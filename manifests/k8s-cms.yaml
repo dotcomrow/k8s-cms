@@ -337,7 +337,7 @@ data:
   
   redis-creds.tpl: |
     {{ with secret "secret/data/redis/value" -}}
-    export REDIS_PASSWORD="{{ .Data.data.value }}"
+    export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
 ---
 # Using existing Redis instance at redis.redis.svc.cluster.local
