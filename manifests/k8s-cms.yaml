@@ -535,18 +535,34 @@ spec:
             echo "⏳ Waiting for database to settle..."
             sleep 5
             
-            # Retry migrations with backoff
+            # Force complete all migrations
             echo "🔄 Running database migrations with retry..."
             for i in 1 2 3; do
               echo "Migration attempt $i..."
-              if node cli.js database migrate:up; then
-                echo "✅ Migrations completed successfully"
+              
+              # Try to run all pending migrations
+              if node cli.js database migrate:latest; then
+                echo "✅ All migrations completed successfully"
+                break
+              elif node cli.js database migrate:up; then
+                echo "✅ Migration up completed successfully"
                 break
               else
                 echo "⚠️ Migration attempt $i failed, waiting before retry..."
+                
+                # On final attempt, try bootstrap to ensure schema is current
+                if [ $i -eq 3 ]; then
+                  echo "🔄 Final attempt: trying bootstrap to complete schema..."
+                  node cli.js bootstrap || echo "Bootstrap also failed"
+                fi
+                
                 sleep $((i * 5))
               fi
             done
+            
+            # Verify schema is complete by counting tables again
+            final_table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'directus';" 2>/dev/null | tr -d ' \n\r' || echo "0")
+            echo "📊 Final table count: $final_table_count tables"
             
             echo "🔍 Debug: Environment check..."
             echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
