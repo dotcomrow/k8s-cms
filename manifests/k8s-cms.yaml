@@ -251,7 +251,7 @@ data:
   DB_SCHEMA: "directus"
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
-  REDIS_HOST: "redis-headless.redis.svc.cluster.local"
+  REDIS_HOST: "redis.redis.svc.cluster.local"
   REDIS_PORT: "6379"
   RATE_LIMITER_ENABLED: "true"
   RATE_LIMITER_STORE: "redis"
@@ -342,7 +342,7 @@ data:
     export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
 ---
-# Using existing Redis instance at redis-headless.redis.svc.cluster.local (master service)
+# Using existing Redis master service at redis.redis.svc.cluster.local
 ---
 # PersistentVolumeClaim for Directus uploads
 apiVersion: v1
@@ -424,7 +424,7 @@ spec:
           args:
             - |
               echo "⏳ Waiting for existing Redis instance to be ready..."
-              until redis-cli -h redis-headless.redis.svc.cluster.local -p 6379 ping; do
+              until redis-cli -h redis.redis.svc.cluster.local -p 6379 ping; do
                 echo "Redis not ready, waiting..."
                 sleep 5
               done
@@ -488,15 +488,17 @@ spec:
             table_count=0
             
             # Simple approach: try install once, handle "already installed" gracefully
-            echo "� Running database install (will skip if already complete)..."
+            echo "📦 Running database install (will skip if already complete)..."
             if node cli.js database install 2>&1 | tee /tmp/install.log; then
               echo "✅ Database installation completed successfully"
-            elif grep -q "Database is already installed" /tmp/install.log; then
-              echo "✅ Database already installed, proceeding..."
             else
-              echo "❌ Database installation failed"
-              cat /tmp/install.log
-              exit 1
+              if grep -q "Database is already installed" /tmp/install.log; then
+                echo "✅ Database already installed, proceeding..."
+              else
+                echo "❌ Database installation failed"
+                cat /tmp/install.log
+                exit 1
+              fi
             fi
             
             # Wait for any remaining DDL transactions
