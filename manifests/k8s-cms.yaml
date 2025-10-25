@@ -499,7 +499,7 @@ spec:
             echo "🔄 Running database migrations with retry..."
             for i in 1 2 3; do
               echo "Migration attempt $i..."
-              if node cli.js database migrate; then
+              if node cli.js database migrate:up; then
                 echo "✅ Migrations completed successfully"
                 break
               else
