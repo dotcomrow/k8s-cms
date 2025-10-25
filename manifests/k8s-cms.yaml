@@ -483,93 +483,32 @@ spec:
             echo "🔄 Initializing Directus database..."
             
 
-            # Check database completeness using Directus CLI commands
-            echo "🔍 Checking database installation status..."
+            # Simple check: assume database needs setup and let Directus handle it
+            echo "� Proceeding with database setup (let Directus handle detection)..."
+            table_count=0
             
-            # Use Directus CLI to check if database is already installed
-            if node cli.js database migrate:status >/dev/null 2>&1; then
-              table_count=27
-              echo "📊 Database complete: Directus migrations accessible"
-            elif node cli.js database install --dry-run 2>&1 | grep -q "Database is already installed"; then
-              table_count=27
-              echo "📊 Database complete: Directus reports already installed"  
+            # Simple approach: try install once, handle "already installed" gracefully
+            echo "� Running database install (will skip if already complete)..."
+            if node cli.js database install 2>&1 | tee /tmp/install.log; then
+              echo "✅ Database installation completed successfully"
+            elif grep -q "Database is already installed" /tmp/install.log; then
+              echo "✅ Database already installed, proceeding..."
             else
-              table_count=0
-              echo "📊 Database appears incomplete or not initialized"
-            fi
-            
-            if [ "$table_count" -ge 25 ]; then
-              echo "✅ Database appears complete with $table_count tables, skipping install"
-            else
-              echo "📦 Database incomplete ($table_count tables), attempting to complete installation..."
-              
-              # If some tables exist but not complete, try to reset and reinstall
-              if [ "$table_count" -gt 0 ]; then
-                echo "🔄 Partial installation detected, resetting database..."
-                # Drop existing directus tables to allow clean reinstall
-                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "
-                  DO \$\$ 
-                  DECLARE
-                    r RECORD;
-                  BEGIN
-                    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'directus') 
-                    LOOP
-                      EXECUTE 'DROP TABLE IF EXISTS directus.' || quote_ident(r.tablename) || ' CASCADE';
-                    END LOOP;
-                  END \$\$;
-                " 2>/dev/null || true
-              fi
-              
-              # Run database installation with retry for YugabyteDB concurrency
-              for attempt in 1 2 3 4 5; do
-                echo "Database install attempt $attempt..."
-                if node cli.js database install; then
-                  echo "✅ Database installation completed successfully"
-                  break
-                elif [ $attempt -eq 5 ]; then
-                  echo "❌ Database installation failed after 5 attempts"
-                  exit 1
-                else
-                  echo "⚠️ Install attempt $attempt failed, waiting before retry..."
-                  sleep $((attempt * 3))
-                fi
-              done
+              echo "❌ Database installation failed"
+              cat /tmp/install.log
+              exit 1
             fi
             
             # Wait for any remaining DDL transactions
             echo "⏳ Waiting for database to settle..."
             sleep 5
             
-            # Force complete all migrations
-            echo "🔄 Running database migrations with retry..."
-            for i in 1 2 3; do
-              echo "Migration attempt $i..."
-              
-              # Try to run all pending migrations
-              if node cli.js database migrate:latest; then
-                echo "✅ All migrations completed successfully"
-                break
-              elif node cli.js database migrate:up; then
-                echo "✅ Migration up completed successfully"
-                break
-              else
-                echo "⚠️ Migration attempt $i failed, waiting before retry..."
-                
-                # On final attempt, try bootstrap to ensure schema is current
-                if [ $i -eq 3 ]; then
-                  echo "🔄 Final attempt: trying bootstrap to complete schema..."
-                  node cli.js bootstrap || echo "Bootstrap also failed"
-                fi
-                
-                sleep $((i * 5))
-              fi
-            done
-            
-            # Verify schema is complete using Directus CLI
-            if node cli.js database migrate:status >/dev/null 2>&1; then
-              echo "📊 Database installation verified: migrations accessible"
+            # Simple migration approach
+            echo "🔄 Running database migrations..."
+            if node cli.js database migrate:latest; then
+              echo "✅ Migrations completed successfully"
             else
-              echo "⚠️ Database verification failed: migrations not accessible"
+              echo "⚠️ Migration failed, but proceeding..."
             fi
             
             echo "🔍 Debug: Environment check..."
