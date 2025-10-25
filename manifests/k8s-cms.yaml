@@ -143,7 +143,7 @@ spec:
 
               psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d "$DB" <<EOSQL
               CREATE SCHEMA IF NOT EXISTS directus AUTHORIZATION ${ROLE_OWNER};
-              ALTER ROLE ${ROLE_OWNER} SET search_path = directus,public;
+              ALTER ROLE ${ROLE_OWNER} SET search_path = directus;
               GRANT CONNECT ON DATABASE ${DB} TO ${ROLE_OWNER};
               GRANT USAGE, CREATE ON SCHEMA directus TO ${ROLE_GROUP};
               GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA directus TO ${ROLE_GROUP};
@@ -509,9 +509,12 @@ spec:
             done
             
             echo "🔍 Debug: Environment check..."
-            echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER"
+            echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
             echo "REDIS_HOST: $REDIS_HOST"
             echo "Credentials loaded: KEY(${#KEY}), SECRET(${#SECRET}), ADMIN_EMAIL($ADMIN_EMAIL)"
+            
+            # Ensure proper schema connection
+            export DB_SEARCH_PATH="directus"
             
             echo "🚀 Starting Directus server..."
             exec node cli.js start
