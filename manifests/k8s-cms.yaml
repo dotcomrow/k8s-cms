@@ -484,7 +484,12 @@ spec:
             
 
             # Count tables to check completeness
-            table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'directus';" 2>/dev/null | xargs || echo "0")
+            table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'directus';" 2>/dev/null | tr -d ' \n\r' || echo "0")
+            
+            # Ensure table_count is a valid number
+            if ! [ "$table_count" -eq "$table_count" ] 2>/dev/null; then
+              table_count=0
+            fi
             
             echo "📊 Found $table_count Directus tables in database"
             
