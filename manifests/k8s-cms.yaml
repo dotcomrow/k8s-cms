@@ -482,22 +482,38 @@ spec:
             
             echo "🔄 Initializing Directus database..."
             
-            # Simple bootstrap approach - this will create tables if they don't exist
-            echo "📦 Running Directus bootstrap..."
-            node cli.js bootstrap || true
+            # Check if database is already initialized
+            if node cli.js database install --help > /dev/null 2>&1; then
+              echo "📦 Installing Directus database schema..."
+              node cli.js database install || echo "⚠️ Database install failed, may already be installed"
+            else
+              echo "📦 Running Directus bootstrap..."
+              node cli.js bootstrap || echo "⚠️ Bootstrap failed, may already be installed"
+            fi
             
-            echo "🔄 Running database migrations..."
-            node cli.js database migrate:up || true
+            # Wait for YugabyteDB DDL transactions to complete
+            echo "⏳ Waiting for database to settle..."
+            sleep 10
             
-            echo "🔍 Debug: Checking environment variables..."
-            echo "DB_HOST: $DB_HOST"
-            echo "DB_USER: $DB_USER"
+            # Retry migrations with backoff
+            echo "🔄 Running database migrations with retry..."
+            for i in 1 2 3; do
+              echo "Migration attempt $i..."
+              if node cli.js database migrate; then
+                echo "✅ Migrations completed successfully"
+                break
+              else
+                echo "⚠️ Migration attempt $i failed, waiting before retry..."
+                sleep $((i * 5))
+              fi
+            done
+            
+            echo "🔍 Debug: Environment check..."
+            echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER"
             echo "REDIS_HOST: $REDIS_HOST"
-            echo "KEY length: ${#KEY}"
-            echo "SECRET length: ${#SECRET}"
+            echo "Credentials loaded: KEY(${#KEY}), SECRET(${#SECRET}), ADMIN_EMAIL($ADMIN_EMAIL)"
             
             echo "🚀 Starting Directus server..."
-            set -x  # Enable debug output
             exec node cli.js start
         ports:
         - containerPort: 8055
