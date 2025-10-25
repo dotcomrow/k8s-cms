@@ -100,10 +100,7 @@ spec:
                 vault kv put secret/directus/keys key="$KEY" secret="$SECRET"
               fi
               
-              if ! vault kv get -format=json secret/directus/redis >/dev/null 2>&1; then
-                REDIS_PASS="$(tr -dc 'A-Za-z0-9@#%^+=_' </dev/urandom | head -c 32)"
-                vault kv put secret/directus/redis password="$REDIS_PASS"
-              fi
+# Redis password is already managed in existing Redis instance
 
               until getent hosts "$PGHOST" >/dev/null 2>&1; do echo "🔄 Waiting for DNS for $PGHOST..."; sleep 3; done
               until nc -z -w1 "$PGHOST" "$PGPORT"; do echo "⏳ Waiting for DB $PGHOST:$PGPORT..."; sleep 3; done
@@ -172,12 +169,12 @@ spec:
               path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
-              path "secret/data/directus/redis"                    { capabilities = ["read"] }
+              path "secret/data/redis/password"                    { capabilities = ["read"] }
               path "secret/data/vaultadmin"                        { capabilities = ["read"] }
               EOF
 
               vault write auth/kubernetes/role/directus \
-                bound_service_account_names="directus,redis" \
+                bound_service_account_names="directus" \
                 bound_service_account_namespaces="directus" \
                 policies="directus" \
                 ttl="48h"
@@ -216,9 +213,6 @@ subjects:
   - kind: ServiceAccount
     name: directus
     namespace: directus
-  - kind: ServiceAccount
-    name: redis
-    namespace: directus
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -241,12 +235,6 @@ metadata:
   name: directus
   namespace: directus
 ---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: redis
-  namespace: directus
----
 # ConfigMap for Directus configuration
 apiVersion: v1
 kind: ConfigMap
@@ -261,7 +249,7 @@ data:
   DB_SCHEMA: "directus"
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
-  REDIS_HOST: "redis-service.directus.svc.cluster.local"
+  REDIS_HOST: "redis.redis.svc.cluster.local"
   REDIS_PORT: "6379"
   RATE_LIMITER_ENABLED: "true"
   RATE_LIMITER_STORE: "redis"
@@ -348,174 +336,11 @@ data:
     {{- end }}
   
   redis-creds.tpl: |
-    {{ with secret "secret/data/directus/redis" -}}
+    {{ with secret "secret/data/redis/password" -}}
     export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
 ---
-# Vault Agent Configuration for Redis
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: vault-agent-config-redis
-  namespace: directus
-data:
-  vault-agent.hcl: |
-    pid_file = "/vault/agent.pid"
-    exit_after_auth = false
-    
-    vault {
-      address = "http://vault.vault.svc.cluster.local:8200"
-    }
-    
-    auto_auth {
-      method "kubernetes" {
-        mount_path = "auth/kubernetes"
-        config = {
-          role = "directus"
-        }
-      }
-      
-      sink "file" {
-        config = {
-          path = "/vault/token"
-        }
-      }
-    }
-    
-    template {
-      source      = "/vault-templates/redis-password.tpl"
-      destination = "/vault-secrets/redis-password.conf"
-      perms       = 0644
-    }
-  
-  redis-password.tpl: |
-    {{ with secret "secret/data/directus/redis" -}}
-    requirepass {{ .Data.data.password }}
-    {{- end }}
----
-# Redis Deployment for caching with Vault integration
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-  namespace: directus
-  labels:
-    app: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      serviceAccountName: redis
-      volumes:
-        - name: redis-data
-          emptyDir: {}
-        - name: vault-agent-config
-          configMap:
-            name: vault-agent-config-redis
-        - name: vault-secrets
-          emptyDir: {}
-        - name: vault-templates
-          configMap:
-            name: vault-agent-config-redis
-            items:
-              - key: redis-password.tpl
-                path: redis-password.tpl
-      initContainers:
-        - name: wait-for-config-job
-          image: alpine/k8s:1.31.4
-          command: ["/bin/sh","-lc"]
-          args:
-            - |
-              echo "Waiting for Job vault/directus-yugabyte-config to complete..."
-              while true; do
-                if ! kubectl -n vault get job directus-yugabyte-config >/dev/null 2>&1; then
-                  echo "  └─ job not found yet..."; sleep 5; continue
-                fi
-                SUCC="$(kubectl -n vault get job directus-yugabyte-config -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"; SUCC="${SUCC:-0}"
-                [ "$SUCC" -ge 1 ] && break
-                sleep 5
-              done
-      containers:
-      - name: vault-agent
-        image: hashicorp/vault:1.15.4
-        command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
-        volumeMounts:
-        - name: vault-agent-config
-          mountPath: /vault-config
-        - name: vault-secrets
-          mountPath: /vault-secrets
-        - name: vault-templates
-          mountPath: /vault-templates
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
-      - name: redis
-        image: redis:7-alpine
-        command: ["/bin/sh", "-c"]
-        args:
-          - |
-            set -e
-            echo "⏳ Waiting for Vault agent to generate Redis password..."
-            while [ ! -f /vault-secrets/redis-password.conf ]; do
-              sleep 2
-            done
-            echo "✅ Redis password configuration retrieved from Vault"
-            echo "🚀 Starting Redis with authentication..."
-            exec redis-server /vault-secrets/redis-password.conf
-        ports:
-        - containerPort: 6379
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "200m"
-        volumeMounts:
-        - name: redis-data
-          mountPath: /data
-        - name: vault-secrets
-          mountPath: /vault-secrets
-        livenessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "redis-cli ping"
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "redis-cli ping"
-          initialDelaySeconds: 5
-          periodSeconds: 5
----
-# Redis Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis-service
-  namespace: directus
-spec:
-  selector:
-    app: redis
-  ports:
-  - port: 6379
-    targetPort: 6379
-  type: ClusterIP
+# Using existing Redis instance at redis.redis.svc.cluster.local
 ---
 # PersistentVolumeClaim for Directus uploads
 apiVersion: v1
@@ -529,7 +354,8 @@ spec:
   resources:
     requests:
       storage: 10Gi
-  storageClassName: standard  # Adjust based on your cluster's storage classes
+  storageClassName: nfs-client
+  # storageClassName: standard  # Use default storage class
 ---
 # Directus Deployment with Vault integration
 apiVersion: apps/v1
@@ -596,12 +422,12 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              echo "⏳ Waiting for Redis to be ready..."
-              until redis-cli -h redis-service.directus.svc.cluster.local -p 6379 ping; do
+              echo "⏳ Waiting for existing Redis instance to be ready..."
+              until redis-cli -h redis.redis.svc.cluster.local -p 6379 ping; do
                 echo "Redis not ready, waiting..."
                 sleep 5
               done
-              echo "✅ Redis is ready"
+              echo "✅ Existing Redis instance is ready"
       containers:
       - name: vault-agent
         image: hashicorp/vault:1.15.4
