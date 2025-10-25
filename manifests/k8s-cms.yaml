@@ -336,7 +336,7 @@ data:
     {{- end }}
   
   redis-creds.tpl: |
-    {{ with secret "secret/data/redis/value" -}}
+    {{ with secret "secret/data/redis/password" -}}
     export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
 ---
