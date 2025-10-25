@@ -480,7 +480,22 @@ spec:
             export ADMIN_PASSWORD
             export REDIS_PASSWORD
             
-            echo "🚀 Starting Directus with Vault-injected credentials..."
+            echo "� Checking if Directus database is initialized..."
+            
+            # Try to bootstrap the database if it's not already initialized
+            if ! node cli.js database --help > /dev/null 2>&1; then
+              echo "📦 Bootstrapping Directus database..."
+              node cli.js bootstrap
+            else
+              echo "🔍 Checking database status..."
+              # Check if database needs migration
+              if node cli.js database migrate --help > /dev/null 2>&1; then
+                echo "🔄 Running database migrations..."
+                node cli.js database migrate
+              fi
+            fi
+            
+            echo "�🚀 Starting Directus with Vault-injected credentials..."
             exec node cli.js start
         ports:
         - containerPort: 8055
