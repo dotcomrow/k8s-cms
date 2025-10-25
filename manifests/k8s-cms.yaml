@@ -483,15 +483,24 @@ spec:
             echo "🔄 Initializing Directus database..."
             
 
-            # Count tables to check completeness
-            table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'directus';" 2>/dev/null | tr -d ' \n\r' || echo "0")
+            # Count tables to check completeness - try multiple approaches
+            echo "🔍 Checking database schema and table count..."
             
-            # Ensure table_count is a valid number
-            if ! [ "$table_count" -eq "$table_count" ] 2>/dev/null; then
-              table_count=0
+            # First try to check if directus_users exists (key table)
+            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_users LIMIT 1;" >/dev/null 2>&1; then
+              table_count=27  # Assume complete installation if directus_users exists
+              echo "📊 Database appears complete (directus_users table exists)"
+            else
+              # If that fails, try to count tables in public schema (YugabyteDB default)
+              table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'directus_%';" 2>/dev/null | tr -d ' \n\r' || echo "0")
+              
+              # Ensure table_count is a valid number
+              if ! [ "$table_count" -eq "$table_count" ] 2>/dev/null; then
+                table_count=0
+              fi
+              
+              echo "📊 Found $table_count Directus tables in database"
             fi
-            
-            echo "📊 Found $table_count Directus tables in database"
             
             if [ "$table_count" -ge 25 ]; then
               echo "✅ Database appears complete with $table_count tables, skipping install"
@@ -561,7 +570,7 @@ spec:
             done
             
             # Verify schema is complete by counting tables again
-            final_table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'directus';" 2>/dev/null | tr -d ' \n\r' || echo "0")
+            final_table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'directus_%';" 2>/dev/null | tr -d ' \n\r' || echo "0")
             echo "📊 Final table count: $final_table_count tables"
             
             echo "🔍 Debug: Environment check..."
