@@ -227,6 +227,8 @@ metadata:
     app: directus-cms
   annotations:
     linkerd.io/inject: enabled
+    scheduler.alpha.kubernetes.io/node-selector: "dedicated=work-node"
+    field.cattle.io/projectId: "local:applications"
 ---
 # Service Accounts
 apiVersion: v1
