@@ -449,7 +449,7 @@ spec:
             cpu: "100m"
       - name: directus
         image: directus/directus:11
-        command: ["/bin/bash", "-c"]
+        command: ["/bin/sh", "-c"]
         args:
           - |
             set -e
