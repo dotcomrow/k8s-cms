@@ -489,7 +489,15 @@ spec:
             echo "🔄 Running database migrations..."
             node cli.js database migrate || true
             
-            echo "� Starting Directus..."
+            echo "🔍 Debug: Checking environment variables..."
+            echo "DB_HOST: $DB_HOST"
+            echo "DB_USER: $DB_USER"
+            echo "REDIS_HOST: $REDIS_HOST"
+            echo "KEY length: ${#KEY}"
+            echo "SECRET length: ${#SECRET}"
+            
+            echo "🚀 Starting Directus server..."
+            set -x  # Enable debug output
             exec node cli.js start
         ports:
         - containerPort: 8055
@@ -610,7 +618,7 @@ spec:
           httpGet:
             path: /server/health
             port: 8055
-          initialDelaySeconds: 60
+          initialDelaySeconds: 120
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
@@ -618,7 +626,7 @@ spec:
           httpGet:
             path: /server/health
             port: 8055
-          initialDelaySeconds: 30
+          initialDelaySeconds: 90
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
