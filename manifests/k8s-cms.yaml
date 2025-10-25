@@ -100,7 +100,7 @@ spec:
                 vault kv put secret/directus/keys key="$KEY" secret="$SECRET"
               fi
               
-# Redis password is already managed in existing Redis instance
+              # Redis password is already managed in existing Redis instance
 
               until getent hosts "$PGHOST" >/dev/null 2>&1; do echo "🔄 Waiting for DNS for $PGHOST..."; sleep 3; done
               until nc -z -w1 "$PGHOST" "$PGPORT"; do echo "⏳ Waiting for DB $PGHOST:$PGPORT..."; sleep 3; done
