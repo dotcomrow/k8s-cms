@@ -522,7 +522,16 @@ spec:
             export DB_SEARCH_PATH="directus"
             
             echo "🚀 Starting Directus server..."
-            exec node cli.js start
+            # Create a startup script that sources all environment variables
+            echo '#!/bin/sh' > /tmp/start-directus.sh
+            echo 'source /vault-secrets/db-creds.env' >> /tmp/start-directus.sh
+            echo 'source /vault-secrets/app-keys.env' >> /tmp/start-directus.sh
+            echo 'source /vault-secrets/admin-creds.env' >> /tmp/start-directus.sh
+            echo 'source /vault-secrets/redis-creds.env' >> /tmp/start-directus.sh
+            echo 'export DB_USER DB_PASSWORD KEY SECRET ADMIN_EMAIL ADMIN_PASSWORD REDIS_PASSWORD' >> /tmp/start-directus.sh
+            echo 'exec node cli.js start' >> /tmp/start-directus.sh
+            chmod +x /tmp/start-directus.sh
+            exec /tmp/start-directus.sh
         ports:
         - containerPort: 8055
         env:
@@ -642,17 +651,17 @@ spec:
           httpGet:
             path: /server/health
             port: 8055
-          initialDelaySeconds: 120
-          periodSeconds: 10
-          timeoutSeconds: 5
+          initialDelaySeconds: 360  # Allow 6 minutes for complete startup
+          periodSeconds: 30
+          timeoutSeconds: 10
           failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /server/health
             port: 8055
-          initialDelaySeconds: 90
-          periodSeconds: 5
-          timeoutSeconds: 3
+          initialDelaySeconds: 300  # Allow 5 minutes for database setup and migrations
+          periodSeconds: 10
+          timeoutSeconds: 5
           failureThreshold: 3
         volumeMounts:
         - name: uploads
