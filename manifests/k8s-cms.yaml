@@ -169,7 +169,7 @@ spec:
               path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
-              path "secret/data/redis/password"                    { capabilities = ["read"] }
+              path "secret/data/redis/value"                       { capabilities = ["read"] }
               path "secret/data/vaultadmin"                        { capabilities = ["read"] }
               EOF
 
@@ -337,7 +337,7 @@ data:
   
   redis-creds.tpl: |
     {{ with secret "secret/data/redis/value" -}}
-    export REDIS_PASSWORD="{{ .Data.data.password }}"
+    export REDIS_PASSWORD="{{ .Data.data.value }}"
     {{- end }}
 ---
 # Using existing Redis instance at redis.redis.svc.cluster.local
@@ -354,8 +354,7 @@ spec:
   resources:
     requests:
       storage: 10Gi
-  storageClassName: nfs-client
-  # storageClassName: standard  # Use default storage class
+  storageClassName: nfs-client  # Use nfs-client storage class
 ---
 # Directus Deployment with Vault integration
 apiVersion: apps/v1
