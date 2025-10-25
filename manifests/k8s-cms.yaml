@@ -483,15 +483,34 @@ spec:
             echo "🔄 Initializing Directus database..."
             
 
-            # Check if already initialized by testing for multiple core tables
-            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_migrations LIMIT 1;" 2>/dev/null && \
-               psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_users LIMIT 1;" 2>/dev/null; then
-              echo "✅ Database already initialized, skipping setup"
+            # Count tables to check completeness
+            table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'directus';" 2>/dev/null | xargs || echo "0")
+            
+            echo "📊 Found $table_count Directus tables in database"
+            
+            if [ "$table_count" -ge 25 ]; then
+              echo "✅ Database appears complete with $table_count tables, skipping install"
             else
-              echo "📦 Database not initialized or incomplete, running database install..."
+              echo "📦 Database incomplete ($table_count tables), attempting to complete installation..."
+              
+              # If some tables exist but not complete, try to reset and reinstall
+              if [ "$table_count" -gt 0 ]; then
+                echo "🔄 Partial installation detected, resetting database..."
+                # Drop existing directus tables to allow clean reinstall
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "
+                  DO \$\$ 
+                  DECLARE
+                    r RECORD;
+                  BEGIN
+                    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'directus') 
+                    LOOP
+                      EXECUTE 'DROP TABLE IF EXISTS directus.' || quote_ident(r.tablename) || ' CASCADE';
+                    END LOOP;
+                  END \$\$;
+                " 2>/dev/null || true
+              fi
               
               # Run database installation with retry for YugabyteDB concurrency
-
               for attempt in 1 2 3 4 5; do
                 echo "Database install attempt $attempt..."
                 if node cli.js database install; then
@@ -505,7 +524,6 @@ spec:
                   sleep $((attempt * 3))
                 fi
               done
-
             fi
             
             # Wait for any remaining DDL transactions
