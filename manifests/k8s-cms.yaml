@@ -483,23 +483,32 @@ spec:
             echo "🔄 Initializing Directus database..."
             
 
-            # Count tables to check completeness - try multiple approaches
+            # Check database completeness using multiple approaches
             echo "🔍 Checking database schema and table count..."
             
-            # First try to check if directus_users exists (key table)
+            # Debug: Show what tables actually exist
+            echo "🔍 Debug: Listing all directus tables..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'directus_%' ORDER BY table_name;" 2>/dev/null || echo "Failed to query tables"
+            
+            # Try different approaches to detect existing installation
             if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_users LIMIT 1;" >/dev/null 2>&1; then
-              table_count=27  # Assume complete installation if directus_users exists
-              echo "📊 Database appears complete (directus_users table exists)"
+              table_count=27
+              echo "📊 Database complete: directus_users table accessible"
+            elif psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_migrations LIMIT 1;" >/dev/null 2>&1; then
+              table_count=27  
+              echo "📊 Database complete: directus_migrations table accessible"
+            elif psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "\\dt directus_*" >/dev/null 2>&1; then
+              table_count=27
+              echo "📊 Database complete: directus tables found via \\dt command"
             else
-              # If that fails, try to count tables in public schema (YugabyteDB default)
-              table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'directus_%';" 2>/dev/null | tr -d ' \n\r' || echo "0")
+              # If all checks fail, count tables
+              table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'directus_%';" 2>/dev/null | tr -d ' \n\r' || echo "0")
               
-              # Ensure table_count is a valid number
               if ! [ "$table_count" -eq "$table_count" ] 2>/dev/null; then
                 table_count=0
               fi
               
-              echo "📊 Found $table_count Directus tables in database"
+              echo "📊 Found $table_count Directus tables via count query"
             fi
             
             if [ "$table_count" -ge 25 ]; then
