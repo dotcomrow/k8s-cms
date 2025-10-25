@@ -251,7 +251,7 @@ data:
   DB_SCHEMA: "directus"
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
-  REDIS_HOST: "redis.redis.svc.cluster.local"
+  REDIS_HOST: "redis-headless.redis.svc.cluster.local"
   REDIS_PORT: "6379"
   RATE_LIMITER_ENABLED: "true"
   RATE_LIMITER_STORE: "redis"
@@ -342,7 +342,7 @@ data:
     export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
 ---
-# Using existing Redis instance at redis.redis.svc.cluster.local
+# Using existing Redis instance at redis-headless.redis.svc.cluster.local (master service)
 ---
 # PersistentVolumeClaim for Directus uploads
 apiVersion: v1
@@ -424,7 +424,7 @@ spec:
           args:
             - |
               echo "⏳ Waiting for existing Redis instance to be ready..."
-              until redis-cli -h redis.redis.svc.cluster.local -p 6379 ping; do
+              until redis-cli -h redis-headless.redis.svc.cluster.local -p 6379 ping; do
                 echo "Redis not ready, waiting..."
                 sleep 5
               done
@@ -483,11 +483,12 @@ spec:
             echo "🔄 Initializing Directus database..."
             
 
-            # Check if already initialized by testing for directus_collections table
-            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_collections LIMIT 1;" 2>/dev/null; then
+            # Check if already initialized by testing for multiple core tables
+            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_migrations LIMIT 1;" 2>/dev/null && \
+               psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_users LIMIT 1;" 2>/dev/null; then
               echo "✅ Database already initialized, skipping setup"
             else
-              echo "📦 Database not initialized, running database install..."
+              echo "📦 Database not initialized or incomplete, running database install..."
               
               # Run database installation with retry for YugabyteDB concurrency
 
