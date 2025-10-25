@@ -169,7 +169,7 @@ spec:
               path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
-              path "secret/data/redis/value"                       { capabilities = ["read"] }
+              path "secret/data/redis/password"                    { capabilities = ["read"] }
               path "secret/data/vaultadmin"                        { capabilities = ["read"] }
               EOF
 
