@@ -480,22 +480,16 @@ spec:
             export ADMIN_PASSWORD
             export REDIS_PASSWORD
             
-            echo "� Checking if Directus database is initialized..."
+            echo "🔄 Initializing Directus database..."
             
-            # Try to bootstrap the database if it's not already initialized
-            if ! node cli.js database --help > /dev/null 2>&1; then
-              echo "📦 Bootstrapping Directus database..."
-              node cli.js bootstrap
-            else
-              echo "🔍 Checking database status..."
-              # Check if database needs migration
-              if node cli.js database migrate --help > /dev/null 2>&1; then
-                echo "🔄 Running database migrations..."
-                node cli.js database migrate
-              fi
-            fi
+            # Simple bootstrap approach - this will create tables if they don't exist
+            echo "📦 Running Directus bootstrap..."
+            node cli.js bootstrap || true
             
-            echo "�🚀 Starting Directus with Vault-injected credentials..."
+            echo "🔄 Running database migrations..."
+            node cli.js database migrate || true
+            
+            echo "� Starting Directus..."
             exec node cli.js start
         ports:
         - containerPort: 8055
