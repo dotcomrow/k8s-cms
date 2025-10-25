@@ -483,32 +483,19 @@ spec:
             echo "🔄 Initializing Directus database..."
             
 
-            # Check database completeness using multiple approaches
-            echo "🔍 Checking database schema and table count..."
+            # Check database completeness using Directus CLI commands
+            echo "🔍 Checking database installation status..."
             
-            # Debug: Show what tables actually exist
-            echo "🔍 Debug: Listing all directus tables..."
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'directus_%' ORDER BY table_name;" 2>/dev/null || echo "Failed to query tables"
-            
-            # Try different approaches to detect existing installation
-            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_users LIMIT 1;" >/dev/null 2>&1; then
+            # Use Directus CLI to check if database is already installed
+            if node cli.js database migrate:status >/dev/null 2>&1; then
               table_count=27
-              echo "📊 Database complete: directus_users table accessible"
-            elif psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_migrations LIMIT 1;" >/dev/null 2>&1; then
-              table_count=27  
-              echo "📊 Database complete: directus_migrations table accessible"
-            elif psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "\\dt directus_*" >/dev/null 2>&1; then
+              echo "📊 Database complete: Directus migrations accessible"
+            elif node cli.js database install --dry-run 2>&1 | grep -q "Database is already installed"; then
               table_count=27
-              echo "📊 Database complete: directus tables found via \\dt command"
+              echo "📊 Database complete: Directus reports already installed"  
             else
-              # If all checks fail, count tables
-              table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'directus_%';" 2>/dev/null | tr -d ' \n\r' || echo "0")
-              
-              if ! [ "$table_count" -eq "$table_count" ] 2>/dev/null; then
-                table_count=0
-              fi
-              
-              echo "📊 Found $table_count Directus tables via count query"
+              table_count=0
+              echo "📊 Database appears incomplete or not initialized"
             fi
             
             if [ "$table_count" -ge 25 ]; then
@@ -578,9 +565,12 @@ spec:
               fi
             done
             
-            # Verify schema is complete by counting tables again
-            final_table_count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -t -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'directus_%';" 2>/dev/null | tr -d ' \n\r' || echo "0")
-            echo "📊 Final table count: $final_table_count tables"
+            # Verify schema is complete using Directus CLI
+            if node cli.js database migrate:status >/dev/null 2>&1; then
+              echo "📊 Database installation verified: migrations accessible"
+            else
+              echo "⚠️ Database verification failed: migrations not accessible"
+            fi
             
             echo "🔍 Debug: Environment check..."
             echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
