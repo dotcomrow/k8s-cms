@@ -482,40 +482,29 @@ spec:
             
             echo "🔄 Initializing Directus database..."
             
-            # Create a simple lock mechanism using database to prevent concurrent initialization
-            DB_INIT_LOCK_TABLE="directus_init_lock"
-            
-            # Check if already initialized by testing for an existing table
-            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_collections' LIMIT 1;" 2>/dev/null | grep -q "1 row"; then
+
+            # Check if already initialized by testing for directus_collections table
+            if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SELECT 1 FROM directus_collections LIMIT 1;" 2>/dev/null; then
               echo "✅ Database already initialized, skipping setup"
             else
-              echo "📦 Database not initialized, starting setup..."
+              echo "📦 Database not initialized, running database install..."
               
-              # Try to acquire initialization lock
-              if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "CREATE TABLE IF NOT EXISTS $DB_INIT_LOCK_TABLE (locked_at TIMESTAMP DEFAULT NOW());" 2>/dev/null; then
-                echo "� Acquired initialization lock"
-                
-                # Run database installation with retry for YugabyteDB concurrency
-                for attempt in 1 2 3 4 5; do
-                  echo "Database install attempt $attempt..."
-                  if node cli.js database install; then
-                    echo "✅ Database installation completed successfully"
-                    break
-                  elif [ $attempt -eq 5 ]; then
-                    echo "❌ Database installation failed after 5 attempts"
-                    break
-                  else
-                    echo "⚠️ Install attempt $attempt failed, waiting before retry..."
-                    sleep $((attempt * 3))
-                  fi
-                done
-                
-                # Clean up lock
-                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "DROP TABLE IF EXISTS $DB_INIT_LOCK_TABLE;" 2>/dev/null || true
-              else
-                echo "⏳ Another pod is initializing database, waiting..."
-                sleep 30
-              fi
+              # Run database installation with retry for YugabyteDB concurrency
+
+              for attempt in 1 2 3 4 5; do
+                echo "Database install attempt $attempt..."
+                if node cli.js database install; then
+                  echo "✅ Database installation completed successfully"
+                  break
+                elif [ $attempt -eq 5 ]; then
+                  echo "❌ Database installation failed after 5 attempts"
+                  exit 1
+                else
+                  echo "⚠️ Install attempt $attempt failed, waiting before retry..."
+                  sleep $((attempt * 3))
+                fi
+              done
+
             fi
             
             # Wait for any remaining DDL transactions
