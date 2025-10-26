@@ -125,14 +125,6 @@ resource "google_cloud_run_v2_service" "github_profile_svc" {
     }
   }
 
-  lifecycle {
-    ignore_changes = [
-      template[0].containers[0].env, # app envs may drift intentionally
-      client,
-      client_version,
-    ]
-  }
-
   depends_on = [
     google_project_iam_member.registry_permissions,
     google_project_iam_member.secret_manager_grant,
