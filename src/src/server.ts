@@ -7,7 +7,7 @@ import { z } from "zod";
 
 /**
  * -----------------------------
- * Env configuration & parsing
+ * Env configuration & parsing 
  * -----------------------------
  */
 const envSchema = z.object({
