@@ -31,9 +31,15 @@ resource "google_project_service" "project_service" {
   service = var.apis[count.index]
 }
 
+resource "google_service_account" "default_compute" {
+  account_id   = "default-compute-sa"
+  display_name = "Default Compute Service Account for Cloud Run"
+  project      = google_project.infra.project_id
+}
+
 data "google_compute_default_service_account" "default" {
   project = google_project.infra.project_id
-  depends_on = [google_project_service.project_service]
+  depends_on = [google_project_service.project_service, google_service_account.default_compute]
 }
 
 resource "google_project_iam_member" "registry_permissions" {
@@ -89,7 +95,7 @@ resource "google_cloud_run_v2_service" "github_profile_svc" {
   deletion_protection = false
 
   template {
-    service_account = google_service_account.eventarc_service_account.email
+    service_account = data.google_compute_default_service_account.default.email
 
     scaling {
       min_instance_count = 0
@@ -131,7 +137,6 @@ resource "google_cloud_run_v2_service" "github_profile_svc" {
     google_project_iam_member.registry_permissions,
     google_project_iam_member.secret_manager_grant,
     null_resource.ghcr_to_gcp_image_sync,
-    google_service_account.eventarc_service_account,
     google_project_iam_member.cloud_run_secret_access,
     google_project_iam_member.eventarc_receive_auditlog,
     null_resource.kms_iam_binding,
@@ -142,7 +147,7 @@ resource "google_cloud_run_v2_service" "github_profile_svc" {
 resource "google_project_iam_member" "cloud_run_secret_list" {
   project = google_project.infra.project_id
   role    = "roles/secretmanager.viewer"
-  member  = "serviceAccount:${google_service_account.eventarc_service_account.email}"
+  member  = "serviceAccount:${data.google_compute_default_service_account.default.email}"
 }
 
 resource "google_artifact_registry_repository" "github_profile_repo" {
