@@ -675,8 +675,16 @@ kind: Service
 metadata:
   name: directus-service
   namespace: directus
+  annotations:
+    teleport.dev/name: "directus-cms"
+    teleport.dev/protocol: "http"
+    teleport.dev/public-addr: "cms.app.suncoast.systems"
+    teleport.dev/description: "Directus CMS Service"
   labels:
     app: directus
+    app.kubernetes.io/name: directus-cms
+    app.kubernetes.io/component: cms
+    teleport.dev/enroll: "true"
 spec:
   selector:
     app: directus
@@ -687,29 +695,29 @@ spec:
     protocol: TCP
   type: ClusterIP
 ---
-# HorizontalPodAutoscaler for automatic scaling
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: directus-hpa
-  namespace: directus
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: directus
-  minReplicas: 2
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80
+# # HorizontalPodAutoscaler for automatic scaling
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: directus-hpa
+#   namespace: directus
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: directus
+#   minReplicas: 2
+#   maxReplicas: 10
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 70
+#   - type: Resource
+#     resource:
+#       name: memory
+#       target:
+#         type: Utilization
+#         averageUtilization: 80
