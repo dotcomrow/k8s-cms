@@ -645,6 +645,31 @@ spec:
             configMapKeyRef:
               name: directus-config
               key: ASSETS_CACHE_TTL
+        - name: GITHUB_CLIENT_ID
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: GITHUB_CLIENT_ID
+        - name: GITHUB_CLIENT_SECRET
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: GITHUB_CLIENT_SECRET
+        - name: GITHUB_ALLOW_SIGNUP
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: GITHUB_ALLOW_SIGNUP
+        - name: GITHUB_TEAMS
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: GITHUB_TEAMS
+        - name: GITHUB_ORG
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: GITHUB_ORG
         resources:
           requests:
             memory: "512Mi"
