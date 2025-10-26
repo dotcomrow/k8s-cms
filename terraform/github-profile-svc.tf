@@ -4,7 +4,7 @@ data "external" "ghcr_tag" {
     set -e
     TAG=$(curl -s \
       -H "Authorization: Bearer ${var.GHCR_PAT}" \
-      https://api.github.com/users/${var.GITHUB_ORG}/packages/container/vault-sync-run-container/versions \
+      https://api.github.com/users/${var.GITHUB_ORG}/packages/container/github-profile-service/versions \
       | jq -r '.[].metadata.container.tags[]' \
       | grep '^ts-' | sort -r | head -n1)
     jq -n --arg tag "$TAG" '{ tag: $tag }'
@@ -13,14 +13,14 @@ data "external" "ghcr_tag" {
 }
 
 # 2. Null resource tracks last synced tag and only runs when tag changes
-resource "null_resource" "vault_sync_tag_tracker" {
+resource "null_resource" "github_profile_tag_tracker" {
   triggers = {
     tag = data.external.ghcr_tag.result.tag
   }
 }
 
 locals {
-  image_tag = null_resource.vault_sync_tag_tracker.triggers.tag
+  image_tag = null_resource.github_profile_tag_tracker.triggers.tag
 }
 
 resource "google_project_service" "project_service" {
@@ -64,23 +64,12 @@ resource "google_artifact_registry_repository" "thirdparty" {
   project            = google_project.infra.project_id
 }
 
-locals {
-  tbot_config_yaml = templatefile("${path.module}/tbot_config/vault_tbot_config.tftpl", {
-    proxy_server = "teleport.app.suncoast.systems:443"
-    token_name   = "vault-bot-gcp"     # must match your Teleport token resource name
-    app_name     = "vault"
-    listen_addr  = "tcp://127.0.0.1:8200"
-  })
-  tbot_config_b64 = base64encode(local.tbot_config_yaml)
-}
 
 # --- DRY helpers ---
 locals {
-  app_image  = "${var.region}-docker.pkg.dev/${google_project.infra.project_id}/vault-sync-run-container/vault-sync-run-container:${local.image_tag}"
-  tbot_image = "${var.region}-docker.pkg.dev/${google_project.infra.project_id}/thirdparty/teleport-bot-container@sha256:42656ba9c19437d0646fcaf27c18aeba21218d6ca10d16bfc9ca5376c2864f1d"
-
+  app_image  = "${var.region}-docker.pkg.dev/${google_project.infra.project_id}/github-profile-service/github-profile-service:${local.image_tag}"
+  
   app_env = [
-    { name = "VAULT_ADDRS",              value = "${var.VAULT_ADDRESS},http://127.0.0.1:8200" },
     { name = "GCP_PROJECT_ID",           value = google_project.infra.project_id },
     { name = "VAULT_CONNECT_TIMEOUT_MS", value = "300" },
     { name = "VAULT_READ_TIMEOUT_MS",    value = "2000" },
@@ -90,16 +79,10 @@ locals {
     { name = "DEBUG_VAULT_RESOLVER",     value = "true" },
   ]
 
-  tbot_env = [
-    { name = "TBOT_CONFIG",      value = local.tbot_config_b64 },
-    { name = "TBOT_RETRY_DELAY", value = "10" },
-    # { name = "TBOT_ARGS",       value = "start" },  # default is "start"
-    # { name = "TBOT_DISABLED",   value = "" },       # set "1" to park sidecar
-  ]
 }
 
-resource "google_cloud_run_v2_service" "vault_sync_svc" {
-  name                = "vault-sync-run-container"
+resource "google_cloud_run_v2_service" "github_profile_svc" {
+  name                = "github-profile-service"
   location            = var.region
   project             = google_project.infra.project_id
   ingress             = "INGRESS_TRAFFIC_ALL"
@@ -134,28 +117,6 @@ resource "google_cloud_run_v2_service" "vault_sync_svc" {
         cpu_idle = true
       }
     }
-
-    # ---- Teleport tbot wrapper sidecar ----
-    containers {
-      name  = "tbot"
-      image = local.tbot_image
-
-      dynamic "env" {
-        for_each = { for i, e in local.tbot_env : i => e }
-        content {
-          name  = env.value.name
-          value = env.value.value
-        }
-      }
-
-      resources {
-        limits = {
-          cpu    = "200m"
-          memory = "128Mi"
-        }
-        cpu_idle = true
-      }
-    }
   }
 
   lifecycle {
@@ -184,21 +145,12 @@ resource "google_project_iam_member" "cloud_run_secret_list" {
   member  = "serviceAccount:${google_service_account.eventarc_service_account.email}"
 }
 
-resource "google_cloud_run_service_iam_member" "eventarc_invoker" {
-  location = google_cloud_run_v2_service.vault_sync_svc.location
-  project  = google_cloud_run_v2_service.vault_sync_svc.project
-  service  = google_cloud_run_v2_service.vault_sync_svc.name
-
-  role   = "roles/run.invoker"
-  member = "serviceAccount:${google_service_account.eventarc_service_account.email}"
-}
-
-resource "google_artifact_registry_repository" "vault_sync_repo" {
+resource "google_artifact_registry_repository" "github_profile_repo" {
   location      = var.region
-  repository_id = "vault-sync-run-container"
+  repository_id = "github-profile-service"
   format        = "DOCKER"
   project       = google_project.infra.project_id
-  description   = "Hosted repo for vault-sync image"
+  description   = "Hosted repo for github-profile-service image"
   depends_on = [google_project_service.project_service]
 }
 
@@ -219,7 +171,7 @@ resource "null_resource" "ghcr_to_gcp_image_sync" {
       GHCR_PAT     = var.GHCR_PAT
       PROJECT_ID   = google_project.infra.project_id
       REGION       = var.region
-      IMAGE_NAME   = "vault-sync-run-container"
+      IMAGE_NAME   = "github-profile-service"
       TAG          = local.image_tag
     }
 
@@ -272,11 +224,11 @@ resource "null_resource" "ghcr_to_gcp_image_sync" {
   }
 
   depends_on = [
-    google_artifact_registry_repository.vault_sync_repo,
-    null_resource.vault_sync_tag_tracker
+    google_artifact_registry_repository.github_profile_repo,
+    null_resource.github_profile_tag_tracker
   ]
   triggers = {
-    tag = null_resource.vault_sync_tag_tracker.triggers.tag
+    tag = null_resource.github_profile_tag_tracker.triggers.tag
   }
 
   lifecycle {

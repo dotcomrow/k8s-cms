@@ -1,16 +1,16 @@
 {
   "compilerOptions": {
-    "target": "ES2021",
-    "module": "NodeNext",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "rootDir": "src",
+    "outDir": "dist",
     "strict": true,
     "esModuleInterop": true,
-    "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist",
-    "declaration": true,
-    "moduleResolution": "NodeNext",
-    "lib": ["ES2021"]
+    "noEmitOnError": true,
+    "skipLibCheck": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "**/*.test.ts"]
+  "include": ["src"]
 }

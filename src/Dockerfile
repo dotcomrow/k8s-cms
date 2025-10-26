@@ -1,22 +1,22 @@
-FROM node:18
-
-# Set working directory
-WORKDIR /usr/src/app
-
-# Copy package manifests first for better caching
-COPY package*.json tsconfig.json ./
-
-# Install dependencies
-RUN npm install
-
-# Copy the rest of the app
-COPY . .
-
-# Build TypeScript
+# -------- Build stage --------
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci
+COPY tsconfig.json ./tsconfig.json
+COPY src ./src
 RUN npm run build
 
-# Expose Cloud Run's default port
+# -------- Runtime stage --------
+FROM node:20-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+# Create non-root user
+RUN addgroup -S app && adduser -S -G app app
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+USER app
 EXPOSE 8080
-
-# Run compiled app
-CMD ["node", "dist/sync.js"]
+CMD ["node", "dist/server.js"]

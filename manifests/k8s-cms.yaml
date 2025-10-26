@@ -272,8 +272,9 @@ data:
   AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
   AUTH_GITHUB_IDENTIFIER_KEY: id
   AUTH_GITHUB_EMAIL_KEY: email
-  AUTH_GITHUB_SCOPE: "read:user,user:email"
+  AUTH_GITHUB_SCOPE: "read:user,user:email,read:org"
   AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION: "true"
+  AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -704,6 +705,11 @@ spec:
             configMapKeyRef:
               name: directus-config
               key: AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION
+        - name: AUTH_GITHUB_GROUP_CLAIM_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: AUTH_GITHUB_GROUP_CLAIM_NAME
         resources:
           requests:
             memory: "512Mi"
