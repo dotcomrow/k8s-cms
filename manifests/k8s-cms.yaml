@@ -1,5 +1,5 @@
 # =========================
-# Directus CMS Platform with Vault Integration
+# Directus CMS Platform with Vault Integration (dynamic team→role mapping)
 # =========================
 
 # =========================
@@ -171,6 +171,7 @@ spec:
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
               path "secret/data/redis"                             { capabilities = ["read"] }
               path "secret/data/vaultadmin"                        { capabilities = ["read"] }
+              path "secret/data/directus/github"                   { capabilities = ["read"] }  # <-- GitHub OAuth creds
               EOF
 
               vault write auth/kubernetes/role/directus \
@@ -230,7 +231,7 @@ metadata:
     scheduler.alpha.kubernetes.io/node-selector: "dedicated=work-node"
     field.cattle.io/projectId: "local:applications"
 ---
-# Service Accounts
+# Service Account for Directus
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -249,37 +250,43 @@ data:
   DB_PORT: "5433"
   DB_DATABASE: "directus"
   DB_SCHEMA: "directus"
+
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
   REDIS_HOST: "redis-0.redis-headless.redis.svc.cluster.local"
   REDIS_PORT: "6379"
+
   RATE_LIMITER_ENABLED: "true"
   RATE_LIMITER_STORE: "redis"
+
   STORAGE_LOCATIONS: "local"
   STORAGE_LOCAL_DRIVER: "local"
   STORAGE_LOCAL_ROOT: "./uploads"
+
   LOG_LEVEL: "info"
   LOG_STYLE: "pretty"
   PUBLIC_URL: "https://cms.teleport.app.suncoast.systems/"
+
   CORS_ENABLED: "true"
   CORS_ORIGIN: "true"
   ASSETS_CACHE_TTL: "30d"
+
+  # --- GitHub OAuth (Directus reads these envs) ---
   AUTH_GITHUB_DRIVER: "oauth2"
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
   AUTH_GITHUB_ACCESS_URL: "https://github.com/login/oauth/access_token"
-  AUTH_GITHUB_PROFILE_URL: "<path:secret/data/directus-github-profile-api-url#value><path:secret/data/directus-github-profile-api-key#value>"
-  AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
-  AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
-  AUTH_GITHUB_IDENTIFIER_KEY: id
-  AUTH_GITHUB_EMAIL_KEY: email
-  AUTH_GITHUB_SCOPE: "read:user,user:email,read:org"
+  # Provide the FULL profile proxy URL (including ?key=...) via Vault/AVP:
+  AUTH_GITHUB_PROFILE_URL: "<path:secret/data/directus-github-profile-url#value><path:secret/data/directus-github-profile-api-key#value>"
+
+  # Keep CLIENT_ID/SECRET here only if AVP resolves them; otherwise they are injected by Vault Agent below.
+  # AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
+  # AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
+
+  AUTH_GITHUB_IDENTIFIER_KEY: "id"
+  AUTH_GITHUB_EMAIL_KEY: "email"
+  AUTH_GITHUB_SCOPE: "read:user user:email read:org"
   AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION: "true"
   AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
-  AUTH_GITHUB_ROLE_MAPPING: |
-    {
-      "github:dotcomrow:admins": "k8s_directus_console_admins",
-      "github:dotcomrow:editors": "k8s_directus_console_editors"
-    }
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -334,6 +341,13 @@ data:
       destination = "/vault-secrets/redis-creds.env"
       perms       = 0644
     }
+
+    # --- GitHub OAuth Client from Vault ---
+    template {
+      source      = "/vault-templates/github-oauth.tpl"
+      destination = "/vault-secrets/github-oauth.env"
+      perms       = 0644
+    }
   
   db-creds.tpl: |
     {{ with secret "yugabyte-db/static-creds/directus-app" -}}
@@ -357,8 +371,12 @@ data:
     {{ with secret "secret/data/redis" -}}
     export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
----
-# Using Redis master pod directly at redis-0.redis-headless.redis.svc.cluster.local
+
+  github-oauth.tpl: |
+    {{ with secret "secret/data/directus/github" -}}
+    export AUTH_GITHUB_CLIENT_ID="{{ .Data.data.client_id }}"
+    export AUTH_GITHUB_CLIENT_SECRET="{{ .Data.data.client_secret }}"
+    {{- end }}
 ---
 # PersistentVolumeClaim for Directus uploads
 apiVersion: v1
@@ -372,9 +390,9 @@ spec:
   resources:
     requests:
       storage: 10Gi
-  storageClassName: nfs-client  # Use nfs-client storage class
+  storageClassName: nfs-client
 ---
-# Directus Deployment with Vault integration
+# Directus Deployment with Vault integration & dynamic role mapping
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -383,12 +401,12 @@ metadata:
   labels:
     app: directus
 spec:
-  replicas: 1  # Start with single replica to avoid concurrent database initialization
+  replicas: 1  # start with one replica to avoid concurrent DB init
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
-      maxSurge: 0  # Prevent multiple pods during deployment
+      maxSurge: 0
   selector:
     matchLabels:
       app: directus
@@ -419,6 +437,8 @@ spec:
                 path: admin-creds.tpl
               - key: redis-creds.tpl
                 path: redis-creds.tpl
+              - key: github-oauth.tpl
+                path: github-oauth.tpl
       initContainers:
         - name: wait-for-config-job
           image: alpine/k8s:1.31.4
@@ -457,12 +477,8 @@ spec:
         - name: vault-templates
           mountPath: /vault-templates
         resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
+          requests: { memory: "64Mi", cpu: "50m" }
+          limits:   { memory: "128Mi", cpu: "100m" }
       - name: directus
         image: directus/directus:11
         command: ["/bin/sh", "-c"]
@@ -470,81 +486,102 @@ spec:
           - |
             set -e
             echo "⏳ Waiting for Vault agent to generate all credential files..."
-            
             while [ ! -f /vault-secrets/db-creds.env ] || \
                   [ ! -f /vault-secrets/app-keys.env ] || \
                   [ ! -f /vault-secrets/admin-creds.env ] || \
-                  [ ! -f /vault-secrets/redis-creds.env ]; do
+                  [ ! -f /vault-secrets/redis-creds.env ] || \
+                  [ ! -f /vault-secrets/github-oauth.env ]; do
               echo "Waiting for credential files..."
               sleep 2
             done
-            
+
             echo "✅ All credential files retrieved from Vault"
             echo "🔑 Loading credentials..."
-            
-            source /vault-secrets/db-creds.env
-            source /vault-secrets/app-keys.env
-            source /vault-secrets/admin-creds.env  
-            source /vault-secrets/redis-creds.env
-            
-            # Export all required environment variables
-            export DB_USER
-            export DB_PASSWORD
-            export KEY
-            export SECRET
-            export ADMIN_EMAIL
-            export ADMIN_PASSWORD
-            export REDIS_PASSWORD
-            
-            echo "🔄 Initializing Directus database..."
-            
+            . /vault-secrets/db-creds.env
+            . /vault-secrets/app-keys.env
+            . /vault-secrets/admin-creds.env  
+            . /vault-secrets/redis-creds.env
+            . /vault-secrets/github-oauth.env
 
-            # Simple check: assume database needs setup and let Directus handle it
-            echo "� Proceeding with database setup (let Directus handle detection)..."
-            table_count=0
-            
-            # Simple approach: try install once, handle "already installed" gracefully
-            echo "📦 Running database install (will skip if already complete)..."
+            # Export required envs for Directus
+            export DB_USER DB_PASSWORD KEY SECRET ADMIN_EMAIL ADMIN_PASSWORD REDIS_PASSWORD
+            export AUTH_GITHUB_CLIENT_ID AUTH_GITHUB_CLIENT_SECRET
+
+            echo "🔄 Initializing Directus database..."
+            echo "📦 Running database install (idempotent)..."
             if node cli.js database install 2>&1 | tee /tmp/install.log; then
               echo "✅ Database installation completed successfully"
             else
               if grep -q "Database is already installed" /tmp/install.log; then
                 echo "✅ Database already installed, proceeding..."
               else
-                echo "❌ Database installation failed"
-                cat /tmp/install.log
-                exit 1
+                echo "❌ Database installation failed"; cat /tmp/install.log; exit 1
               fi
             fi
-            
-            # Wait for any remaining DDL transactions
-            echo "⏳ Waiting for database to settle..."
-            sleep 5
-            
-            # Simple migration approach
+
             echo "🔄 Running database migrations..."
-            if node cli.js database migrate:latest; then
-              echo "✅ Migrations completed successfully"
-            else
-              echo "⚠️ Migration failed, but proceeding..."
-            fi
-            
+            node cli.js database migrate:latest || echo "⚠️ Migration failed, continuing..."
+
             echo "🔍 Debug: Environment check..."
             echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
             echo "REDIS_HOST: $REDIS_HOST"
             echo "Credentials loaded: KEY(${#KEY}), SECRET(${#SECRET}), ADMIN_EMAIL($ADMIN_EMAIL)"
-            
+
             # Ensure proper schema connection
             export DB_SEARCH_PATH="directus"
-            
+
+            echo "🔧 Resolving Directus role UUIDs from TEAM_ROLE_MAP…"
+            TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
+
+            ROLE_MAPPING_JSON="$(
+            node -e '
+              const { Client } = require("pg");
+              const mapStr = process.env.TEAM_ROLE_MAP || "";
+              const pairs = mapStr.split(",")
+                .map(s => s.trim()).filter(Boolean)
+                .map(s => { const i = s.indexOf("="); if (i<0) return null; return [s.slice(0,i).trim(), s.slice(i+1).trim()]; })
+                .filter(Boolean);
+              (async () => {
+                const client = new Client({
+                  host: process.env.DB_HOST,
+                  port: Number(process.env.DB_PORT || 5432),
+                  user: process.env.DB_USER,
+                  password: process.env.DB_PASSWORD,
+                  database: process.env.DB_DATABASE || "directus",
+                });
+                await client.connect();
+                const out = {};
+                for (const [team, roleName] of pairs) {
+                  const res = await client.query("SELECT id FROM directus_roles WHERE name = $1 LIMIT 1", [roleName]);
+                  if (res.rows.length) {
+                    out[team] = res.rows[0].id;
+                    console.log(`  ↪ mapped ${team} -> ${roleName} -> ${res.rows[0].id}`);
+                  } else {
+                    console.error(`  ⚠ role not found: ${roleName}`);
+                  }
+                }
+                await client.end();
+                process.stdout.write("json:" + JSON.stringify(out));
+              })().catch(e => { console.error(e); process.exit(1); });
+            '
+            )"
+
+            if [ -z "$ROLE_MAPPING_JSON" ]; then
+              echo "❌ Failed to build AUTH_GITHUB_ROLE_MAPPING"; exit 1
+            fi
+            echo "✅ AUTH_GITHUB_ROLE_MAPPING = $ROLE_MAPPING_JSON"
+
             echo "🚀 Starting Directus server..."
             # Create a startup script that sources all environment variables
             echo '#!/bin/sh' > /tmp/start-directus.sh
-            echo 'source /vault-secrets/db-creds.env' >> /tmp/start-directus.sh
-            echo 'source /vault-secrets/app-keys.env' >> /tmp/start-directus.sh
-            echo 'source /vault-secrets/admin-creds.env' >> /tmp/start-directus.sh
-            echo 'source /vault-secrets/redis-creds.env' >> /tmp/start-directus.sh
+            echo '. /vault-secrets/db-creds.env' >> /tmp/start-directus.sh
+            echo '. /vault-secrets/app-keys.env' >> /tmp/start-directus.sh
+            echo '. /vault-secrets/admin-creds.env' >> /tmp/start-directus.sh
+            echo '. /vault-secrets/redis-creds.env' >> /tmp/start-directus.sh
+            echo '. /vault-secrets/github-oauth.env' >> /tmp/start-directus.sh
+            echo "export AUTH_GITHUB_ROLE_MAPPING='$ROLE_MAPPING_JSON'" >> /tmp/start-directus.sh
             echo 'export DB_USER DB_PASSWORD KEY SECRET ADMIN_EMAIL ADMIN_PASSWORD REDIS_PASSWORD' >> /tmp/start-directus.sh
+            echo 'export AUTH_GITHUB_CLIENT_ID AUTH_GITHUB_CLIENT_SECRET' >> /tmp/start-directus.sh
             echo 'exec node cli.js start' >> /tmp/start-directus.sh
             chmod +x /tmp/start-directus.sh
             exec /tmp/start-directus.sh
@@ -555,191 +592,93 @@ spec:
           value: "github"
         - name: AUTH_DISABLE_DEFAULT
           value: "true"
+
+        # Optional: your default team→role names (left = proxy group; right = Directus role name)
+        - name: TEAM_ROLE_MAP
+          value: "github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor"
+
         # Database configuration
         - name: DB_CLIENT
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: DB_CLIENT
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DB_CLIENT } }
         - name: DB_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: DB_HOST
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DB_HOST } }
         - name: DB_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: DB_PORT
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
         - name: DB_DATABASE
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: DB_DATABASE
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
         - name: DB_SCHEMA
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: DB_SCHEMA
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DB_SCHEMA } }
+
         # Cache configuration
         - name: CACHE_ENABLED
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: CACHE_ENABLED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: CACHE_ENABLED } }
         - name: CACHE_STORE
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: CACHE_STORE
+          valueFrom: { configMapKeyRef: { name: directus-config, key: CACHE_STORE } }
         - name: REDIS_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: REDIS_HOST
+          valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_HOST } }
         - name: REDIS_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: REDIS_PORT
+          valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_PORT } }
+
         # Rate limiting
         - name: RATE_LIMITER_ENABLED
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: RATE_LIMITER_ENABLED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: RATE_LIMITER_ENABLED } }
         - name: RATE_LIMITER_STORE
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: RATE_LIMITER_STORE
+          valueFrom: { configMapKeyRef: { name: directus-config, key: RATE_LIMITER_STORE } }
+
         # Storage configuration
         - name: STORAGE_LOCATIONS
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: STORAGE_LOCATIONS
+          valueFrom: { configMapKeyRef: { name: directus-config, key: STORAGE_LOCATIONS } }
         - name: STORAGE_LOCAL_DRIVER
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: STORAGE_LOCAL_DRIVER
+          valueFrom: { configMapKeyRef: { name: directus-config, key: STORAGE_LOCAL_DRIVER } }
         - name: STORAGE_LOCAL_ROOT
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: STORAGE_LOCAL_ROOT
+          valueFrom: { configMapKeyRef: { name: directus-config, key: STORAGE_LOCAL_ROOT } }
+
         # Other configuration
         - name: LOG_LEVEL
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: LOG_LEVEL
+          valueFrom: { configMapKeyRef: { name: directus-config, key: LOG_LEVEL } }
         - name: LOG_STYLE
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: LOG_STYLE
+          valueFrom: { configMapKeyRef: { name: directus-config, key: LOG_STYLE } }
         - name: PUBLIC_URL
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: PUBLIC_URL
+          valueFrom: { configMapKeyRef: { name: directus-config, key: PUBLIC_URL } }
         - name: CORS_ENABLED
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: CORS_ENABLED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: CORS_ENABLED } }
         - name: CORS_ORIGIN
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: CORS_ORIGIN
+          valueFrom: { configMapKeyRef: { name: directus-config, key: CORS_ORIGIN } }
         - name: ASSETS_CACHE_TTL
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: ASSETS_CACHE_TTL
-        - name: AUTH_GITHUB_CLIENT_ID
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_CLIENT_ID
-        - name: AUTH_GITHUB_CLIENT_SECRET
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_CLIENT_SECRET
+          valueFrom: { configMapKeyRef: { name: directus-config, key: ASSETS_CACHE_TTL } }
+
+        # GitHub OAuth provider config
         - name: AUTH_GITHUB_DRIVER
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_DRIVER
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_DRIVER } }
         - name: AUTH_GITHUB_AUTHORIZE_URL
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_AUTHORIZE_URL
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_AUTHORIZE_URL } }
         - name: AUTH_GITHUB_ACCESS_URL
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_ACCESS_URL
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_ACCESS_URL } }
         - name: AUTH_GITHUB_PROFILE_URL
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_PROFILE_URL
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_URL } }
         - name: AUTH_GITHUB_IDENTIFIER_KEY
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_IDENTIFIER_KEY
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_IDENTIFIER_KEY } }
         - name: AUTH_GITHUB_EMAIL_KEY
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_EMAIL_KEY
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_EMAIL_KEY } }
         - name: AUTH_GITHUB_SCOPE
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_SCOPE
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_SCOPE } }
         - name: AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION } }
         - name: AUTH_GITHUB_GROUP_CLAIM_NAME
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_GROUP_CLAIM_NAME
-        - name: AUTH_GITHUB_ROLE_MAPPING
-          valueFrom:
-            configMapKeyRef:
-              name: directus-config
-              key: AUTH_GITHUB_ROLE_MAPPING
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_GROUP_CLAIM_NAME } }
+
         resources:
-          requests:
-            memory: "512Mi"
-            cpu: "250m"
-          limits:
-            memory: "1Gi"
-            cpu: "500m"
+          requests: { memory: "512Mi", cpu: "250m" }
+          limits:   { memory: "1Gi",   cpu: "500m" }
         livenessProbe:
-          httpGet:
-            path: /server/health
-            port: 8055
-          initialDelaySeconds: 360  # Allow 6 minutes for complete startup
+          httpGet: { path: /server/health, port: 8055 }
+          initialDelaySeconds: 360
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
         readinessProbe:
-          httpGet:
-            path: /server/health
-            port: 8055
-          initialDelaySeconds: 300  # Allow 5 minutes for database setup and migrations
+          httpGet: { path: /server/health, port: 8055 }
+          initialDelaySeconds: 300
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
@@ -774,30 +713,3 @@ spec:
     targetPort: 8055
     protocol: TCP
   type: ClusterIP
----
-# # HorizontalPodAutoscaler for automatic scaling
-# apiVersion: autoscaling/v2
-# kind: HorizontalPodAutoscaler
-# metadata:
-#   name: directus-hpa
-#   namespace: directus
-# spec:
-#   scaleTargetRef:
-#     apiVersion: apps/v1
-#     kind: Deployment
-#     name: directus
-#   minReplicas: 2
-#   maxReplicas: 10
-#   metrics:
-#   - type: Resource
-#     resource:
-#       name: cpu
-#       target:
-#         type: Utilization
-#         averageUtilization: 70
-#   - type: Resource
-#     resource:
-#       name: memory
-#       target:
-#         type: Utilization
-#         averageUtilization: 80
