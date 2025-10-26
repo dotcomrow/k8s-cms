@@ -264,11 +264,12 @@ data:
   CORS_ENABLED: "true"
   CORS_ORIGIN: "true"
   ASSETS_CACHE_TTL: "30d"
-  GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
-  GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
-  GITHUB_ALLOW_SIGNUP: "true"
-  GITHUB_TEAMS: "dotcomrow/k8s_directus_console_admins" # Optional: restrict to specific team
-  GITHUB_ORG: "dotcomrow"               # Optional: restrict to org
+  AUTH_GITHUB_DRIVER: "oauth2"
+  AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
+  AUTH_GITHUB_ACCESS_URL: "https://github.com/login/oauth/access_token"
+  AUTH_GITHUB_PROFILE_URL: "https://api.github.com/user"
+  AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
+  AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -645,31 +646,36 @@ spec:
             configMapKeyRef:
               name: directus-config
               key: ASSETS_CACHE_TTL
-        - name: GITHUB_CLIENT_ID
+        - name: AUTH_GITHUB_CLIENT_ID
           valueFrom:
             configMapKeyRef:
               name: directus-config
-              key: GITHUB_CLIENT_ID
-        - name: GITHUB_CLIENT_SECRET
+              key: AUTH_GITHUB_CLIENT_ID
+        - name: AUTH_GITHUB_CLIENT_SECRET
           valueFrom:
             configMapKeyRef:
               name: directus-config
-              key: GITHUB_CLIENT_SECRET
-        - name: GITHUB_ALLOW_SIGNUP
+              key: AUTH_GITHUB_CLIENT_SECRET
+        - name: AUTH_GITHUB_DRIVER
           valueFrom:
             configMapKeyRef:
               name: directus-config
-              key: GITHUB_ALLOW_SIGNUP
-        - name: GITHUB_TEAMS
+              key: AUTH_GITHUB_DRIVER
+        - name: AUTH_GITHUB_AUTHORIZE_URL
           valueFrom:
             configMapKeyRef:
               name: directus-config
-              key: GITHUB_TEAMS
-        - name: GITHUB_ORG
+              key: AUTH_GITHUB_AUTHORIZE_URL
+        - name: AUTH_GITHUB_ACCESS_URL
           valueFrom:
             configMapKeyRef:
               name: directus-config
-              key: GITHUB_ORG
+              key: AUTH_GITHUB_ACCESS_URL
+        - name: AUTH_GITHUB_PROFILE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: AUTH_GITHUB_PROFILE_URL
         resources:
           requests:
             memory: "512Mi"
