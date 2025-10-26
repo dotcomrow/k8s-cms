@@ -276,7 +276,7 @@ data:
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
   AUTH_GITHUB_ACCESS_URL: "https://github.com/login/oauth/access_token"
   # Provide the FULL profile proxy URL (including ?key=...) via Vault/AVP:
-  AUTH_GITHUB_PROFILE_URL: "<path:secret/data/directus-github-profile-url#value><path:secret/data/directus-github-profile-api-key#value>"
+  AUTH_GITHUB_PROFILE_URL: "<path:secret/data/directus-github-profile-api-url#value><path:secret/data/directus-github-profile-api-key#value>"
 
   # Keep CLIENT_ID/SECRET here only if AVP resolves them; otherwise they are injected by Vault Agent below.
   # AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
