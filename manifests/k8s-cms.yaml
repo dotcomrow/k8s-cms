@@ -260,7 +260,7 @@ data:
   STORAGE_LOCAL_ROOT: "./uploads"
   LOG_LEVEL: "info"
   LOG_STYLE: "pretty"
-  PUBLIC_URL: "https://cms.suncoastsystems.com"
+  PUBLIC_URL: "https://cms.teleport.app.suncoast.systems/"
   CORS_ENABLED: "true"
   CORS_ORIGIN: "true"
   ASSETS_CACHE_TTL: "30d"
