@@ -264,6 +264,11 @@ data:
   CORS_ENABLED: "true"
   CORS_ORIGIN: "true"
   ASSETS_CACHE_TTL: "30d"
+  GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
+  GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
+  GITHUB_ALLOW_SIGNUP: "true"
+  GITHUB_TEAMS: "dotcomrow/k8s_directus_console_admins" # Optional: restrict to specific team
+  GITHUB_ORG: "dotcomrow"               # Optional: restrict to org
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
