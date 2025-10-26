@@ -5,6 +5,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 COPY tsconfig.json ./tsconfig.json
 COPY src ./src
+RUN npm install
 RUN npm run build
 
 # -------- Runtime stage --------
