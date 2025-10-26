@@ -678,7 +678,7 @@ metadata:
   annotations:
     teleport.dev/name: "directus-cms"
     teleport.dev/protocol: "http"
-    teleport.dev/public-addr: "cms.app.suncoast.systems"
+    teleport.dev/public-addr: "cms.teleport.app.suncoast.systems"
     teleport.dev/description: "Directus CMS Service"
   labels:
     app: directus
