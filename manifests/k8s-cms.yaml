@@ -279,8 +279,8 @@ data:
   AUTH_GITHUB_PROFILE_URL: "<path:secret/data/directus-github-profile-api-url#value><path:secret/data/directus-github-profile-api-key#value>"
 
   # Keep CLIENT_ID/SECRET here only if AVP resolves them; otherwise they are injected by Vault Agent below.
-  # AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
-  # AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
+  AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
+  AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
 
   AUTH_GITHUB_IDENTIFIER_KEY: "id"
   AUTH_GITHUB_EMAIL_KEY: "email"
@@ -370,12 +370,6 @@ data:
   redis-creds.tpl: |
     {{ with secret "secret/data/redis" -}}
     export REDIS_PASSWORD="{{ .Data.data.password }}"
-    {{- end }}
-
-  github-oauth.tpl: |
-    {{ with secret "secret/data/directus/github" -}}
-    export AUTH_GITHUB_CLIENT_ID="{{ .Data.data.client_id }}"
-    export AUTH_GITHUB_CLIENT_SECRET="{{ .Data.data.client_secret }}"
     {{- end }}
 ---
 # PersistentVolumeClaim for Directus uploads
@@ -666,6 +660,10 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION } }
         - name: AUTH_GITHUB_GROUP_CLAIM_NAME
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_GROUP_CLAIM_NAME } }
+        - name: AUTH_GITHUB_CLIENT_ID
+          valueFrom: { secretKeyRef: { name: directus-github-oauth, key: client-id } }
+        - name: AUTH_GITHUB_CLIENT_SECRET
+          valueFrom: { secretKeyRef: { name: directus-github-oauth, key: client-secret } }
 
         resources:
           requests: { memory: "512Mi", cpu: "250m" }
