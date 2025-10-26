@@ -483,8 +483,7 @@ spec:
             while [ ! -f /vault-secrets/db-creds.env ] || \
                   [ ! -f /vault-secrets/app-keys.env ] || \
                   [ ! -f /vault-secrets/admin-creds.env ] || \
-                  [ ! -f /vault-secrets/redis-creds.env ] || \
-                  [ ! -f /vault-secrets/github-oauth.env ]; do
+                  [ ! -f /vault-secrets/redis-creds.env ]; do
               echo "Waiting for credential files..."
               sleep 2
             done
@@ -495,7 +494,6 @@ spec:
             . /vault-secrets/app-keys.env
             . /vault-secrets/admin-creds.env  
             . /vault-secrets/redis-creds.env
-            . /vault-secrets/github-oauth.env
 
             # Export required envs for Directus
             export DB_USER DB_PASSWORD KEY SECRET ADMIN_EMAIL ADMIN_PASSWORD REDIS_PASSWORD
