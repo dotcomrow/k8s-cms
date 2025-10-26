@@ -2,10 +2,10 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
+RUN npm install
 RUN npm ci
 COPY tsconfig.json ./tsconfig.json
 COPY src ./src
-RUN npm install
 RUN npm run build
 
 # -------- Runtime stage --------
