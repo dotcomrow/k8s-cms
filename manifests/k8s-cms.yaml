@@ -266,7 +266,7 @@ data:
   ASSETS_CACHE_TTL: "30d"
   AUTH_GITHUB_DRIVER: "oauth2"
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
-  AUTH_GITHUB_TOKEN_URL: "https://github.com/login/oauth/access_token"
+  AUTH_GITHUB_ACCESS_URL: "https://github.com/login/oauth/access_token"
   AUTH_GITHUB_PROFILE_URL: "https://api.github.com/user"
   AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
   AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
@@ -546,7 +546,7 @@ spec:
         - containerPort: 8055
         env:
         - name: AUTH_PROVIDERS
-          value: "github,local"
+          value: "github"
         - name: AUTH_DISABLE_DEFAULT
           value: "true"
         # Database configuration
@@ -674,11 +674,11 @@ spec:
             configMapKeyRef:
               name: directus-config
               key: AUTH_GITHUB_AUTHORIZE_URL
-        - name: AUTH_GITHUB_TOKEN_URL
+        - name: AUTH_GITHUB_ACCESS_URL
           valueFrom:
             configMapKeyRef:
               name: directus-config
-              key: AUTH_GITHUB_TOKEN_URL
+              key: AUTH_GITHUB_ACCESS_URL
         - name: AUTH_GITHUB_PROFILE_URL
           valueFrom:
             configMapKeyRef:
