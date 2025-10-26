@@ -267,7 +267,7 @@ data:
   AUTH_GITHUB_DRIVER: "oauth2"
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
   AUTH_GITHUB_ACCESS_URL: "https://github.com/login/oauth/access_token"
-  AUTH_GITHUB_PROFILE_URL: "https://api.github.com/user"
+  AUTH_GITHUB_PROFILE_URL: "<path:secret/data/directus-github-profile-api-url#value><path:secret/data/directus-github-profile-api-key#value>"
   AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
   AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
   AUTH_GITHUB_IDENTIFIER_KEY: id

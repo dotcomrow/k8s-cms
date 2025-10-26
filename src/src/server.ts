@@ -124,10 +124,15 @@ function getBearerToken(req: Request): string {
   return auth.substring("Bearer ".length).trim();
 }
 
+// replace enforceApiKey() with this version:
 function enforceApiKey(req: Request): void {
   if (!REQUIRE_API_KEY) return;
-  const key = req.get("X-API-Key");
-  if (!key || key !== env.API_KEY) {
+
+  const headerKey = req.get("X-API-Key");
+  const queryKey = (req.query?.key as string) || (req.query?.api_key as string);
+
+  const provided = headerKey || queryKey;
+  if (!provided || provided !== env.API_KEY) {
     const e = new Error("Forbidden: missing or invalid API key");
     (e as any).status = 403;
     throw e;

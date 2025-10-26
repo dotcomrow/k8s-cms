@@ -76,13 +76,13 @@ locals {
   app_image  = "${var.region}-docker.pkg.dev/${google_project.infra.project_id}/github-profile-service/github-profile-service:${local.image_tag}"
   
   app_env = [
-    { name = "GCP_PROJECT_ID",           value = google_project.infra.project_id },
-    { name = "VAULT_CONNECT_TIMEOUT_MS", value = "300" },
-    { name = "VAULT_READ_TIMEOUT_MS",    value = "2000" },
-    { name = "VAULT_WAIT_FOR_TUNNEL_MS", value = "4000" },
-    { name = "VAULT_ACTIVE_BASE_TTL_MS", value = "60000" },
-    { name = "VAULT_PASSIVE_RECHECK_MS", value = "30000" },
-    { name = "DEBUG_VAULT_RESOLVER",     value = "true" },
+    { name = "REQUIRE_API_KEY",             value = true },
+    { name = "API_KEY",                     value = "<path:secret/data/directus-github-profile-api-key#value>" },
+    { name = "GROUP_PREFIX",                value = "github:" },
+    { name = "GROUP_FORMAT",                value = "org:team" },
+    { name = "INCLUDE_ROLE_SUFFIX",         value = "false" },
+    { name = "INCLUDE_ORG_AS_GROUP",        value = "false" },
+    { name = "ALLOWLIST_ORGS",              value = "dotcomrow" },
   ]
 
 }
@@ -139,6 +139,14 @@ resource "google_cloud_run_v2_service" "github_profile_svc" {
     null_resource.ghcr_to_gcp_image_sync,
     google_project_iam_member.cloud_run_secret_list
   ]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
+  name     = google_cloud_run_v2_service.github_profile_svc.name
+  location = var.region
+  project  = google_project.infra.project_id
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
 
 resource "google_project_iam_member" "cloud_run_secret_list" {
