@@ -541,6 +541,10 @@ spec:
         ports:
         - containerPort: 8055
         env:
+        - name: AUTH_PROVIDERS
+          value: "github,local"
+        - name: AUTH_DISABLE_DEFAULT
+          value: "true"
         # Database configuration
         - name: DB_CLIENT
           valueFrom:
