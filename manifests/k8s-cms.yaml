@@ -275,6 +275,11 @@ data:
   AUTH_GITHUB_SCOPE: "read:user,user:email,read:org"
   AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION: "true"
   AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
+  AUTH_GITHUB_ROLE_MAPPING: |
+    {
+      "github:dotcomrow:admins": "k8s_directus_console_admins",
+      "github:dotcomrow:editors": "k8s_directus_console_editors"
+    }
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -710,6 +715,11 @@ spec:
             configMapKeyRef:
               name: directus-config
               key: AUTH_GITHUB_GROUP_CLAIM_NAME
+        - name: AUTH_GITHUB_ROLE_MAPPING
+          valueFrom:
+            configMapKeyRef:
+              name: directus-config
+              key: AUTH_GITHUB_ROLE_MAPPING
         resources:
           requests:
             memory: "512Mi"
