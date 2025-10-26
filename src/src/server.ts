@@ -130,7 +130,8 @@ function enforceApiKey(req: Request): void {
 
   const headerKey = req.get("X-API-Key");
   const queryKey = (req.query?.key as string) || (req.query?.api_key as string);
-
+  console.log(`Header Key: ${headerKey}, Query Key: ${queryKey}`);
+  console.log(`Expected Key: ${env.API_KEY}`);
   const provided = headerKey || queryKey;
   if (!provided || provided !== env.API_KEY) {
     const e = new Error("Forbidden: missing or invalid API key");
