@@ -58,3 +58,8 @@ variable "GHCR_PAT" {
   type        = string
   default     = "your-ghcr-personal-access-token"
 }
+
+variable "api_key" {
+  description = "API key for the GitHub profile service"
+  type        = string
+}

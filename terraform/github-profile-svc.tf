@@ -77,7 +77,7 @@ locals {
   
   app_env = [
     { name = "REQUIRE_API_KEY",             value = true },
-    { name = "API_KEY",                     value = "<path:secret/data/directus-github-profile-api-key#value>" },
+    { name = "API_KEY",                     value = var.api_key },
     { name = "GROUP_PREFIX",                value = "github:" },
     { name = "GROUP_FORMAT",                value = "org:team" },
     { name = "INCLUDE_ROLE_SUFFIX",         value = "false" },
