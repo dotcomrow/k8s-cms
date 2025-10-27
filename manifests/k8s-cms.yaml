@@ -510,7 +510,7 @@ spec:
 
             echo "🔄 Initializing Directus database..."
             echo "📦 Running database install (idempotent)..."
-            if node cli.js database install 2>&1 | tee /tmp/install.log; then
+            if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false node cli.js database install 2>&1 | tee /tmp/install.log; then
               echo "✅ Database installation completed successfully"
             else
               if grep -q "Database is already installed" /tmp/install.log; then
@@ -521,7 +521,7 @@ spec:
             fi
 
             echo "🔄 Running database migrations..."
-            node cli.js database migrate:latest || echo "⚠️ Migration failed, continuing..."
+            CACHE_ENABLED=false RATE_LIMITER_ENABLED=false node cli.js database migrate:latest || echo "⚠️ Migration failed, continuing..."
 
             echo "🔍 Debug: Environment check..."
             echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
