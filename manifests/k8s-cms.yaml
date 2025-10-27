@@ -290,23 +290,20 @@ data:
   AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
   AUTH_GITHUB_PROFILE_TRANSFORM: >
     json:{
-      "login":"{{ login }}",
-      "html_url":"{{ html_url }}",
-      "company":"{{ company }}",
-      "blog":"{{ blog }}",
-      "location":"{{ location }}",
-      "bio":"{{ bio }}",
-      "twitter_username":"{{ twitter_username }}",
-      "created_at":"{{ created_at }}",
-      "updated_at":"{{ updated_at }}",
-      "groups":{{ groups | json }},
-      "emails":{{ emails | json }},
-      "orgs":{{ orgs | json }},
-      "teams":{{ teams | json }},
-      "repos":{{ repos | json }},
-      "oauth_scopes":{{ oauth_scopes | json }},
-      "rate_limit":{{ rate_limit | json }}
-    }
+        "email":"{{ email }}",
+        "first_name":"{{ name }}",
+        "last_name":"",
+        "avatar":"{{ avatar_url }}",
+        "github_login":"{{ login }}",
+        "github_url":"{{ html_url }}",
+        "github_company":"{{ company }}",
+        "github_bio":"{{ bio }}",
+        "github_metadata":{
+          "emails":{{ emails | json }},
+          "orgs":{{ orgs | json }},
+          "teams":{{ teams | json }}
+        }
+      }
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
