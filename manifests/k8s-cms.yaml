@@ -551,34 +551,36 @@ spec:
               echo "⚠️ Bootstrap returned non-zero (might already be initialized); continuing"
             fi
 
-            # 2) Start Directus briefly in the background to query REST API
+            # 2) Start Directus briefly in the background to query REST API.
+            #    IMPORTANT: enable password auth only for this temp server
             echo "🛰  Starting Directus in the background for role lookup…"
-            (node cli.js start >/tmp/directus-bg.log 2>&1) &
+            (
+              AUTH_DISABLE_DEFAULT=false \
+              AUTH_PROVIDERS="password,github" \
+              CACHE_ENABLED=false \
+              RATE_LIMITER_ENABLED=false \
+              node cli.js start >/tmp/directus-bg.log 2>&1
+            ) &
             BG_PID=$!
 
             # 3) Poll health
             echo "⏳ Waiting for background server to become healthy…"
             node -e '
               const url = "http://127.0.0.1:8055/server/health";
-              const retry = async () => {
-                for (let i=0;i<60;i++){
-                  try{
-                    const r = await fetch(url, { method:"GET" });
+              const sleep = ms => new Promise(r=>setTimeout(r,ms));
+              (async () => {
+                for (let i=0; i<90; i++) {
+                  try {
+                    const r = await fetch(url);
                     if (r.ok) { console.log("ok"); return; }
-                  }catch{}
-                  await new Promise(r=>setTimeout(r,1000));
+                  } catch {}
+                  await sleep(1000);
                 }
                 process.exit(1);
-              };
-              retry();
-            ' >/tmp/health.ready 2>/dev/null || {
-              echo "❌ Background server didn’t get healthy. Logs:"
-              tail -n +1 /tmp/directus-bg.log || true
-              kill ${BG_PID} >/dev/null 2>&1 || true
-              exit 1
-            }
+              })();
+            ' || { echo "❌ BG server never became healthy"; tail -n +1 /tmp/directus-bg.log || true; kill $BG_PID || true; exit 1; }
 
-            # 4) Login as the admin created via bootstrap to obtain an access token
+            # 4) Login as admin to get an access token
             ACCESS_TOKEN="$(
               node -e '
                 (async () => {
@@ -591,7 +593,7 @@ spec:
                   const j = await r.json();
                   process.stdout.write(j?.data?.access_token || "");
                 })().catch(e => { console.error(e); process.exit(1); });
-              '
+              ' ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD"
             )"
 
             if [ -z "$ACCESS_TOKEN" ]; then
