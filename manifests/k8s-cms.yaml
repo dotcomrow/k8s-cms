@@ -430,13 +430,31 @@ spec:
           command: ["/bin/sh","-lc"]
           args:
             - |
-              echo "Waiting for Job vault/directus-yugabyte-config to complete..."
+              echo "Waiting for Job(s) with prefix 'directus-yugabyte-config' in vault namespace to complete..."
+
+              TARGET_PREFIX="directus-yugabyte-config"
+
               while true; do
-                if ! kubectl -n vault get job directus-yugabyte-config >/dev/null 2>&1; then
-                  echo "  └─ job not found yet..."; sleep 5; continue
+                # 1) If an exact job exists, check it first
+                if kubectl -n vault get job "$TARGET_PREFIX" >/dev/null 2>&1; then
+                  SUCC="$(kubectl -n vault get job "$TARGET_PREFIX" -o jsonpath='{.status.succeeded}' 2>/dev/null || echo 0)"
+                  [ "${SUCC:-0}" -ge 1 ] && { echo "✅ Job $TARGET_PREFIX succeeded"; break; }
                 fi
-                SUCC="$(kubectl -n vault get job directus-yugabyte-config -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"; SUCC="${SUCC:-0}"
-                [ "$SUCC" -ge 1 ] && break
+
+                # 2) Otherwise, find any job whose name starts with the prefix (handles CronJob or generateName cases)
+                MATCHING_JOB="$(kubectl -n vault get jobs -o json \
+                  | jq -r --arg p "$TARGET_PREFIX" '.items[] | select(.metadata.name | startswith($p)) | .metadata.name' \
+                  | head -n1)"
+
+                if [ -n "$MATCHING_JOB" ]; then
+                  SUCC="$(kubectl -n vault get job "$MATCHING_JOB" -o jsonpath='{.status.succeeded}' 2>/dev/null || echo 0)"
+                  if [ "${SUCC:-0}" -ge 1 ]; then
+                    echo "✅ Job $MATCHING_JOB succeeded"
+                    break
+                  fi
+                fi
+
+                echo "  └─ still waiting…"
                 sleep 5
               done
         - name: wait-for-redis
