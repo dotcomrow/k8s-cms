@@ -611,6 +611,7 @@ spec:
             echo '. /vault-secrets/app-keys.env' >> /tmp/start-directus.sh
             echo '. /vault-secrets/admin-creds.env' >> /tmp/start-directus.sh
             echo '. /vault-secrets/redis-creds.env' >> /tmp/start-directus.sh
+            echo "export AUTH_GITHUB_ROLE_MAPPING='$AUTH_GITHUB_ROLE_MAPPING'" >> /tmp/start-directus.sh
             echo "export AUTH_GITHUB_ROLE_MAPPING='$ROLE_MAPPING_JSON'" >> /tmp/start-directus.sh
             echo 'export DB_USER DB_PASSWORD KEY SECRET ADMIN_EMAIL ADMIN_PASSWORD REDIS_PASSWORD' >> /tmp/start-directus.sh
             echo 'exec node cli.js start' >> /tmp/start-directus.sh
