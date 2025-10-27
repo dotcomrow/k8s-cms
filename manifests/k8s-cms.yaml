@@ -288,6 +288,25 @@ data:
   AUTH_GITHUB_SCOPE: "read:user user:email read:org"
   AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION: "true"
   AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
+  AUTH_GITHUB_PROFILE_TRANSFORM: >
+    json:{
+      "login":"{{ login }}",
+      "html_url":"{{ html_url }}",
+      "company":"{{ company }}",
+      "blog":"{{ blog }}",
+      "location":"{{ location }}",
+      "bio":"{{ bio }}",
+      "twitter_username":"{{ twitter_username }}",
+      "created_at":"{{ created_at }}",
+      "updated_at":"{{ updated_at }}",
+      "groups":{{ groups | json }},
+      "emails":{{ emails | json }},
+      "orgs":{{ orgs | json }},
+      "teams":{{ teams | json }},
+      "repos":{{ repos | json }},
+      "oauth_scopes":{{ oauth_scopes | json }},
+      "rate_limit":{{ rate_limit | json }}
+    }
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -754,7 +773,9 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_ID } }
         - name: AUTH_GITHUB_CLIENT_SECRET
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_SECRET } }
-
+        - name: AUTH_GITHUB_PROFILE_TRANSFORM
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_TRANSFORM } }
+          
         resources:
           requests: { memory: "512Mi", cpu: "250m" }
           limits:   { memory: "1Gi",   cpu: "500m" }
