@@ -426,6 +426,54 @@ spec:
               - key: redis-creds.tpl
                 path: redis-creds.tpl
       initContainers:
+        - name: nuke-directus-roles
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              set -eu
+
+              # tools we need (alpine base)
+              apk add --no-cache curl jq >/dev/null
+
+              VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+              VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
+
+              echo "🔐 Fetching DB static creds for directus-app from Vault…"
+              CREDS="$(curl -sf \
+                -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                "${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app")"
+
+              DB_USER="$(echo "$CREDS" | jq -r '.data.username')"
+              DB_PASS="$(echo "$CREDS" | jq -r '.data.password')"
+
+              if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ] || [ "$DB_USER" = "null" ] || [ "$DB_PASS" = "null" ]; then
+                echo "❌ Failed to fetch DB creds from Vault"; exit 1
+              fi
+
+              export PGPASSWORD="$DB_PASS"
+              echo "🔧 TRUNCATE directus_roles (CASCADE)…"
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 <<'SQL'
+              SET search_path TO directus, public;
+              TRUNCATE TABLE directus_roles RESTART IDENTITY CASCADE;
+              TRUNCATE TABLE directus_users RESTART IDENTITY CASCADE;
+              SQL
+              echo "✅ directus_roles emptied."
+          env:
+            - name: DB_HOST
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_HOST } }
+            - name: DB_PORT
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
+            - name: DB_DATABASE
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+          volumeMounts:
+            - name: vault-root-token
+              mountPath: /vault-token
+              readOnly: true
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
         - name: wait-for-config-job
           image: alpine/k8s:1.31.4
           command: ["/bin/sh","-lc"]
@@ -535,133 +583,72 @@ spec:
             # Work from the app dir so the CLI behaves consistently
             cd /directus
 
-            echo "🔧 Seeding defaults and resolving role UUIDs (without duplicates)…"
+            echo "🔧 Seeding defaults if missing & resolving role UUIDs…"
 
-            # Make CLI deterministic and avoid Redis during CLI ops
+            # Make CLI quieter & deterministic for parsing
             export NO_COLOR=1
             export LOG_STYLE=raw
             export LOG_LEVEL=error
             export CACHE_ENABLED=false
             export RATE_LIMITER_ENABLED=false
 
-            # 1) Ensure the default data is present (idempotent)
-            if node cli.js bootstrap; then
-              echo "✅ Bootstrap done (or already initialized)"
-            else
-              echo "⚠️ Bootstrap returned non-zero (might already be initialized); continuing"
-            fi
+            # Parse the first UUID-looking token from a file
+            _extract_uuid_from_file() {
+              # greedy-safe: match canonical 8-4-4-4-12 hex UUID
+              grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "$1" | head -n1
+            }
 
-            # 2) Start Directus briefly in the background to query REST API.
-            #    IMPORTANT: enable password auth only for this temp server
-            echo "🛰  Starting Directus in the background for role lookup…"
-            (
-              AUTH_DISABLE_DEFAULT=false \
-              AUTH_PROVIDERS="password,github" \
-              CACHE_ENABLED=false \
-              RATE_LIMITER_ENABLED=false \
-              node cli.js start >/tmp/directus-bg.log 2>&1
-            ) &
-            BG_PID=$!
+            # Create role and capture UUID from *its own* output stream
+            _create_role_and_get_id() {
+              local role_name="$1"; shift
+              local tmp="$(mktemp)"
+              # run create; don’t fail the script if it errors (already exists etc.)
+              node cli.js roles create --role "$role_name" "$@" >"$tmp" 2>&1 || true
+              local id="$(_extract_uuid_from_file "$tmp")"
+              rm -f "$tmp"
+              printf "%s" "$id"
+            }
 
-            # 3) Poll health
-            echo "⏳ Waiting for background server to become healthy…"
-            node -e '
-              const url = "http://127.0.0.1:8055/server/health";
-              const sleep = ms => new Promise(r=>setTimeout(r,ms));
-              (async () => {
-                for (let i=0; i<90; i++) {
-                  try {
-                    const r = await fetch(url);
-                    if (r.ok) { console.log("ok"); return; }
-                  } catch {}
-                  await sleep(1000);
-                }
-                process.exit(1);
-              })();
-            ' || { echo "❌ BG server never became healthy"; tail -n +1 /tmp/directus-bg.log || true; kill $BG_PID || true; exit 1; }
+            # Try to create (or re-create) roles and grab their IDs
+            ADMIN_ROLE_ID="$(_create_role_and_get_id "Administrator" --admin --app)"
+            EDITOR_ROLE_ID="$(_create_role_and_get_id "Editor" --app)"
 
-            # 4) Login as admin to get an access token
-            ACCESS_TOKEN="$(
-              node -e '
-                (async () => {
-                  const r = await fetch("http://127.0.0.1:8055/auth/login", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD })
-                  });
-                  if (!r.ok) { console.error("login failed", r.status); process.exit(1); }
-                  const j = await r.json();
-                  process.stdout.write(j?.data?.access_token || "");
-                })().catch(e => { console.error(e); process.exit(1); });
-              ' ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD"
-            )"
+            # IDs printed above; make sure they are in the environment for everything that follows
+            export ADMIN_ROLE_ID
+            export EDITOR_ROLE_ID
 
-            if [ -z "$ACCESS_TOKEN" ]; then
-              echo "❌ Could not login to Directus for role lookup"
-              kill ${BG_PID} >/dev/null 2>&1 || true
-              exit 1
-            fi
-
-            # 5) Query roles by name (Administrator, Editor)
-            ROLES_JSON="$(
-              node -e '
-                (async () => {
-                  const url = "http://127.0.0.1:8055/roles?limit=-1&filter[name][_in]=Administrator,Editor";
-                  const r = await fetch(url, { headers: { authorization: `Bearer ${process.env.ACCESS_TOKEN}` }});
-                  if (!r.ok) { console.error("roles query failed", r.status); process.exit(1); }
-                  const j = await r.json();
-                  process.stdout.write(JSON.stringify(j?.data || []));
-                })().catch(e => { console.error(e); process.exit(1); });
-              ' ACCESS_TOKEN="$ACCESS_TOKEN"
-            )"
-
-            # 6) Stop the temporary Directus instance
-            kill ${BG_PID} >/dev/null 2>&1 || true
-            sleep 1
-
-            # 7) Extract IDs by name
-            ADMIN_ROLE_ID="$(
-              node -e '
-                try {
-                  const arr = JSON.parse(process.env.ROLES_JSON || "[]");
-                  const admin = arr.find(r => r?.name === "Administrator");
-                  process.stdout.write(admin?.id || "");
-                } catch(e) {}
-              ' ROLES_JSON="$ROLES_JSON"
-            )"
-            EDITOR_ROLE_ID="$(
-              node -e '
-                try {
-                  const arr = JSON.parse(process.env.ROLES_JSON || "[]");
-                  const editor = arr.find(r => r?.name === "Editor");
-                  process.stdout.write(editor?.id || "");
-                } catch(e) {}
-              ' ROLES_JSON="$ROLES_JSON"
-            )"
-
-            if [ -z "$ADMIN_ROLE_ID" ]; then echo "❌ Couldn’t resolve Administrator role id"; fi
-            if [ -z "$EDITOR_ROLE_ID" ]; then echo "⚠️ Couldn’t resolve Editor role id (maybe you don’t use it)"; fi
-
-            # 8) Build AUTH_GITHUB_ROLE_MAPPING from TEAM_ROLE_MAP + the IDs
+            # Build AUTH_GITHUB_ROLE_MAPPING purely in sh from TEAM_ROLE_MAP and the two IDs
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor}"
-            AUTH_GITHUB_ROLE_MAPPING="$(
-              node -e '
-                const pairs = String(process.env.TEAM_ROLE_MAP || "").split(",").map(s => s.trim()).filter(Boolean);
-                const out = {};
-                for (const p of pairs) {
-                  const i = p.indexOf("=");
-                  if (i<0) continue;
-                  const group = p.slice(0,i).trim();
-                  const roleName = p.slice(i+1).trim();
-                  const id = roleName === "Administrator" ? process.env.ADMIN_ROLE_ID
-                          : roleName === "Editor"        ? process.env.EDITOR_ROLE_ID
-                          : "";
-                  if (id) out[group] = id;
-                }
-                process.stdout.write("json:" + JSON.stringify(out));
-              ' TEAM_ROLE_MAP="$TEAM_ROLE_MAP" ADMIN_ROLE_ID="$ADMIN_ROLE_ID" EDITOR_ROLE_ID="$EDITOR_ROLE_ID"
-            )"
 
+            make_mapping() {
+              pairs="$1"
+              admin_id="$2"
+              editor_id="$3"
+              out='json:{'
+              first=1
+              OLDIFS="$IFS"; IFS=',' 
+              for kv in $pairs; do
+                IFS="$OLDIFS"
+                group="${kv%%=*}"
+                name="${kv#*=}"
+                id=""
+                [ "$name" = "Administrator" ] && id="$admin_id"
+                [ "$name" = "Editor" ] && id="$editor_id"
+                if [ -n "$id" ]; then
+                  [ $first -eq 0 ] && out="$out,"
+                  out="$out\"$group\":\"$id\""
+                  first=0
+                else
+                  echo "  ⚠ no id available for role name: $name" >&2
+                fi
+                IFS=',' 
+              done
+              IFS="$OLDIFS"
+              out="$out}"
+              printf "%s" "$out"
+            }
+
+            AUTH_GITHUB_ROLE_MAPPING="$(make_mapping "$TEAM_ROLE_MAP" "$ADMIN_ROLE_ID" "$EDITOR_ROLE_ID")"
             export AUTH_GITHUB_ROLE_MAPPING
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $AUTH_GITHUB_ROLE_MAPPING"
 
