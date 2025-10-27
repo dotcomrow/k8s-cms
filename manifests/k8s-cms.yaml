@@ -531,42 +531,56 @@ spec:
             # Ensure proper schema connection
             export DB_SEARCH_PATH="directus"
 
+            # Ensure psql exists (works on both Alpine & Debian/Ubuntu images)
+            if ! command -v psql >/dev/null 2>&1; then
+              if command -v apk >/dev/null 2>&1; then
+                echo "📦 Installing psql (Alpine)…"
+                apk add --no-cache postgresql15-client
+              elif command -v apt-get >/dev/null 2>&1; then
+                echo "📦 Installing psql (Debian/Ubuntu)…"
+                apt-get update -y
+                apt-get install -y --no-install-recommends postgresql-client
+                rm -rf /var/lib/apt/lists/*
+              else
+                echo "❌ Could not install psql (no apk/apt-get)."
+                exit 1
+              fi
+            fi
+
             echo "🔧 Resolving Directus role UUIDs from TEAM_ROLE_MAP…"
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
 
-            ROLE_MAPPING_JSON="$(
-            node -e '
-              const { Client } = require("pg");
-              const mapStr = process.env.TEAM_ROLE_MAP || "";
-              const pairs = mapStr.split(",")
-                .map(s => s.trim()).filter(Boolean)
-                .map(s => { const i = s.indexOf("="); if (i<0) return null; return [s.slice(0,i).trim(), s.slice(i+1).trim()]; })
-                .filter(Boolean);
-              (async () => {
-                const client = new Client({
-                  host: process.env.DB_HOST,
-                  port: Number(process.env.DB_PORT || 5432),
-                  user: process.env.DB_USER,
-                  password: process.env.DB_PASSWORD,
-                  database: process.env.DB_DATABASE || "directus",
-                });
-                await client.connect();
-                const out = {};
-                for (const [team, roleName] of pairs) {
-                  const res = await client.query("SELECT id FROM directus_roles WHERE name = $1 LIMIT 1", [roleName]);
-                  if (res.rows.length) {
-                    out[team] = res.rows[0].id;
-                    console.log(`  ↪ mapped ${team} -> ${roleName} -> ${res.rows[0].id}`);
-                  } else {
-                    console.error(`  ⚠ role not found: ${roleName}`);
-                  }
-                }
-                await client.end();
-                process.stdout.write("json:" + JSON.stringify(out));
-              })().catch(e => { console.error(e); process.exit(1); });
-            '
-            )"
+            # Build JSON mapping: {"group":"role-uuid",...} with the required "json:" prefix
+            build_mapping() {
+              local pairs="$1"
+              local out="" first=1
+              IFS=',' read -r -a arr <<< "$pairs"
+              for kv in "${arr[@]}"; do
+                kv="$(echo "$kv" | xargs)"        # trim
+                [ -z "$kv" ] && continue
+                key="${kv%%=*}"
+                role="${kv#*=}"
+                if [ -z "$key" ] || [ -z "$role" ]; then
+                  echo "⚠️  Skipping invalid mapping entry: '$kv'" >&2
+                  continue
+                fi
+                # Query role UUID by name
+                id="$(PGPASSWORD="$DB_PASSWORD" psql \
+                    -h "$DB_HOST" -p "${DB_PORT:-5432}" \
+                    -U "$DB_USER" -d "${DB_DATABASE:-directus}" \
+                    -Atc "SELECT id FROM directus_roles WHERE name = \$\$${role}\$\$ LIMIT 1;" 2>/dev/null || true)"
+                if [ -n "$id" ]; then
+                  [ $first -eq 1 ] && out="\"$key\":\"$id\"" || out="$out,\"$key\":\"$id\""
+                  first=0
+                  echo "  ↪ mapped ${key} -> ${role} -> ${id}"
+                else
+                  echo "  ⚠ role not found: ${role}" >&2
+                fi
+              done
+              echo "json:{${out}}"
+            }
 
+            ROLE_MAPPING_JSON="$(build_mapping "$TEAM_ROLE_MAP")"
             if [ -z "$ROLE_MAPPING_JSON" ]; then
               echo "❌ Failed to build AUTH_GITHUB_ROLE_MAPPING"; exit 1
             fi
