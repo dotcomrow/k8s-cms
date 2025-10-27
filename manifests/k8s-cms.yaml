@@ -536,7 +536,7 @@ spec:
             cd /directus
 
             echo "🔧 Seeding defaults if missing & resolving role UUIDs…"
-            TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
+            TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor}"
 
             node cli.js roles create --role "Administrator" --admin --app
             node cli.js roles create --role "Editor" --app
