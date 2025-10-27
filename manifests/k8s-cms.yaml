@@ -291,6 +291,7 @@ data:
   AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
   AUTH_GITHUB_PROFILE_FORMAT: "json"
   AUTH_GITHUB_SYNC_USER_INFO: "true"
+  AUTH_GITHUB_FIRST_NAME_KEY: "name"
   AUTH_GITHUB_PROFILE_TRANSFORM: >
     json:{
         "email":"{{ email }}",
@@ -309,7 +310,6 @@ data:
       }
 
   WEBSOCKETS_ENABLED: "true"
-  WEBSOCKETS_GRAPHQL_ENABLED: "true"
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -832,8 +832,6 @@ spec:
         # WebSockets configuration
         - name: WEBSOCKETS_ENABLED
           valueFrom: { configMapKeyRef: { name: directus-config, key: WEBSOCKETS_ENABLED } }
-        - name: WEBSOCKETS_GRAPHQL_ENABLED
-          valueFrom: { configMapKeyRef: { name: directus-config, key: WEBSOCKETS_GRAPHQL_ENABLED } }
 
         # GitHub OAuth provider config
         - name: AUTH_GITHUB_DRIVER
@@ -866,6 +864,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_FORMAT } }
         - name: AUTH_GITHUB_SYNC_USER_INFO
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_SYNC_USER_INFO } }
+        - name: AUTH_GITHUB_FIRST_NAME_KEY
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_FIRST_NAME_KEY } }
 
         resources:
           requests: { memory: "512Mi", cpu: "250m" }
