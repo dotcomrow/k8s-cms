@@ -534,71 +534,58 @@ spec:
             # Work from the app dir so the CLI behaves consistently
             cd /directus
 
-            echo "🔧 Resolving Directus role UUIDs from TEAM_ROLE_MAP…"
+            echo "🔧 Seeding defaults if missing & resolving role UUIDs…"
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
 
-            # Try to fetch roles (JSON), with a short retry loop while DB finishes settling
+            # Count roles using Directus CLI (no DB client needed)
+            roles_count="$(
+              node -e '
+                const { execSync } = require("child_process");
+                try {
+                  const out = execSync("node cli.js count directus_roles", {stdio:["ignore","pipe","pipe"]}).toString().trim();
+                  process.stdout.write(out || "0");
+                } catch (e) { process.stdout.write("0"); }
+              '
+            )"
+
+            echo "📊 directus_roles count = ${roles_count:-0}"
+
+            # If there are no roles, run bootstrap to create default roles & admin
+            if [ "${roles_count:-0}" = "0" ]; then
+              echo "⚠️  No roles found; running bootstrap to seed defaults…"
+              # Pass credentials via flags to be explicit
+              if ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+                node cli.js bootstrap --email "${ADMIN_EMAIL}" --password "${ADMIN_PASSWORD}"; then
+                echo "✅ Bootstrap succeeded."
+              else
+                echo "❌ Bootstrap failed. Check ADMIN_EMAIL / ADMIN_PASSWORD and DB connectivity."
+                # We still continue to let the server start, but mapping will be empty
+              fi
+            fi
+
+            # Re-read roles as JSON (retry a few times in case bootstrap just wrote them)
             get_roles_json() {
               for i in 1 2 3 4 5; do
                 ROLES_JSON_RAW="$(node cli.js roles list --json 2>/dev/null || true)"
                 if [ -n "$ROLES_JSON_RAW" ] && [ "$ROLES_JSON_RAW" != "[]" ]; then
-                  echo "$ROLES_JSON_RAW"
-                  return 0
+                  echo "$ROLES_JSON_RAW"; return 0
                 fi
-                echo "  ↪ roles not ready yet (attempt $i/5)…"
-                sleep 2
+                echo "  ↪ roles not ready yet (attempt $i/5)…"; sleep 2
               done
-              echo ""
-              return 1
+              echo "[]"; return 1
             }
 
-            ROLES_BY_NAME_JSON="$(
-              ROLES_RAW="$(get_roles_json)"; \
-              node -e '
-                try {
-                  const arr = JSON.parse(process.env.ROLES_RAW || "[]");
-                  const byName = {};
-                  if (Array.isArray(arr)) {
-                    for (const r of arr) if (r && r.name && r.id) byName[r.name] = r.id;
-                  }
-                  process.stdout.write(JSON.stringify(byName));
-                } catch { process.stdout.write("{}"); }
-              ' ROLES_RAW="$ROLES_RAW"
-            )"
+            ROLES_RAW="$(get_roles_json)"
 
-            # If no roles present at all, try a one-time bootstrap (creates default roles + admin)
-            if [ -z "$ROLES_BY_NAME_JSON" ] || [ "$ROLES_BY_NAME_JSON" = "{}" ]; then
-              echo "⚠️  No roles returned by CLI; attempting one-time bootstrap…"
-              # Only run if the command exists (older images always have it, but check anyway)
-              if node cli.js | grep -qi bootstrap; then
-                if ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASSWORD}" node cli.js bootstrap; then
-                  echo "✅ Bootstrap succeeded; re-reading roles…"
-                  ROLES_RAW="$(node cli.js roles list --json 2>/dev/null || echo "[]")"
-                  ROLES_BY_NAME_JSON="$(node -e '
-                    try {
-                      const arr = JSON.parse(process.env.ROLES_RAW || "[]");
-                      const byName = {};
-                      if (Array.isArray(arr)) {
-                        for (const r of arr) if (r && r.name && r.id) byName[r.name] = r.id;
-                      }
-                      process.stdout.write(JSON.stringify(byName));
-                    } catch { process.stdout.write("{}"); }
-                  ' ROLES_RAW="$ROLES_RAW")"
-                else
-                  echo "❌ Bootstrap failed; continuing without role mapping."
-                  ROLES_BY_NAME_JSON="{}"
-                fi
-              else
-                echo "ℹ️  Bootstrap command not available; continuing without role mapping."
-                ROLES_BY_NAME_JSON="{}"
-              fi
-            fi
-
-            # Build AUTH_GITHUB_ROLE_MAPPING='json:{...}' using TEAM_ROLE_MAP + ROLES_BY_NAME_JSON
+            # Build AUTH_GITHUB_ROLE_MAPPING='json:{...}' from TEAM_ROLE_MAP + roles JSON
             ROLE_MAPPING_JSON="$(
               node -e '
+                const byName = {};
+                try {
+                  const arr = JSON.parse(process.env.ROLES_RAW || "[]");
+                  if (Array.isArray(arr)) for (const r of arr) if (r && r.name && r.id) byName[r.name] = r.id;
+                } catch {}
                 const pairsStr = process.env.TEAM_ROLE_MAP || "";
-                const byName = JSON.parse(process.env.ROLES_BY_NAME_JSON || "{}");
                 const out = {};
                 for (const kv of pairsStr.split(",")) {
                   const s = kv.trim(); if (!s) continue;
@@ -614,7 +601,7 @@ spec:
                   }
                 }
                 process.stdout.write("json:" + JSON.stringify(out));
-              ' TEAM_ROLE_MAP="$TEAM_ROLE_MAP" ROLES_BY_NAME_JSON="$ROLES_BY_NAME_JSON"
+              ' ROLES_RAW="$ROLES_RAW" TEAM_ROLE_MAP="$TEAM_ROLE_MAP"
             )"
 
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $ROLE_MAPPING_JSON"
