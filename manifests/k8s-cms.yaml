@@ -536,79 +536,93 @@ spec:
             cd /directus
 
             echo "🔧 Seeding defaults if missing & resolving role UUIDs…"
+
+            # Make CLI runs deterministic (avoid Redis auth noise)
+            export CACHE_ENABLED=false
+            export RATE_LIMITER_ENABLED=false
+
+            # Default team→role names (left = proxy group; right = Directus role name)
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor}"
 
-            node cli.js roles create --role "Administrator" --admin --app
-            node cli.js roles create --role "Editor" --app
-
-            # Count roles using Directus CLI (no DB client needed)
-            roles_count="$(
+            # Helper: get role id by name via CLI JSON
+            get_role_id_by_name() {
+              ROLE_NAME="$1"
               node -e '
                 const { execSync } = require("child_process");
                 try {
-                  const out = execSync("node cli.js count directus_roles", {stdio:["ignore","pipe","pipe"]}).toString().trim();
-                  process.stdout.write(out || "0");
-                } catch (e) { process.stdout.write("0"); }
-              '
-            )"
-
-            echo "📊 directus_roles count = ${roles_count:-0}"
-
-            # If there are no roles, run bootstrap to create default roles & admin
-            if [ "${roles_count:-0}" = "0" ]; then
-              echo "⚠️  No roles found; running bootstrap to seed defaults…"
-              # Pass credentials via flags to be explicit
-              if ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-                node cli.js bootstrap ; then
-                echo "✅ Bootstrap succeeded."
-              else
-                echo "❌ Bootstrap failed. Check ADMIN_EMAIL / ADMIN_PASSWORD and DB connectivity."
-                # We still continue to let the server start, but mapping will be empty
-              fi
-            fi
-
-            # Re-read roles as JSON (retry a few times in case bootstrap just wrote them)
-            get_roles_json() {
-              for i in 1 2 3 4 5; do
-                ROLES_JSON_RAW="$(node cli.js roles list --json 2>/dev/null || true)"
-                if [ -n "$ROLES_JSON_RAW" ] && [ "$ROLES_JSON_RAW" != "[]" ]; then
-                  echo "$ROLES_JSON_RAW"; return 0
-                fi
-                echo "  ↪ roles not ready yet (attempt $i/5)…"; sleep 2
-              done
-              echo "[]"; return 1
+                  const arr = JSON.parse(execSync("node cli.js roles list --json", {stdio:["ignore","pipe","pipe"]}).toString());
+                  const m = Array.isArray(arr) ? arr.find(r => r && r.name === process.env.ROLE_NAME) : null;
+                  if (m && m.id) process.stdout.write(m.id);
+                } catch {}
+              ' ROLE_NAME="$ROLE_NAME"
             }
 
-            ROLES_RAW="$(get_roles_json)"
+            # Helper: create role if missing; capture ID from stdout (the CLI echos the UUID)
+            get_or_create_role() {
+              ROLE_NAME="$1"; shift
+              # 1) already exists?
+              RID="$(get_role_id_by_name "$ROLE_NAME")"
+              if [ -n "$RID" ]; then
+                echo "  ℹ️  Role '$ROLE_NAME' exists: $RID" >&2
+                printf "%s" "$RID"
+                return 0
+              fi
 
-            # Build AUTH_GITHUB_ROLE_MAPPING='json:{...}' from TEAM_ROLE_MAP + roles JSON
+              # 2) create and regex the UUID from stdout
+              OUT="$(node cli.js roles create --role "$ROLE_NAME" "$@" 2>&1 || true)"
+              echo "$OUT" >&2
+              RID="$(node -e 'const s=process.env.OUT||""; const m=s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i); if(m) process.stdout.write(m[0]);' OUT="$OUT")"
+
+              # 3) fallback: read it again from roles list
+              if [ -z "$RID" ]; then
+                RID="$(get_role_id_by_name "$ROLE_NAME")"
+              fi
+
+              if [ -z "$RID" ]; then
+                echo "  ❌ Failed to create/find role '$ROLE_NAME'" >&2
+              else
+                echo "  ✅ Role '$ROLE_NAME' id: $RID" >&2
+              fi
+              printf "%s" "$RID"
+            }
+
+            # Ensure the two roles exist (and grab ids)
+            ADMIN_ROLE_ID="$(get_or_create_role "Administrator" --admin --app)"
+            EDITOR_ROLE_ID="$(get_or_create_role "Editor" --app)"
+
+            # Build a name→id map in env for the mapper
+            ROLE_IDS_JSON="$(node -e '
+              const out = {};
+              if (process.env.ADMIN_ROLE_ID) out["Administrator"] = process.env.ADMIN_ROLE_ID;
+              if (process.env.EDITOR_ROLE_ID) out["Editor"] = process.env.EDITOR_ROLE_ID;
+              process.stdout.write(JSON.stringify(out));
+            ' ADMIN_ROLE_ID="$ADMIN_ROLE_ID" EDITOR_ROLE_ID="$EDITOR_ROLE_ID")"
+
+            # Build AUTH_GITHUB_ROLE_MAPPING from TEAM_ROLE_MAP and ROLE_IDS_JSON
             ROLE_MAPPING_JSON="$(
               node -e '
-                const byName = {};
-                try {
-                  const arr = JSON.parse(process.env.ROLES_RAW || "[]");
-                  if (Array.isArray(arr)) for (const r of arr) if (r && r.name && r.id) byName[r.name] = r.id;
-                } catch {}
                 const pairsStr = process.env.TEAM_ROLE_MAP || "";
+                const nameToId = JSON.parse(process.env.ROLE_IDS_JSON || "{}");
                 const out = {};
-                for (const kv of pairsStr.split(",")) {
-                  const s = kv.trim(); if (!s) continue;
+                for (const token of pairsStr.split(",")) {
+                  const s = token.trim(); if (!s) continue;
                   const i = s.indexOf("="); if (i < 0) continue;
                   const group = s.slice(0,i).trim();
                   const roleName = s.slice(i+1).trim();
-                  const id = byName[roleName];
+                  const id = nameToId[roleName];
                   if (id) {
                     out[group] = id;
                     console.error(`  ↪ mapped ${group} -> ${roleName} -> ${id}`);
                   } else {
-                    console.error(`  ⚠ role not found: ${roleName}`);
+                    console.error(`  ⚠ role not found by name: ${roleName}`);
                   }
                 }
                 process.stdout.write("json:" + JSON.stringify(out));
-              ' ROLES_RAW="$ROLES_RAW" TEAM_ROLE_MAP="$TEAM_ROLE_MAP"
+              ' TEAM_ROLE_MAP="$TEAM_ROLE_MAP" ROLE_IDS_JSON="$ROLE_IDS_JSON"
             )"
 
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $ROLE_MAPPING_JSON"
+            export AUTH_GITHUB_ROLE_MAPPING="$ROLE_MAPPING_JSON"
 
             echo "🚀 Starting Directus server..."
             # Create a startup script that sources all environment variables
