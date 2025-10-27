@@ -540,6 +540,74 @@ spec:
               done
               echo "✅ Existing Redis instance is ready"
       containers:
+      - name: directus-postschema
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh","-lc"]
+        args:
+          - |
+            set -eu
+
+            # tools
+            apk add --no-cache curl jq >/dev/null
+
+            # --- wait for Directus to be healthy (same pod: localhost) ---
+            echo "⏳ Waiting for Directus /server/health..."
+            until curl -sf http://127.0.0.1:8055/server/health >/dev/null; do
+              echo "  .. not ready yet"
+              sleep 3
+            done
+            echo "✅ Directus is healthy"
+
+            # --- fetch DB creds from Vault (same way as your init did) ---
+            VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+            VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
+            CREDS="$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+              "${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app")"
+            DB_USER="$(echo "$CREDS" | jq -r '.data.username')"
+            DB_PASS="$(echo "$CREDS" | jq -r '.data.password')"
+
+            if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ] || [ "$DB_USER" = "null" ] || [ "$DB_PASS" = "null" ]; then
+              echo "❌ Failed to fetch DB creds from Vault"; exit 1
+            fi
+
+            export PGPASSWORD="$DB_PASS"
+
+            echo "🔧 Applying user profile columns (idempotent)…"
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 <<'SQL'
+            SET search_path TO directus, public;
+
+            ALTER TABLE directus_users
+              ADD COLUMN IF NOT EXISTS github_login        TEXT,
+              ADD COLUMN IF NOT EXISTS github_url          TEXT,
+              ADD COLUMN IF NOT EXISTS github_company      TEXT,
+              ADD COLUMN IF NOT EXISTS github_bio          TEXT,
+              ADD COLUMN IF NOT EXISTS github_metadata     JSONB;
+
+            -- Optional: keep these in sync with your transform keys:
+            -- UPDATE directus_users SET
+            --   github_login   = COALESCE((metadata->>'login'), github_login),
+            --   github_url     = COALESCE((metadata->>'html_url'), github_url),
+            --   github_company = COALESCE((metadata->>'company'), github_company),
+            --   github_bio     = COALESCE((metadata->>'bio'), github_bio)
+            -- WHERE metadata IS NOT NULL;
+            SQL
+
+            echo "✅ Schema patch applied. Exiting sidecar."
+        env:
+          - name: DB_HOST
+            valueFrom: { configMapKeyRef: { name: directus-config, key: DB_HOST } }
+          - name: DB_PORT
+            valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
+          - name: DB_DATABASE
+            valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+        volumeMounts:
+          - name: vault-root-token
+            mountPath: /vault-token
+            readOnly: true
+        resources:
+          requests: { cpu: "10m", memory: "32Mi" }
+          limits:   { cpu: "50m", memory: "64Mi" }
       - name: vault-agent
         image: hashicorp/vault:1.15.4
         command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
@@ -775,7 +843,7 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_SECRET } }
         - name: AUTH_GITHUB_PROFILE_TRANSFORM
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_TRANSFORM } }
-          
+
         resources:
           requests: { memory: "512Mi", cpu: "250m" }
           limits:   { memory: "1Gi",   cpu: "500m" }
