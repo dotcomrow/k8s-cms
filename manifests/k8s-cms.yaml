@@ -537,8 +537,8 @@ spec:
             echo "🔧 Seeding defaults if missing & resolving role UUIDs…"
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
 
-            node cli.js roles create --role "Administrator" --admin
-            node cli.js roles create --role "Editor"
+            node cli.js roles create --role "Administrator" --admin --app
+            node cli.js roles create --role "Editor" --app
 
             # Count roles using Directus CLI (no DB client needed)
             roles_count="$(
