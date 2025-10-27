@@ -254,6 +254,7 @@ data:
 
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
+  REDIS_ENABLED: "true"
   REDIS_HOST: "redis-0.redis-headless.redis.svc.cluster.local"
   REDIS_PORT: "6379"
 
@@ -306,6 +307,9 @@ data:
           "teams":{{ teams | json }}
         }
       }
+
+  WEBSOCKETS_ENABLED: "true"
+  WEBSOCKETS_GRAPHQL_ENABLED: "true"
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -794,6 +798,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_HOST } }
         - name: REDIS_PORT
           valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_PORT } }
+        - name: REDIS_ENABLED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_ENABLED } }
 
         # Rate limiting
         - name: RATE_LIMITER_ENABLED
@@ -822,6 +828,12 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: CORS_ORIGIN } }
         - name: ASSETS_CACHE_TTL
           valueFrom: { configMapKeyRef: { name: directus-config, key: ASSETS_CACHE_TTL } }
+
+        # WebSockets configuration
+        - name: WEBSOCKETS_ENABLED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: WEBSOCKETS_ENABLED } }
+        - name: WEBSOCKETS_GRAPHQL_ENABLED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: WEBSOCKETS_GRAPHQL_ENABLED } }
 
         # GitHub OAuth provider config
         - name: AUTH_GITHUB_DRIVER
