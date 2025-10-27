@@ -544,8 +544,6 @@ spec:
             export CACHE_ENABLED=false
             export RATE_LIMITER_ENABLED=false
 
-            TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor}"
-
             # Parse the first UUID-looking token from a file
             _extract_uuid_from_file() {
               # greedy-safe: match canonical 8-4-4-4-12 hex UUID
@@ -628,7 +626,7 @@ spec:
 
         # Optional: your default team→role names (left = proxy group; right = Directus role name)
         - name: TEAM_ROLE_MAP
-          value: "github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor"
+          value: "github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor"
 
         # Database configuration
         - name: DB_CLIENT
