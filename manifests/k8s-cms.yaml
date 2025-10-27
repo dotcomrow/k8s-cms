@@ -531,97 +531,92 @@ spec:
             # Ensure proper schema connection
             export DB_SEARCH_PATH="directus"
 
+            # Work from the app dir so the CLI behaves consistently
+            cd /directus
+
             echo "🔧 Resolving Directus role UUIDs from TEAM_ROLE_MAP…"
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
 
-            # 1) Pull roles via Directus CLI, prefer JSON; fallback to text parsing.
-            #    No extra packages required.
+            # Try to fetch roles (JSON), with a short retry loop while DB finishes settling
+            get_roles_json() {
+              for i in 1 2 3 4 5; do
+                ROLES_JSON_RAW="$(node cli.js roles list --json 2>/dev/null || true)"
+                if [ -n "$ROLES_JSON_RAW" ] && [ "$ROLES_JSON_RAW" != "[]" ]; then
+                  echo "$ROLES_JSON_RAW"
+                  return 0
+                fi
+                echo "  ↪ roles not ready yet (attempt $i/5)…"
+                sleep 2
+              done
+              echo ""
+              return 1
+            }
+
             ROLES_BY_NAME_JSON="$(
-            node - <<'NODE'
-            const { execSync } = require('node:child_process');
-
-            function listRolesJSON() {
-              try {
-                const raw = execSync('node cli.js roles list --json', { stdio: ['ignore','pipe','pipe'] }).toString();
-                const arr = JSON.parse(raw);
-                const byName = {};
-                for (const r of Array.isArray(arr) ? arr : []) {
-                  if (r && r.name && r.id) byName[r.name] = r.id;
-                }
-                if (Object.keys(byName).length) {
-                  console.error('  ↪ obtained roles via --json');
-                  return byName;
-                }
-              } catch {}
-              return null;
-            }
-
-            function listRolesText() {
-              try {
-                const raw = execSync('node cli.js roles list', { stdio: ['ignore','pipe','pipe'] }).toString();
-                const byName = {};
-                const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
-
-                for (const line of raw.split('\n')) {
-                  const m = line.match(uuidRe);
-                  if (!m) continue;
-                  const id = m[0];
-
-                  // Try column-split first (│ or |), then fallback to last token-ish
-                  let name = null;
-                  const parts = line.split(/│|\|/);
-                  if (parts.length >= 3) name = parts[2].trim();
-                  if (!name) {
-                    const tail = line.replace(uuidRe, '');
-                    const toks = tail.split(/ {2,}|\t/).map(s => s.trim()).filter(Boolean);
-                    name = toks[toks.length - 1] || null;
+              ROLES_RAW="$(get_roles_json)"; \
+              node -e '
+                try {
+                  const arr = JSON.parse(process.env.ROLES_RAW || "[]");
+                  const byName = {};
+                  if (Array.isArray(arr)) {
+                    for (const r of arr) if (r && r.name && r.id) byName[r.name] = r.id;
                   }
-                  if (name) byName[name] = id;
-                }
-
-                if (Object.keys(byName).length) {
-                  console.error('  ↪ parsed roles from text output');
-                  return byName;
-                }
-              } catch {}
-              return {};
-            }
-
-            const byName = listRolesJSON() || listRolesText();
-            process.stdout.write(JSON.stringify(byName));
-            NODE
+                  process.stdout.write(JSON.stringify(byName));
+                } catch { process.stdout.write("{}"); }
+              ' ROLES_RAW="$ROLES_RAW"
             )"
 
+            # If no roles present at all, try a one-time bootstrap (creates default roles + admin)
             if [ -z "$ROLES_BY_NAME_JSON" ] || [ "$ROLES_BY_NAME_JSON" = "{}" ]; then
-              echo "⚠️  Could not obtain role list from Directus CLI; proceeding with empty mapping."
+              echo "⚠️  No roles returned by CLI; attempting one-time bootstrap…"
+              # Only run if the command exists (older images always have it, but check anyway)
+              if node cli.js | grep -qi bootstrap; then
+                if ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASSWORD}" node cli.js bootstrap; then
+                  echo "✅ Bootstrap succeeded; re-reading roles…"
+                  ROLES_RAW="$(node cli.js roles list --json 2>/dev/null || echo "[]")"
+                  ROLES_BY_NAME_JSON="$(node -e '
+                    try {
+                      const arr = JSON.parse(process.env.ROLES_RAW || "[]");
+                      const byName = {};
+                      if (Array.isArray(arr)) {
+                        for (const r of arr) if (r && r.name && r.id) byName[r.name] = r.id;
+                      }
+                      process.stdout.write(JSON.stringify(byName));
+                    } catch { process.stdout.write("{}"); }
+                  ' ROLES_RAW="$ROLES_RAW")"
+                else
+                  echo "❌ Bootstrap failed; continuing without role mapping."
+                  ROLES_BY_NAME_JSON="{}"
+                fi
+              else
+                echo "ℹ️  Bootstrap command not available; continuing without role mapping."
+                ROLES_BY_NAME_JSON="{}"
+              fi
             fi
 
-            # 2) Build AUTH_GITHUB_ROLE_MAPPING='json:{...}' using TEAM_ROLE_MAP
-            build_mapping_from_json() {
-              local pairs="$1"; local jsonRoles="$2"
-              # Use Node (built-in) to safely match names → ids and construct the json: mapping
-              node - <<NODE
-            const pairsStr = ${JSON.stringify(TEAM_ROLE_MAP)};
-            const byName = ${ROLES_BY_NAME_JSON || "{}"};
-            const out = {};
-            for (const kv of pairsStr.split(',')) {
-              const s = kv.trim(); if (!s) continue;
-              const i = s.indexOf('='); if (i < 0) continue;
-              const group = s.slice(0,i).trim();
-              const roleName = s.slice(i+1).trim();
-              const id = byName[roleName];
-              if (id) {
-                out[group] = id;
-                console.error(\`  ↪ mapped \${group} -> \${roleName} -> \${id}\`);
-              } else {
-                console.error(\`  ⚠ role not found: \${roleName}\`);
-              }
-            }
-            process.stdout.write("json:" + JSON.stringify(out));
-            NODE
-            }
+            # Build AUTH_GITHUB_ROLE_MAPPING='json:{...}' using TEAM_ROLE_MAP + ROLES_BY_NAME_JSON
+            ROLE_MAPPING_JSON="$(
+              node -e '
+                const pairsStr = process.env.TEAM_ROLE_MAP || "";
+                const byName = JSON.parse(process.env.ROLES_BY_NAME_JSON || "{}");
+                const out = {};
+                for (const kv of pairsStr.split(",")) {
+                  const s = kv.trim(); if (!s) continue;
+                  const i = s.indexOf("="); if (i < 0) continue;
+                  const group = s.slice(0,i).trim();
+                  const roleName = s.slice(i+1).trim();
+                  const id = byName[roleName];
+                  if (id) {
+                    out[group] = id;
+                    console.error(`  ↪ mapped ${group} -> ${roleName} -> ${id}`);
+                  } else {
+                    console.error(`  ⚠ role not found: ${roleName}`);
+                  }
+                }
+                process.stdout.write("json:" + JSON.stringify(out));
+              ' TEAM_ROLE_MAP="$TEAM_ROLE_MAP" ROLES_BY_NAME_JSON="$ROLES_BY_NAME_JSON"
+            )"
 
-            ROLE_MAPPING_JSON="$(build_mapping_from_json "$TEAM_ROLE_MAP" "$ROLES_BY_NAME_JSON")"
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $ROLE_MAPPING_JSON"
 
             echo "🚀 Starting Directus server..."
@@ -631,10 +626,8 @@ spec:
             echo '. /vault-secrets/app-keys.env' >> /tmp/start-directus.sh
             echo '. /vault-secrets/admin-creds.env' >> /tmp/start-directus.sh
             echo '. /vault-secrets/redis-creds.env' >> /tmp/start-directus.sh
-            echo '. /vault-secrets/github-oauth.env' >> /tmp/start-directus.sh
             echo "export AUTH_GITHUB_ROLE_MAPPING='$ROLE_MAPPING_JSON'" >> /tmp/start-directus.sh
             echo 'export DB_USER DB_PASSWORD KEY SECRET ADMIN_EMAIL ADMIN_PASSWORD REDIS_PASSWORD' >> /tmp/start-directus.sh
-            echo 'export AUTH_GITHUB_CLIENT_ID AUTH_GITHUB_CLIENT_SECRET' >> /tmp/start-directus.sh
             echo 'exec node cli.js start' >> /tmp/start-directus.sh
             chmod +x /tmp/start-directus.sh
             exec /tmp/start-directus.sh
