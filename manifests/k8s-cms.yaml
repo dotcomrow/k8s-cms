@@ -668,9 +668,9 @@ spec:
         - name: AUTH_GITHUB_GROUP_CLAIM_NAME
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_GROUP_CLAIM_NAME } }
         - name: AUTH_GITHUB_CLIENT_ID
-          valueFrom: { secretKeyRef: { name: directus-github-oauth, key: client-id } }
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_ID } }
         - name: AUTH_GITHUB_CLIENT_SECRET
-          valueFrom: { secretKeyRef: { name: directus-github-oauth, key: client-secret } }
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_SECRET } }
 
         resources:
           requests: { memory: "512Mi", cpu: "250m" }
