@@ -2,36 +2,36 @@ import express, { Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
-import { Agent, request as undiciRequest, setGlobalDispatcher, Headers } from "undici";
+import { Agent, request as undiciRequest, setGlobalDispatcher } from "undici";
+import type { IncomingHttpHeaders } from "http";
 import { z } from "zod";
 
-/** -----------------------------
+/**
+ * -----------------------------
  * Env configuration & parsing
- * ----------------------------*/
+ * -----------------------------
+ */
 const envSchema = z.object({
   PORT: z.string().default("8080"),
 
   REQUIRE_API_KEY: z.string().default("false"),
   API_KEY: z.string().optional(),
+
   ALLOWLIST_ORGS: z.string().default(""),
+
   GROUP_FORMAT: z.enum(["org:team", "org/team", "team"]).default("org:team"),
   GROUP_PREFIX: z.string().default(""),
   INCLUDE_ORG_AS_GROUP: z.string().default("false"),
   INCLUDE_ROLE_SUFFIX: z.string().default("false"),
 
-  // Extra includes (default: safe/lightweight)
-  INCLUDE_ORGS: z.string().default("true"),
-  INCLUDE_ORG_MEMBERSHIPS: z.string().default("true"),
-  INCLUDE_TEAMS: z.string().default("true"),
-  INCLUDE_EMAILS: z.string().default("true"),
-  INCLUDE_SSH_KEYS: z.string().default("true"),
-  INCLUDE_GPG_KEYS: z.string().default("true"),
-  INCLUDE_INSTALLATIONS: z.string().default("false"),
-  INCLUDE_REPOS: z.string().default("false"), // can be heavy
-
   RATE_WINDOW_MS: z.string().default("60000"),
   RATE_MAX: z.string().default("60"),
   TIMEOUT_MS: z.string().default("8000"),
+
+  // pagination control for “fetch as much as possible”
+  MAX_PAGES: z.string().default("2"),     // how many pages to follow at most
+  PER_PAGE: z.string().default("100"),    // items per page
+
   GITHUB_API_BASE: z.string().default("https://api.github.com")
 });
 
@@ -39,48 +39,53 @@ const env = envSchema.parse(process.env);
 
 const toBool = (v: string | undefined) => String(v || "").toLowerCase() === "true";
 const splitCSV = (v: string | undefined) =>
-  String(v || "").split(",").map((s) => s.trim()).filter(Boolean);
+  String(v || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 const REQUIRE_API_KEY = toBool(env.REQUIRE_API_KEY);
 const INCLUDE_ORG_AS_GROUP = toBool(env.INCLUDE_ORG_AS_GROUP);
 const INCLUDE_ROLE_SUFFIX = toBool(env.INCLUDE_ROLE_SUFFIX);
 const ALLOWED_ORGS = new Set(splitCSV(env.ALLOWLIST_ORGS));
+const PER_PAGE = Math.max(1, Math.min(100, Number(env.PER_PAGE) || 100));
+const MAX_PAGES = Math.max(1, Math.min(10, Number(env.MAX_PAGES) || 2));
 
-const INC = {
-  ORGS: toBool(env.INCLUDE_ORGS),
-  ORG_MEMBERSHIPS: toBool(env.INCLUDE_ORG_MEMBERSHIPS),
-  TEAMS: toBool(env.INCLUDE_TEAMS),
-  EMAILS: toBool(env.INCLUDE_EMAILS),
-  SSH_KEYS: toBool(env.INCLUDE_SSH_KEYS),
-  GPG_KEYS: toBool(env.INCLUDE_GPG_KEYS),
-  INSTALLATIONS: toBool(env.INCLUDE_INSTALLATIONS),
-  REPOS: toBool(env.INCLUDE_REPOS)
-};
-
-/** -----------------------------
- * HTTP client setup
- * ----------------------------*/
-setGlobalDispatcher(
-  new Agent({ keepAliveTimeout: 10_000, keepAliveMaxTimeout: 10_000 })
-);
-
-// --- Types (subset + extras we use) ---
+/**
+ * -----------------------------
+ * Types
+ * -----------------------------
+ */
 type GitHubEmail = { email: string; primary?: boolean; verified?: boolean; visibility?: string | null };
 type GitHubTeam = {
-  id: number;
   name: string;
   slug: string;
-  organization: { login: string; id?: number };
-  permission?: string;     // classic teams
-  privacy?: string;
-  role?: "member" | "maintainer"; // from /user/teams
+  organization: { login: string };
+  role?: "member" | "maintainer";
 };
-type GitHubOrg = { id: number; login: string; description?: string; avatar_url?: string; html_url?: string };
-type GitHubOrgMembership = { organization: GitHubOrg; state: "active" | "pending"; role: "admin" | "member" };
-type GitHubKey = { id: number; key: string; title?: string; created_at?: string; verified?: boolean };
-type GitHubGpgKey = { id: number; key_id?: string; public_key: string; created_at?: string; can_sign?: boolean };
-type GitHubInstallation = { id: number; account: { login: string; id: number; type: string } };
-type GitHubRepo = { id: number; name: string; full_name: string; private: boolean; fork: boolean; html_url: string };
+type GitHubOrg = {
+  login: string;
+  id: number;
+  avatar_url?: string;
+  url?: string;
+};
+type GitHubOrgMembership = {
+  organization: GitHubOrg;
+  state: "active" | "pending";
+  role: "member" | "admin";
+};
+type GitHubRepo = {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  fork: boolean;
+  html_url: string;
+  language?: string | null;
+  pushed_at?: string | null;
+  updated_at?: string | null;
+  permissions?: Record<string, boolean>;
+};
 type GitHubUser = {
   id: number;
   login: string;
@@ -93,55 +98,132 @@ type GitHubUser = {
   location?: string | null;
   bio?: string | null;
   twitter_username?: string | null;
-  site_admin?: boolean;
-  hireable?: boolean | null;
-  suspended_at?: string | null;
   created_at?: string;
   updated_at?: string;
-  followers?: number;
-  following?: number;
-  public_repos?: number;
-  public_gists?: number;
-  total_private_repos?: number;
-  owned_private_repos?: number;
-  plan?: { name: string; space: number; collaborators: number; private_repos: number };
 };
 
-// generic GitHub GET that returns data + headers
-async function ghGet<T>(path: string, token: string, signal: AbortSignal): Promise<{ data: T; headers: Headers }> {
-  const url = `${env.GITHUB_API_BASE}${path}`;
+type HeaderBag = { get(name: string): string | undefined };
+
+/**
+ * -----------------------------
+ * HTTP client setup
+ * -----------------------------
+ */
+setGlobalDispatcher(
+  new Agent({
+    keepAliveTimeout: 10_000,
+    keepAliveMaxTimeout: 10_000
+  })
+);
+
+function toHeaderBag(h: IncomingHttpHeaders): HeaderBag {
+  return {
+    get(name: string) {
+      const val = h[name.toLowerCase()];
+      if (Array.isArray(val)) return val[0];
+      if (typeof val === "number") return String(val);
+      return val ?? undefined;
+    }
+  };
+}
+
+/**
+ * Low-level GitHub GET
+ */
+async function ghGet<T>(
+  pathOrAbsoluteUrl: string,
+  token: string,
+  signal: AbortSignal
+): Promise<{ data: T; headers: HeaderBag }> {
+  const url =
+    pathOrAbsoluteUrl.startsWith("http://") || pathOrAbsoluteUrl.startsWith("https://")
+      ? pathOrAbsoluteUrl
+      : `${env.GITHUB_API_BASE}${pathOrAbsoluteUrl}`;
+
   const { statusCode, body, headers } = await undiciRequest(url, {
     method: "GET",
     headers: {
-      "User-Agent": "directus-github-profile-proxy/1.1",
+      "User-Agent": "directus-github-profile-proxy/1.2",
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2022-11-28"
     },
     signal
   });
+
   const text = await body.text();
+
   if (statusCode >= 400) {
-    const err = new Error(`GitHub API ${path} failed: ${statusCode} ${text}`);
-    (err as any).status = 502;
+    const err = new Error(`GitHub API GET ${url} failed: ${statusCode} ${text}`);
+    (err as any).status = statusCode === 401 || statusCode === 403 ? 401 : 502;
     throw err;
   }
+
+  const hb = toHeaderBag(headers);
+
   try {
-    return { data: JSON.parse(text) as T, headers };
+    return { data: JSON.parse(text) as T, headers: hb };
   } catch {
-    const err = new Error(`GitHub API ${path} returned non-JSON`);
+    const err = new Error(`GitHub API ${url} returned non-JSON`);
     (err as any).status = 502;
     throw err;
   }
 }
 
+/**
+ * Parse Link header for pagination “next”
+ */
+function parseNextLink(linkHeader?: string): string | undefined {
+  if (!linkHeader) return undefined;
+  // format: <https://...&page=2>; rel="next", <...>; rel="last"
+  const parts = linkHeader.split(",").map((s) => s.trim());
+  for (const p of parts) {
+    const m = p.match(/^<([^>]+)>\s*;\s*rel="([^"]+)"$/);
+    if (m && m[2] === "next") return m[1];
+  }
+  return undefined;
+}
+
+/**
+ * Fetch all pages (up to MAX_PAGES) for a path.
+ * Automatically injects per_page if not present.
+ */
+async function ghGetAll<T>(
+  path: string,
+  token: string,
+  signal: AbortSignal,
+  perPage = PER_PAGE,
+  maxPages = MAX_PAGES
+): Promise<{ items: T[]; lastHeaders?: HeaderBag }> {
+  const results: T[] = [];
+  let url = path.includes("per_page=") ? path : `${path}${path.includes("?") ? "&" : "?"}per_page=${perPage}`;
+  let lastHeaders: HeaderBag | undefined;
+  for (let i = 0; i < maxPages; i++) {
+    const { data, headers } = await ghGet<T[]>(url, token, signal);
+    results.push(...(Array.isArray(data) ? data : []));
+    lastHeaders = headers;
+    const next = parseNextLink(headers.get("link"));
+    if (!next) break;
+    url = next;
+  }
+  return { items: results, lastHeaders };
+}
+
+/**
+ * Group formatting
+ */
 function formatGroup(opts: { org: string; team: string; role?: string }): string {
   let base: string;
   switch (env.GROUP_FORMAT) {
-    case "team": base = opts.team; break;
-    case "org/team": base = `${opts.org}/${opts.team}`; break;
+    case "team":
+      base = opts.team;
+      break;
+    case "org/team":
+      base = `${opts.org}/${opts.team}`;
+      break;
     case "org:team":
-    default: base = `${opts.org}:${opts.team}`;
+    default:
+      base = `${opts.org}:${opts.team}`;
   }
   if (env.GROUP_PREFIX) base = `${env.GROUP_PREFIX}${base}`;
   if (INCLUDE_ROLE_SUFFIX && opts.role) base = `${base}:${opts.role}`;
@@ -170,65 +252,50 @@ function enforceApiKey(req: Request): void {
   }
 }
 
-/** -----------------------------
- * Data aggregation
- * ----------------------------*/
+/**
+ * Compose the “as-much-as-possible” profile bundle
+ */
 async function fetchProfileBundle(token: string) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), Number(env.TIMEOUT_MS));
+
   try {
-    // Base user + header-derived metadata
-    const { data: user, headers: userHdrs } = await ghGet<GitHubUser>("/user", token, ac.signal);
+    // Base user
+    const { data: user, headers: userH } = await ghGet<GitHubUser>("/user", token, ac.signal);
 
-    const scopes = (userHdrs.get("x-oauth-scopes") || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    const rate = {
-      limit: Number(userHdrs.get("x-ratelimit-limit") || 0),
-      remaining: Number(userHdrs.get("x-ratelimit-remaining") || 0),
-      reset: Number(userHdrs.get("x-ratelimit-reset") || 0)
-    };
-
-    // Parallel optional fetches
-    const [
-      emailsRes,
-      teamsRes,
-      orgsRes,
-      orgMshipsRes,
-      sshRes,
-      gpgRes,
-      installsRes,
-      reposRes
-    ] = await Promise.all([
-      INC.EMAILS ? ghGet<GitHubEmail[]>("/user/emails", token, ac.signal).catch(() => ({ data: [] as GitHubEmail[], headers: new Headers() })) : Promise.resolve({ data: [] as GitHubEmail[], headers: new Headers() }),
-      INC.TEAMS ? ghGet<GitHubTeam[]>("/user/teams", token, ac.signal).catch(() => ({ data: [] as GitHubTeam[], headers: new Headers() })) : Promise.resolve({ data: [] as GitHubTeam[], headers: new Headers() }),
-      INC.ORGS ? ghGet<GitHubOrg[]>("/user/orgs", token, ac.signal).catch(() => ({ data: [] as GitHubOrg[], headers: new Headers() })) : Promise.resolve({ data: [] as GitHubOrg[], headers: new Headers() }),
-      INC.ORG_MEMBERSHIPS ? ghGet<GitHubOrgMembership[]>("/user/memberships/orgs", token, ac.signal).catch(() => ({ data: [] as GitHubOrgMembership[], headers: new Headers() })) : Promise.resolve({ data: [] as GitHubOrgMembership[], headers: new Headers() }),
-      INC.SSH_KEYS ? ghGet<GitHubKey[]>("/user/keys", token, ac.signal).catch(() => ({ data: [] as GitHubKey[], headers: new Headers() })) : Promise.resolve({ data: [] as GitHubKey[], headers: new Headers() }),
-      INC.GPG_KEYS ? ghGet<GitHubGpgKey[]>("/user/gpg_keys", token, ac.signal).catch(() => ({ data: [] as GitHubGpgKey[], headers: new Headers() })) : Promise.resolve({ data: [] as GitHubGpgKey[], headers: new Headers() }),
-      INC.INSTALLATIONS ? ghGet<{ total_count: number; installations: GitHubInstallation[] }>("/user/installations", token, ac.signal).catch(() => ({ data: { total_count: 0, installations: [] }, headers: new Headers() })) : Promise.resolve({ data: { total_count: 0, installations: [] }, headers: new Headers() }),
-      INC.REPOS ? ghGet<GitHubRepo[]>("/user/repos?per_page=100&sort=updated", token, ac.signal).catch(() => ({ data: [] as GitHubRepo[], headers: new Headers() })) : Promise.resolve({ data: [] as GitHubRepo[], headers: new Headers() })
-    ]);
-
-    const emails = emailsRes.data || [];
-    const teams = teamsRes.data || [];
-    const orgs = orgsRes.data || [];
-    const orgMemberships = orgMshipsRes.data || [];
-    const sshKeys = sshRes.data || [];
-    const gpgKeys = gpgRes.data || [];
-    const installations = installsRes.data || { total_count: 0, installations: [] };
-    const repos = reposRes.data || [];
-
-    // Email resolution (prefer primary+verified)
-    let resolvedEmail = user.email ?? null;
-    if (!resolvedEmail && emails.length) {
-      const primary = emails.find((e) => e.primary && e.verified) || emails.find((e) => e.verified);
-      resolvedEmail = primary?.email ?? null;
+    // Emails
+    let emails: GitHubEmail[] = [];
+    try {
+      const { data } = await ghGet<GitHubEmail[]>("/user/emails", token, ac.signal);
+      emails = data || [];
+    } catch {
+      emails = [];
     }
 
-    // Groups from teams (respect allowlist & formatting)
+    // Resolve primary email
+    let email = user.email ?? null;
+    if (!email && emails.length) {
+      const primary = emails.find((e) => e.primary && e.verified) || emails.find((e) => e.verified) || emails[0];
+      email = primary?.email ?? null;
+    }
+
+    // Teams (all pages)
+    const { items: teams } = await ghGetAll<GitHubTeam>("/user/teams", token, ac.signal);
+
+    // Orgs (all pages)
+    const { items: orgs } = await ghGetAll<GitHubOrg>("/user/orgs", token, ac.signal);
+
+    // Org memberships (state/role per org)
+    const { items: orgMemberships } = await ghGetAll<GitHubOrgMembership>("/user/memberships/orgs", token, ac.signal);
+
+    // Repos (first N pages, sorted by updated)
+    const { items: repos, lastHeaders: reposH } = await ghGetAll<GitHubRepo>(
+      "/user/repos?sort=updated&direction=desc",
+      token,
+      ac.signal
+    );
+
+    // Build “groups” for Directus mapping
     const groups: string[] = [];
     for (const t of teams) {
       const org = t?.organization?.login;
@@ -236,88 +303,97 @@ async function fetchProfileBundle(token: string) {
       if (!org || !team) continue;
       if (ALLOWED_ORGS.size && !ALLOWED_ORGS.has(org)) continue;
       groups.push(formatGroup({ org, team, role: t.role }));
-      if (INCLUDE_ORG_AS_GROUP) groups.push(env.GROUP_PREFIX ? `${env.GROUP_PREFIX}${org}` : org);
+      if (INCLUDE_ORG_AS_GROUP) {
+        groups.push(env.GROUP_PREFIX ? `${env.GROUP_PREFIX}${org}` : org);
+      }
     }
 
-    // Build rich response (keep top-level fields friendly to Directus)
+    // Rate limit info (best effort; prefer last repos call if present)
+    const rateHeaders = reposH ?? userH;
+    const rate_limit = {
+      limit: Number(rateHeaders?.get("x-ratelimit-limit") || 0),
+      remaining: Number(rateHeaders?.get("x-ratelimit-remaining") || 0),
+      used: Number(rateHeaders?.get("x-ratelimit-used") || 0),
+      reset: Number(rateHeaders?.get("x-ratelimit-reset") || 0)
+    };
+
+    // Scopes on the token (useful for debugging)
+    const oauth_scopes = (userH.get("x-oauth-scopes") || "").split(",").map((s) => s.trim()).filter(Boolean);
+
+    // Trim repos to a lean shape to keep payload reasonable
+    const repos_min = repos.map((r) => ({
+      id: r.id,
+      name: r.name,
+      full_name: r.full_name,
+      private: r.private,
+      fork: r.fork,
+      html_url: r.html_url,
+      language: r.language ?? null,
+      pushed_at: r.pushed_at ?? null,
+      updated_at: r.updated_at ?? null,
+      permissions: r.permissions ?? undefined
+    }));
+
+    // Final payload
     return {
-      // Minimal identity (unchanged)
+      // core identity for Directus
       id: user.id,
       login: user.login,
       name: user.name ?? null,
-      email: resolvedEmail,
+      email,
+
+      // directus group claim
       groups,
 
-      // Handy identity links
+      // extras (helpful for your dashboards / debugging)
       avatar_url: user.avatar_url,
       html_url: user.html_url,
+      company: user.company ?? null,
+      blog: user.blog ?? null,
+      location: user.location ?? null,
+      bio: user.bio ?? null,
+      twitter_username: user.twitter_username ?? null,
+      created_at: user.created_at ?? null,
+      updated_at: user.updated_at ?? null,
 
-      // Profile details
-      profile: {
-        company: user.company ?? null,
-        blog: user.blog ?? null,
-        location: user.location ?? null,
-        bio: user.bio ?? null,
-        twitter_username: user.twitter_username ?? null,
-        site_admin: !!user.site_admin,
-        hireable: user.hireable ?? null,
-        suspended_at: user.suspended_at ?? null,
-        created_at: user.created_at ?? null,
-        updated_at: user.updated_at ?? null
-      },
-
-      // Counts & plan
-      stats: {
-        followers: user.followers ?? 0,
-        following: user.following ?? 0,
-        public_repos: user.public_repos ?? 0,
-        public_gists: user.public_gists ?? 0,
-        total_private_repos: user.total_private_repos ?? undefined,
-        owned_private_repos: user.owned_private_repos ?? undefined
-      },
-      plan: user.plan ?? null,
-
-      // Collections (conditioned by env toggles)
-      emails, // may be []
-      orgs,   // may be []
-      org_memberships: orgMemberships, // may be []
-      teams: teams.map(t => ({
-        id: t.id,
+      emails,            // raw email array (when available)
+      orgs,              // organizations the user belongs to
+      org_memberships: orgMemberships.map((m) => ({
+        organization: m.organization?.login,
+        org_id: m.organization?.id,
+        state: m.state,
+        role: m.role
+      })),
+      teams: teams.map((t) => ({
         org: t.organization?.login,
         slug: t.slug,
         name: t.name,
-        role: t.role,          // member | maintainer
-        permission: t.permission, // read | write | admin (classic)
-        privacy: t.privacy
+        role: t.role
       })),
-      ssh_keys: sshKeys.map(k => ({ id: k.id, title: k.title, key: k.key, created_at: k.created_at, verified: k.verified })),
-      gpg_keys: gpgKeys.map(k => ({ id: k.id, key_id: k.key_id, public_key: k.public_key, created_at: k.created_at, can_sign: k.can_sign })),
-      installations: {
-        total_count: installations.total_count ?? 0,
-        list: installations.installations ?? []
-      },
-      repos: INC.REPOS
-        ? repos.map(r => ({ id: r.id, name: r.name, full_name: r.full_name, private: r.private, fork: r.fork, html_url: r.html_url }))
-        : undefined,
+      repos: repos_min,  // recent repos (paginated)
 
-      // Token / rate diagnostics
-      oauth: {
-        scopes
-      },
-      rate_limit: rate
+      oauth_scopes,
+      rate_limit
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** -----------------------------
+/**
+ * -----------------------------
  * Express app
- * ----------------------------*/
+ * -----------------------------
+ */
 const app = express();
 app.disable("x-powered-by");
 
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(
+  helmet({
+    contentSecurityPolicy: false
+  })
+);
+
 app.use(express.json({ limit: "64kb" }));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(
@@ -342,7 +418,10 @@ app.get("/github", async (req: Request, res: Response) => {
   } catch (err) {
     const status = (err as any).status || 500;
     res.status(status).json({
-      error: { message: (err as Error).message || "Internal Server Error", status }
+      error: {
+        message: (err as Error).message || "Internal Server Error",
+        status
+      }
     });
   }
 });
