@@ -537,88 +537,71 @@ spec:
 
             echo "🔧 Seeding defaults if missing & resolving role UUIDs…"
 
-            # Make CLI runs deterministic (avoid Redis auth noise)
+            # Make CLI quieter & deterministic for parsing
+            export NO_COLOR=1
+            export LOG_STYLE=raw
+            export LOG_LEVEL=error
             export CACHE_ENABLED=false
             export RATE_LIMITER_ENABLED=false
 
-            # Default team→role names (left = proxy group; right = Directus role name)
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor}"
 
-            # Helper: get role id by name via CLI JSON
-            get_role_id_by_name() {
-              ROLE_NAME="$1"
-              node -e '
-                const { execSync } = require("child_process");
-                try {
-                  const arr = JSON.parse(execSync("node cli.js roles list --json", {stdio:["ignore","pipe","pipe"]}).toString());
-                  const m = Array.isArray(arr) ? arr.find(r => r && r.name === process.env.ROLE_NAME) : null;
-                  if (m && m.id) process.stdout.write(m.id);
-                } catch {}
-              ' ROLE_NAME="$ROLE_NAME"
+            # Parse the first UUID-looking token from a file
+            _extract_uuid_from_file() {
+              # greedy-safe: match canonical 8-4-4-4-12 hex UUID
+              grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "$1" | head -n1
             }
 
-            # Helper: create role if missing; capture ID from stdout (the CLI echos the UUID)
-            get_or_create_role() {
-              ROLE_NAME="$1"; shift
-              # 1) already exists?
-              RID="$(get_role_id_by_name "$ROLE_NAME")"
-              if [ -n "$RID" ]; then
-                echo "  ℹ️  Role '$ROLE_NAME' exists: $RID" >&2
-                printf "%s" "$RID"
-                return 0
-              fi
-
-              # 2) create and regex the UUID from stdout
-              OUT="$(node cli.js roles create --role "$ROLE_NAME" "$@" 2>&1 || true)"
-              echo "$OUT" >&2
-              RID="$(node -e 'const s=process.env.OUT||""; const m=s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i); if(m) process.stdout.write(m[0]);' OUT="$OUT")"
-
-              # 3) fallback: read it again from roles list
-              if [ -z "$RID" ]; then
-                RID="$(get_role_id_by_name "$ROLE_NAME")"
-              fi
-
-              if [ -z "$RID" ]; then
-                echo "  ❌ Failed to create/find role '$ROLE_NAME'" >&2
-              else
-                echo "  ✅ Role '$ROLE_NAME' id: $RID" >&2
-              fi
-              printf "%s" "$RID"
+            # Create role and capture UUID from *its own* output stream
+            _create_role_and_get_id() {
+              local role_name="$1"; shift
+              local tmp="$(mktemp)"
+              # run create; don’t fail the script if it errors (already exists etc.)
+              node cli.js roles create --role "$role_name" "$@" >"$tmp" 2>&1 || true
+              local id="$(_extract_uuid_from_file "$tmp")"
+              rm -f "$tmp"
+              printf "%s" "$id"
             }
 
-            # Ensure the two roles exist (and grab ids)
-            ADMIN_ROLE_ID="$(get_or_create_role "Administrator" --admin --app)"
-            EDITOR_ROLE_ID="$(get_or_create_role "Editor" --app)"
+            # Try to create (or re-create) roles and grab their IDs
+            ADMIN_ROLE_ID="$(_create_role_and_get_id "Administrator" --admin --app)"
+            EDITOR_ROLE_ID="$(_create_role_and_get_id "Editor" --app)"
 
-            # Build a name→id map in env for the mapper
-            ROLE_IDS_JSON="$(node -e '
-              const out = {};
-              if (process.env.ADMIN_ROLE_ID) out["Administrator"] = process.env.ADMIN_ROLE_ID;
-              if (process.env.EDITOR_ROLE_ID) out["Editor"] = process.env.EDITOR_ROLE_ID;
-              process.stdout.write(JSON.stringify(out));
-            ' ADMIN_ROLE_ID="$ADMIN_ROLE_ID" EDITOR_ROLE_ID="$EDITOR_ROLE_ID")"
+            # If either ID is empty, try a second pass (sometimes logs interleave on first boot)
+            if [ -z "$ADMIN_ROLE_ID" ]; then
+              sleep 1
+              ADMIN_ROLE_ID="$(_create_role_and_get_id "Administrator" --admin --app)"
+            fi
+            if [ -z "$EDITOR_ROLE_ID" ]; then
+              sleep 1
+              EDITOR_ROLE_ID="$(_create_role_and_get_id "Editor" --app)"
+            fi
 
-            # Build AUTH_GITHUB_ROLE_MAPPING from TEAM_ROLE_MAP and ROLE_IDS_JSON
+            echo "  ↪ Administrator ID: ${ADMIN_ROLE_ID:-<none>}"
+            echo "  ↪ Editor ID:        ${EDITOR_ROLE_ID:-<none>}"
+
+            # Build the AUTH_GITHUB_ROLE_MAPPING from TEAM_ROLE_MAP and the IDs we captured
             ROLE_MAPPING_JSON="$(
               node -e '
-                const pairsStr = process.env.TEAM_ROLE_MAP || "";
-                const nameToId = JSON.parse(process.env.ROLE_IDS_JSON || "{}");
+                const pairs = (process.env.TEAM_ROLE_MAP || "").split(",").map(s=>s.trim()).filter(Boolean);
+                const admin = process.env.ADMIN_ROLE_ID || "";
+                const editor = process.env.EDITOR_ROLE_ID || "";
+                const nameToId = { "Administrator": admin, "Editor": editor };
                 const out = {};
-                for (const token of pairsStr.split(",")) {
-                  const s = token.trim(); if (!s) continue;
-                  const i = s.indexOf("="); if (i < 0) continue;
-                  const group = s.slice(0,i).trim();
-                  const roleName = s.slice(i+1).trim();
-                  const id = nameToId[roleName];
+                for (const kv of pairs) {
+                  const i = kv.indexOf("="); if (i < 0) continue;
+                  const group = kv.slice(0,i).trim();
+                  const roleName = kv.slice(i+1).trim();
+                  const id = nameToId[roleName] || "";
                   if (id) {
                     out[group] = id;
                     console.error(`  ↪ mapped ${group} -> ${roleName} -> ${id}`);
                   } else {
-                    console.error(`  ⚠ role not found by name: ${roleName}`);
+                    console.error(`  ⚠ role id not available for name: ${roleName}`);
                   }
                 }
                 process.stdout.write("json:" + JSON.stringify(out));
-              ' TEAM_ROLE_MAP="$TEAM_ROLE_MAP" ROLE_IDS_JSON="$ROLE_IDS_JSON"
+              ' ADMIN_ROLE_ID="$ADMIN_ROLE_ID" EDITOR_ROLE_ID="$EDITOR_ROLE_ID" TEAM_ROLE_MAP="$TEAM_ROLE_MAP"
             )"
 
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $ROLE_MAPPING_JSON"
