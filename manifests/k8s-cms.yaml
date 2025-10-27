@@ -547,9 +547,11 @@ spec:
         args:
           - |
             set -eu
+
+            # tools
             apk add --no-cache curl jq >/dev/null
 
-            # 1) Wait for Directus to be healthy
+            # --- wait for Directus to be healthy (same pod: localhost) ---
             echo "⏳ Waiting for Directus /server/health..."
             until curl -sf http://127.0.0.1:8055/server/health >/dev/null; do
               echo "  .. not ready yet"
@@ -557,68 +559,56 @@ spec:
             done
             echo "✅ Directus is healthy"
 
-            # 2) Fetch DB creds from Vault
+            # --- fetch DB creds from Vault ---
             VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
             VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
             CREDS="$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
               "${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app")"
             DB_USER="$(echo "$CREDS" | jq -r '.data.username')"
             DB_PASS="$(echo "$CREDS" | jq -r '.data.password')"
-            if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ] || [ "$DB_USER" = "null" ] || [ "$DB_PASS" = "null" ]; then
+
+            if [ -z "${DB_USER:-}" ] || [ -z "${DB_PASS:-}" ] || [ "$DB_USER" = "null" ] || [ "$DB_PASS" = "null" ]; then
               echo "❌ Failed to fetch DB creds from Vault"; exit 1
             fi
+
             export PGPASSWORD="$DB_PASS"
 
-            # 3) If already patched, skip
-            echo "🔎 Checking patch sentinel…"
-            PATCH_KEY="github_profile_cols_v1"
-            EXISTS=$(
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -tAc \
-              "SELECT 1
-               FROM information_schema.tables
-               WHERE table_schema = 'directus' AND table_name = 'schema_patch_log';"
-            )
-            if [ "$EXISTS" != "1" ]; then
-              echo "🧱 Creating sentinel table…"
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 <<'SQL'
-              SET search_path TO directus, public;
-              CREATE TABLE IF NOT EXISTS schema_patch_log (
-                patch_key TEXT PRIMARY KEY,
-                applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-              );
-              SQL
-            fi
+            # 1) Ensure schema_patch_log exists (no heredocs)
+            echo "🔎 Ensuring sentinel table…"
+            printf '%s\n' \
+              'SET search_path TO directus, public;' \
+              'CREATE TABLE IF NOT EXISTS schema_patch_log (' \
+              '  patch_key TEXT PRIMARY KEY,' \
+              '  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()' \
+              ');' \
+            | psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 >/dev/null
 
-            ALREADY=$(
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -tAc \
-              "SET search_path TO directus, public;
-               SELECT 1 FROM schema_patch_log WHERE patch_key = '${PATCH_KEY}';"
-            )
+            # 2) Check sentinel; skip if already applied
+            PATCH_KEY="github_profile_cols_v1"
+            ALREADY="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SET search_path TO directus, public; SELECT 1 FROM schema_patch_log WHERE patch_key='${PATCH_KEY}';" || true)"
+
             if [ "$ALREADY" = "1" ]; then
               echo "✅ Patch already applied, going idle."
               exec tail -f /dev/null
             fi
 
-            # 4) Apply columns idempotently
+            # 3) Apply idempotent ALTERs
             echo "🔧 Applying user profile columns…"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 <<'SQL'
-            SET search_path TO directus, public;
+            printf '%s\n' \
+              'SET search_path TO directus, public;' \
+              'ALTER TABLE directus_users' \
+              '  ADD COLUMN IF NOT EXISTS github_login    TEXT,' \
+              '  ADD COLUMN IF NOT EXISTS github_url      TEXT,' \
+              '  ADD COLUMN IF NOT EXISTS github_company  TEXT,' \
+              '  ADD COLUMN IF NOT EXISTS github_bio      TEXT,' \
+              '  ADD COLUMN IF NOT EXISTS github_metadata JSONB;' \
+            | psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1
 
-            ALTER TABLE directus_users
-              ADD COLUMN IF NOT EXISTS github_login    TEXT,
-              ADD COLUMN IF NOT EXISTS github_url      TEXT,
-              ADD COLUMN IF NOT EXISTS github_company  TEXT,
-              ADD COLUMN IF NOT EXISTS github_bio      TEXT,
-              ADD COLUMN IF NOT EXISTS github_metadata JSONB;
-            SQL
-
-            # 5) Record sentinel
+            # 4) Record sentinel
             echo "📝 Recording sentinel…"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 <<SQL
-            SET search_path TO directus, public;
-            INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}')
-            ON CONFLICT (patch_key) DO NOTHING;
-            SQL
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
 
             echo "✅ Schema patch applied. Going idle."
             exec tail -f /dev/null
