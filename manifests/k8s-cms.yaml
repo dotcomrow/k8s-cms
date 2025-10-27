@@ -341,13 +341,6 @@ data:
       destination = "/vault-secrets/redis-creds.env"
       perms       = 0644
     }
-
-    # --- GitHub OAuth Client from Vault ---
-    template {
-      source      = "/vault-templates/github-oauth.tpl"
-      destination = "/vault-secrets/github-oauth.env"
-      perms       = 0644
-    }
   
   db-creds.tpl: |
     {{ with secret "yugabyte-db/static-creds/directus-app" -}}
@@ -431,8 +424,6 @@ spec:
                 path: admin-creds.tpl
               - key: redis-creds.tpl
                 path: redis-creds.tpl
-              - key: github-oauth.tpl
-                path: github-oauth.tpl
       initContainers:
         - name: wait-for-config-job
           image: alpine/k8s:1.31.4
