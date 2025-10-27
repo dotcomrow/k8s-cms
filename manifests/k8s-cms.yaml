@@ -555,7 +555,7 @@ spec:
               echo "⚠️  No roles found; running bootstrap to seed defaults…"
               # Pass credentials via flags to be explicit
               if ADMIN_EMAIL="${ADMIN_EMAIL}" ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-                node cli.js bootstrap --email "${ADMIN_EMAIL}" --password "${ADMIN_PASSWORD}"; then
+                node cli.js bootstrap ; then
                 echo "✅ Bootstrap succeeded."
               else
                 echo "❌ Bootstrap failed. Check ADMIN_EMAIL / ADMIN_PASSWORD and DB connectivity."
