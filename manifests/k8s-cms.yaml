@@ -567,45 +567,44 @@ spec:
             ADMIN_ROLE_ID="$(_create_role_and_get_id "Administrator" --admin --app)"
             EDITOR_ROLE_ID="$(_create_role_and_get_id "Editor" --app)"
 
-            # If either ID is empty, try a second pass (sometimes logs interleave on first boot)
-            if [ -z "$ADMIN_ROLE_ID" ]; then
-              sleep 1
-              ADMIN_ROLE_ID="$(_create_role_and_get_id "Administrator" --admin --app)"
-            fi
-            if [ -z "$EDITOR_ROLE_ID" ]; then
-              sleep 1
-              EDITOR_ROLE_ID="$(_create_role_and_get_id "Editor" --app)"
-            fi
+            # IDs printed above; make sure they are in the environment for everything that follows
+            export ADMIN_ROLE_ID
+            export EDITOR_ROLE_ID
 
-            echo "  ↪ Administrator ID: ${ADMIN_ROLE_ID:-<none>}"
-            echo "  ↪ Editor ID:        ${EDITOR_ROLE_ID:-<none>}"
+            # Build AUTH_GITHUB_ROLE_MAPPING purely in sh from TEAM_ROLE_MAP and the two IDs
+            TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor}"
 
-            # Build the AUTH_GITHUB_ROLE_MAPPING from TEAM_ROLE_MAP and the IDs we captured
-            ROLE_MAPPING_JSON="$(
-              node -e '
-                const pairs = (process.env.TEAM_ROLE_MAP || "").split(",").map(s=>s.trim()).filter(Boolean);
-                const admin = process.env.ADMIN_ROLE_ID || "";
-                const editor = process.env.EDITOR_ROLE_ID || "";
-                const nameToId = { "Administrator": admin, "Editor": editor };
-                const out = {};
-                for (const kv of pairs) {
-                  const i = kv.indexOf("="); if (i < 0) continue;
-                  const group = kv.slice(0,i).trim();
-                  const roleName = kv.slice(i+1).trim();
-                  const id = nameToId[roleName] || "";
-                  if (id) {
-                    out[group] = id;
-                    console.error(`  ↪ mapped ${group} -> ${roleName} -> ${id}`);
-                  } else {
-                    console.error(`  ⚠ role id not available for name: ${roleName}`);
-                  }
-                }
-                process.stdout.write("json:" + JSON.stringify(out));
-              ' ADMIN_ROLE_ID="$ADMIN_ROLE_ID" EDITOR_ROLE_ID="$EDITOR_ROLE_ID" TEAM_ROLE_MAP="$TEAM_ROLE_MAP"
-            )"
+            make_mapping() {
+              pairs="$1"
+              admin_id="$2"
+              editor_id="$3"
+              out='json:{'
+              first=1
+              OLDIFS="$IFS"; IFS=',' 
+              for kv in $pairs; do
+                IFS="$OLDIFS"
+                group="${kv%%=*}"
+                name="${kv#*=}"
+                id=""
+                [ "$name" = "Administrator" ] && id="$admin_id"
+                [ "$name" = "Editor" ] && id="$editor_id"
+                if [ -n "$id" ]; then
+                  [ $first -eq 0 ] && out="$out,"
+                  out="$out\"$group\":\"$id\""
+                  first=0
+                else
+                  echo "  ⚠ no id available for role name: $name" >&2
+                fi
+                IFS=',' 
+              done
+              IFS="$OLDIFS"
+              out="$out}"
+              printf "%s" "$out"
+            }
 
-            echo "✅ AUTH_GITHUB_ROLE_MAPPING = $ROLE_MAPPING_JSON"
-            export AUTH_GITHUB_ROLE_MAPPING="$ROLE_MAPPING_JSON"
+            AUTH_GITHUB_ROLE_MAPPING="$(make_mapping "$TEAM_ROLE_MAP" "$ADMIN_ROLE_ID" "$EDITOR_ROLE_ID")"
+            export AUTH_GITHUB_ROLE_MAPPING
+            echo "✅ AUTH_GITHUB_ROLE_MAPPING = $AUTH_GITHUB_ROLE_MAPPING"
 
             echo "🚀 Starting Directus server..."
             # Create a startup script that sources all environment variables
