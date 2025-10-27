@@ -531,56 +531,81 @@ spec:
             # Ensure proper schema connection
             export DB_SEARCH_PATH="directus"
 
-            # Ensure psql exists (works on both Alpine & Debian/Ubuntu images)
-            if ! command -v psql >/dev/null 2>&1; then
-              if command -v apk >/dev/null 2>&1; then
-                echo "📦 Installing psql (Alpine)…"
-                apk add --no-cache postgresql15-client
-              elif command -v apt-get >/dev/null 2>&1; then
-                echo "📦 Installing psql (Debian/Ubuntu)…"
-                apt-get update -y
-                apt-get install -y --no-install-recommends postgresql-client
-                rm -rf /var/lib/apt/lists/*
-              else
-                echo "❌ Could not install psql (no apk/apt-get)."
-                exit 1
-              fi
-            fi
+            echo "🔧 Resolving Directus role UUIDs from TEAM_ROLE_MAP…"
+            TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
 
             echo "🔧 Resolving Directus role UUIDs from TEAM_ROLE_MAP…"
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:admins=Administrator,github:dotcomrow:editors=Editor}"
 
-            # Build JSON mapping: {"group":"role-uuid",...} with the required "json:" prefix
-            build_mapping() {
-              local pairs="$1"
-              local out="" first=1
-              IFS=',' read -r -a arr <<< "$pairs"
-              for kv in "${arr[@]}"; do
-                kv="$(echo "$kv" | xargs)"        # trim
-                [ -z "$kv" ] && continue
-                key="${kv%%=*}"
-                role="${kv#*=}"
-                if [ -z "$key" ] || [ -z "$role" ]; then
-                  echo "⚠️  Skipping invalid mapping entry: '$kv'" >&2
-                  continue
-                fi
-                # Query role UUID by name
-                id="$(PGPASSWORD="$DB_PASSWORD" psql \
-                    -h "$DB_HOST" -p "${DB_PORT:-5432}" \
-                    -U "$DB_USER" -d "${DB_DATABASE:-directus}" \
-                    -Atc "SELECT id FROM directus_roles WHERE name = \$\$${role}\$\$ LIMIT 1;" 2>/dev/null || true)"
-                if [ -n "$id" ]; then
-                  [ $first -eq 1 ] && out="\"$key\":\"$id\"" || out="$out,\"$key\":\"$id\""
-                  first=0
-                  echo "  ↪ mapped ${key} -> ${role} -> ${id}"
-                else
-                  echo "  ⚠ role not found: ${role}" >&2
-                fi
-              done
-              echo "json:{${out}}"
+            # Grab roles using the Directus CLI (no DB clients needed)
+            # We expect a box-drawn table; we parse lines containing '│' and extract id + name columns
+            ROLE_LINES="$(node cli.js roles list 2>/dev/null || true)"
+
+            if [ -z "$ROLE_LINES" ]; then
+              echo "❌ Unable to list roles via Directus CLI. Aborting."
+              exit 1
+            fi
+
+            # Parse the table into "id|name" per line using awk only
+            parse_roles() {
+              printf "%s" "$ROLE_LINES" | awk -F '│' '
+                function trim(s){ gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", s); return s }
+                /│/ {
+                  id = trim($2); name = trim($3);
+                  # accept UUID-ish ids only
+                  if (id ~ /^[0-9a-fA-F-]{36}$/ && name != "" && name != "name") {
+                    print id "|" name
+                  }
+                }'
             }
 
-            ROLE_MAPPING_JSON="$(build_mapping "$TEAM_ROLE_MAP")"
+            ROLE_MAP_FILE="/tmp/roles_parsed.txt"
+            parse_roles > "$ROLE_MAP_FILE"
+
+            if [ ! -s "$ROLE_MAP_FILE" ]; then
+              echo "❌ Failed to parse roles from CLI output:"
+              echo "$ROLE_LINES"
+              exit 1
+            fi
+
+            echo "📋 Available roles:"
+            cat "$ROLE_MAP_FILE" | sed 's/^/  • /'
+
+            # Build JSON mapping {"group":"role-uuid",...} with "json:" prefix
+            build_json_mapping() {
+              local pairs="$1"
+              local json="{" first=1
+              IFS=',' read -r -a arr <<< "$pairs"
+              for kv in "${arr[@]}"; do
+                kv="$(echo "$kv" | xargs)"
+                [ -z "$kv" ] && continue
+                group="${kv%%=*}"
+                rname="${kv#*=}"
+                [ -z "$group" ] || [ -z "$rname" ] && { echo "  ⚠️  skip invalid entry: $kv" >&2; continue; }
+
+                # lookup role id by name (exact match, case-sensitive)
+                rid="$(awk -F '|' -v want="$rname" '
+                  function trim(s){ gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", s); return s }
+                  { id=trim($1); name=trim($2); if (name==want) { print id; exit } }' "$ROLE_MAP_FILE")"
+
+                if [ -n "$rid" ]; then
+                  if [ $first -eq 1 ]; then
+                    json="${json}\"${group}\":\"${rid}\""
+                    first=0
+                  else
+                    json="${json},\"${group}\":\"${rid}\""
+                  fi
+                  echo "  ↪ mapped ${group} -> ${rname} -> ${rid}"
+                else
+                  echo "  ⚠ role not found: ${rname}" >&2
+                fi
+              done
+              json="${json}}"
+              printf "json:%s" "$json"
+            }
+
+            ROLE_MAPPING_JSON="$(build_json_mapping "$TEAM_ROLE_MAP")"
+
             if [ -z "$ROLE_MAPPING_JSON" ]; then
               echo "❌ Failed to build AUTH_GITHUB_ROLE_MAPPING"; exit 1
             fi
