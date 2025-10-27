@@ -288,6 +288,7 @@ data:
   AUTH_GITHUB_SCOPE: "read:user user:email read:org"
   AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION: "true"
   AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
+  AUTH_GITHUB_PROFILE_FORMAT: "json"
   AUTH_GITHUB_PROFILE_TRANSFORM: >
     json:{
         "email":"{{ email }}",
@@ -859,6 +860,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_SECRET } }
         - name: AUTH_GITHUB_PROFILE_TRANSFORM
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_TRANSFORM } }
+        - name: AUTH_GITHUB_PROFILE_FORMAT
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_FORMAT } }
 
         resources:
           requests: { memory: "512Mi", cpu: "250m" }
