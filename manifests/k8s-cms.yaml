@@ -405,6 +405,9 @@ spec:
     spec:
       serviceAccountName: directus
       volumes:
+        - name: root-token
+          secret:
+            secretName: vault-root-token
         - name: uploads
           persistentVolumeClaim:
             claimName: directus-uploads
