@@ -697,6 +697,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION } }
         - name: AUTH_GITHUB_GROUP_CLAIM_NAME
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_GROUP_CLAIM_NAME } }
+        - name: AUTH_GITHUB_GROUPS_CLAIM
+          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_GROUP_CLAIM_NAME } }
         - name: AUTH_GITHUB_CLIENT_ID
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_ID } }
         - name: AUTH_GITHUB_CLIENT_SECRET
