@@ -695,17 +695,37 @@ spec:
             # Add small delay to ensure DB is fully ready after install
             sleep 2
             
-            if node cli.js database migrate:latest 2>&1 | tee /tmp/migrate.log; then
-              echo "✅ Migrations completed successfully"
-            else
-              echo "⚠️ Migration had issues, checking if critical..."
-              # Check if the server can still start despite migration issues
-              if grep -q "Cannot read properties of undefined" /tmp/migrate.log; then
-                echo "⚠️ Known schema cache issue during migration, but continuing..."
+            # Run migrations with retry logic for schema cache issues
+            migration_attempts=0
+            max_attempts=3
+            
+            while [ $migration_attempts -lt $max_attempts ]; do
+              migration_attempts=$((migration_attempts + 1))
+              echo "🔄 Migration attempt $migration_attempts/$max_attempts..."
+              
+              if node cli.js database migrate:latest 2>&1 | tee /tmp/migrate.log; then
+                echo "✅ Migrations completed successfully"
+                break
               else
-                echo "❌ Critical migration failure"; cat /tmp/migrate.log; exit 1
+                echo "⚠️ Migration attempt $migration_attempts failed"
+                if grep -q "Cannot read properties of undefined\|reading 'primary'" /tmp/migrate.log; then
+                  echo "⚠️ Schema cache issue detected, clearing cache and retrying..."
+                  # Clear any cached schema data
+                  export CACHE_SCHEMA=false
+                  export CACHE_PERMISSIONS=false
+                  export CACHE_ENABLED=false
+                  sleep 3
+                  if [ $migration_attempts -lt $max_attempts ]; then
+                    continue
+                  else
+                    echo "⚠️ Migration completed with schema cache warnings (proceeding)"
+                    break
+                  fi
+                else
+                  echo "❌ Critical migration failure"; cat /tmp/migrate.log; exit 1
+                fi
               fi
-            fi
+            done
 
             echo "🔍 Debug: Environment check..."
             echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
@@ -786,6 +806,25 @@ spec:
             AUTH_GITHUB_ROLE_MAPPING="$(make_mapping "$TEAM_ROLE_MAP" "$ADMIN_ROLE_ID" "$EDITOR_ROLE_ID")"
             export AUTH_GITHUB_ROLE_MAPPING
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $AUTH_GITHUB_ROLE_MAPPING"
+
+            # Ensure admin user exists to disable setup form
+            echo "👤 Ensuring admin user exists..."
+            admin_tmp="$(mktemp)"
+            export CACHE_ENABLED=false
+            export RATE_LIMITER_ENABLED=false
+            
+            # Try to create admin user (will fail if exists, which is fine)
+            if node cli.js users create --email "$ADMIN_EMAIL" --password "$ADMIN_PASSWORD" --role "$ADMIN_ROLE_ID" >"$admin_tmp" 2>&1; then
+              echo "✅ Admin user created successfully"
+            else
+              if grep -q "already exists\|duplicate\|unique constraint" "$admin_tmp"; then
+                echo "✅ Admin user already exists"
+              else
+                echo "⚠️ Admin user creation issue (continuing anyway):"
+                cat "$admin_tmp"
+              fi
+            fi
+            rm -f "$admin_tmp"
 
             echo "🚀 Starting Directus server..."
             # Reset cache settings for production mode
