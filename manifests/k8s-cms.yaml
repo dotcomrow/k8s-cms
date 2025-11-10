@@ -353,11 +353,7 @@ data:
       perms       = 0644
     }
     
-    template {
-      source      = "/vault-templates/admin-creds.tpl"
-      destination = "/vault-secrets/admin-creds.env"
-      perms       = 0644
-    }
+
     
     template {
       source      = "/vault-templates/redis-creds.tpl"
@@ -377,11 +373,7 @@ data:
     export SECRET="{{ .Data.data.secret }}"
     {{- end }}
   
-  admin-creds.tpl: |
-    {{ with secret "secret/data/directus/admin" -}}
-    export ADMIN_EMAIL="{{ .Data.data.email }}"
-    export ADMIN_PASSWORD="{{ .Data.data.password }}"
-    {{- end }}
+
   
   redis-creds.tpl: |
     {{ with secret "secret/data/redis" -}}
@@ -446,8 +438,6 @@ spec:
                 path: db-creds.tpl
               - key: app-keys.tpl
                 path: app-keys.tpl
-              - key: admin-creds.tpl
-                path: admin-creds.tpl
               - key: redis-creds.tpl
                 path: redis-creds.tpl
       initContainers:
@@ -663,7 +653,6 @@ spec:
             echo "⏳ Waiting for Vault agent to generate all credential files..."
             while [ ! -f /vault-secrets/db-creds.env ] || \
                   [ ! -f /vault-secrets/app-keys.env ] || \
-                  [ ! -f /vault-secrets/admin-creds.env ] || \
                   [ ! -f /vault-secrets/redis-creds.env ]; do
               echo "Waiting for credential files..."
               sleep 2
@@ -676,13 +665,17 @@ spec:
             . /vault-secrets/admin-creds.env  
             . /vault-secrets/redis-creds.env
 
+            # Generate random admin credentials for initial setup (not used for actual login)
+            RANDOM_ADMIN_EMAIL="setup-$(tr -dc 'a-z0-9' < /dev/urandom | head -c 8)@internal.local"
+            RANDOM_ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9@#%^*+=_-' < /dev/urandom | head -c 32)"
+            
             # Export required envs for Directus
-            export DB_USER DB_PASSWORD KEY SECRET ADMIN_EMAIL ADMIN_PASSWORD REDIS_PASSWORD
-            export AUTH_GITHUB_CLIENT_ID AUTH_GITHUB_CLIENT_SECRET
+            export DB_USER DB_PASSWORD KEY SECRET REDIS_PASSWORD
+            export ADMIN_EMAIL="$RANDOM_ADMIN_EMAIL" ADMIN_PASSWORD="$RANDOM_ADMIN_PASSWORD"
 
             echo "🔄 Initializing Directus database..."
             echo "📦 Running database install (idempotent)..."
-            if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false node cli.js database install 2>&1 | tee /tmp/install.log; then
+            if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install 2>&1 | tee /tmp/install.log; then
               echo "✅ Database installation completed successfully"
             else
               if grep -q "Database is already installed" /tmp/install.log; then
@@ -693,7 +686,27 @@ spec:
             fi
 
             echo "🔄 Running database migrations..."
-            CACHE_ENABLED=false RATE_LIMITER_ENABLED=false node cli.js database migrate:latest || echo "⚠️ Migration failed, continuing..."
+            # Clear any cached schema and run migrations with cache disabled
+            export CACHE_ENABLED=false
+            export RATE_LIMITER_ENABLED=false  
+            export CACHE_STORE=memory
+            export CACHE_SCHEMA=false
+            export CACHE_PERMISSIONS=false
+            
+            # Add small delay to ensure DB is fully ready after install
+            sleep 2
+            
+            if node cli.js database migrate:latest 2>&1 | tee /tmp/migrate.log; then
+              echo "✅ Migrations completed successfully"
+            else
+              echo "⚠️ Migration had issues, checking if critical..."
+              # Check if the server can still start despite migration issues
+              if grep -q "Cannot read properties of undefined" /tmp/migrate.log; then
+                echo "⚠️ Known schema cache issue during migration, but continuing..."
+              else
+                echo "❌ Critical migration failure"; cat /tmp/migrate.log; exit 1
+              fi
+            fi
 
             echo "🔍 Debug: Environment check..."
             echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
@@ -776,6 +789,16 @@ spec:
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $AUTH_GITHUB_ROLE_MAPPING"
 
             echo "🚀 Starting Directus server..."
+            # Reset cache settings for production mode
+            unset NO_COLOR LOG_STYLE
+            export LOG_LEVEL=info
+            export CACHE_ENABLED=true
+            export RATE_LIMITER_ENABLED=true
+            
+            # Clear any lingering schema cache issues before starting
+            export CACHE_SCHEMA=false
+            export CACHE_PERMISSIONS=false
+            
             exec node cli.js start
         ports:
         - containerPort: 8055
