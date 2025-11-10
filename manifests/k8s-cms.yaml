@@ -662,7 +662,6 @@ spec:
             echo "🔑 Loading credentials..."
             . /vault-secrets/db-creds.env
             . /vault-secrets/app-keys.env
-            . /vault-secrets/admin-creds.env  
             . /vault-secrets/redis-creds.env
 
             # Generate random admin credentials for initial setup (not used for actual login)
