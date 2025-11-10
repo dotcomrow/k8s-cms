@@ -478,13 +478,30 @@ spec:
               fi
 
               export PGPASSWORD="$DB_PASS"
-              echo "🔧 TRUNCATE directus_roles (CASCADE)…"
+              echo "🔧 Checking and truncating directus tables if they exist…"
               psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 <<'SQL'
               SET search_path TO directus, public;
-              TRUNCATE TABLE directus_roles RESTART IDENTITY CASCADE;
-              TRUNCATE TABLE directus_users RESTART IDENTITY CASCADE;
+              
+              -- Only truncate if tables exist
+              DO $$
+              BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'directus' AND table_name = 'directus_roles') THEN
+                  TRUNCATE TABLE directus_roles RESTART IDENTITY CASCADE;
+                  RAISE NOTICE 'directus_roles truncated';
+                ELSE
+                  RAISE NOTICE 'directus_roles does not exist, skipping';
+                END IF;
+                
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'directus' AND table_name = 'directus_users') THEN
+                  TRUNCATE TABLE directus_users RESTART IDENTITY CASCADE;
+                  RAISE NOTICE 'directus_users truncated';
+                ELSE
+                  RAISE NOTICE 'directus_users does not exist, skipping';
+                END IF;
+              END
+              $$;
               SQL
-              echo "✅ directus_roles emptied."
+              echo "✅ Directus tables checked and cleaned if they existed."
           env:
             - name: DB_HOST
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_HOST } }
