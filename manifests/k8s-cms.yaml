@@ -479,28 +479,23 @@ spec:
 
               export PGPASSWORD="$DB_PASS"
               echo "🔧 Checking and truncating directus tables if they exist…"
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 <<'SQL'
-              SET search_path TO directus, public;
               
-              -- Only truncate if tables exist
-              DO $$
-              BEGIN
-                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'directus' AND table_name = 'directus_roles') THEN
-                  TRUNCATE TABLE directus_roles RESTART IDENTITY CASCADE;
-                  RAISE NOTICE 'directus_roles truncated';
-                ELSE
-                  RAISE NOTICE 'directus_roles does not exist, skipping';
-                END IF;
-                
-                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'directus' AND table_name = 'directus_users') THEN
-                  TRUNCATE TABLE directus_users RESTART IDENTITY CASCADE;
-                  RAISE NOTICE 'directus_users truncated';
-                ELSE
-                  RAISE NOTICE 'directus_users does not exist, skipping';
-                END IF;
-              END
-              $$;
-              SQL
+              # Check if directus_roles table exists and truncate if it does
+              if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -tAc "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_roles'" 2>/dev/null | grep -q 1; then
+                echo "  └─ Truncating directus_roles..."
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SET search_path TO directus, public; TRUNCATE TABLE directus_roles RESTART IDENTITY CASCADE;"
+              else
+                echo "  └─ directus_roles does not exist, skipping"
+              fi
+              
+              # Check if directus_users table exists and truncate if it does
+              if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -tAc "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_users'" 2>/dev/null | grep -q 1; then
+                echo "  └─ Truncating directus_users..."
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -c "SET search_path TO directus, public; TRUNCATE TABLE directus_users RESTART IDENTITY CASCADE;"
+              else
+                echo "  └─ directus_users does not exist, skipping"
+              fi
+              
               echo "✅ Directus tables checked and cleaned if they existed."
           env:
             - name: DB_HOST
