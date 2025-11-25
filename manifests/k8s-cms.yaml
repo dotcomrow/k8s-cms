@@ -75,6 +75,11 @@ spec:
               done
               export VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
 
+              while ! curl -sS -o /dev/null --connect-timeout 2 --max-time 5 "$VAULT_ADDR/v1/sys/health"; do
+                echo "⏳ Waiting for Vault at $VAULT_ADDR..."
+                sleep 5
+              done
+
               echo "🧩 Ensuring KV v2 at 'secret/'..."
               while :; do
                 if vault secrets list -format=json 2>/dev/null \
