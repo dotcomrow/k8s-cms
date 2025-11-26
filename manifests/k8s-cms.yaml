@@ -256,6 +256,8 @@ data:
   DB_PORT: "5433"
   DB_DATABASE: "directus"
   DB_SCHEMA: "directus"
+  DB_POOL__MIN: "0"
+  DB_POOL__MAX: "20"
 
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
@@ -856,6 +858,10 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
         - name: DB_SCHEMA
           valueFrom: { configMapKeyRef: { name: directus-config, key: DB_SCHEMA } }
+        - name: DB_POOL__MIN
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DB_POOL__MIN } }
+        - name: DB_POOL__MAX
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DB_POOL__MAX } }
 
         # Cache configuration
         - name: CACHE_ENABLED
