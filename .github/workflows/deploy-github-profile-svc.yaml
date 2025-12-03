@@ -40,3 +40,8 @@ jobs:
           cd src/
           docker push ghcr.io/${{ github.repository_owner }}/github-profile-service:${{ steps.set-tag.outputs.tag }}
 
+      # Clean up the local image to free runner disk space
+      - name: Remove local Docker image
+        run: |
+          docker rmi ghcr.io/${{ github.repository_owner }}/github-profile-service:${{ steps.set-tag.outputs.tag }} || true
+          docker image prune -f
