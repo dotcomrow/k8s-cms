@@ -19,9 +19,6 @@ spec:
       containers:
         - name: copy-secret
           image: alpine/k8s:1.31.4
-          resources:
-            requests: { cpu: "50m", memory: "64Mi" }
-            limits:   { cpu: "200m", memory: "256Mi" }
           command: ["/bin/sh","-c"]
           args:
             - |
@@ -195,9 +192,6 @@ spec:
             - name: root-token
               mountPath: /vault-token
               readOnly: true
-          resources:
-            requests: { cpu: "50m",  memory: "64Mi" }
-            limits:   { cpu: "200m", memory: "256Mi" }
 ---
 # RBAC for initialization jobs
 apiVersion: rbac.authorization.k8s.io/v1
@@ -635,9 +629,6 @@ spec:
           - name: vault-root-token
             mountPath: /vault-token
             readOnly: true
-        resources:
-          requests: { cpu: "10m", memory: "32Mi" }
-          limits:   { cpu: "50m", memory: "64Mi" }
       - name: vault-agent
         image: hashicorp/vault:1.15.4
         command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
@@ -648,9 +639,6 @@ spec:
           mountPath: /vault-secrets
         - name: vault-templates
           mountPath: /vault-templates
-        resources:
-          requests: { memory: "64Mi", cpu: "50m" }
-          limits:   { memory: "128Mi", cpu: "100m" }
       - name: directus
         image: directus/directus:11
         command: ["/bin/sh", "-c"]
@@ -941,9 +929,6 @@ spec:
         - name: AUTH_GITHUB_FIRST_NAME_KEY
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_FIRST_NAME_KEY } }
 
-        resources:
-          requests: { memory: "512Mi", cpu: "250m" }
-          limits:   { memory: "1Gi",   cpu: "500m" }
         livenessProbe:
           httpGet: { path: /server/health, port: 8055 }
           initialDelaySeconds: 360
