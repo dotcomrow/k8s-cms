@@ -667,9 +667,15 @@ spec:
             export DB_USER DB_PASSWORD KEY SECRET REDIS_PASSWORD
             export ADMIN_EMAIL="$RANDOM_ADMIN_EMAIL" ADMIN_PASSWORD="$RANDOM_ADMIN_PASSWORD"
 
+            # Work from the app dir so the CLI behaves consistently
+            cd /directus
+
+            # Ensure Directus uses the intended schema/search_path for all CLI calls
+            export DB_SEARCH_PATH="${DB_SCHEMA:-directus},public"
+
             echo "🔄 Initializing Directus database..."
             echo "📦 Running database install (idempotent)..."
-            if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install 2>&1 | tee /tmp/install.log; then
+            if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install >/tmp/install.log 2>&1; then
               echo "✅ Database installation completed successfully"
             else
               if grep -q "Database is already installed" /tmp/install.log; then
@@ -677,6 +683,78 @@ spec:
               else
                 echo "❌ Database installation failed"; cat /tmp/install.log; exit 1
               fi
+            fi
+
+            _ensure_project_owner_migration_recorded() {
+              MIGRATION_VERSION="20251014A"
+              MIGRATION_NAME="Add Project Owner"
+              export MIGRATION_VERSION MIGRATION_NAME
+
+              node --input-type=module -e '
+import knex from "knex";
+
+const schema = process.env.DB_SCHEMA || "directus";
+
+const db = knex({
+  client: process.env.DB_CLIENT || "pg",
+  connection: {
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT || 5432),
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_DATABASE,
+  },
+});
+
+await (async () => {
+  const migrationsTable = await db("information_schema.tables")
+    .where({ table_schema: schema, table_name: "directus_migrations" })
+    .first();
+
+  if (!migrationsTable) return;
+
+  const migrations = db.withSchema(schema);
+  const existing = await migrations("directus_migrations")
+    .where({ version: process.env.MIGRATION_VERSION })
+    .first();
+
+  if (existing) return;
+
+  const projectOwnerCol = await db("information_schema.columns")
+    .where({
+      table_schema: schema,
+      table_name: "directus_settings",
+      column_name: "project_owner",
+    })
+    .first();
+
+  if (!projectOwnerCol) return;
+
+  const migrationCols = await db("information_schema.columns")
+    .select("column_name")
+    .where({ table_schema: schema, table_name: "directus_migrations" });
+
+  const insert = {
+    version: process.env.MIGRATION_VERSION,
+    name: process.env.MIGRATION_NAME,
+  };
+
+  if (migrationCols.some((col) => col.column_name === "timestamp")) {
+    insert.timestamp = new Date().toISOString();
+  }
+
+  await migrations("directus_migrations")
+    .insert(insert)
+    .onConflict("version")
+    .ignore();
+
+  console.log("Marked Add Project Owner migration as applied.");
+})().finally(() => db.destroy());
+'
+            }
+
+            if ! _ensure_project_owner_migration_recorded; then
+              echo "⚠️ Failed to reconcile Add Project Owner migration state; continuing..."
             fi
 
             echo "🔄 Running database migrations..."
@@ -697,13 +775,16 @@ spec:
             export CACHE_ENABLED=false
             export RATE_LIMITER_ENABLED=false
             
-            if node cli.js database migrate:latest 2>&1 | tee /tmp/migrate.log; then
+            if node cli.js database migrate:latest >/tmp/migrate.log 2>&1; then
+              cat /tmp/migrate.log
               echo "✅ Migrations completed successfully"
             else
               # Check if it's the known schema cache issue in Add Project Owner migration
-              if grep -q "Cannot read properties of undefined.*primary\|Add Project Owner" /tmp/migrate.log; then
-                echo "⚠️ Known schema issue in 'Add Project Owner' migration detected"
+              if grep -q "Cannot read properties of undefined.*primary\|Add Project Owner\|project_owner.*already exists" /tmp/migrate.log; then
+                echo "⚠️ Known issue in 'Add Project Owner' migration detected"
+                _ensure_project_owner_migration_recorded || true
                 echo "⚠️ This is a non-critical schema cache issue - continuing with deployment"
+                cat /tmp/migrate.log
                 echo "✅ Migrations completed with known warnings"
               else
                 echo "❌ Critical migration failure"
@@ -718,10 +799,7 @@ spec:
             echo "Credentials loaded: KEY(${#KEY}), SECRET(${#SECRET}), ADMIN_EMAIL($ADMIN_EMAIL)"
 
             # Ensure proper schema connection
-            export DB_SEARCH_PATH="directus"
-
-            # Work from the app dir so the CLI behaves consistently
-            cd /directus
+            export DB_SEARCH_PATH="${DB_SCHEMA:-directus},public"
 
             echo "🔧 Seeding defaults if missing & resolving role UUIDs…"
 
