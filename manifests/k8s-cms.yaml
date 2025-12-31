@@ -284,6 +284,8 @@ data:
   # Keep CLIENT_ID/SECRET here only if AVP resolves them; otherwise they are injected by Vault Agent below.
   AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
   AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
+  # Increase OAuth2 userinfo timeout for cold-starting profile proxy
+  AUTH_GITHUB_CLIENT_HTTP__TIMEOUT: "15000"
 
   AUTH_GITHUB_IDENTIFIER_KEY: "id"
   AUTH_GITHUB_EMAIL_KEY: "email"
@@ -673,6 +675,20 @@ spec:
             # Ensure Directus uses the intended schema/search_path for all CLI calls
             export DB_SEARCH_PATH="${DB_SCHEMA:-directus},public"
 
+            # Increase OAuth2 userinfo timeout for cold-starting profile proxy
+            if [ -n "${AUTH_GITHUB_CLIENT_HTTP__TIMEOUT:-}" ]; then
+              printf '%s\n' \
+                "import { custom } from 'openid-client';" \
+                "const timeout = Number(process.env.AUTH_GITHUB_CLIENT_HTTP__TIMEOUT || 0);" \
+                "if (Number.isFinite(timeout) && timeout > 0) { custom.setHttpOptionsDefaults({ timeout }); }" \
+                > /tmp/openid-timeout.mjs
+              if [ -n "${NODE_OPTIONS:-}" ]; then
+                export NODE_OPTIONS="${NODE_OPTIONS} --import=/tmp/openid-timeout.mjs"
+              else
+                export NODE_OPTIONS="--import=/tmp/openid-timeout.mjs"
+              fi
+            fi
+
             echo "🔄 Initializing Directus database..."
             echo "📦 Running database install (idempotent)..."
             if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install >/tmp/install.log 2>&1; then
@@ -690,12 +706,16 @@ spec:
               MIGRATION_NAME="Add Project Owner"
               export MIGRATION_VERSION MIGRATION_NAME
 
-              node --input-type=module -e 'import knex from "knex"; const schema = process.env.DB_SCHEMA || "directus"; const db = knex({ client: process.env.DB_CLIENT || "pg", connection: { host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE } }); const run = async () => { const migrationsTable = await db("information_schema.tables").where({ table_schema: schema, table_name: "directus_migrations" }).first(); if (!migrationsTable) return; const migrations = db.withSchema(schema); const existing = await migrations("directus_migrations").where({ version: process.env.MIGRATION_VERSION }).first(); if (existing) return; const projectOwnerCol = await db("information_schema.columns").where({ table_schema: schema, table_name: "directus_settings", column_name: "project_owner" }).first(); if (!projectOwnerCol) return; const migrationCols = await db("information_schema.columns").select("column_name").where({ table_schema: schema, table_name: "directus_migrations" }); const insert = { version: process.env.MIGRATION_VERSION, name: process.env.MIGRATION_NAME }; if (migrationCols.some((col) => col.column_name === "timestamp")) { insert.timestamp = new Date().toISOString(); } await migrations("directus_migrations").insert(insert).onConflict("version").ignore(); console.log("Marked Add Project Owner migration as applied."); }; run().finally(() => db.destroy());'
+              node --input-type=module -e 'import getDatabase from "@directus/api/dist/database/index.js"; const schema = process.env.DB_SCHEMA || "directus"; const db = getDatabase(); const run = async () => { const migrationsTable = await db("information_schema.tables").where({ table_schema: schema, table_name: "directus_migrations" }).first(); if (!migrationsTable) return; const migrations = db.withSchema(schema); const existing = await migrations("directus_migrations").where({ version: process.env.MIGRATION_VERSION }).first(); if (existing) return; const projectOwnerCol = await db("information_schema.columns").where({ table_schema: schema, table_name: "directus_settings", column_name: "project_owner" }).first(); if (!projectOwnerCol) return; const migrationCols = await db("information_schema.columns").select("column_name").where({ table_schema: schema, table_name: "directus_migrations" }); const insert = { version: process.env.MIGRATION_VERSION, name: process.env.MIGRATION_NAME }; if (migrationCols.some((col) => col.column_name === "timestamp")) { insert.timestamp = new Date().toISOString(); } await migrations("directus_migrations").insert(insert).onConflict("version").ignore(); console.log("Marked Add Project Owner migration as applied."); }; run().finally(() => db.destroy());'
             }
 
             if ! _ensure_project_owner_migration_recorded; then
               echo "⚠️ Failed to reconcile Add Project Owner migration state; continuing..."
             fi
+
+            _ensure_settings_row() {
+              node --input-type=module -e 'import getDatabase from "@directus/api/dist/database/index.js"; const schema = process.env.DB_SCHEMA || "directus"; const db = getDatabase(); const run = async () => { const table = await db("information_schema.tables").where({ table_schema: schema, table_name: "directus_settings" }).first(); if (!table) return; const row = await db.withSchema(schema)("directus_settings").count({ count: "*" }).first(); const count = Number(row?.count ?? 0); if (!count) { await db.withSchema(schema)("directus_settings").insert({}); console.log("Seeded directus_settings row."); } }; run().finally(() => db.destroy());'
+            }
 
             echo "🔄 Running database migrations..."
             # Clear any cached schema and run migrations with cache disabled
@@ -731,6 +751,10 @@ spec:
                 cat /tmp/migrate.log
                 exit 1
               fi
+            fi
+
+            if ! _ensure_settings_row; then
+              echo "⚠️ Failed to ensure directus_settings row; continuing..."
             fi
 
             echo "🔍 Debug: Environment check..."
