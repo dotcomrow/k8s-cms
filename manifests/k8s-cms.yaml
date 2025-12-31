@@ -690,67 +690,7 @@ spec:
               MIGRATION_NAME="Add Project Owner"
               export MIGRATION_VERSION MIGRATION_NAME
 
-              node --input-type=module -e '
-import knex from "knex";
-
-const schema = process.env.DB_SCHEMA || "directus";
-
-const db = knex({
-  client: process.env.DB_CLIENT || "pg",
-  connection: {
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT || 5432),
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_DATABASE,
-  },
-});
-
-await (async () => {
-  const migrationsTable = await db("information_schema.tables")
-    .where({ table_schema: schema, table_name: "directus_migrations" })
-    .first();
-
-  if (!migrationsTable) return;
-
-  const migrations = db.withSchema(schema);
-  const existing = await migrations("directus_migrations")
-    .where({ version: process.env.MIGRATION_VERSION })
-    .first();
-
-  if (existing) return;
-
-  const projectOwnerCol = await db("information_schema.columns")
-    .where({
-      table_schema: schema,
-      table_name: "directus_settings",
-      column_name: "project_owner",
-    })
-    .first();
-
-  if (!projectOwnerCol) return;
-
-  const migrationCols = await db("information_schema.columns")
-    .select("column_name")
-    .where({ table_schema: schema, table_name: "directus_migrations" });
-
-  const insert = {
-    version: process.env.MIGRATION_VERSION,
-    name: process.env.MIGRATION_NAME,
-  };
-
-  if (migrationCols.some((col) => col.column_name === "timestamp")) {
-    insert.timestamp = new Date().toISOString();
-  }
-
-  await migrations("directus_migrations")
-    .insert(insert)
-    .onConflict("version")
-    .ignore();
-
-  console.log("Marked Add Project Owner migration as applied.");
-})().finally(() => db.destroy());
-'
+              node --input-type=module -e 'import knex from "knex"; const schema = process.env.DB_SCHEMA || "directus"; const db = knex({ client: process.env.DB_CLIENT || "pg", connection: { host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE } }); const run = async () => { const migrationsTable = await db("information_schema.tables").where({ table_schema: schema, table_name: "directus_migrations" }).first(); if (!migrationsTable) return; const migrations = db.withSchema(schema); const existing = await migrations("directus_migrations").where({ version: process.env.MIGRATION_VERSION }).first(); if (existing) return; const projectOwnerCol = await db("information_schema.columns").where({ table_schema: schema, table_name: "directus_settings", column_name: "project_owner" }).first(); if (!projectOwnerCol) return; const migrationCols = await db("information_schema.columns").select("column_name").where({ table_schema: schema, table_name: "directus_migrations" }); const insert = { version: process.env.MIGRATION_VERSION, name: process.env.MIGRATION_NAME }; if (migrationCols.some((col) => col.column_name === "timestamp")) { insert.timestamp = new Date().toISOString(); } await migrations("directus_migrations").insert(insert).onConflict("version").ignore(); console.log("Marked Add Project Owner migration as applied."); }; run().finally(() => db.destroy());'
             }
 
             if ! _ensure_project_owner_migration_recorded; then
