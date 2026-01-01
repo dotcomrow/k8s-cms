@@ -228,7 +228,6 @@ metadata:
   annotations:
     linkerd.io/inject: enabled
     config.linkerd.io/skip-outbound-ports: "5433"
-    scheduler.alpha.kubernetes.io/node-selector: "dedicated=work-node"
     field.cattle.io/projectId: "local:applications"
 ---
 # Service Account for Directus
