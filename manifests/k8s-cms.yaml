@@ -312,80 +312,21 @@ metadata:
   namespace: directus
 data:
   settings.yaml: |
-    id: 1 # Singleton settings row id (always 1).
-    project_name: "Suncoast Systems CMS" # Project name shown in Data Studio, login, and public pages.
-    project_descriptor: "Content Management System for Suncoast Systems" # Short descriptor shown beneath the project name in Data Studio.
-    project_url: null # URL opened when clicking the top-left logo in the module bar.
-    project_color: "#6644FF" # Brand color (hex) for logo, login, and public pages.
-    project_logo: null # File id for 40x40 logo (directus_files).
-    public_foreground: null # File id for public page foreground image (directus_files).
-    public_background: null # File id for public page background image/video (directus_files).
-    public_favicon: null # File id for Data Studio favicon (directus_files).
-    public_note: null # Markdown note shown on the public/login page.
-    default_appearance: auto # Theme mode: auto | light | dark.
-    default_theme_light: null # Theme name/id for light mode (from themes list).
-    default_theme_dark: null # Theme name/id for dark mode (from themes list).
-    theme_light_overrides: null # JSON of theme token overrides for light mode.
-    theme_dark_overrides: null # JSON of theme token overrides for dark mode.
-    default_language: en-US # Default language locale for the app (e.g. en-US).
-    auth_login_attempts: 25 # Failed login attempts before account is locked/suspended.
-    auth_password_policy: null # Password policy regex or preset (none/weak/strong/custom); null disables.
-    storage_asset_transform: all # Asset transforms: all | none | presets.
-    storage_asset_presets: null # Array of preset objects (key, fit, width, height, quality, withoutEnlargement, format, etc).
-    # example:
-    # - key: small
-    #   fit: cover
-    #   width: 200
-    #   height: 161
-    #   quality: 80
-    #   withoutEnlargement: false
-    custom_css: null # Custom CSS injected into the Data Studio.
-    storage_default_folder: null # Default upload folder id (directus_folders).
-    basemaps: null # Array of custom basemap tile configs; overrides Mapbox defaults.
-    # example (UI fields: name, type, tileSize, url, attribution):
-    # - name: OpenStreetMap
-    #   type: raster
-    #   tileSize: 256
-    #   url: https://tile.openstreetmap.org/{z}/{x}/{y}.png
-    #   attribution: "(c) OpenStreetMap contributors"
-    #   # type values map to UI choices: Raster | Raster TileJSON | Mapbox Style
-    mapbox_key: null # Mapbox access token for map features.
-    module_bar: null # Module bar config array (visibility, order, custom links with name/icon/url).
-    # example (core modules, order matters):
-    # - content
-    # - files
-    # - insights
-    # - settings
-    # # Use the UI then read /settings to capture the exact structure for your version.
-    custom_aspect_ratios: null # Array of { text, value } for image editor aspect ratios.
-    # example:
-    # - text: "16:10"
-    #   value: 1.6
-    report_error_url: null # Error report URL template with error/route/user context variables.
-    report_bug_url: null # Bug report URL.
-    report_feature_url: null # Feature request URL.
-    public_registration: false # Enable user self-registration.
-    public_registration_verify_email: true # Require email verification for new registrations.
-    public_registration_role: null # Role id assigned to new registrations (non-admin).
-    public_registration_email_filter: null # Email filter rule(s) using Directus string filters.
-    visual_editor_urls: null # List of allowed website URLs for Visual Editor module.
-    # example:
-    # - https://www.example.com
-    # - https://admin.example.com
-    mcp_enabled: true # Enable MCP server in Settings > AI > Model Context Protocol.
-    mcp_allow_deletes: false # Allow destructive MCP tools (delete items/files/fields/etc).
-    mcp_prompts_collection: null # Collection for MCP stored prompts.
-    mcp_system_prompt_enabled: true # Use default MCP system prompt.
-    mcp_system_prompt: null # Custom MCP system prompt (overrides default).
-    ai_openai_api_key: "<path:secret/data/open_ai_key#value>" # OpenAI API key for AI Chat (encrypted at rest; AVP renders).
-    ai_anthropic_api_key: null # Anthropic API key for AI Chat.
-    ai_system_prompt: null # Custom AI Chat system prompt.
-    project_id: null # Undocumented; likely Directus Cloud metadata (leave null for self-hosted).
-    project_owner: null # Undocumented; likely project owner user id (Cloud).
-    project_usage: null # Undocumented; likely usage telemetry/metadata (Cloud).
-    org_name: null # Undocumented; likely organization name (Cloud).
-    product_updates: null # Undocumented; likely product updates metadata (Cloud).
-    project_status: null # Undocumented; likely project status (Cloud).
+    id: 1
+    project_name: "Suncoast Systems CMS"
+    project_descriptor: "Content Management System for Suncoast Systems"
+    project_color: "#6644FF"
+    default_language: en-US
+    auth_login_attempts: 25
+    storage_asset_transform: all
+    public_registration: false
+    public_registration_verify_email: true
+    mcp_enabled: true
+    mcp_allow_deletes: false
+    mcp_system_prompt_enabled: true
+    ai_anthropic_api_key: null
+    ai_system_prompt: null
+    project_owner: null
 ---
 # Directus hook extension: sync GitHub profile fields + avatar on SSO
 apiVersion: v1
@@ -410,27 +351,71 @@ data:
     const PROVIDER = 'github';
 
     const isNonEmpty = (value) => value !== null && value !== undefined && value !== '';
-    const pick = (obj, key) => {
+    const isObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
+    const getPath = (obj, path) => {
       if (!obj) return undefined;
-      if (isNonEmpty(obj[key])) return obj[key];
-      const nestedProfile = obj[`profile.${key}`];
-      if (isNonEmpty(nestedProfile)) return nestedProfile;
-      const nestedData = obj[`data.${key}`];
-      if (isNonEmpty(nestedData)) return nestedData;
+      return path.split('.').reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj);
+    };
+    const pick = (obj, ...paths) => {
+      if (!obj) return undefined;
+      for (const path of paths) {
+        const value = getPath(obj, path);
+        if (isNonEmpty(value)) return value;
+      }
       return undefined;
     };
+    const isProfileLike = (obj) => {
+      if (!isObject(obj)) return false;
+      return ['login', 'id', 'html_url', 'avatar_url', 'name', 'company', 'bio']
+        .some((key) => isNonEmpty(obj[key]));
+    };
+    const extractUserInfo = (meta) => {
+      const payload = meta?.providerPayload;
+      if (!isObject(payload)) return null;
+      const directCandidates = [
+        payload.userInfo,
+        payload.profile,
+        payload.user,
+        payload.data,
+        payload.raw,
+        payload.response,
+        payload.body
+      ];
+      for (const candidate of directCandidates) {
+        if (isProfileLike(candidate)) return candidate;
+      }
+      if (isProfileLike(payload)) return payload;
+      const queue = [{ value: payload, depth: 0 }];
+      const seen = new Set();
+      while (queue.length) {
+        const { value, depth } = queue.shift();
+        if (!isObject(value) || seen.has(value) || depth > 3) continue;
+        seen.add(value);
+        if (isProfileLike(value)) return value;
+        for (const key of Object.keys(value)) {
+          const next = value[key];
+          if (isObject(next)) queue.push({ value: next, depth: depth + 1 });
+        }
+      }
+      return null;
+    };
 
-    const buildGithubMetadata = (info) => {
+    const buildGithubMetadata = (info, payload) => {
       const metadata = {};
-      if (info.emails !== undefined) metadata.emails = info.emails;
-      if (info.orgs !== undefined) metadata.orgs = info.orgs;
-      if (info.teams !== undefined) metadata.teams = info.teams;
-      if (info['profile.emails'] !== undefined && metadata.emails === undefined) metadata.emails = info['profile.emails'];
-      if (info['profile.orgs'] !== undefined && metadata.orgs === undefined) metadata.orgs = info['profile.orgs'];
-      if (info['profile.teams'] !== undefined && metadata.teams === undefined) metadata.teams = info['profile.teams'];
-      if (info['data.emails'] !== undefined && metadata.emails === undefined) metadata.emails = info['data.emails'];
-      if (info['data.orgs'] !== undefined && metadata.orgs === undefined) metadata.orgs = info['data.orgs'];
-      if (info['data.teams'] !== undefined && metadata.teams === undefined) metadata.teams = info['data.teams'];
+      const sources = [info, payload].filter(isObject);
+      const readMeta = (key) => {
+        for (const src of sources) {
+          const val = pick(src, key, `profile.${key}`, `data.${key}`, `user.${key}`);
+          if (val !== undefined) return val;
+        }
+        return undefined;
+      };
+      const emails = readMeta('emails');
+      const orgs = readMeta('orgs');
+      const teams = readMeta('teams');
+      if (emails !== undefined) metadata.emails = emails;
+      if (orgs !== undefined) metadata.orgs = orgs;
+      if (teams !== undefined) metadata.teams = teams;
       return Object.keys(metadata).length ? metadata : undefined;
     };
 
@@ -467,12 +452,19 @@ data:
       }
 
       async function applyGithubProfile(payload, meta, context, opts) {
-        if (meta?.provider !== PROVIDER) return payload;
+        const provider = (meta?.provider || '').toLowerCase();
+        if (provider !== PROVIDER) return payload;
 
-        const userInfoFlat = meta?.providerPayload?.userInfo;
-        if (!userInfoFlat || typeof userInfoFlat !== 'object') return payload;
-
-        const userInfo = userInfoFlat;
+        const userInfo = extractUserInfo(meta);
+        if (!userInfo) {
+          try {
+            logger.info(
+              { providerPayloadKeys: Object.keys(meta?.providerPayload || {}) },
+              '[github-profile-sync] No userInfo found in provider payload'
+            );
+          } catch {}
+          return payload;
+        }
         try {
           const keys = Object.keys(userInfo);
           logger.info(
@@ -481,22 +473,28 @@ data:
           );
         } catch {}
 
+        const payloadInfo = isObject(meta?.providerPayload) ? meta.providerPayload : {};
         const updates = {};
-        const login = pick(userInfo, 'login');
-        const htmlUrl = pick(userInfo, 'html_url');
-        const company = pick(userInfo, 'company');
-        const bio = pick(userInfo, 'bio');
+        const login = pick(userInfo, 'login', 'profile.login', 'data.login', 'user.login')
+          ?? pick(payloadInfo, 'login', 'profile.login', 'data.login', 'user.login');
+        const htmlUrl = pick(userInfo, 'html_url', 'profile.html_url', 'data.html_url', 'user.html_url')
+          ?? pick(payloadInfo, 'html_url', 'profile.html_url', 'data.html_url', 'user.html_url');
+        const company = pick(userInfo, 'company', 'profile.company', 'data.company', 'user.company')
+          ?? pick(payloadInfo, 'company', 'profile.company', 'data.company', 'user.company');
+        const bio = pick(userInfo, 'bio', 'profile.bio', 'data.bio', 'user.bio')
+          ?? pick(payloadInfo, 'bio', 'profile.bio', 'data.bio', 'user.bio');
 
         if (login) updates.github_login = login;
         if (htmlUrl) updates.github_url = htmlUrl;
         if (company) updates.github_company = company;
         if (bio) updates.github_bio = bio;
 
-        const metadata = buildGithubMetadata(userInfo);
+        const metadata = buildGithubMetadata(userInfo, payloadInfo);
         if (metadata) updates.github_metadata = metadata;
 
         if (opts?.importAvatar) {
-          const avatarUrl = pick(userInfo, 'avatar_url');
+          const avatarUrl = pick(userInfo, 'avatar_url', 'profile.avatar_url', 'data.avatar_url', 'user.avatar_url')
+            ?? pick(payloadInfo, 'avatar_url', 'profile.avatar_url', 'data.avatar_url', 'user.avatar_url');
           const avatarId = await maybeImportAvatar(avatarUrl, meta, context, userInfo);
           if (avatarId) updates.avatar = avatarId;
         }
@@ -742,12 +740,15 @@ spec:
               echo "Waiting for Job(s) with prefix 'directus-yugabyte-config' in vault namespace to complete..."
 
               TARGET_PREFIX="directus-yugabyte-config"
+              MAX_MISSES=24 # ~2 minutes at 5s intervals
+              MISSES=0
 
               while true; do
                 # 1) If an exact job exists, check it first
                 if kubectl -n vault get job "$TARGET_PREFIX" >/dev/null 2>&1; then
                   SUCC="$(kubectl -n vault get job "$TARGET_PREFIX" -o jsonpath='{.status.succeeded}' 2>/dev/null || echo 0)"
                   [ "${SUCC:-0}" -ge 1 ] && { echo "✅ Job $TARGET_PREFIX succeeded"; break; }
+                  MISSES=0
                 fi
 
                 # 2) Otherwise, find any job whose name starts with the prefix (handles CronJob or generateName cases)
@@ -759,6 +760,13 @@ spec:
                   SUCC="$(kubectl -n vault get job "$MATCHING_JOB" -o jsonpath='{.status.succeeded}' 2>/dev/null || echo 0)"
                   if [ "${SUCC:-0}" -ge 1 ]; then
                     echo "✅ Job $MATCHING_JOB succeeded"
+                    break
+                  fi
+                  MISSES=0
+                else
+                  MISSES=$((MISSES + 1))
+                  if [ "$MISSES" -ge "$MAX_MISSES" ]; then
+                    echo "⚠️ No matching job found after waiting; continuing startup."
                     break
                   fi
                 fi
@@ -904,28 +912,26 @@ spec:
             ENCRYPTED_REGEX='^1\\|\\|scrypt\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+$'
 
             EXTRA_ENCRYPTED_COLS="ai_openai_api_key ai_anthropic_api_key ai_google_api_key ai_openai_compatible_api_key"
-            ALL_ENCRYPTED_COLS="${ENCRYPTED_COLS:-}"
-            for _col in $EXTRA_ENCRYPTED_COLS; do
-              if [ -n "${ALL_ENCRYPTED_COLS:-}" ]; then
-                ALL_ENCRYPTED_COLS="${ALL_ENCRYPTED_COLS}
-${_col}"
-              else
-                ALL_ENCRYPTED_COLS="${_col}"
+            _sanitize_encrypted_col() {
+              enc_col="$1"
+              [ -z "${enc_col:-}" ] && return 0
+              if ! printf '%s\n' "$SETTINGS_COLS" | grep -qx "$enc_col"; then
+                return 0
               fi
-            done
+              _col_escaped="$(printf '%s' "$enc_col" | sed 's/\"/\"\"/g')"
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
+                -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL WHERE \"${_col_escaped}\" IS NOT NULL AND \"${_col_escaped}\" !~ '${ENCRYPTED_REGEX}';"
+            }
 
-            if [ -n "${ALL_ENCRYPTED_COLS:-}" ]; then
-              echo "🔐 Sanitizing encrypted settings fields..."
-              printf '%s\n' "$ALL_ENCRYPTED_COLS" | while IFS= read -r enc_col; do
-                [ -z "${enc_col:-}" ] && continue
-                if ! printf '%s\n' "$SETTINGS_COLS" | grep -qx "$enc_col"; then
-                  continue
-                fi
-                _col_escaped="$(printf '%s' "$enc_col" | sed 's/\"/\"\"/g')"
-                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
-                  -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL WHERE \"${_col_escaped}\" IS NOT NULL AND \"${_col_escaped}\" !~ '${ENCRYPTED_REGEX}';"
+            echo "🔐 Sanitizing encrypted settings fields..."
+            if [ -n "${ENCRYPTED_COLS:-}" ]; then
+              printf '%s\n' "$ENCRYPTED_COLS" | while IFS= read -r enc_col; do
+                _sanitize_encrypted_col "$enc_col"
               done
             fi
+            for enc_col in $EXTRA_ENCRYPTED_COLS; do
+              _sanitize_encrypted_col "$enc_col"
+            done
 
             _update_setting() {
               _col="$1"
@@ -942,7 +948,7 @@ ${_col}"
               OPENAI_COL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                 "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' AND column_name ~* 'openai.*key|ai_.*openai|openai.*api.*key' ORDER BY column_name LIMIT 1;" || true)"
               if [ -n "${OPENAI_COL:-}" ]; then
-                if printf '%s\n' "$ENCRYPTED_COLS" | grep -qx "$OPENAI_COL"; then
+                if printf '%s\n' "$ENCRYPTED_COLS" | grep -qx "$OPENAI_COL" || printf '%s\n' "$EXTRA_ENCRYPTED_COLS" | tr ' ' '\n' | grep -qx "$OPENAI_COL"; then
                   echo "⚠️ ${OPENAI_COL} is encrypted; skipping direct DB update to avoid invalid encrypted payload."
                 else
                   _update_setting "$OPENAI_COL" "$OPENAI_KEY"
@@ -1008,10 +1014,10 @@ ${_col}"
                 "SELECT project_owner FROM directus_settings LIMIT 1;" || true)"
               if [ -z "${CURRENT_OWNER:-}" ] || [ "${CURRENT_OWNER}" = "null" ]; then
                 OWNER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                  "SELECT u.id FROM directus_users u JOIN directus_roles r ON u.role = r.id WHERE r.name='Administrator' ORDER BY u.created_on ASC LIMIT 1;" || true)"
+                  "SELECT u.id FROM directus_users u JOIN directus_roles r ON u.role = r.id WHERE r.name='Administrator' ORDER BY u.id ASC LIMIT 1;" || true)"
                 if [ -z "${OWNER_ID:-}" ] || [ "${OWNER_ID}" = "null" ]; then
                   OWNER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                    "SELECT id FROM directus_users ORDER BY created_on ASC LIMIT 1;" || true)"
+                    "SELECT id FROM directus_users ORDER BY id ASC LIMIT 1;" || true)"
                 fi
                 if [ -n "${OWNER_ID:-}" ] && [ "${OWNER_ID}" != "null" ]; then
                   _owner_escaped="$(printf '%s' "$OWNER_ID" | sed "s/'/''/g")"
@@ -1209,6 +1215,17 @@ ${_col}"
 
             if ! _ensure_settings_row; then
               echo "⚠️ Failed to ensure directus_settings row; continuing..."
+            fi
+
+            _set_ai_openai_key() {
+              node -e 'const fs = require("fs"); const path = require("path"); const crypto = require("crypto"); const pnpmRoot = "/directus/node_modules/.pnpm"; const knexEntry = fs.readdirSync(pnpmRoot).find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex"))); if (!knexEntry) { console.error("knex not found"); process.exit(1); } const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex")); const schema = process.env.DB_SCHEMA || "directus"; const db = knex({ client: "pg", connection: { host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE } }); const parsePayload = (value) => { const parts = String(value || "").split("||"); if (parts.length < 9) return null; const [version, kdf, nStr, rStr, pStr, saltB64, ivB64, cipherText, tagB64] = parts; if (version !== "1" || kdf !== "scrypt") return null; return { n: Number(nStr) || 2 ** 14, r: Number(rStr) || 8, p: Number(pStr) || 1, saltB64, ivB64, cipherText, tagB64 }; }; const decryptPayload = (value, secret) => { const parsed = parsePayload(value); if (!parsed) return null; try { const salt = Buffer.from(parsed.saltB64, "base64"); const keyBuf = crypto.scryptSync(secret, salt, 32, { N: parsed.n, r: parsed.r, p: parsed.p }); const iv = Buffer.from(parsed.ivB64, "base64"); const tag = Buffer.from(parsed.tagB64, "base64"); const decipher = crypto.createDecipheriv("aes-256-gcm", keyBuf, iv); decipher.setAuthTag(tag); let plaintext = decipher.update(parsed.cipherText, "base64", "utf8"); plaintext += decipher.final("utf8"); return plaintext; } catch { return null; } }; const encryptPayload = (plain, secret) => { const salt = crypto.randomBytes(16); const keyBuf = crypto.scryptSync(secret, salt, 32, { N: 2 ** 14, r: 8, p: 1 }); const iv = crypto.randomBytes(12); const cipher = crypto.createCipheriv("aes-256-gcm", keyBuf, iv); let cipherText = cipher.update(plain, "utf8", "base64"); cipherText += cipher.final("base64"); const tag = cipher.getAuthTag().toString("base64"); return ["1","scrypt",2 ** 14,8,1,salt.toString("base64"),iv.toString("base64"),cipherText,tag].join("||"); }; const run = async () => { const desired = process.env.OPENAI_API_KEY; const secret = process.env.SECRET; if (!secret) { console.log("Missing SECRET; skipping OpenAI key encryption."); return; } const col = await db("information_schema.columns").where({ table_schema: schema, table_name: "directus_settings", column_name: "ai_openai_api_key" }).first(); if (!col) { console.log("ai_openai_api_key column not found; skipping."); return; } const row = await db("directus_settings").withSchema(schema).select("ai_openai_api_key").first(); const current = row?.ai_openai_api_key; const isEncrypted = typeof current === "string" && current.startsWith("1||scrypt||"); const writeValue = async (nextValue, reason) => { await db("directus_settings").withSchema(schema).update({ ai_openai_api_key: nextValue }); console.log(reason); }; if (isEncrypted) { const decrypted = decryptPayload(current, secret); if (decrypted === null) { if (desired) { const payload = encryptPayload(desired, secret); await writeValue(payload, "Re-encrypted OpenAI key with current SECRET."); } else { await writeValue(null, "Cleared invalid OpenAI key (no OPENAI_API_KEY available)."); } return; } if (desired && decrypted !== desired) { const payload = encryptPayload(desired, secret); await writeValue(payload, "Updated OpenAI key from OPENAI_API_KEY."); } else { console.log("ai_openai_api_key already encrypted and valid."); } return; } if (desired) { const payload = encryptPayload(desired, secret); await writeValue(payload, "Encrypted OpenAI key stored in directus_settings.ai_openai_api_key"); } else if (current !== null && current !== undefined) { await writeValue(null, "Cleared non-encrypted OpenAI key."); } else { console.log("No OpenAI key to set."); } }; run().finally(() => db.destroy());'
+            }
+
+            if [ -n "${OPENAI_API_KEY:-}" ]; then
+              echo "🔐 Encrypting OpenAI key into directus_settings..."
+              _set_ai_openai_key || echo "⚠️ Failed to store OpenAI key."
+            else
+              echo "ℹ️ OPENAI_API_KEY not set; skipping encrypted OpenAI key."
             fi
 
             echo "🔍 Debug: Environment check..."
