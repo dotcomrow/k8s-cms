@@ -785,7 +785,7 @@ spec:
               _val="$2"
               psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
                 -v col="$_col" -v val="$_val" -c \
-                "SET search_path TO directus, public; DO \$\$ BEGIN EXECUTE format('UPDATE directus_settings SET %I = %L', :'col', :'val'); END \$\$;"
+                "SET search_path TO directus, public; UPDATE directus_settings SET :\"col\" = :'val';"
             }
 
             UPDATED="0"
@@ -813,7 +813,7 @@ spec:
                   if [ "$val_type" = "null" ]; then
                     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
                       -v col="$key" -c \
-                      "SET search_path TO directus, public; DO \$\$ BEGIN EXECUTE format('UPDATE directus_settings SET %I = NULL', :'col'); END \$\$;"
+                      "SET search_path TO directus, public; UPDATE directus_settings SET :\"col\" = NULL;"
                     UPDATED="1"
                     continue
                   fi
