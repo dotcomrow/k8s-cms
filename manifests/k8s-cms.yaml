@@ -874,6 +874,21 @@ spec:
               exec tail -f /dev/null
             fi
 
+            ENCRYPTED_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT field FROM directus_fields WHERE collection='directus_settings' AND special::text ILIKE '%encrypt%';" || true)"
+
+            if [ -n "${ENCRYPTED_COLS:-}" ]; then
+              echo "🔐 Sanitizing encrypted settings fields..."
+              while IFS= read -r enc_col; do
+                [ -z "${enc_col:-}" ] && continue
+                _col_escaped="$(printf '%s' "$enc_col" | sed 's/\"/\"\"/g')"
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
+                  -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL WHERE \"${_col_escaped}\" IS NOT NULL AND \"${_col_escaped}\" NOT LIKE '%||%';"
+              done <<EOF_ENC
+${ENCRYPTED_COLS}
+EOF_ENC
+            fi
+
             _update_setting() {
               _col="$1"
               _val="$2"
@@ -889,9 +904,13 @@ spec:
               OPENAI_COL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                 "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' AND column_name ~* 'openai.*key|ai_.*openai|openai.*api.*key' ORDER BY column_name LIMIT 1;" || true)"
               if [ -n "${OPENAI_COL:-}" ]; then
-                _update_setting "$OPENAI_COL" "$OPENAI_KEY"
-                UPDATED="1"
-                echo "✅ OpenAI key stored in directus_settings.${OPENAI_COL} (source: ${OPENAI_KEY_SOURCE})"
+                if printf '%s\n' "$ENCRYPTED_COLS" | grep -qx "$OPENAI_COL"; then
+                  echo "⚠️ ${OPENAI_COL} is encrypted; skipping direct DB update to avoid invalid encrypted payload."
+                else
+                  _update_setting "$OPENAI_COL" "$OPENAI_KEY"
+                  UPDATED="1"
+                  echo "✅ OpenAI key stored in directus_settings.${OPENAI_COL} (source: ${OPENAI_KEY_SOURCE})"
+                fi
               else
                 echo "⚠️ No OpenAI settings column found in directus_settings; skipping OpenAI setting."
               fi
@@ -901,6 +920,10 @@ spec:
               while IFS= read -r key; do
                 if printf '%s' "$key" | grep -Eq 'openai.*key|ai_.*openai|openai.*api.*key'; then
                   # handled separately via OPENAI_KEY logic above
+                  continue
+                fi
+                if printf '%s\n' "$ENCRYPTED_COLS" | grep -qx "$key"; then
+                  echo "⚠️ settings.yaml key '${key}' is encrypted; skipping direct DB update."
                   continue
                 fi
                 if printf '%s\n' "$SETTINGS_COLS" | grep -qx "$key"; then
@@ -935,6 +958,32 @@ spec:
               echo "⚠️ No applicable settings were updated."
             else
               echo "✅ Directus settings updated in database."
+            fi
+
+            echo "👤 Ensuring project owner is set..."
+            if printf '%s\n' "$SETTINGS_COLS" | grep -qx "project_owner"; then
+              CURRENT_OWNER="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT project_owner FROM directus_settings LIMIT 1;" || true)"
+              if [ -z "${CURRENT_OWNER:-}" ] || [ "${CURRENT_OWNER}" = "null" ]; then
+                OWNER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT u.id FROM directus_users u JOIN directus_roles r ON u.role = r.id WHERE r.name='Administrator' ORDER BY u.created_on ASC LIMIT 1;" || true)"
+                if [ -z "${OWNER_ID:-}" ] || [ "${OWNER_ID}" = "null" ]; then
+                  OWNER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT id FROM directus_users ORDER BY created_on ASC LIMIT 1;" || true)"
+                fi
+                if [ -n "${OWNER_ID:-}" ] && [ "${OWNER_ID}" != "null" ]; then
+                  _owner_escaped="$(printf '%s' "$OWNER_ID" | sed "s/'/''/g")"
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
+                    -c "SET search_path TO directus, public; UPDATE directus_settings SET project_owner = '${_owner_escaped}' WHERE project_owner IS NULL;"
+                  echo "✅ Project owner set to ${OWNER_ID}"
+                else
+                  echo "⚠️ No users found to set project owner."
+                fi
+              else
+                echo "✅ Project owner already set."
+              fi
+            else
+              echo "⚠️ project_owner column not found; skipping."
             fi
 
             echo "✅ Schema patch applied. Going idle."
