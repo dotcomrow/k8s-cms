@@ -783,9 +783,10 @@ spec:
             _update_setting() {
               _col="$1"
               _val="$2"
+              _col_escaped="$(printf '%s' "$_col" | sed 's/\"/\"\"/g')"
+              _val_escaped="$(printf '%s' "$_val" | sed "s/'/''/g")"
               psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
-                -v col="$_col" -v val="$_val" -c \
-                "SET search_path TO directus, public; UPDATE directus_settings SET :\"col\" = :'val';"
+                -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = '${_val_escaped}';"
             }
 
             UPDATED="0"
@@ -811,9 +812,9 @@ spec:
                 if printf '%s\n' "$SETTINGS_COLS" | grep -qx "$key"; then
                   val_type="$(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r --arg k "$key" '.[$k] | type')"
                   if [ "$val_type" = "null" ]; then
+                    _col_escaped="$(printf '%s' "$key" | sed 's/\"/\"\"/g')"
                     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
-                      -v col="$key" -c \
-                      "SET search_path TO directus, public; UPDATE directus_settings SET :\"col\" = NULL;"
+                      -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL;"
                     UPDATED="1"
                     continue
                   fi
