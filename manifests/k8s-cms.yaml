@@ -33,8 +33,11 @@ kind: Job
 metadata:
   name: directus-yugabyte-config
   namespace: vault
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true
 spec:
   backoffLimit: 0
+  ttlSecondsAfterFinished: 300
   template:
     metadata:
       annotations:
@@ -314,6 +317,17 @@ data:
 
   WEBSOCKETS_ENABLED: "true"
 ---
+# Optional Directus settings patch (non-secret).
+# Add fields to settings.json to apply them via /settings on startup.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-settings
+  namespace: directus
+data:
+  settings.json: |
+    {}
+---
 # Vault Agent Configuration for Directus
 apiVersion: v1
 kind: ConfigMap
@@ -456,6 +470,12 @@ spec:
                 path: openai.tpl
               - key: redis-creds.tpl
                 path: redis-creds.tpl
+        - name: directus-settings
+          configMap:
+            name: directus-settings
+            items:
+              - key: settings.json
+                path: settings.json
       initContainers:
         - name: nuke-directus-roles
           image: postgres:16-alpine
@@ -631,13 +651,32 @@ spec:
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
 
-            # 5) Configure Directus AI OpenAI key via API using a temporary static token
-            echo "🤖 Configuring Directus AI settings..."
+            # 5) Configure Directus settings via API using a temporary static token
+            echo "🤖 Configuring Directus settings..."
             OPENAI_KEY="$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
               "${VAULT_ADDR}/v1/secret/data/open_ai_key" | jq -r '.data.data.value' || true)"
 
             if [ -z "${OPENAI_KEY:-}" ] || [ "$OPENAI_KEY" = "null" ]; then
-              echo "⚠️ OpenAI key missing in Vault (secret/data/open_ai_key#value); skipping AI setup."
+              echo "⚠️ OpenAI key missing in Vault (secret/data/open_ai_key#value); will skip OpenAI setting."
+              OPENAI_KEY=""
+            fi
+
+            EXTRA_SETTINGS_FILE="/directus-settings/settings.json"
+            EXTRA_SETTINGS="{}"
+            EXTRA_SETTINGS_HAS_KEYS="0"
+            if [ -f "$EXTRA_SETTINGS_FILE" ]; then
+              if jq -e 'type=="object"' "$EXTRA_SETTINGS_FILE" >/dev/null 2>&1; then
+                EXTRA_SETTINGS="$(cat "$EXTRA_SETTINGS_FILE")"
+                if jq -e 'length>0' "$EXTRA_SETTINGS_FILE" >/dev/null 2>&1; then
+                  EXTRA_SETTINGS_HAS_KEYS="1"
+                fi
+              else
+                echo "⚠️ Invalid JSON in $EXTRA_SETTINGS_FILE; ignoring."
+              fi
+            fi
+
+            if [ -z "${OPENAI_KEY:-}" ] && [ "$EXTRA_SETTINGS_HAS_KEYS" != "1" ]; then
+              echo "⚠️ No settings to apply; skipping."
               echo "✅ Schema patch applied. Going idle."
               exec tail -f /dev/null
             fi
@@ -663,21 +702,36 @@ spec:
               TOKEN_WAS_SET="1"
             fi
 
-            SETTINGS_JSON="$(curl -sf -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-              http://127.0.0.1:8055/settings || true)"
-            OPENAI_FIELD="$(printf '%s' "$SETTINGS_JSON" | jq -r \
-              '.data | keys[] | select(test("openai.*key|ai_.*openai|openai.*api.*key"; "i"))' | head -n1 || true)"
+            OPENAI_PATCH="{}"
+            if [ -n "${OPENAI_KEY:-}" ]; then
+              SETTINGS_JSON="$(curl -sf -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+                http://127.0.0.1:8055/settings || true)"
+              OPENAI_FIELD="$(printf '%s' "$SETTINGS_JSON" | jq -r \
+                '.data | keys[] | select(test("openai.*key|ai_.*openai|openai.*api.*key"; "i"))' | head -n1 || true)"
 
-            if [ -z "${OPENAI_FIELD:-}" ]; then
-              echo "⚠️ Could not find OpenAI settings field in /settings; skipping AI setup."
+              if [ -z "${OPENAI_FIELD:-}" ]; then
+                echo "⚠️ Could not find OpenAI settings field in /settings; skipping OpenAI setting."
+              else
+                OPENAI_PATCH="$(jq -n --arg k "$OPENAI_FIELD" --arg v "$OPENAI_KEY" '{($k): $v}')"
+              fi
+            fi
+
+            EXTRA_FILE="$(mktemp)"
+            OPENAI_FILE="$(mktemp)"
+            printf '%s' "$EXTRA_SETTINGS" >"$EXTRA_FILE"
+            printf '%s' "$OPENAI_PATCH" >"$OPENAI_FILE"
+            PATCH_PAYLOAD="$(jq -s '.[0] * .[1]' "$EXTRA_FILE" "$OPENAI_FILE")"
+            rm -f "$EXTRA_FILE" "$OPENAI_FILE"
+
+            if ! printf '%s' "$PATCH_PAYLOAD" | jq -e 'length>0' >/dev/null 2>&1; then
+              echo "⚠️ No applicable settings to patch; skipping."
             else
-              PATCH_PAYLOAD="$(jq -n --arg k "$OPENAI_FIELD" --arg v "$OPENAI_KEY" '{($k): $v}')"
               curl -sf -X PATCH \
                 -H "Authorization: Bearer ${ADMIN_TOKEN}" \
                 -H "Content-Type: application/json" \
                 -d "$PATCH_PAYLOAD" \
                 http://127.0.0.1:8055/settings >/dev/null
-              echo "✅ AI OpenAI key configured via /settings."
+              echo "✅ Directus settings configured via /settings."
             fi
 
             if [ "${TOKEN_WAS_SET:-}" = "1" ]; then
@@ -697,6 +751,9 @@ spec:
         volumeMounts:
           - name: vault-root-token
             mountPath: /vault-token
+            readOnly: true
+          - name: directus-settings
+            mountPath: /directus-settings
             readOnly: true
       - name: vault-agent
         image: hashicorp/vault:1.15.4
