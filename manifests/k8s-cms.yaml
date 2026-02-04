@@ -860,12 +860,6 @@ spec:
               fi
             fi
 
-            if [ -z "${OPENAI_KEY:-}" ] && [ "$EXTRA_SETTINGS_HAS_KEYS" != "1" ]; then
-              echo "⚠️ No settings to apply; skipping."
-              echo "✅ Schema patch applied. Going idle."
-              exec tail -f /dev/null
-            fi
-
             SETTINGS_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
               "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' ORDER BY column_name;" || true)"
             if [ -z "${SETTINGS_COLS:-}" ]; then
@@ -876,6 +870,7 @@ spec:
 
             ENCRYPTED_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
               "SELECT field FROM directus_fields WHERE collection='directus_settings' AND special::text ILIKE '%encrypt%';" || true)"
+            ENCRYPTED_REGEX='^1\\|\\|scrypt\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+$'
 
             if [ -n "${ENCRYPTED_COLS:-}" ]; then
               echo "🔐 Sanitizing encrypted settings fields..."
@@ -883,7 +878,7 @@ spec:
                 [ -z "${enc_col:-}" ] && continue
                 _col_escaped="$(printf '%s' "$enc_col" | sed 's/\"/\"\"/g')"
                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
-                  -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL WHERE \"${_col_escaped}\" IS NOT NULL AND \"${_col_escaped}\" NOT LIKE '%||%';"
+                  -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL WHERE \"${_col_escaped}\" IS NOT NULL AND \"${_col_escaped}\" !~ '${ENCRYPTED_REGEX}';"
               done
             fi
 
@@ -956,6 +951,10 @@ spec:
               echo "⚠️ No applicable settings were updated."
             else
               echo "✅ Directus settings updated in database."
+            fi
+
+            if [ -z "${OPENAI_KEY:-}" ] && [ "$EXTRA_SETTINGS_HAS_KEYS" != "1" ]; then
+              echo "ℹ️ No settings to apply from settings.yaml/OpenAI; continuing with owner/cleanup."
             fi
 
             echo "👤 Ensuring project owner is set..."
