@@ -295,25 +295,9 @@ data:
   AUTH_GITHUB_SCOPE: "read:user user:email read:org"
   AUTH_GITHUB_ALLOW_PUBLIC_REGISTRATION: "true"
   AUTH_GITHUB_GROUP_CLAIM_NAME: "groups"
-  AUTH_GITHUB_PROFILE_FORMAT: "json"
   AUTH_GITHUB_SYNC_USER_INFO: "true"
   AUTH_GITHUB_FIRST_NAME_KEY: "name"
-  AUTH_GITHUB_PROFILE_TRANSFORM: >
-    json:{
-        "email":"{{ email }}",
-        "first_name":"{{ name }}",
-        "last_name":"",
-        "avatar":"{{ avatar_url }}",
-        "github_login":"{{ login }}",
-        "github_url":"{{ html_url }}",
-        "github_company":"{{ company }}",
-        "github_bio":"{{ bio }}",
-        "github_metadata":{
-          "emails":{{ emails | json }},
-          "orgs":{{ orgs | json }},
-          "teams":{{ teams | json }}
-        }
-      }
+  # Directus 11 no longer supports PROFILE_TRANSFORM; handled via hook extension.
 
   WEBSOCKETS_ENABLED: "true"
 ---
@@ -402,6 +386,110 @@ data:
     org_name: null # Undocumented; likely organization name (Cloud).
     product_updates: null # Undocumented; likely product updates metadata (Cloud).
     project_status: null # Undocumented; likely project status (Cloud).
+---
+# Directus hook extension: sync GitHub profile fields + avatar on SSO
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-extensions
+  namespace: directus
+data:
+  github-profile-sync.js: |
+    import { defineHook } from '@directus/extensions-sdk';
+    import { unflatten } from 'flat';
+
+    const PROVIDER = 'github';
+
+    const isNonEmpty = (value) => value !== null && value !== undefined && value !== '';
+    const pick = (obj, key) => (obj && isNonEmpty(obj[key]) ? obj[key] : undefined);
+
+    const buildGithubMetadata = (info) => {
+      const metadata = {};
+      if (info.emails !== undefined) metadata.emails = info.emails;
+      if (info.orgs !== undefined) metadata.orgs = info.orgs;
+      if (info.teams !== undefined) metadata.teams = info.teams;
+      return Object.keys(metadata).length ? metadata : undefined;
+    };
+
+    const unflattenUserInfo = (userInfo, logger) => {
+      try {
+        return unflatten(userInfo);
+      } catch (error) {
+        logger?.warn?.(error, '[github-profile-sync] Failed to unflatten userInfo payload');
+        return userInfo;
+      }
+    };
+
+    export default defineHook(({ filter }, { services, logger, getSchema }) => {
+      const { FilesService } = services;
+
+      async function maybeImportAvatar(avatarUrl, meta, context, userInfo) {
+        if (!avatarUrl || typeof avatarUrl !== 'string') return undefined;
+
+        try {
+          if (meta?.identifier) {
+            const existing = await context.database('directus_users')
+              .select('avatar')
+              .where({ external_identifier: meta.identifier, provider: PROVIDER })
+              .first();
+
+            if (existing?.avatar) return undefined;
+          }
+
+          const schema = context.schema ?? (await getSchema());
+          const filesService = new FilesService({
+            knex: context.database,
+            schema,
+            accountability: null
+          });
+
+          const title = userInfo?.login ? `${userInfo.login} (GitHub avatar)` : 'GitHub avatar';
+          return await filesService.importOne(avatarUrl, { title });
+        } catch (error) {
+          logger.warn(error, '[github-profile-sync] Failed to import avatar from GitHub');
+          return undefined;
+        }
+      }
+
+      async function applyGithubProfile(payload, meta, context, opts) {
+        if (meta?.provider !== PROVIDER) return payload;
+
+        const userInfoFlat = meta?.providerPayload?.userInfo;
+        if (!userInfoFlat || typeof userInfoFlat !== 'object') return payload;
+
+        const userInfo = unflattenUserInfo(userInfoFlat, logger);
+
+        const updates = {};
+        const login = pick(userInfo, 'login');
+        const htmlUrl = pick(userInfo, 'html_url');
+        const company = pick(userInfo, 'company');
+        const bio = pick(userInfo, 'bio');
+
+        if (login) updates.github_login = login;
+        if (htmlUrl) updates.github_url = htmlUrl;
+        if (company) updates.github_company = company;
+        if (bio) updates.github_bio = bio;
+
+        const metadata = buildGithubMetadata(userInfo);
+        if (metadata) updates.github_metadata = metadata;
+
+        if (opts?.importAvatar) {
+          const avatarUrl = pick(userInfo, 'avatar_url');
+          const avatarId = await maybeImportAvatar(avatarUrl, meta, context, userInfo);
+          if (avatarId) updates.avatar = avatarId;
+        }
+
+        return { ...payload, ...updates };
+      }
+
+      filter('auth.create', async (payload, meta, context) => {
+        return applyGithubProfile(payload, meta, context, { importAvatar: true });
+      });
+
+      filter('auth.update', async (payload, meta, context) => {
+        return applyGithubProfile(payload, meta, context, { importAvatar: true });
+      });
+    });
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -551,6 +639,12 @@ spec:
             items:
               - key: settings.yaml
                 path: settings.yaml
+        - name: directus-extensions
+          configMap:
+            name: directus-extensions
+            items:
+              - key: github-profile-sync.js
+                path: hooks/github-profile-sync/index.js
       initContainers:
         - name: nuke-directus-roles
           image: postgres:16-alpine
@@ -1195,10 +1289,6 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_ID } }
         - name: AUTH_GITHUB_CLIENT_SECRET
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_CLIENT_SECRET } }
-        - name: AUTH_GITHUB_PROFILE_TRANSFORM
-          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_TRANSFORM } }
-        - name: AUTH_GITHUB_PROFILE_FORMAT
-          valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_PROFILE_FORMAT } }
         - name: AUTH_GITHUB_SYNC_USER_INFO
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_SYNC_USER_INFO } }
         - name: AUTH_GITHUB_FIRST_NAME_KEY
@@ -1221,6 +1311,8 @@ spec:
           mountPath: /directus/uploads
         - name: vault-secrets
           mountPath: /vault-secrets
+        - name: directus-extensions
+          mountPath: /directus/extensions
 ---
 # Directus Service
 apiVersion: v1
