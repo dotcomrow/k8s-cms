@@ -405,8 +405,6 @@ data:
       }
     }
   github-profile-sync.index.js: |
-    import { defineHook } from '@directus/extensions-sdk';
-
     const PROVIDER = 'github';
 
     const isNonEmpty = (value) => value !== null && value !== undefined && value !== '';
@@ -434,7 +432,7 @@ data:
       return Object.keys(metadata).length ? metadata : undefined;
     };
 
-    export default defineHook(({ filter }, { services, logger, getSchema }) => {
+    export default ({ filter }, { services, logger, getSchema }) => {
       logger.info('[github-profile-sync] hook loaded');
       const { FilesService } = services;
 
@@ -473,6 +471,13 @@ data:
         if (!userInfoFlat || typeof userInfoFlat !== 'object') return payload;
 
         const userInfo = userInfoFlat;
+        try {
+          const keys = Object.keys(userInfo);
+          logger.info(
+            { keys: keys.slice(0, 30), total: keys.length },
+            '[github-profile-sync] userInfo keys'
+          );
+        } catch {}
 
         const updates = {};
         const login = pick(userInfo, 'login');
@@ -504,7 +509,7 @@ data:
       filter('auth.update', async (payload, meta, context) => {
         return applyGithubProfile(payload, meta, context, { importAvatar: true });
       });
-    });
+    };
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -896,9 +901,10 @@ spec:
               "SELECT field FROM directus_fields WHERE collection='directus_settings' AND special::text ILIKE '%encrypt%';" || true)"
             ENCRYPTED_REGEX='^1\\|\\|scrypt\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+$'
 
-            if [ -n "${ENCRYPTED_COLS:-}" ]; then
+            EXTRA_ENCRYPTED_COLS="ai_openai_api_key ai_anthropic_api_key ai_google_api_key ai_openai_compatible_api_key"
+            if [ -n "${ENCRYPTED_COLS:-}" ] || [ -n "${EXTRA_ENCRYPTED_COLS:-}" ]; then
               echo "🔐 Sanitizing encrypted settings fields..."
-              printf '%s\n' "$ENCRYPTED_COLS" | while IFS= read -r enc_col; do
+              printf '%s\n' "$ENCRYPTED_COLS" "$EXTRA_ENCRYPTED_COLS" | while IFS= read -r enc_col; do
                 [ -z "${enc_col:-}" ] && continue
                 _col_escaped="$(printf '%s' "$enc_col" | sed 's/\"/\"\"/g')"
                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
