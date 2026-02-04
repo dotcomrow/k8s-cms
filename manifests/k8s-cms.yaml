@@ -879,14 +879,12 @@ spec:
 
             if [ -n "${ENCRYPTED_COLS:-}" ]; then
               echo "🔐 Sanitizing encrypted settings fields..."
-              while IFS= read -r enc_col; do
+              printf '%s\n' "$ENCRYPTED_COLS" | while IFS= read -r enc_col; do
                 [ -z "${enc_col:-}" ] && continue
                 _col_escaped="$(printf '%s' "$enc_col" | sed 's/\"/\"\"/g')"
                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
                   -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL WHERE \"${_col_escaped}\" IS NOT NULL AND \"${_col_escaped}\" NOT LIKE '%||%';"
-              done <<EOF_ENC
-${ENCRYPTED_COLS}
-EOF_ENC
+              done
             fi
 
             _update_setting() {
