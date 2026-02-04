@@ -401,7 +401,9 @@ data:
       "type": "module",
       "directus:extension": {
         "type": "hook",
-        "path": "index.js"
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
       }
     }
   github-profile-sync.index.js: |
@@ -902,10 +904,23 @@ spec:
             ENCRYPTED_REGEX='^1\\|\\|scrypt\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+$'
 
             EXTRA_ENCRYPTED_COLS="ai_openai_api_key ai_anthropic_api_key ai_google_api_key ai_openai_compatible_api_key"
-            if [ -n "${ENCRYPTED_COLS:-}" ] || [ -n "${EXTRA_ENCRYPTED_COLS:-}" ]; then
+            ALL_ENCRYPTED_COLS="${ENCRYPTED_COLS:-}"
+            for _col in $EXTRA_ENCRYPTED_COLS; do
+              if [ -n "${ALL_ENCRYPTED_COLS:-}" ]; then
+                ALL_ENCRYPTED_COLS="${ALL_ENCRYPTED_COLS}
+${_col}"
+              else
+                ALL_ENCRYPTED_COLS="${_col}"
+              fi
+            done
+
+            if [ -n "${ALL_ENCRYPTED_COLS:-}" ]; then
               echo "🔐 Sanitizing encrypted settings fields..."
-              printf '%s\n' "$ENCRYPTED_COLS" "$EXTRA_ENCRYPTED_COLS" | while IFS= read -r enc_col; do
+              printf '%s\n' "$ALL_ENCRYPTED_COLS" | while IFS= read -r enc_col; do
                 [ -z "${enc_col:-}" ] && continue
+                if ! printf '%s\n' "$SETTINGS_COLS" | grep -qx "$enc_col"; then
+                  continue
+                fi
                 _col_escaped="$(printf '%s' "$enc_col" | sed 's/\"/\"\"/g')"
                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
                   -c "SET search_path TO directus, public; UPDATE directus_settings SET \"${_col_escaped}\" = NULL WHERE \"${_col_escaped}\" IS NOT NULL AND \"${_col_escaped}\" !~ '${ENCRYPTED_REGEX}';"
