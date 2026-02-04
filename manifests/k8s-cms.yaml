@@ -317,16 +317,91 @@ data:
 
   WEBSOCKETS_ENABLED: "true"
 ---
-# Optional Directus settings patch (non-secret).
-# Add fields to settings.json to apply them via /settings on startup.
+# Optional Directus settings patch.
+# Add fields to settings.yaml to apply them via DB on startup.
+# Note: If you add secrets here (e.g. OpenAI key), AVP will render them into a ConfigMap.
+# Consider whether a Secret is more appropriate for your threat model.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: directus-settings
   namespace: directus
 data:
-  settings.json: |
-    {}
+  settings.yaml: |
+    id: 1 # Singleton settings row id (always 1).
+    project_name: "Suncoast Systems CMS" # Project name shown in Data Studio, login, and public pages.
+    project_descriptor: "Content Management System for Suncoast Systems" # Short descriptor shown beneath the project name in Data Studio.
+    project_url: null # URL opened when clicking the top-left logo in the module bar.
+    project_color: "#6644FF" # Brand color (hex) for logo, login, and public pages.
+    project_logo: null # File id for 40x40 logo (directus_files).
+    public_foreground: null # File id for public page foreground image (directus_files).
+    public_background: null # File id for public page background image/video (directus_files).
+    public_favicon: null # File id for Data Studio favicon (directus_files).
+    public_note: null # Markdown note shown on the public/login page.
+    default_appearance: auto # Theme mode: auto | light | dark.
+    default_theme_light: null # Theme name/id for light mode (from themes list).
+    default_theme_dark: null # Theme name/id for dark mode (from themes list).
+    theme_light_overrides: null # JSON of theme token overrides for light mode.
+    theme_dark_overrides: null # JSON of theme token overrides for dark mode.
+    default_language: en-US # Default language locale for the app (e.g. en-US).
+    auth_login_attempts: 25 # Failed login attempts before account is locked/suspended.
+    auth_password_policy: null # Password policy regex or preset (none/weak/strong/custom); null disables.
+    storage_asset_transform: all # Asset transforms: all | none | presets.
+    storage_asset_presets: null # Array of preset objects (key, fit, width, height, quality, withoutEnlargement, format, etc).
+    # example:
+    # - key: small
+    #   fit: cover
+    #   width: 200
+    #   height: 161
+    #   quality: 80
+    #   withoutEnlargement: false
+    custom_css: null # Custom CSS injected into the Data Studio.
+    storage_default_folder: null # Default upload folder id (directus_folders).
+    basemaps: null # Array of custom basemap tile configs; overrides Mapbox defaults.
+    # example (UI fields: name, type, tileSize, url, attribution):
+    # - name: OpenStreetMap
+    #   type: raster
+    #   tileSize: 256
+    #   url: https://tile.openstreetmap.org/{z}/{x}/{y}.png
+    #   attribution: "(c) OpenStreetMap contributors"
+    #   # type values map to UI choices: Raster | Raster TileJSON | Mapbox Style
+    mapbox_key: null # Mapbox access token for map features.
+    module_bar: null # Module bar config array (visibility, order, custom links with name/icon/url).
+    # example (core modules, order matters):
+    # - content
+    # - files
+    # - insights
+    # - settings
+    # # Use the UI then read /settings to capture the exact structure for your version.
+    custom_aspect_ratios: null # Array of { text, value } for image editor aspect ratios.
+    # example:
+    # - text: "16:10"
+    #   value: 1.6
+    report_error_url: null # Error report URL template with error/route/user context variables.
+    report_bug_url: null # Bug report URL.
+    report_feature_url: null # Feature request URL.
+    public_registration: false # Enable user self-registration.
+    public_registration_verify_email: true # Require email verification for new registrations.
+    public_registration_role: null # Role id assigned to new registrations (non-admin).
+    public_registration_email_filter: null # Email filter rule(s) using Directus string filters.
+    visual_editor_urls: null # List of allowed website URLs for Visual Editor module.
+    # example:
+    # - https://www.example.com
+    # - https://admin.example.com
+    mcp_enabled: true # Enable MCP server in Settings > AI > Model Context Protocol.
+    mcp_allow_deletes: false # Allow destructive MCP tools (delete items/files/fields/etc).
+    mcp_prompts_collection: null # Collection for MCP stored prompts.
+    mcp_system_prompt_enabled: true # Use default MCP system prompt.
+    mcp_system_prompt: null # Custom MCP system prompt (overrides default).
+    ai_openai_api_key: "<path:secret/data/open_ai_key#value>" # OpenAI API key for AI Chat (encrypted at rest; AVP renders).
+    ai_anthropic_api_key: null # Anthropic API key for AI Chat.
+    ai_system_prompt: null # Custom AI Chat system prompt.
+    project_id: null # Undocumented; likely Directus Cloud metadata (leave null for self-hosted).
+    project_owner: null # Undocumented; likely project owner user id (Cloud).
+    project_usage: null # Undocumented; likely usage telemetry/metadata (Cloud).
+    org_name: null # Undocumented; likely organization name (Cloud).
+    product_updates: null # Undocumented; likely product updates metadata (Cloud).
+    project_status: null # Undocumented; likely project status (Cloud).
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -474,8 +549,8 @@ spec:
           configMap:
             name: directus-settings
             items:
-              - key: settings.json
-                path: settings.json
+              - key: settings.yaml
+                path: settings.yaml
       initContainers:
         - name: nuke-directus-roles
           image: postgres:16-alpine
@@ -590,7 +665,7 @@ spec:
             set -eu
 
             # tools
-            apk add --no-cache curl jq >/dev/null
+            apk add --no-cache curl jq yq >/dev/null
 
             # --- wait for Directus to be healthy (same pod: localhost) ---
             echo "⏳ Waiting for Directus /server/health..."
@@ -651,27 +726,43 @@ spec:
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
 
-            # 5) Configure Directus settings via API using a temporary static token
+            # 5) Configure Directus settings directly in DB
             echo "🤖 Configuring Directus settings..."
-            OPENAI_KEY="$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
-              "${VAULT_ADDR}/v1/secret/data/open_ai_key" | jq -r '.data.data.value' || true)"
-
-            if [ -z "${OPENAI_KEY:-}" ] || [ "$OPENAI_KEY" = "null" ]; then
-              echo "⚠️ OpenAI key missing in Vault (secret/data/open_ai_key#value); will skip OpenAI setting."
-              OPENAI_KEY=""
-            fi
-
-            EXTRA_SETTINGS_FILE="/directus-settings/settings.json"
-            EXTRA_SETTINGS="{}"
+            EXTRA_SETTINGS_FILE="/directus-settings/settings.yaml"
             EXTRA_SETTINGS_HAS_KEYS="0"
+            OPENAI_KEY=""
+            OPENAI_KEY_SOURCE=""
             if [ -f "$EXTRA_SETTINGS_FILE" ]; then
-              if jq -e 'type=="object"' "$EXTRA_SETTINGS_FILE" >/dev/null 2>&1; then
-                EXTRA_SETTINGS="$(cat "$EXTRA_SETTINGS_FILE")"
-                if jq -e 'length>0' "$EXTRA_SETTINGS_FILE" >/dev/null 2>&1; then
+              EXTRA_SETTINGS_JSON="$(yq -o=json '.' "$EXTRA_SETTINGS_FILE" 2>/dev/null || true)"
+              if printf '%s' "$EXTRA_SETTINGS_JSON" | jq -e 'type=="object"' >/dev/null 2>&1; then
+                if printf '%s' "$EXTRA_SETTINGS_JSON" | jq -e 'length>0' >/dev/null 2>&1; then
                   EXTRA_SETTINGS_HAS_KEYS="1"
                 fi
+                OPENAI_KEY_FROM_SETTINGS="$(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r \
+                  'to_entries[] | select(.key|test("openai.*key|ai_.*openai|openai.*api.*key"; "i")) | .value | if type=="string" then . else empty end' \
+                  | head -n1 || true)"
+                if [ -n "${OPENAI_KEY_FROM_SETTINGS:-}" ] && [ "${OPENAI_KEY_FROM_SETTINGS}" != "null" ]; then
+                  if printf '%s' "$OPENAI_KEY_FROM_SETTINGS" | grep -q '<path:'; then
+                    echo "⚠️ OpenAI key placeholder detected in settings.yaml (AVP not rendered); will try Vault."
+                  else
+                    OPENAI_KEY="$OPENAI_KEY_FROM_SETTINGS"
+                    OPENAI_KEY_SOURCE="settings.yaml"
+                  fi
+                fi
               else
-                echo "⚠️ Invalid JSON in $EXTRA_SETTINGS_FILE; ignoring."
+                echo "⚠️ Invalid YAML in $EXTRA_SETTINGS_FILE; ignoring."
+              fi
+            fi
+
+            if [ -z "${OPENAI_KEY:-}" ]; then
+              OPENAI_KEY="$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                "${VAULT_ADDR}/v1/secret/data/open_ai_key" | jq -r '.data.data.value' || true)"
+              if [ -n "${OPENAI_KEY:-}" ] && [ "${OPENAI_KEY}" != "null" ]; then
+                OPENAI_KEY_SOURCE="vault"
+              else
+                OPENAI_KEY=""
+                OPENAI_KEY_SOURCE=""
+                echo "⚠️ OpenAI key missing; will skip OpenAI setting."
               fi
             fi
 
@@ -681,62 +772,74 @@ spec:
               exec tail -f /dev/null
             fi
 
-            ADMIN_ROLE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SET search_path TO directus, public; SELECT id FROM directus_roles WHERE admin_access = true ORDER BY name LIMIT 1;" || true)"
-            ADMIN_USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SET search_path TO directus, public; SELECT id FROM directus_users WHERE role='${ADMIN_ROLE_ID}' ORDER BY id LIMIT 1;" || true)"
-
-            if [ -z "${ADMIN_ROLE_ID:-}" ] || [ -z "${ADMIN_USER_ID:-}" ] || [ "$ADMIN_ROLE_ID" = "null" ] || [ "$ADMIN_USER_ID" = "null" ]; then
-              echo "⚠️ Could not locate an admin user for API auth; skipping AI setup."
+            SETTINGS_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' ORDER BY column_name;" || true)"
+            if [ -z "${SETTINGS_COLS:-}" ]; then
+              echo "⚠️ Could not read directus_settings columns; skipping settings."
               echo "✅ Schema patch applied. Going idle."
               exec tail -f /dev/null
             fi
 
-            ADMIN_TOKEN="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SET search_path TO directus, public; SELECT token FROM directus_users WHERE id='${ADMIN_USER_ID}';" || true)"
-            TOKEN_WAS_SET=""
-            if [ -z "${ADMIN_TOKEN:-}" ] || [ "$ADMIN_TOKEN" = "null" ]; then
-              ADMIN_TOKEN="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48)"
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                "SET search_path TO directus, public; UPDATE directus_users SET token='${ADMIN_TOKEN}' WHERE id='${ADMIN_USER_ID}';"
-              TOKEN_WAS_SET="1"
-            fi
+            _update_setting() {
+              _col="$1"
+              _val="$2"
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
+                -v col="$_col" -v val="$_val" -c \
+                "SET search_path TO directus, public; DO \$\$ BEGIN EXECUTE format('UPDATE directus_settings SET %I = %L', :'col', :'val'); END \$\$;"
+            }
 
-            OPENAI_PATCH="{}"
+            UPDATED="0"
+
             if [ -n "${OPENAI_KEY:-}" ]; then
-              SETTINGS_JSON="$(curl -sf -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-                http://127.0.0.1:8055/settings || true)"
-              OPENAI_FIELD="$(printf '%s' "$SETTINGS_JSON" | jq -r \
-                '.data | keys[] | select(test("openai.*key|ai_.*openai|openai.*api.*key"; "i"))' | head -n1 || true)"
-
-              if [ -z "${OPENAI_FIELD:-}" ]; then
-                echo "⚠️ Could not find OpenAI settings field in /settings; skipping OpenAI setting."
+              OPENAI_COL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' AND column_name ~* 'openai.*key|ai_.*openai|openai.*api.*key' ORDER BY column_name LIMIT 1;" || true)"
+              if [ -n "${OPENAI_COL:-}" ]; then
+                _update_setting "$OPENAI_COL" "$OPENAI_KEY"
+                UPDATED="1"
+                echo "✅ OpenAI key stored in directus_settings.${OPENAI_COL} (source: ${OPENAI_KEY_SOURCE})"
               else
-                OPENAI_PATCH="$(jq -n --arg k "$OPENAI_FIELD" --arg v "$OPENAI_KEY" '{($k): $v}')"
+                echo "⚠️ No OpenAI settings column found in directus_settings; skipping OpenAI setting."
               fi
             fi
 
-            EXTRA_FILE="$(mktemp)"
-            OPENAI_FILE="$(mktemp)"
-            printf '%s' "$EXTRA_SETTINGS" >"$EXTRA_FILE"
-            printf '%s' "$OPENAI_PATCH" >"$OPENAI_FILE"
-            PATCH_PAYLOAD="$(jq -s '.[0] * .[1]' "$EXTRA_FILE" "$OPENAI_FILE")"
-            rm -f "$EXTRA_FILE" "$OPENAI_FILE"
-
-            if ! printf '%s' "$PATCH_PAYLOAD" | jq -e 'length>0' >/dev/null 2>&1; then
-              echo "⚠️ No applicable settings to patch; skipping."
-            else
-              curl -sf -X PATCH \
-                -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "$PATCH_PAYLOAD" \
-                http://127.0.0.1:8055/settings >/dev/null
-              echo "✅ Directus settings configured via /settings."
+            if [ "$EXTRA_SETTINGS_HAS_KEYS" = "1" ]; then
+              while IFS= read -r key; do
+                if printf '%s' "$key" | grep -Eq 'openai.*key|ai_.*openai|openai.*api.*key'; then
+                  # handled separately via OPENAI_KEY logic above
+                  continue
+                fi
+                if printf '%s\n' "$SETTINGS_COLS" | grep -qx "$key"; then
+                  val_type="$(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r --arg k "$key" '.[$k] | type')"
+                  if [ "$val_type" = "null" ]; then
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
+                      -v col="$key" -c \
+                      "SET search_path TO directus, public; DO \$\$ BEGIN EXECUTE format('UPDATE directus_settings SET %I = NULL', :'col'); END \$\$;"
+                    UPDATED="1"
+                    continue
+                  fi
+                  case "$val_type" in
+                    string)
+                      val="$(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r --arg k "$key" '.[$k]')"
+                      ;;
+                    number|boolean)
+                      val="$(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r --arg k "$key" '.[$k]')"
+                      ;;
+                    *)
+                      val="$(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -c --arg k "$key" '.[$k]')"
+                      ;;
+                  esac
+                  _update_setting "$key" "$val"
+                  UPDATED="1"
+                else
+                  echo "⚠️ settings.yaml key '${key}' not found in directus_settings; skipping."
+                fi
+              done < <(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r 'keys[]')
             fi
 
-            if [ "${TOKEN_WAS_SET:-}" = "1" ]; then
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                "SET search_path TO directus, public; UPDATE directus_users SET token=NULL WHERE id='${ADMIN_USER_ID}';"
+            if [ "$UPDATED" != "1" ]; then
+              echo "⚠️ No applicable settings were updated."
+            else
+              echo "✅ Directus settings updated in database."
             fi
 
             echo "✅ Schema patch applied. Going idle."
