@@ -394,7 +394,17 @@ metadata:
   name: directus-extensions
   namespace: directus
 data:
-  github-profile-sync.js: |
+  github-profile-sync.package.json: |
+    {
+      "name": "directus-extension-github-profile-sync",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "hook",
+        "path": "index.js"
+      }
+    }
+  github-profile-sync.index.js: |
     import { defineHook } from '@directus/extensions-sdk';
     import { unflatten } from 'flat';
 
@@ -643,8 +653,10 @@ spec:
           configMap:
             name: directus-extensions
             items:
-              - key: github-profile-sync.js
-                path: hooks/github-profile-sync/index.js
+              - key: github-profile-sync.package.json
+                path: github-profile-sync/package.json
+              - key: github-profile-sync.index.js
+                path: github-profile-sync/index.js
       initContainers:
         - name: nuke-directus-roles
           image: postgres:16-alpine
