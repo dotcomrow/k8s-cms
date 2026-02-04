@@ -406,31 +406,36 @@ data:
     }
   github-profile-sync.index.js: |
     import { defineHook } from '@directus/extensions-sdk';
-    import { unflatten } from 'flat';
 
     const PROVIDER = 'github';
 
     const isNonEmpty = (value) => value !== null && value !== undefined && value !== '';
-    const pick = (obj, key) => (obj && isNonEmpty(obj[key]) ? obj[key] : undefined);
+    const pick = (obj, key) => {
+      if (!obj) return undefined;
+      if (isNonEmpty(obj[key])) return obj[key];
+      const nestedProfile = obj[`profile.${key}`];
+      if (isNonEmpty(nestedProfile)) return nestedProfile;
+      const nestedData = obj[`data.${key}`];
+      if (isNonEmpty(nestedData)) return nestedData;
+      return undefined;
+    };
 
     const buildGithubMetadata = (info) => {
       const metadata = {};
       if (info.emails !== undefined) metadata.emails = info.emails;
       if (info.orgs !== undefined) metadata.orgs = info.orgs;
       if (info.teams !== undefined) metadata.teams = info.teams;
+      if (info['profile.emails'] !== undefined && metadata.emails === undefined) metadata.emails = info['profile.emails'];
+      if (info['profile.orgs'] !== undefined && metadata.orgs === undefined) metadata.orgs = info['profile.orgs'];
+      if (info['profile.teams'] !== undefined && metadata.teams === undefined) metadata.teams = info['profile.teams'];
+      if (info['data.emails'] !== undefined && metadata.emails === undefined) metadata.emails = info['data.emails'];
+      if (info['data.orgs'] !== undefined && metadata.orgs === undefined) metadata.orgs = info['data.orgs'];
+      if (info['data.teams'] !== undefined && metadata.teams === undefined) metadata.teams = info['data.teams'];
       return Object.keys(metadata).length ? metadata : undefined;
     };
 
-    const unflattenUserInfo = (userInfo, logger) => {
-      try {
-        return unflatten(userInfo);
-      } catch (error) {
-        logger?.warn?.(error, '[github-profile-sync] Failed to unflatten userInfo payload');
-        return userInfo;
-      }
-    };
-
     export default defineHook(({ filter }, { services, logger, getSchema }) => {
+      logger.info('[github-profile-sync] hook loaded');
       const { FilesService } = services;
 
       async function maybeImportAvatar(avatarUrl, meta, context, userInfo) {
@@ -467,7 +472,7 @@ data:
         const userInfoFlat = meta?.providerPayload?.userInfo;
         if (!userInfoFlat || typeof userInfoFlat !== 'object') return payload;
 
-        const userInfo = unflattenUserInfo(userInfoFlat, logger);
+        const userInfo = userInfoFlat;
 
         const updates = {};
         const login = pick(userInfo, 'login');
