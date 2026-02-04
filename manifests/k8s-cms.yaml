@@ -717,7 +717,6 @@ spec:
             echo "⏳ Waiting for Vault agent to generate all credential files..."
             while [ ! -f /vault-secrets/db-creds.env ] || \
                   [ ! -f /vault-secrets/app-keys.env ] || \
-                  [ ! -f /vault-secrets/openai.env ] || \
                   [ ! -f /vault-secrets/redis-creds.env ]; do
               echo "Waiting for credential files..."
               sleep 2
@@ -727,7 +726,11 @@ spec:
             echo "🔑 Loading credentials..."
             . /vault-secrets/db-creds.env
             . /vault-secrets/app-keys.env
-            . /vault-secrets/openai.env
+            if [ -f /vault-secrets/openai.env ]; then
+              . /vault-secrets/openai.env
+            else
+              echo "⚠️ /vault-secrets/openai.env not found; continuing without OPENAI_API_KEY"
+            fi
             . /vault-secrets/redis-creds.env
 
             # Generate random admin credentials for initial setup (not used for actual login)
