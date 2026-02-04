@@ -411,6 +411,18 @@ data:
 
     const isNonEmpty = (value) => value !== null && value !== undefined && value !== '';
     const isObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
+    const splitName = (fullName) => {
+      if (!fullName || typeof fullName !== 'string') return { firstName: undefined, lastName: undefined };
+      const cleaned = fullName.trim().replace(/\s+/g, ' ');
+      if (!cleaned) return { firstName: undefined, lastName: undefined };
+      if (cleaned.includes(',')) {
+        const parts = cleaned.split(',').map((part) => part.trim()).filter(Boolean);
+        if (parts.length >= 2) return { firstName: parts.slice(1).join(' '), lastName: parts[0] };
+      }
+      const parts = cleaned.split(' ');
+      if (parts.length === 1) return { firstName: parts[0], lastName: undefined };
+      return { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
+    };
     const getPath = (obj, path) => {
       if (!obj) return undefined;
       return path.split('.').reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj);
@@ -482,6 +494,22 @@ data:
       logger.info('[github-profile-sync] hook loaded');
       const { FilesService } = services;
 
+      async function filterUserUpdates(updates, context) {
+        try {
+          const schema = context.schema ?? (await getSchema());
+          const fields = schema?.collections?.directus_users?.fields;
+          if (!fields) return updates;
+          const allowed = new Set(Object.keys(fields));
+          const filtered = {};
+          for (const [key, value] of Object.entries(updates)) {
+            if (allowed.has(key)) filtered[key] = value;
+          }
+          return filtered;
+        } catch {
+          return updates;
+        }
+      }
+
       async function maybeImportAvatar(avatarUrl, meta, context, userInfo) {
         if (!avatarUrl || typeof avatarUrl !== 'string') return undefined;
 
@@ -542,11 +570,73 @@ data:
           ?? pick(payloadInfo, 'company', 'profile.company', 'data.company', 'user.company');
         const bio = pick(userInfo, 'bio', 'profile.bio', 'data.bio', 'user.bio')
           ?? pick(payloadInfo, 'bio', 'profile.bio', 'data.bio', 'user.bio');
+        const location = pick(userInfo, 'location', 'profile.location', 'data.location', 'user.location')
+          ?? pick(payloadInfo, 'location', 'profile.location', 'data.location', 'user.location');
+        const title = pick(userInfo, 'title', 'profile.title', 'data.title', 'user.title')
+          ?? pick(payloadInfo, 'title', 'profile.title', 'data.title', 'user.title');
+        const description = pick(userInfo, 'description', 'profile.description', 'data.description', 'user.description')
+          ?? pick(payloadInfo, 'description', 'profile.description', 'data.description', 'user.description');
+        const givenName = pick(
+          userInfo,
+          'given_name',
+          'first_name',
+          'profile.given_name',
+          'profile.first_name',
+          'data.given_name',
+          'data.first_name',
+          'user.given_name',
+          'user.first_name'
+        ) ?? pick(
+          payloadInfo,
+          'given_name',
+          'first_name',
+          'profile.given_name',
+          'profile.first_name',
+          'data.given_name',
+          'data.first_name',
+          'user.given_name',
+          'user.first_name'
+        );
+        const familyName = pick(
+          userInfo,
+          'family_name',
+          'last_name',
+          'profile.family_name',
+          'profile.last_name',
+          'data.family_name',
+          'data.last_name',
+          'user.family_name',
+          'user.last_name'
+        ) ?? pick(
+          payloadInfo,
+          'family_name',
+          'last_name',
+          'profile.family_name',
+          'profile.last_name',
+          'data.family_name',
+          'data.last_name',
+          'user.family_name',
+          'user.last_name'
+        );
 
         if (login) updates.github_login = login;
         if (htmlUrl) updates.github_url = htmlUrl;
         if (company) updates.github_company = company;
         if (bio) updates.github_bio = bio;
+        if (location) updates.location = location;
+        if (title || company) updates.title = title || company;
+        if (description || bio) updates.description = description || bio;
+
+        if (givenName || familyName) {
+          if (givenName) updates.first_name = givenName;
+          if (familyName) updates.last_name = familyName;
+        } else {
+          const name = pick(userInfo, 'name', 'profile.name', 'data.name', 'user.name')
+            ?? pick(payloadInfo, 'name', 'profile.name', 'data.name', 'user.name');
+          const split = splitName(name);
+          if (split.firstName) updates.first_name = split.firstName;
+          if (split.lastName) updates.last_name = split.lastName;
+        }
 
         const metadata = buildGithubMetadata(userInfo, payloadInfo);
         if (metadata) updates.github_metadata = metadata;
@@ -558,7 +648,8 @@ data:
           if (avatarId) updates.avatar = avatarId;
         }
 
-        return { ...payload, ...updates };
+        const safeUpdates = await filterUserUpdates(updates, context);
+        return { ...payload, ...safeUpdates };
       }
 
       filter('auth.create', async (payload, meta, context) => {
