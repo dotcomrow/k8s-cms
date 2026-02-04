@@ -312,21 +312,80 @@ metadata:
   namespace: directus
 data:
   settings.yaml: |
-    id: 1
-    project_name: "Suncoast Systems CMS"
-    project_descriptor: "Content Management System for Suncoast Systems"
-    project_color: "#6644FF"
-    default_language: en-US
-    auth_login_attempts: 25
-    storage_asset_transform: all
-    public_registration: false
-    public_registration_verify_email: true
-    mcp_enabled: true
-    mcp_allow_deletes: false
-    mcp_system_prompt_enabled: true
-    ai_anthropic_api_key: null
-    ai_system_prompt: null
-    project_owner: null
+    id: 1 # Singleton settings row id (always 1).
+    project_name: "Suncoast Systems CMS" # Project name shown in Data Studio, login, and public pages.
+    project_descriptor: "Content Management System for Suncoast Systems" # Short descriptor shown beneath the project name in Data Studio.
+    project_url: null # URL opened when clicking the top-left logo in the module bar.
+    project_color: "#6644FF" # Brand color (hex) for logo, login, and public pages.
+    project_logo: null # File id for 40x40 logo (directus_files).
+    public_foreground: null # File id for public page foreground image (directus_files).
+    public_background: null # File id for public page background image/video (directus_files).
+    public_favicon: null # File id for Data Studio favicon (directus_files).
+    public_note: null # Markdown note shown on the public/login page.
+    default_appearance: auto # Theme mode: auto | light | dark.
+    default_theme_light: null # Theme name/id for light mode (from themes list).
+    default_theme_dark: null # Theme name/id for dark mode (from themes list).
+    theme_light_overrides: null # JSON of theme token overrides for light mode.
+    theme_dark_overrides: null # JSON of theme token overrides for dark mode.
+    default_language: en-US # Default language locale for the app (e.g. en-US).
+    auth_login_attempts: 25 # Failed login attempts before account is locked/suspended.
+    auth_password_policy: null # Password policy regex or preset (none/weak/strong/custom); null disables.
+    storage_asset_transform: all # Asset transforms: all | none | presets.
+    storage_asset_presets: null # Array of preset objects (key, fit, width, height, quality, withoutEnlargement, format, etc).
+    # example:
+    # - key: small
+    #   fit: cover
+    #   width: 200
+    #   height: 161
+    #   quality: 80
+    #   withoutEnlargement: false
+    custom_css: null # Custom CSS injected into the Data Studio.
+    storage_default_folder: null # Default upload folder id (directus_folders).
+    basemaps: null # Array of custom basemap tile configs; overrides Mapbox defaults.
+    # example (UI fields: name, type, tileSize, url, attribution):
+    # - name: OpenStreetMap
+    #   type: raster
+    #   tileSize: 256
+    #   url: https://tile.openstreetmap.org/{z}/{x}/{y}.png
+    #   attribution: "(c) OpenStreetMap contributors"
+    #   # type values map to UI choices: Raster | Raster TileJSON | Mapbox Style
+    mapbox_key: null # Mapbox access token for map features.
+    module_bar: null # Module bar config array (visibility, order, custom links with name/icon/url).
+    # example (core modules, order matters):
+    # - content
+    # - files
+    # - insights
+    # - settings
+    # # Use the UI then read /settings to capture the exact structure for your version.
+    custom_aspect_ratios: null # Array of { text, value } for image editor aspect ratios.
+    # example:
+    # - text: "16:10"
+    #   value: 1.6
+    report_error_url: null # Error report URL template with error/route/user context variables.
+    report_bug_url: null # Bug report URL.
+    report_feature_url: null # Feature request URL.
+    public_registration: false # Enable user self-registration.
+    public_registration_verify_email: true # Require email verification for new registrations.
+    public_registration_role: null # Role id assigned to new registrations (non-admin).
+    public_registration_email_filter: null # Email filter rule(s) using Directus string filters.
+    visual_editor_urls: null # List of allowed website URLs for Visual Editor module.
+    # example:
+    # - https://www.example.com
+    # - https://admin.example.com
+    mcp_enabled: true # Enable MCP server in Settings > AI > Model Context Protocol.
+    mcp_allow_deletes: false # Allow destructive MCP tools (delete items/files/fields/etc).
+    mcp_prompts_collection: null # Collection for MCP stored prompts.
+    mcp_system_prompt_enabled: true # Use default MCP system prompt.
+    mcp_system_prompt: null # Custom MCP system prompt (overrides default).
+    ai_openai_api_key: "<path:secret/data/open_ai_key#value>" # OpenAI API key for AI Chat (encrypted at rest; AVP renders).
+    ai_anthropic_api_key: null # Anthropic API key for AI Chat.
+    ai_system_prompt: null # Custom AI Chat system prompt.
+    project_id: null # Undocumented; likely Directus Cloud metadata (leave null for self-hosted).
+    project_owner: null # Undocumented; likely project owner user id (Cloud).
+    project_usage: null # Undocumented; likely usage telemetry/metadata (Cloud).
+    org_name: null # Undocumented; likely organization name (Cloud).
+    product_updates: null # Undocumented; likely product updates metadata (Cloud).
+    project_status: null # Undocumented; likely project status (Cloud).
 ---
 # Directus hook extension: sync GitHub profile fields + avatar on SSO
 apiVersion: v1
