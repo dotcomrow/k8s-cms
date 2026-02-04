@@ -608,6 +608,8 @@ metadata:
   namespace: directus
   labels:
     app: directus
+  annotations:
+    reloader.stakater.com/auto: "true"
 spec:
   replicas: 1  # start with one replica to avoid concurrent DB init
   strategy:
@@ -622,6 +624,8 @@ spec:
     metadata:
       labels:
         app: directus
+      annotations:
+        reloader.stakater.com/auto: "true"
     spec:
       serviceAccountName: directus
       volumes:
@@ -810,32 +814,35 @@ spec:
               ');' \
             | psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 >/dev/null
 
-            # 2) Check sentinel; skip if already applied
+            # 2) Check sentinel; skip schema patch if already applied
             PATCH_KEY="github_profile_cols_v1"
+            SKIP_PATCH="0"
             ALREADY="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
               "SET search_path TO directus, public; SELECT 1 FROM schema_patch_log WHERE patch_key='${PATCH_KEY}';" || true)"
 
             if [ "$ALREADY" = "1" ]; then
-              echo "✅ Patch already applied, going idle."
-              exec tail -f /dev/null
+              echo "✅ Patch already applied; skipping schema changes."
+              SKIP_PATCH="1"
             fi
 
-            # 3) Apply idempotent ALTERs
-            echo "🔧 Applying user profile columns…"
-            printf '%s\n' \
-              'SET search_path TO directus, public;' \
-              'ALTER TABLE directus_users' \
-              '  ADD COLUMN IF NOT EXISTS github_login    TEXT,' \
-              '  ADD COLUMN IF NOT EXISTS github_url      TEXT,' \
-              '  ADD COLUMN IF NOT EXISTS github_company  TEXT,' \
-              '  ADD COLUMN IF NOT EXISTS github_bio      TEXT,' \
-              '  ADD COLUMN IF NOT EXISTS github_metadata JSONB;' \
-            | psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1
+            if [ "$SKIP_PATCH" != "1" ]; then
+              # 3) Apply idempotent ALTERs
+              echo "🔧 Applying user profile columns…"
+              printf '%s\n' \
+                'SET search_path TO directus, public;' \
+                'ALTER TABLE directus_users' \
+                '  ADD COLUMN IF NOT EXISTS github_login    TEXT,' \
+                '  ADD COLUMN IF NOT EXISTS github_url      TEXT,' \
+                '  ADD COLUMN IF NOT EXISTS github_company  TEXT,' \
+                '  ADD COLUMN IF NOT EXISTS github_bio      TEXT,' \
+                '  ADD COLUMN IF NOT EXISTS github_metadata JSONB;' \
+              | psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1
 
-            # 4) Record sentinel
-            echo "📝 Recording sentinel…"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
+              # 4) Record sentinel
+              echo "📝 Recording sentinel…"
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
+            fi
 
             # 5) Configure Directus settings directly in DB
             echo "🤖 Configuring Directus settings..."
@@ -998,6 +1005,42 @@ spec:
               fi
             else
               echo "⚠️ project_owner column not found; skipping."
+            fi
+
+            echo "🧩 Ensuring github-profile-sync extension is enabled..."
+            EXT_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_extensions' LIMIT 1;" || true)"
+            if [ "$EXT_TABLE_EXISTS" = "1" ]; then
+              EXT_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_extensions' ORDER BY column_name;" || true)"
+              if printf '%s\n' "$EXT_COLS" | grep -qx "folder"; then
+                EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus_extensions WHERE folder='github-profile-sync' AND source='local' LIMIT 1;" || true)"
+                if [ "$EXISTS" = "1" ]; then
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE folder='github-profile-sync' AND source='local';"
+                  echo "✅ github-profile-sync extension enabled."
+                else
+                  EXT_ID="$(cat /proc/sys/kernel/random/uuid)"
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; INSERT INTO directus_extensions (id, enabled, source, folder, bundle) VALUES ('${EXT_ID}', true, 'local', 'github-profile-sync', NULL);"
+                  echo "✅ github-profile-sync extension registered."
+                fi
+              else
+                EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus_extensions WHERE name='github-profile-sync' LIMIT 1;" || true)"
+                if [ "$EXISTS" = "1" ]; then
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE name='github-profile-sync';"
+                  echo "✅ github-profile-sync extension enabled."
+                else
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; INSERT INTO directus_extensions (name, enabled) VALUES ('github-profile-sync', true);"
+                  echo "✅ github-profile-sync extension registered."
+                fi
+              fi
+            else
+              echo "⚠️ directus_extensions table not found; skipping extension enable."
             fi
 
             echo "✅ Schema patch applied. Going idle."
@@ -1308,6 +1351,10 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: STORAGE_LOCAL_DRIVER } }
         - name: STORAGE_LOCAL_ROOT
           valueFrom: { configMapKeyRef: { name: directus-config, key: STORAGE_LOCAL_ROOT } }
+
+        # Extensions configuration
+        - name: EXTENSIONS_PATH
+          value: "/directus/extensions"
 
         # Other configuration
         - name: LOG_LEVEL
