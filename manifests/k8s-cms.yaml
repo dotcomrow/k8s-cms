@@ -837,12 +837,29 @@ spec:
               VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
 
               echo "🔐 Fetching DB static creds for directus-app from Vault…"
-              CREDS="$(curl -sf \
-                -H "X-Vault-Token: ${VAULT_TOKEN}" \
-                "${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app")"
-
-              DB_USER="$(echo "$CREDS" | jq -r '.data.username')"
-              DB_PASS="$(echo "$CREDS" | jq -r '.data.password')"
+              CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
+              DB_USER=""
+              DB_PASS=""
+              i=0
+              while [ "$i" -lt 40 ]; do
+                CODE="$(curl -sS -o /tmp/creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "$CREDS_URL" || true)"
+                if [ "$CODE" = "200" ]; then
+                  DB_USER="$(jq -r '.data.username // empty' /tmp/creds.json)"
+                  DB_PASS="$(jq -r '.data.password // empty' /tmp/creds.json)"
+                  if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
+                    break
+                  fi
+                else
+                  ERR="$(jq -r '.errors[0] // empty' /tmp/creds.json 2>/dev/null || true)"
+                  if [ -n "$ERR" ]; then
+                    echo "  .. Vault returned HTTP $CODE: $ERR"
+                  else
+                    echo "  .. Vault returned HTTP $CODE"
+                  fi
+                fi
+                i=$((i + 1))
+                sleep 3
+              done
 
               if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ] || [ "$DB_USER" = "null" ] || [ "$DB_PASS" = "null" ]; then
                 echo "❌ Failed to fetch DB creds from Vault"; exit 1
@@ -1022,7 +1039,7 @@ spec:
                   EXTRA_SETTINGS_HAS_KEYS="1"
                 fi
                 OPENAI_KEY_FROM_SETTINGS="$(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r \
-                  'to_entries[] | select(.key|test("openai.*key|ai_.*openai|openai.*api.*key"; "i")) | .value | if type=="string" then . else empty end' \
+                  'to_entries[] | select(.key|test("openai.*key$"; "i")) | .value | if type=="string" then . else empty end' \
                   | head -n1 || true)"
                 if [ -n "${OPENAI_KEY_FROM_SETTINGS:-}" ] && [ "${OPENAI_KEY_FROM_SETTINGS}" != "null" ]; then
                   if printf '%s' "$OPENAI_KEY_FROM_SETTINGS" | grep -q '<path:'; then
@@ -1096,7 +1113,7 @@ spec:
 
             if [ -n "${OPENAI_KEY:-}" ]; then
               OPENAI_COL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' AND column_name ~* 'openai.*key|ai_.*openai|openai.*api.*key' ORDER BY column_name LIMIT 1;" || true)"
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' AND column_name ~* 'openai.*key$' ORDER BY column_name LIMIT 1;" || true)"
               if [ -n "${OPENAI_COL:-}" ]; then
                 if printf '%s\n' "$ENCRYPTED_COLS" | grep -qx "$OPENAI_COL" || printf '%s\n' "$EXTRA_ENCRYPTED_COLS" | tr ' ' '\n' | grep -qx "$OPENAI_COL"; then
                   echo "⚠️ ${OPENAI_COL} is encrypted; skipping direct DB update to avoid invalid encrypted payload."
@@ -1112,11 +1129,11 @@ spec:
 
             if [ "$EXTRA_SETTINGS_HAS_KEYS" = "1" ]; then
               while IFS= read -r key; do
-                if printf '%s' "$key" | grep -Eq 'openai.*key|ai_.*openai|openai.*api.*key'; then
+                if printf '%s' "$key" | grep -Eq 'openai.*key$'; then
                   # handled separately via OPENAI_KEY logic above
                   continue
                 fi
-                if printf '%s\n' "$ENCRYPTED_COLS" | grep -qx "$key"; then
+                if printf '%s\n' "$ENCRYPTED_COLS" | grep -qx "$key" || printf '%s\n' "$EXTRA_ENCRYPTED_COLS" | tr ' ' '\n' | grep -qx "$key"; then
                   echo "⚠️ settings.yaml key '${key}' is encrypted; skipping direct DB update."
                   continue
                 fi
