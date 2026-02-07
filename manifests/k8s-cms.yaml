@@ -378,7 +378,45 @@ data:
     mcp_system_prompt_enabled: true # Use default MCP system prompt.
     mcp_system_prompt: null # Custom MCP system prompt (overrides default).
     ai_openai_api_key: "<path:secret/data/open_ai_key#value>" # OpenAI API key for AI Chat (encrypted at rest; AVP renders).
+    # Directus AI providers are enabled when their API key (and for openai-compatible: base URL) is configured.
+    # Standard providers (openai/anthropic/google) also require a non-empty allowed-models list.
     ai_anthropic_api_key: null # Anthropic API key for AI Chat.
+    ai_google_api_key: null # Google (Gemini) API key for AI Chat.
+    # OpenAI-compatible provider (useful for proxies / gateways / self-hosted OpenAI-compatible endpoints).
+    # Note: api keys are encrypted at rest; the manifest startup script stores the key in encrypted form.
+    ai_openai_compatible_api_key: "<path:secret/data/open_ai_key#value>" # OpenAI-compatible API key (encrypted at rest).
+    ai_openai_compatible_base_url: "https://api.openai.com/v1" # OpenAI-compatible base URL.
+    ai_openai_compatible_name: "openai-compatible" # Provider name (UI label / providerOptions key).
+    ai_openai_compatible_models:
+      - id: "gpt-4o-mini"
+        name: "GPT-4o Mini"
+        context: 128000
+        output: 16384
+        attachment: true
+        reasoning: false
+      - id: "gpt-5-nano"
+        name: "GPT-5 Nano"
+        context: 400000
+        output: 128000
+        attachment: true
+        reasoning: true
+      - id: "gpt-5-mini"
+        name: "GPT-5 Mini"
+        context: 400000
+        output: 128000
+        attachment: true
+        reasoning: true
+      - id: "gpt-5"
+        name: "GPT-5"
+        context: 400000
+        output: 128000
+        attachment: true
+        reasoning: true
+    ai_openai_compatible_headers: null # Optional: [{ header, value }, ...]
+    # Allowed models (empty/null disables the provider in /ai/chat).
+    ai_openai_allowed_models: ["gpt-4o-mini","gpt-5-nano","gpt-5-mini","gpt-5"]
+    ai_anthropic_allowed_models: ["claude-haiku-4-5","claude-sonnet-4-5"]
+    ai_google_allowed_models: ["gemini-3-pro-preview","gemini-3-flash-preview","gemini-2.5-pro","gemini-2.5-flash"]
     ai_system_prompt: null # Custom AI Chat system prompt.
     project_id: null # Undocumented; likely Directus Cloud metadata (leave null for self-hosted).
     project_owner: null # Undocumented; likely project owner user id (Cloud).
@@ -1384,15 +1422,252 @@ spec:
               echo "⚠️ Failed to ensure directus_settings row; continuing..."
             fi
 
-            _set_ai_openai_key() {
-              node -e 'const fs = require("fs"); const path = require("path"); const crypto = require("crypto"); const pnpmRoot = "/directus/node_modules/.pnpm"; const knexEntry = fs.readdirSync(pnpmRoot).find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex"))); if (!knexEntry) { console.error("knex not found"); process.exit(1); } const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex")); const schema = process.env.DB_SCHEMA || "directus"; const db = knex({ client: "pg", connection: { host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE } }); const parsePayload = (value) => { const parts = String(value || "").split("||"); if (parts.length < 9) return null; const [version, kdf, nStr, rStr, pStr, saltB64, ivB64, cipherText, tagB64] = parts; if (version !== "1" || kdf !== "scrypt") return null; return { n: Number(nStr) || 2 ** 14, r: Number(rStr) || 8, p: Number(pStr) || 1, saltB64, ivB64, cipherText, tagB64 }; }; const decryptPayload = (value, secret) => { const parsed = parsePayload(value); if (!parsed) return null; try { const salt = Buffer.from(parsed.saltB64, "base64"); const keyBuf = crypto.scryptSync(secret, salt, 32, { N: parsed.n, r: parsed.r, p: parsed.p }); const iv = Buffer.from(parsed.ivB64, "base64"); const tag = Buffer.from(parsed.tagB64, "base64"); const decipher = crypto.createDecipheriv("aes-256-gcm", keyBuf, iv); decipher.setAuthTag(tag); let plaintext = decipher.update(parsed.cipherText, "base64", "utf8"); plaintext += decipher.final("utf8"); return plaintext; } catch { return null; } }; const encryptPayload = (plain, secret) => { const salt = crypto.randomBytes(16); const keyBuf = crypto.scryptSync(secret, salt, 32, { N: 2 ** 14, r: 8, p: 1 }); const iv = crypto.randomBytes(12); const cipher = crypto.createCipheriv("aes-256-gcm", keyBuf, iv); let cipherText = cipher.update(plain, "utf8", "base64"); cipherText += cipher.final("base64"); const tag = cipher.getAuthTag().toString("base64"); return ["1","scrypt",2 ** 14,8,1,salt.toString("base64"),iv.toString("base64"),cipherText,tag].join("||"); }; const run = async () => { const desired = process.env.OPENAI_API_KEY; const secret = process.env.SECRET; if (!secret) { console.log("Missing SECRET; skipping OpenAI key encryption."); return; } const col = await db("information_schema.columns").where({ table_schema: schema, table_name: "directus_settings", column_name: "ai_openai_api_key" }).first(); if (!col) { console.log("ai_openai_api_key column not found; skipping."); return; } const row = await db("directus_settings").withSchema(schema).select("ai_openai_api_key").first(); const current = row?.ai_openai_api_key; const isEncrypted = typeof current === "string" && current.startsWith("1||scrypt||"); const writeValue = async (nextValue, reason) => { await db("directus_settings").withSchema(schema).update({ ai_openai_api_key: nextValue }); console.log(reason); }; if (isEncrypted) { const decrypted = decryptPayload(current, secret); if (decrypted === null) { if (desired) { const payload = encryptPayload(desired, secret); await writeValue(payload, "Re-encrypted OpenAI key with current SECRET."); } else { await writeValue(null, "Cleared invalid OpenAI key (no OPENAI_API_KEY available)."); } return; } if (desired && decrypted !== desired) { const payload = encryptPayload(desired, secret); await writeValue(payload, "Updated OpenAI key from OPENAI_API_KEY."); } else { console.log("ai_openai_api_key already encrypted and valid."); } return; } if (desired) { const payload = encryptPayload(desired, secret); await writeValue(payload, "Encrypted OpenAI key stored in directus_settings.ai_openai_api_key"); } else if (current !== null && current !== undefined) { await writeValue(null, "Cleared non-encrypted OpenAI key."); } else { console.log("No OpenAI key to set."); } }; run().finally(() => db.destroy());'
+            _ensure_ai_settings_defaults() {
+              node - <<'NODE'
+            const fs = require("fs");
+            const path = require("path");
+            
+            const pnpmRoot = "/directus/node_modules/.pnpm";
+            const knexEntry = fs
+              .readdirSync(pnpmRoot)
+              .find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex")));
+            
+            if (!knexEntry) {
+              console.error("knex not found");
+              process.exit(1);
+            }
+            
+            const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex"));
+            
+            const schema = process.env.DB_SCHEMA || "directus";
+            const db = knex({
+              client: "pg",
+              connection: {
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT || 5432),
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD,
+                database: process.env.DB_DATABASE
+              }
+            });
+            
+            const DEFAULT_OPENAI_ALLOWED_MODELS = ["gpt-4o-mini", "gpt-5-nano", "gpt-5-mini", "gpt-5"];
+            const DEFAULT_ANTHROPIC_ALLOWED_MODELS = ["claude-haiku-4-5", "claude-sonnet-4-5"];
+            const DEFAULT_GOOGLE_ALLOWED_MODELS = ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"];
+            
+            const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = "https://api.openai.com/v1";
+            const DEFAULT_OPENAI_COMPATIBLE_NAME = "openai-compatible";
+            const DEFAULT_OPENAI_COMPATIBLE_MODELS = [
+              { id: "gpt-4o-mini", name: "GPT-4o Mini", context: 128000, output: 16384, attachment: true, reasoning: false },
+              { id: "gpt-5-nano", name: "GPT-5 Nano", context: 400000, output: 128000, attachment: true, reasoning: true },
+              { id: "gpt-5-mini", name: "GPT-5 Mini", context: 400000, output: 128000, attachment: true, reasoning: true },
+              { id: "gpt-5", name: "GPT-5", context: 400000, output: 128000, attachment: true, reasoning: true }
+            ];
+            
+            async function run() {
+              const wantCols = [
+                "ai_openai_allowed_models",
+                "ai_anthropic_allowed_models",
+                "ai_google_allowed_models",
+                "ai_openai_compatible_base_url",
+                "ai_openai_compatible_name",
+                "ai_openai_compatible_models",
+                "ai_openai_compatible_headers"
+              ];
+            
+              const cols = await db("information_schema.columns")
+                .select("column_name")
+                .where({ table_schema: schema, table_name: "directus_settings" })
+                .whereIn("column_name", wantCols);
+            
+              const existing = new Set(cols.map((c) => c.column_name));
+              if (existing.size === 0) {
+                console.log("No AI settings columns found; skipping AI defaults.");
+                return;
+              }
+            
+              const rowCount = await db("directus_settings").withSchema(schema).count({ count: "*" }).first();
+              const count = Number(rowCount?.count ?? 0);
+              if (!count) {
+                await db("directus_settings").withSchema(schema).insert({});
+              }
+            
+              const selectCols = Array.from(existing);
+              const current = (await db("directus_settings").withSchema(schema).select(selectCols).first()) || {};
+            
+              const patch = {};
+            
+              if (existing.has("ai_openai_allowed_models") && current.ai_openai_allowed_models == null) {
+                patch.ai_openai_allowed_models = JSON.stringify(DEFAULT_OPENAI_ALLOWED_MODELS);
+              }
+              if (existing.has("ai_anthropic_allowed_models") && current.ai_anthropic_allowed_models == null) {
+                patch.ai_anthropic_allowed_models = JSON.stringify(DEFAULT_ANTHROPIC_ALLOWED_MODELS);
+              }
+              if (existing.has("ai_google_allowed_models") && current.ai_google_allowed_models == null) {
+                patch.ai_google_allowed_models = JSON.stringify(DEFAULT_GOOGLE_ALLOWED_MODELS);
+              }
+              if (existing.has("ai_openai_compatible_base_url") && current.ai_openai_compatible_base_url == null) {
+                patch.ai_openai_compatible_base_url = DEFAULT_OPENAI_COMPATIBLE_BASE_URL;
+              }
+              if (existing.has("ai_openai_compatible_name") && current.ai_openai_compatible_name == null) {
+                patch.ai_openai_compatible_name = DEFAULT_OPENAI_COMPATIBLE_NAME;
+              }
+              if (existing.has("ai_openai_compatible_models") && current.ai_openai_compatible_models == null) {
+                patch.ai_openai_compatible_models = JSON.stringify(DEFAULT_OPENAI_COMPATIBLE_MODELS);
+              }
+            
+              const keys = Object.keys(patch);
+              if (keys.length === 0) {
+                console.log("AI settings already initialized.");
+                return;
+              }
+            
+              await db("directus_settings").withSchema(schema).update(patch);
+              console.log(`Initialized AI settings defaults: ${keys.join(", ")}`);
+            }
+            
+            run().finally(() => db.destroy());
+            NODE
             }
 
+            _set_ai_provider_keys() {
+              node - <<'NODE'
+            const fs = require("fs");
+            const path = require("path");
+            const crypto = require("crypto");
+            
+            const pnpmRoot = "/directus/node_modules/.pnpm";
+            const knexEntry = fs
+              .readdirSync(pnpmRoot)
+              .find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex")));
+            
+            if (!knexEntry) {
+              console.error("knex not found");
+              process.exit(1);
+            }
+            
+            const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex"));
+            
+            const schema = process.env.DB_SCHEMA || "directus";
+            const db = knex({
+              client: "pg",
+              connection: {
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT || 5432),
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD,
+                database: process.env.DB_DATABASE
+              }
+            });
+            
+            const parsePayload = (value) => {
+              const parts = String(value || "").split("||");
+              if (parts.length < 9) return null;
+              const [version, kdf, nStr, rStr, pStr, saltB64, ivB64, cipherText, tagB64] = parts;
+              if (version !== "1" || kdf !== "scrypt") return null;
+              return { n: Number(nStr) || 2 ** 14, r: Number(rStr) || 8, p: Number(pStr) || 1, saltB64, ivB64, cipherText, tagB64 };
+            };
+            
+            const decryptPayload = (value, secret) => {
+              const parsed = parsePayload(value);
+              if (!parsed) return null;
+              try {
+                const salt = Buffer.from(parsed.saltB64, "base64");
+                const keyBuf = crypto.scryptSync(secret, salt, 32, { N: parsed.n, r: parsed.r, p: parsed.p });
+                const iv = Buffer.from(parsed.ivB64, "base64");
+                const tag = Buffer.from(parsed.tagB64, "base64");
+                const decipher = crypto.createDecipheriv("aes-256-gcm", keyBuf, iv);
+                decipher.setAuthTag(tag);
+                let plaintext = decipher.update(parsed.cipherText, "base64", "utf8");
+                plaintext += decipher.final("utf8");
+                return plaintext;
+              } catch {
+                return null;
+              }
+            };
+            
+            const encryptPayload = (plain, secret) => {
+              const salt = crypto.randomBytes(16);
+              const keyBuf = crypto.scryptSync(secret, salt, 32, { N: 2 ** 14, r: 8, p: 1 });
+              const iv = crypto.randomBytes(12);
+              const cipher = crypto.createCipheriv("aes-256-gcm", keyBuf, iv);
+              let cipherText = cipher.update(plain, "utf8", "base64");
+              cipherText += cipher.final("base64");
+              const tag = cipher.getAuthTag().toString("base64");
+              return ["1", "scrypt", 2 ** 14, 8, 1, salt.toString("base64"), iv.toString("base64"), cipherText, tag].join("||");
+            };
+            
+            async function run() {
+              const desired = process.env.OPENAI_API_KEY;
+              const secret = process.env.SECRET;
+            
+              if (!secret) {
+                console.log("Missing SECRET; skipping AI key encryption.");
+                return;
+              }
+            
+              if (!desired) {
+                console.log("Missing OPENAI_API_KEY; skipping AI key encryption.");
+                return;
+              }
+            
+              const wantCols = ["ai_openai_api_key", "ai_openai_compatible_api_key"];
+              const cols = await db("information_schema.columns")
+                .select("column_name")
+                .where({ table_schema: schema, table_name: "directus_settings" })
+                .whereIn("column_name", wantCols);
+            
+              const existing = cols.map((c) => c.column_name);
+              if (existing.length === 0) {
+                console.log("No AI key columns found; skipping.");
+                return;
+              }
+            
+              const row = (await db("directus_settings").withSchema(schema).select(existing).first()) || {};
+            
+              const patch = {};
+              for (const col of existing) {
+                const current = row[col];
+                const isEncrypted = typeof current === "string" && current.startsWith("1||scrypt||");
+            
+                if (isEncrypted) {
+                  const decrypted = decryptPayload(current, secret);
+                  if (decrypted === null) {
+                    patch[col] = encryptPayload(desired, secret);
+                    continue;
+                  }
+                  if (decrypted !== desired) {
+                    patch[col] = encryptPayload(desired, secret);
+                    continue;
+                  }
+                  continue;
+                }
+            
+                patch[col] = encryptPayload(desired, secret);
+              }
+            
+              const keys = Object.keys(patch);
+              if (keys.length === 0) {
+                console.log("No AI keys to update.");
+                return;
+              }
+            
+              await db("directus_settings").withSchema(schema).update(patch);
+              console.log(`Encrypted AI keys stored in directus_settings: ${keys.join(", ")}`);
+            }
+            
+            run().finally(() => db.destroy());
+            NODE
+            }
+
+            echo "🤖 Ensuring AI settings defaults..."
+            _ensure_ai_settings_defaults || echo "⚠️ Failed to ensure AI settings defaults."
+
             if [ -n "${OPENAI_API_KEY:-}" ]; then
-              echo "🔐 Encrypting OpenAI key into directus_settings..."
-              _set_ai_openai_key || echo "⚠️ Failed to store OpenAI key."
+              echo "🔐 Encrypting AI provider keys into directus_settings..."
+              _set_ai_provider_keys || echo "⚠️ Failed to store AI provider keys."
             else
-              echo "ℹ️ OPENAI_API_KEY not set; skipping encrypted OpenAI key."
+              echo "ℹ️ OPENAI_API_KEY not set; skipping encrypted AI provider keys."
             fi
 
             echo "🔍 Debug: Environment check..."
