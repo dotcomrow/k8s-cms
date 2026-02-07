@@ -300,6 +300,8 @@ data:
   # Directus 11 no longer supports PROFILE_TRANSFORM; handled via hook extension.
 
   WEBSOCKETS_ENABLED: "true"
+  # Yugabyte can throw transient catalog snapshot errors during collab init; disable collab handler by default.
+  WEBSOCKETS_COLLAB_ENABLED: "false"
 ---
 # Optional Directus settings patch.
 # Add fields to settings.yaml to apply them via DB on startup.
@@ -418,6 +420,7 @@ data:
     ai_anthropic_allowed_models: ["claude-haiku-4-5","claude-sonnet-4-5"]
     ai_google_allowed_models: ["gemini-3-pro-preview","gemini-3-flash-preview","gemini-2.5-pro","gemini-2.5-flash"]
     ai_system_prompt: null # Custom AI Chat system prompt.
+    collaborative_editing_enabled: false # Disable collaborative editing (collab websockets) by default.
     project_id: null # Undocumented; likely Directus Cloud metadata (leave null for self-hosted).
     project_owner: null # Undocumented; likely project owner user id (Cloud).
     project_usage: null # Undocumented; likely usage telemetry/metadata (Cloud).
@@ -1853,6 +1856,8 @@ spec:
         # WebSockets configuration
         - name: WEBSOCKETS_ENABLED
           valueFrom: { configMapKeyRef: { name: directus-config, key: WEBSOCKETS_ENABLED } }
+        - name: WEBSOCKETS_COLLAB_ENABLED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: WEBSOCKETS_COLLAB_ENABLED } }
 
         # GitHub OAuth provider config
         - name: AUTH_GITHUB_DRIVER
