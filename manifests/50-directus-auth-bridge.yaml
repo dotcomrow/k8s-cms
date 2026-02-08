@@ -14,8 +14,10 @@ data:
   app.py: |
     import json
     import os
+    import re
     import threading
     import time
+    import urllib.error
     import urllib.request
     import uuid
 
@@ -27,15 +29,110 @@ data:
         "KEYCLOAK_JWKS_URL",
         "https://auth.suncoast.systems/realms/external/protocol/openid-connect/certs",
     )
-    DIRECTUS_TOKEN = os.environ.get("DIRECTUS_TOKEN", "")
     TOKEN_TTL_SECONDS = int(os.environ.get("DIRECTUS_EXPIRES_IN_SECONDS", "3600"))
     JWKS_CACHE_SECONDS = int(os.environ.get("JWKS_CACHE_SECONDS", "300"))
     JWKS_TIMEOUT_SECONDS = int(os.environ.get("JWKS_TIMEOUT_SECONDS", "5"))
 
+    VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200").rstrip("/")
+    VAULT_TOKEN_FILE = os.environ.get("VAULT_TOKEN_FILE", "/vault-secrets/vault-token")
+    DIRECTUS_TOKEN_DEFAULT_VAULT_PATH = os.environ.get(
+        "DIRECTUS_TOKEN_DEFAULT_VAULT_PATH",
+        "secret/data/directus/gravitee",
+    )
+    DIRECTUS_TOKEN_CLIENT_PREFIX = os.environ.get(
+        "DIRECTUS_TOKEN_CLIENT_PREFIX",
+        "secret/data/directus/gravitee/clients/",
+    )
+    DIRECTUS_TOKEN_KEY = os.environ.get("DIRECTUS_TOKEN_KEY", "token")
+    TOKEN_CACHE_SECONDS = int(os.environ.get("DIRECTUS_TOKEN_CACHE_SECONDS", "60"))
+
     _jwks_cache = {"data": None, "loaded_at": 0.0}
     _jwks_lock = threading.Lock()
 
+    _token_cache = {"default": "", "default_loaded_at": 0.0, "by_client": {}}
+    _token_lock = threading.Lock()
+
     app = FastAPI()
+
+    _client_id_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+    def _read_file(path: str) -> str:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return handle.read().strip()
+        except Exception:
+            return ""
+
+    def _vault_read(path: str) -> dict:
+        token = _read_file(VAULT_TOKEN_FILE)
+        if not token:
+            raise HTTPException(status_code=503, detail="Vault token not available")
+
+        url = f"{VAULT_ADDR}/v1/{path.lstrip('/')}"
+        req = urllib.request.Request(url, headers={"X-Vault-Token": token})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=502, detail=f"Vault returned HTTP {resp.status}")
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return {}
+            raise HTTPException(status_code=502, detail=f"Vault returned HTTP {exc.code}")
+        except Exception:
+            raise HTTPException(status_code=502, detail="Vault request failed")
+
+    def _extract_token(payload: dict) -> str:
+        try:
+            return (payload.get("data", {}).get("data", {}) or {}).get(DIRECTUS_TOKEN_KEY, "") or ""
+        except Exception:
+            return ""
+
+    def _get_client_key(decoded: dict) -> str:
+        # For client_credentials tokens, Keycloak typically includes the caller client id as `azp`.
+        azp = decoded.get("azp")
+        if isinstance(azp, str) and _client_id_re.match(azp):
+            return azp
+
+        cid = decoded.get("client_id") or decoded.get("clientId")
+        if isinstance(cid, str) and _client_id_re.match(cid):
+            return cid
+
+        pu = decoded.get("preferred_username")
+        if isinstance(pu, str) and pu.startswith("service-account-"):
+            cid2 = pu[len("service-account-") :]
+            if cid2 and _client_id_re.match(cid2):
+                return cid2
+
+        return ""
+
+    def _get_default_directus_token() -> str:
+        now = time.time()
+        with _token_lock:
+            cached = _token_cache.get("default", "")
+            loaded_at = _token_cache.get("default_loaded_at", 0.0)
+            if cached and now - loaded_at < TOKEN_CACHE_SECONDS:
+                return cached
+
+        token = _extract_token(_vault_read(DIRECTUS_TOKEN_DEFAULT_VAULT_PATH))
+
+        with _token_lock:
+            _token_cache["default"] = token
+            _token_cache["default_loaded_at"] = now
+        return token
+
+    def _get_directus_token_for_client(client_key: str) -> str:
+        now = time.time()
+        with _token_lock:
+            cached = _token_cache["by_client"].get(client_key)
+            if cached and now - cached.get("loaded_at", 0.0) < TOKEN_CACHE_SECONDS:
+                return cached.get("token", "")
+
+        token = _extract_token(_vault_read(f"{DIRECTUS_TOKEN_CLIENT_PREFIX}{client_key}"))
+
+        with _token_lock:
+            _token_cache["by_client"][client_key] = {"token": token, "loaded_at": now}
+        return token
 
     def _load_jwks():
         now = time.time()
@@ -114,11 +211,24 @@ data:
             if isinstance(aud, str) and aud != audience:
                 raise HTTPException(status_code=401, detail="Requested audience not available")
 
-        if not DIRECTUS_TOKEN:
-            raise HTTPException(status_code=500, detail="DIRECTUS_TOKEN not set")
+        client_key = _get_client_key(decoded)
+        if client_key:
+            directus_token = _get_directus_token_for_client(client_key)
+        else:
+            directus_token = ""
+
+        if not directus_token:
+            # Backward compatible default token (single-tenant / bootstrap).
+            directus_token = _get_default_directus_token()
+
+        if not directus_token:
+            raise HTTPException(
+                status_code=403,
+                detail="No Directus token configured for caller",
+            )
 
         return {
-            "access_token": DIRECTUS_TOKEN,
+            "access_token": directus_token,
             "token_type": "Bearer",
             "expires_in": TOKEN_TTL_SECONDS,
             "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
@@ -149,21 +259,11 @@ data:
 
       sink "file" {
         config = {
-          path = "/vault/token"
+          # Shared with the app container via the /vault-secrets emptyDir.
+          path = "/vault-secrets/vault-token"
         }
       }
     }
-
-    template {
-      source      = "/vault-templates/directus-token.tpl"
-      destination = "/vault-secrets/directus-token.env"
-      perms       = 0644
-    }
-
-  directus-token.tpl: |
-    {{ with secret "secret/data/directus/gravitee" -}}
-    export DIRECTUS_TOKEN="{{ .Data.data.token }}"
-    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -193,8 +293,6 @@ spec:
               mountPath: /vault-config
             - name: vault-secrets
               mountPath: /vault-secrets
-            - name: vault-templates
-              mountPath: /vault-templates
         - name: directus-auth-bridge
           image: python:3.11-slim
           ports:
@@ -211,12 +309,10 @@ spec:
             - |
               set -e
               pip install --no-cache-dir -r /app/requirements.txt >/dev/null
-              echo "⏳ Waiting for Vault agent to render DIRECTUS_TOKEN..."
-              while [ ! -f /vault-secrets/directus-token.env ]; do
+              echo "⏳ Waiting for Vault agent to authenticate..."
+              while [ ! -f /vault-secrets/vault-token ]; do
                 sleep 2
               done
-              . /vault-secrets/directus-token.env
-              export DIRECTUS_TOKEN
               python -m uvicorn app:app --app-dir /app --host 0.0.0.0 --port 8080
           volumeMounts:
             - name: app
@@ -232,12 +328,6 @@ spec:
             name: vault-agent-config-directus-auth-bridge
         - name: vault-secrets
           emptyDir: {}
-        - name: vault-templates
-          configMap:
-            name: vault-agent-config-directus-auth-bridge
-            items:
-              - key: directus-token.tpl
-                path: directus-token.tpl
 ---
 apiVersion: v1
 kind: Service

@@ -56,6 +56,12 @@ spec:
             items:
               - key: settings.yaml
                 path: settings.yaml
+        - name: directus-sites
+          configMap:
+            name: directus-sites
+            items:
+              - key: sites.yaml
+                path: sites.yaml
         - name: directus-extensions
           configMap:
             name: directus-extensions
@@ -302,6 +308,165 @@ spec:
               fi
             fi
 
+            # 5b) Provision site-specific roles/tokens/permissions (GitOps-driven).
+            # - Each site maps from Keycloak `azp` (client id) -> Vault token -> Directus role token.
+            # - GraphQL schema/actions are permission-filtered; seed baseline read perms per site.
+            echo "🧭 Provisioning Directus site roles (if configured)..."
+            SITES_FILE="/directus-sites/sites.yaml"
+            if [ -f "$SITES_FILE" ]; then
+              SITES_JSON="$(yq -o=json '.' "$SITES_FILE" 2>/dev/null || true)"
+              if printf '%s' "$SITES_JSON" | jq -e '.sites | type=="array" and length>0' >/dev/null 2>&1; then
+                ROLE_COLS_ALL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_roles' ORDER BY column_name;" || true)"
+                _has_role_col() { printf '%s\n' "$ROLE_COLS_ALL" | grep -qx "$1"; }
+
+                PERM_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_permissions' LIMIT 1;" || true)"
+                PERM_COLS_ALL=""
+                PERM_FIELDS_TYPE=""
+                PERMISSIONS_TYPE=""
+                VALIDATION_TYPE=""
+                PRESETS_TYPE=""
+                if [ "${PERM_TABLE_EXISTS:-0}" = "1" ]; then
+                  PERM_COLS_ALL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' ORDER BY column_name;" || true)"
+                  _has_perm_col() { printf '%s\n' "$PERM_COLS_ALL" | grep -qx "$1"; }
+                  PERM_FIELDS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT data_type || ':' || udt_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' AND column_name='fields' LIMIT 1;" || true)"
+                  PERMISSIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' AND column_name='permissions' LIMIT 1;" || true)"
+                  VALIDATION_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' AND column_name='validation' LIMIT 1;" || true)"
+                  PRESETS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' AND column_name='presets' LIMIT 1;" || true)"
+                else
+                  _has_perm_col() { return 1; }
+                fi
+
+                _json_empty_for_type() {
+                  _t="$1"
+                  case "$_t" in
+                    jsonb) printf "'{}'::jsonb" ;;
+                    json) printf "'{}'::json" ;;
+                    *) printf "NULL" ;;
+                  esac
+                }
+
+                _fields_value_for_type() {
+                  _t="$1"
+                  case "$_t" in
+                    ARRAY:*) printf "ARRAY['*']::text[]" ;;
+                    jsonb:*|jsonb) printf "'[\"*\"]'::jsonb" ;;
+                    json:*|json) printf "'[\"*\"]'::json" ;;
+                    text:*|text|character\ varying:*|character\ varying) printf "'*'" ;;
+                    *) printf "NULL" ;;
+                  esac
+                }
+
+                printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
+                  site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
+                  client_key="$(printf '%s' "$site" | jq -r '.client_key // .clientId // empty')"
+                  role_name="$(printf '%s' "$site" | jq -r '.role_name // .role // empty')"
+
+                  if [ -z "${client_key:-}" ] || [ "${client_key}" = "null" ]; then
+                    echo "⚠️  site entry missing client_key; skipping (site_key=${site_key})"
+                    continue
+                  fi
+                  if [ -z "${role_name:-}" ] || [ "${role_name}" = "null" ]; then
+                    role_name="$client_key"
+                  fi
+                  if ! printf '%s' "$client_key" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+                    echo "⚠️  invalid client_key '${client_key}' (site_key=${site_key}); skipping"
+                    continue
+                  fi
+
+                  # Ensure a per-client Directus role token exists in Vault.
+                  SITE_TOKEN=""
+                  SITE_VAULT_PATH="secret/data/directus/gravitee/clients/${client_key}"
+                  CODE="$(curl -sS -o /tmp/site-token.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                    "${VAULT_ADDR}/v1/${SITE_VAULT_PATH}" || true)"
+                  if [ "$CODE" = "200" ]; then
+                    SITE_TOKEN="$(jq -r '.data.data.token // empty' /tmp/site-token.json 2>/dev/null || true)"
+                  fi
+                  if [ -z "${SITE_TOKEN:-}" ] || [ "${SITE_TOKEN}" = "null" ]; then
+                    SITE_TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                    payload="$(jq -nc --arg t "$SITE_TOKEN" '{data:{token:$t}}')"
+                    WCODE="$(curl -sS -o /tmp/site-token-write.json -w '%{http_code}' -X POST \
+                      -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+                      -d "$payload" "${VAULT_ADDR}/v1/${SITE_VAULT_PATH}" || true)"
+                    if [ "$WCODE" != "200" ] && [ "$WCODE" != "204" ]; then
+                      echo "⚠️  failed to write Vault token for client_key=${client_key} (HTTP ${WCODE}); skipping"
+                      continue
+                    fi
+                    echo "🔐 Vault token created for client_key=${client_key}"
+                  fi
+
+                  # Ensure Directus role exists (create if missing) and is pinned to the Vault token.
+                  role_name_sql="$(printf '%s' "$role_name" | sed "s/'/''/g")"
+                  ROLE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SET search_path TO directus, public; SELECT id FROM directus_roles WHERE name = '${role_name_sql}' LIMIT 1;" || true)"
+                  ROLE_ID="$(printf '%s' "$ROLE_ID" | tr -d '\r')"
+                  if [ -z "${ROLE_ID:-}" ] || [ "${ROLE_ID}" = "null" ]; then
+                    ROLE_ID="$(cat /proc/sys/kernel/random/uuid)"
+                    desc="Site role for ${site_key:-$client_key}"
+                    desc_sql="$(printf '%s' "$desc" | sed "s/'/''/g")"
+                    token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
+                    INS_COLS="id,name"
+                    INS_VALS="'${ROLE_ID}','${role_name_sql}'"
+                    if _has_role_col "description"; then INS_COLS="${INS_COLS},description"; INS_VALS="${INS_VALS},'${desc_sql}'"; fi
+                    if _has_role_col "icon"; then INS_COLS="${INS_COLS},icon"; INS_VALS="${INS_VALS},'shield'"; fi
+                    if _has_role_col "admin_access"; then INS_COLS="${INS_COLS},admin_access"; INS_VALS="${INS_VALS},false"; fi
+                    if _has_role_col "app_access"; then INS_COLS="${INS_COLS},app_access"; INS_VALS="${INS_VALS},false"; fi
+                    if _has_role_col "enforce_tfa"; then INS_COLS="${INS_COLS},enforce_tfa"; INS_VALS="${INS_VALS},false"; fi
+                    if _has_role_col "token"; then INS_COLS="${INS_COLS},token"; INS_VALS="${INS_VALS},'${token_sql}'"; fi
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; INSERT INTO directus_roles (${INS_COLS}) VALUES (${INS_VALS});"
+                    echo "✅ Created Directus role '${role_name}' (id=${ROLE_ID})"
+                  fi
+
+                  if _has_role_col "token"; then
+                    token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
+                    role_id_sql="$(printf '%s' "$ROLE_ID" | sed "s/'/''/g")"
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; UPDATE directus_roles SET token = '${token_sql}' WHERE id = '${role_id_sql}';"
+                  fi
+
+                  # Seed baseline read permissions for this role (drives available GraphQL actions).
+                  if [ "${PERM_TABLE_EXISTS:-0}" = "1" ]; then
+                    perms_empty="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+                    val_empty="$(_json_empty_for_type "${VALIDATION_TYPE:-}")"
+                    pre_empty="$(_json_empty_for_type "${PRESETS_TYPE:-}")"
+                    fields_val="$(_fields_value_for_type "${PERM_FIELDS_TYPE:-}")"
+
+                    printf '%s' "$site" | jq -r '.read_collections[]? | strings' | while IFS= read -r coll; do
+                      [ -z "${coll:-}" ] && continue
+                      coll_sql="$(printf '%s' "$coll" | sed "s/'/''/g")"
+                      exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                        "SET search_path TO directus, public; SELECT 1 FROM directus_permissions WHERE role = '${ROLE_ID}' AND collection = '${coll_sql}' AND action = 'read' LIMIT 1;" || true)"
+                      exists="$(printf '%s' "$exists" | tr -d '\r')"
+                      if [ "$exists" = "1" ]; then
+                        continue
+                      fi
+                      pid="$(cat /proc/sys/kernel/random/uuid)"
+                      PCOLS="id,role,collection,action"
+                      PVALS="'${pid}','${ROLE_ID}','${coll_sql}','read'"
+                      if _has_perm_col "permissions"; then PCOLS="${PCOLS},permissions"; PVALS="${PVALS},${perms_empty}"; fi
+                      if _has_perm_col "validation"; then PCOLS="${PCOLS},validation"; PVALS="${PVALS},${val_empty}"; fi
+                      if _has_perm_col "presets"; then PCOLS="${PCOLS},presets"; PVALS="${PVALS},${pre_empty}"; fi
+                      if _has_perm_col "fields"; then PCOLS="${PCOLS},fields"; PVALS="${PVALS},${fields_val}"; fi
+                      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                        "SET search_path TO directus, public; INSERT INTO directus_permissions (${PCOLS}) VALUES (${PVALS});"
+                      echo "✅ Granted read on ${coll} to role '${role_name}'"
+                    done
+                  fi
+                done
+              else
+                echo "  └─ no sites configured in ${SITES_FILE}; skipping"
+              fi
+            else
+              echo "  └─ ${SITES_FILE} not found; skipping"
+            fi
+
             # 6) Configure Directus settings directly in DB
             echo "🤖 Configuring Directus settings..."
             EXTRA_SETTINGS_FILE="/directus-settings/settings.yaml"
@@ -528,6 +693,9 @@ spec:
             readOnly: true
           - name: directus-settings
             mountPath: /directus-settings
+            readOnly: true
+          - name: directus-sites
+            mountPath: /directus-sites
             readOnly: true
       - name: vault-agent
         image: hashicorp/vault:1.15.4

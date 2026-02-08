@@ -1,0 +1,27 @@
+# Directus "customer sites" config (drives role + token + permissions bootstrap).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-sites
+  namespace: directus
+  labels:
+    app: directus
+data:
+  sites.yaml: |
+    sites:
+      # Internal site (Cloudflare Worker service client)
+      - site_key: internal
+        client_key: cms-site-internal
+        role_name: cms-site-internal
+        read_collections:
+          # Minimal baseline so GraphQL can serve assets/files
+          - directus_files
+          - directus_folders
+
+      # External site (Cloudflare Worker service client)
+      - site_key: external
+        client_key: cms-site-external
+        role_name: cms-site-external
+        read_collections:
+          - directus_files
+          - directus_folders
