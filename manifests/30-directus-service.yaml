@@ -38,7 +38,7 @@ metadata:
     # Definition list fields (comma-separated)
     gravitee.io/definition-groups: "cms"
     gravitee.io/definition-tags: "directus,cms,graphql,rest"
-    gravitee.io/definition-labels: "internal,cms"
+    gravitee.io/definition-labels: "internal,cms,hasura"
     gravitee.io/definition-categories: "cms"
     gravitee.io/definition-path-mappings: "/directus/*"
 
