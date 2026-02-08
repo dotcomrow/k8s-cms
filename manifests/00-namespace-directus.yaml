@@ -1,0 +1,11 @@
+# Namespace for Directus CMS
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: directus
+  labels:
+    app: directus-cms
+  annotations:
+    linkerd.io/inject: enabled
+    config.linkerd.io/skip-outbound-ports: "5433"
+    field.cattle.io/projectId: "local:applications"

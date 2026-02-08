@@ -1,0 +1,232 @@
+# Serve a Gravitee-friendly OpenAPI document (normalized to OpenAPI 3.0.3).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: directus-openapi
+  namespace: directus
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: directus-openapi
+  namespace: directus
+  labels:
+    app: directus-openapi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: directus-openapi
+  template:
+    metadata:
+      labels:
+        app: directus-openapi
+    spec:
+      serviceAccountName: directus-openapi
+      containers:
+        - name: openapi-fetcher
+          image: python:3.11-slim
+          command: ["python", "-c"]
+          args:
+            - |
+              import json
+              import os
+              import re
+              import time
+              import urllib.request
+
+              url = os.environ.get(
+                  "OPENAPI_SOURCE_URL",
+                  "http://directus-service.directus.svc.cluster.local:8055/server/specs/oas",
+              )
+              out_path = "/openapi/openapi.json"
+
+              retry_seconds = int(os.environ.get("OPENAPI_RETRY_SECONDS", "5"))
+              refresh_seconds = int(os.environ.get("OPENAPI_REFRESH_SECONDS", "300"))
+
+              def normalize(obj):
+                  if isinstance(obj, dict):
+                      obj.pop("jsonSchemaDialect", None)
+                      t = obj.get("type")
+                      if isinstance(t, list) and "null" in t:
+                          t_no_null = [x for x in t if x != "null"]
+                          obj["nullable"] = True
+                          if len(t_no_null) == 1:
+                              obj["type"] = t_no_null[0]
+                          else:
+                              obj["type"] = t_no_null
+                      for key in ("anyOf", "oneOf"):
+                          if key in obj and isinstance(obj[key], list):
+                              items = obj[key]
+                              has_null = any(
+                                  isinstance(item, dict) and item.get("type") == "null"
+                                  for item in items
+                              )
+                              if has_null:
+                                  obj["nullable"] = True
+                                  items = [
+                                      item
+                                      for item in items
+                                      if not (isinstance(item, dict) and item.get("type") == "null")
+                                  ]
+                              obj[key] = [normalize(item) for item in items]
+                      for k, v in list(obj.items()):
+                          if k in ("anyOf", "oneOf"):
+                              continue
+                          obj[k] = normalize(v)
+                  elif isinstance(obj, list):
+                      return [normalize(item) for item in obj]
+                  return obj
+
+              def ensure_path_params(spec):
+                  path_re = re.compile(r"{([^}]+)}")
+                  paths = spec.get("paths", {})
+                  for path, methods in paths.items():
+                      if not isinstance(methods, dict):
+                          continue
+                      required = path_re.findall(path)
+                      if not required:
+                          continue
+                      path_level_params = methods.get("parameters")
+                      if path_level_params is None:
+                          path_level_params = []
+                          methods["parameters"] = path_level_params
+                      path_level_params = [
+                          p for p in path_level_params if isinstance(p, dict)
+                      ]
+                      for method, op in methods.items():
+                          if method.startswith("x-") or method == "parameters":
+                              continue
+                          if not isinstance(op, dict):
+                              continue
+                          op_params = op.get("parameters") or []
+                          op_params = [p for p in op_params if isinstance(p, dict)]
+                          existing = set(
+                              p.get("name")
+                              for p in path_level_params + op_params
+                              if p.get("in") == "path" and p.get("name")
+                          )
+                          missing = [p for p in required if p not in existing]
+                          if not missing:
+                              continue
+                          for param in missing:
+                              op_params.append(
+                                  {
+                                      "name": param,
+                                      "in": "path",
+                                      "required": True,
+                                      "schema": {"type": "string"},
+                                  }
+                              )
+                          op["parameters"] = op_params
+
+              def dedupe_operation_ids(spec):
+                  seen = {}
+                  paths = spec.get("paths", {})
+                  for path, methods in paths.items():
+                      if not isinstance(methods, dict):
+                          continue
+                      for method, op in methods.items():
+                          if method.startswith("x-") or method == "parameters":
+                              continue
+                          if not isinstance(op, dict):
+                              continue
+                          op_id = op.get("operationId")
+                          if not op_id:
+                              op_id = (
+                                  f"{method}_{path}"
+                                  .replace("/", "_")
+                                  .replace("{", "")
+                                  .replace("}", "")
+                              )
+                              op["operationId"] = op_id
+                          if op_id in seen:
+                              new_id = f"{op_id}_{method}"
+                              if new_id in seen:
+                                  idx = 2
+                                  while f"{op_id}_{idx}" in seen:
+                                      idx += 1
+                                  new_id = f"{op_id}_{idx}"
+                              op["operationId"] = new_id
+                              seen[new_id] = (path, method)
+                          else:
+                              seen[op_id] = (path, method)
+
+              def write_stub():
+                  if os.path.exists(out_path):
+                      return
+                  stub = {
+                      "openapi": "3.0.3",
+                      "info": {
+                          "title": "Directus API",
+                          "version": "0.0.0",
+                      },
+                      "paths": {},
+                  }
+                  os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                  with open(out_path, "w", encoding="utf-8") as handle:
+                      json.dump(stub, handle)
+
+              def fetch_once():
+                  with urllib.request.urlopen(url, timeout=10) as resp:
+                      if resp.status != 200:
+                          raise RuntimeError(f"unexpected status {resp.status}")
+                      data = json.load(resp)
+                  data["openapi"] = "3.0.3"
+                  normalize(data)
+                  ensure_path_params(data)
+                  dedupe_operation_ids(data)
+                  os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                  tmp_path = f"{out_path}.tmp"
+                  with open(tmp_path, "w", encoding="utf-8") as handle:
+                      json.dump(data, handle)
+                  os.replace(tmp_path, out_path)
+
+              write_stub()
+
+              while True:
+                  try:
+                      fetch_once()
+                      print("OpenAPI fetched successfully")
+                      time.sleep(refresh_seconds)
+                  except Exception as exc:
+                      print(f"OpenAPI fetch failed: {exc}")
+                      write_stub()
+                      time.sleep(retry_seconds)
+          env:
+            - name: OPENAPI_SOURCE_URL
+              value: "http://directus-service.directus.svc.cluster.local:8055/server/specs/oas"
+            - name: OPENAPI_RETRY_SECONDS
+              value: "5"
+            - name: OPENAPI_REFRESH_SECONDS
+              value: "300"
+          volumeMounts:
+            - name: openapi
+              mountPath: /openapi
+        - name: openapi-server
+          image: python:3.11-slim
+          command: ["python", "-m", "http.server", "8080", "--directory", "/openapi"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: openapi
+              mountPath: /openapi
+      volumes:
+        - name: openapi
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: directus-openapi
+  namespace: directus
+  labels:
+    app: directus-openapi
+spec:
+  selector:
+    app: directus-openapi
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

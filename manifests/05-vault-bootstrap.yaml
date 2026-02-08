@@ -1,0 +1,230 @@
+# =========================
+# Directus CMS Platform with Vault Integration (dynamic team→role mapping)
+# =========================
+
+# =========================
+# Vault and YugabyteDB Initialization Jobs
+# =========================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: copy-directus-vault-root-token
+  namespace: vault
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: default
+      restartPolicy: Never
+      containers:
+        - name: copy-secret
+          image: alpine/k8s:1.31.4
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              echo "🔁 Copying 'vault-root-token' from vault → directus..."
+              kubectl get secret vault-root-token -n vault -o yaml | \
+                sed 's/namespace: vault/namespace: directus/' | \
+                kubectl apply -f -
+              echo "✅ Secret copied successfully."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: directus-yugabyte-config
+  namespace: vault
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: "disabled"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      volumes:
+        - name: root-token
+          secret:
+            secretName: vault-root-token
+      containers:
+        - name: setup-role
+          image: hashicorp/vault:1.15.4
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -eu
+
+              PGHOST=yb-tserver-service.yugabyte.svc.cluster.local
+              PGPORT=5433
+              DB=directus
+              ROLE_GROUP=directus
+              ROLE_OWNER=directus_app
+              VAULTADMIN_USER=vaultadmin
+
+              apk add --no-cache postgresql15-client jq netcat-openbsd curl
+
+              export PATH="$PATH:/vault-bin"
+              export VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+
+              while [ ! -f /vault-token/VAULT_TOKEN ]; do
+                echo "🔁 Waiting for Vault token file..."
+                sleep 2
+              done
+              export VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
+
+              while ! curl -sS -o /dev/null --connect-timeout 2 --max-time 5 "$VAULT_ADDR/v1/sys/health"; do
+                echo "⏳ Waiting for Vault at $VAULT_ADDR..."
+                sleep 5
+              done
+
+              echo "🧩 Ensuring KV v2 at 'secret/'..."
+              while :; do
+                if vault secrets list -format=json 2>/dev/null \
+                  | jq -e '."secret/".type=="kv" and ."secret/".options.version=="2"' >/dev/null; then
+                  echo "✅ 'secret/' is KVv2"; break
+                fi
+                if vault secrets list -format=json 2>/dev/null | jq -e 'has("secret/")' >/dev/null; then
+                  echo "❌ 'secret/' exists but is not KVv2; please migrate manually."; exit 1
+                fi
+                vault secrets enable -path=secret -version=2 kv && break
+                sleep 2
+              done
+
+              echo "🔐 Seeding directus credentials (if missing)..."
+              if ! vault kv get -format=json secret/directus/admin >/dev/null 2>&1; then
+                PASS="$(tr -dc 'A-Za-z0-9@#%^+=_' </dev/urandom | head -c 32)"
+                vault kv put secret/directus/admin email=admin@suncoastsystems.com password="$PASS"
+              fi
+              
+              if ! vault kv get -format=json secret/directus/keys >/dev/null 2>&1; then
+                KEY="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                SECRET="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                vault kv put secret/directus/keys key="$KEY" secret="$SECRET"
+              fi
+
+              # Static role token used by Gravitee token exchange bridge (if missing).
+              if ! vault kv get -format=json secret/directus/gravitee >/dev/null 2>&1; then
+                TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                vault kv put secret/directus/gravitee token="$TOKEN"
+              fi
+              
+              # Redis password is already managed in existing Redis instance
+
+              until getent hosts "$PGHOST" >/dev/null 2>&1; do echo "🔄 Waiting for DNS for $PGHOST..."; sleep 3; done
+              until nc -z -w1 "$PGHOST" "$PGPORT"; do echo "⏳ Waiting for DB $PGHOST:$PGPORT..."; sleep 3; done
+              echo "✅ Yugabyte reachable"
+
+              echo "🔐 Waiting for secret/${VAULTADMIN_USER}..."
+              VAULTADMIN_PASS=""
+              while :; do
+                OUT="$(vault kv get -format=json "secret/${VAULTADMIN_USER}" 2>/dev/null || true)"
+                if [ -n "${OUT}" ]; then
+                  VAULTADMIN_PASS="$(printf '%s' "$OUT" | jq -r '.data.data.password // .data.data.value // empty')"
+                  [ -n "${VAULTADMIN_PASS}" ] && [ "${VAULTADMIN_PASS}" != "null" ] && break
+                fi
+                sleep 5
+              done
+              export PGPASSWORD="$VAULTADMIN_PASS"
+
+              while :; do
+                DB_EXISTS="$(psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d yugabyte -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" 2>/dev/null || true)"
+                [ "$DB_EXISTS" = "1" ] && { echo "✅ DB '$DB' exists"; break; }
+                echo "📦 Creating DB '$DB'..."
+                createdb -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -O "$VAULTADMIN_USER" "$DB" 2>/dev/null && { echo "✅ DB created"; break; }
+                sleep 3
+              done
+
+              psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d yugabyte <<EOSQL
+              DO \$\$
+              BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_GROUP}') THEN
+                  CREATE ROLE ${ROLE_GROUP} NOLOGIN;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_OWNER}') THEN
+                  CREATE ROLE ${ROLE_OWNER} LOGIN INHERIT;
+                END IF;
+              END
+              \$\$;
+              GRANT ${ROLE_GROUP} TO ${ROLE_OWNER};
+              GRANT ${ROLE_OWNER} TO ${VAULTADMIN_USER};
+              EOSQL
+
+              psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d "$DB" <<EOSQL
+              CREATE SCHEMA IF NOT EXISTS directus AUTHORIZATION ${ROLE_OWNER};
+              ALTER ROLE ${ROLE_OWNER} SET search_path = directus;
+              GRANT CONNECT ON DATABASE ${DB} TO ${ROLE_OWNER};
+              GRANT USAGE, CREATE ON SCHEMA directus TO ${ROLE_GROUP};
+              GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA directus TO ${ROLE_GROUP};
+              GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA directus TO ${ROLE_GROUP};
+              ALTER DEFAULT PRIVILEGES IN SCHEMA directus
+                GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${ROLE_GROUP};
+              ALTER DEFAULT PRIVILEGES IN SCHEMA directus
+                GRANT USAGE, SELECT ON SEQUENCES TO ${ROLE_GROUP};
+              EOSQL
+
+              if ! vault secrets list -format=json | jq -e 'has("yugabyte-db/")' >/dev/null 2>&1; then
+                vault secrets enable -path=yugabyte-db database
+                echo "✅ Enabled database secrets engine"
+              fi
+
+              vault write yugabyte-db/static-roles/directus-app \
+                db_name="yugabyte" \
+                username="${ROLE_OWNER}" \
+                rotation_statements="ALTER ROLE \"{{name}}\" WITH PASSWORD '{{password}}';" \
+                rotation_period="24h"
+
+              vault policy write "directus" - <<'EOF'
+              path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
+              path "secret/data/directus/admin"                    { capabilities = ["read"] }
+              path "secret/data/directus/keys"                     { capabilities = ["read"] }
+              path "secret/data/directus/gravitee"                 { capabilities = ["read"] }
+              path "secret/data/open_ai_key"                       { capabilities = ["read"] }
+              path "secret/data/redis"                             { capabilities = ["read"] }
+              path "secret/data/vaultadmin"                        { capabilities = ["read"] }
+              path "secret/data/directus/github"                   { capabilities = ["read"] }  # <-- GitHub OAuth creds
+              EOF
+
+              vault write auth/kubernetes/role/directus \
+                bound_service_account_names="directus" \
+                bound_service_account_namespaces="directus" \
+                policies="directus" \
+                ttl="48h"
+
+              CREDS_JSON="$(vault read -format=json yugabyte-db/static-creds/directus-app)"
+              DB_USER="$(printf '%s' "$CREDS_JSON" | jq -r .data.username)"
+              DB_PASS="$(printf '%s' "$CREDS_JSON" | jq -r .data.password)"
+              export PGPASSWORD="$DB_PASS"
+              echo "🔎 Sanity check as $DB_USER"
+              psql -h "$PGHOST" -p "$PGPORT" -U "$DB_USER" -d "$DB" -c "SELECT current_user, current_schema();"
+          volumeMounts:
+            - name: root-token
+              mountPath: /vault-token
+              readOnly: true
+---
+# RBAC for initialization jobs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: job-status-reader-directus
+  namespace: vault
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: job-status-reader-for-directus
+  namespace: vault
+subjects:
+  - kind: ServiceAccount
+    name: directus
+    namespace: directus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: job-status-reader-directus

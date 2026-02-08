@@ -1,0 +1,256 @@
+# Token exchange bridge used by Gravitee to validate external JWTs and mint a stable Directus Bearer token.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-auth-bridge
+  namespace: directus
+data:
+  requirements.txt: |
+    fastapi==0.115.5
+    uvicorn==0.30.6
+    PyJWT==2.9.0
+    cryptography==43.0.1
+    python-multipart==0.0.9
+  app.py: |
+    import json
+    import os
+    import threading
+    import time
+    import urllib.request
+    import uuid
+
+    import jwt
+    from fastapi import FastAPI, Form, HTTPException
+
+    ISSUER = os.environ.get("KEYCLOAK_ISSUER", "https://auth.suncoast.systems/realms/external")
+    JWKS_URL = os.environ.get(
+        "KEYCLOAK_JWKS_URL",
+        "https://auth.suncoast.systems/realms/external/protocol/openid-connect/certs",
+    )
+    DIRECTUS_TOKEN = os.environ.get("DIRECTUS_TOKEN", "")
+    TOKEN_TTL_SECONDS = int(os.environ.get("DIRECTUS_EXPIRES_IN_SECONDS", "3600"))
+    JWKS_CACHE_SECONDS = int(os.environ.get("JWKS_CACHE_SECONDS", "300"))
+    JWKS_TIMEOUT_SECONDS = int(os.environ.get("JWKS_TIMEOUT_SECONDS", "5"))
+
+    _jwks_cache = {"data": None, "loaded_at": 0.0}
+    _jwks_lock = threading.Lock()
+
+    app = FastAPI()
+
+    def _load_jwks():
+        now = time.time()
+        cached = _jwks_cache["data"]
+        if cached and now - _jwks_cache["loaded_at"] < JWKS_CACHE_SECONDS:
+            return cached
+        with _jwks_lock:
+            now = time.time()
+            cached = _jwks_cache["data"]
+            if cached and now - _jwks_cache["loaded_at"] < JWKS_CACHE_SECONDS:
+                return cached
+            try:
+                with urllib.request.urlopen(JWKS_URL, timeout=JWKS_TIMEOUT_SECONDS) as resp:
+                    data = json.load(resp)
+                _jwks_cache["data"] = data
+                _jwks_cache["loaded_at"] = now
+                return data
+            except Exception:
+                if _jwks_cache["data"]:
+                    return _jwks_cache["data"]
+                raise
+
+    def _find_signing_key(token: str):
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        if not kid:
+            return None
+        jwks = _load_jwks() or {}
+        for key in jwks.get("keys", []):
+            if key.get("kid") == kid:
+                return jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+        return None
+
+    def get_signing_key(token: str):
+        key = _find_signing_key(token)
+        if key:
+            return key
+        _jwks_cache["loaded_at"] = 0.0
+        key = _find_signing_key(token)
+        if key:
+            return key
+        raise HTTPException(status_code=401, detail="Invalid subject token")
+
+    def verify_token(token: str):
+        try:
+            key = get_signing_key(token)
+            return jwt.decode(
+                token,
+                key,
+                algorithms=["RS256"],
+                issuer=ISSUER,
+                options={"verify_aud": False},
+            )
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid subject token")
+
+    @app.post("/token")
+    def token_exchange(
+        grant_type: str = Form(...),
+        subject_token: str = Form(...),
+        subject_token_type: str = Form(None),
+        audience: str = Form(None),
+        client_id: str = Form(None),
+        client_secret: str = Form(None),
+    ):
+        if grant_type != "urn:ietf:params:oauth:grant-type:token-exchange":
+            raise HTTPException(status_code=400, detail="Unsupported grant_type")
+
+        decoded = verify_token(subject_token)
+
+        # Enforce audience match if provided (matches Keycloak 'aud' semantics)
+        if audience:
+            aud = decoded.get("aud")
+            if isinstance(aud, list) and audience not in aud:
+                raise HTTPException(status_code=401, detail="Requested audience not available")
+            if isinstance(aud, str) and aud != audience:
+                raise HTTPException(status_code=401, detail="Requested audience not available")
+
+        if not DIRECTUS_TOKEN:
+            raise HTTPException(status_code=500, detail="DIRECTUS_TOKEN not set")
+
+        return {
+            "access_token": DIRECTUS_TOKEN,
+            "token_type": "Bearer",
+            "expires_in": TOKEN_TTL_SECONDS,
+            "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "jti": str(uuid.uuid4()),
+        }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config-directus-auth-bridge
+  namespace: directus
+data:
+  vault-agent.hcl: |
+    pid_file = "/vault/agent.pid"
+    exit_after_auth = false
+
+    vault {
+      address = "http://vault.vault.svc.cluster.local:8200"
+    }
+
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "directus"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault/token"
+        }
+      }
+    }
+
+    template {
+      source      = "/vault-templates/directus-token.tpl"
+      destination = "/vault-secrets/directus-token.env"
+      perms       = 0644
+    }
+
+  directus-token.tpl: |
+    {{ with secret "secret/data/directus/gravitee" -}}
+    export DIRECTUS_TOKEN="{{ .Data.data.token }}"
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: directus-auth-bridge
+  namespace: directus
+  labels:
+    app: directus-auth-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: directus-auth-bridge
+  template:
+    metadata:
+      labels:
+        app: directus-auth-bridge
+    spec:
+      # Reuse the Directus service account so Vault Kubernetes auth role binding keeps working.
+      serviceAccountName: directus
+      containers:
+        - name: vault-agent
+          image: hashicorp/vault:1.15.4
+          command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
+          volumeMounts:
+            - name: vault-agent-config
+              mountPath: /vault-config
+            - name: vault-secrets
+              mountPath: /vault-secrets
+            - name: vault-templates
+              mountPath: /vault-templates
+        - name: directus-auth-bridge
+          image: python:3.11-slim
+          ports:
+            - containerPort: 8080
+          env:
+            - name: KEYCLOAK_ISSUER
+              value: "https://auth.suncoast.systems/realms/external"
+            - name: KEYCLOAK_JWKS_URL
+              value: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/certs"
+            - name: DIRECTUS_EXPIRES_IN_SECONDS
+              value: "3600"
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              pip install --no-cache-dir -r /app/requirements.txt >/dev/null
+              echo "⏳ Waiting for Vault agent to render DIRECTUS_TOKEN..."
+              while [ ! -f /vault-secrets/directus-token.env ]; do
+                sleep 2
+              done
+              . /vault-secrets/directus-token.env
+              export DIRECTUS_TOKEN
+              python -m uvicorn app:app --app-dir /app --host 0.0.0.0 --port 8080
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: vault-secrets
+              mountPath: /vault-secrets
+      volumes:
+        - name: app
+          configMap:
+            name: directus-auth-bridge
+        - name: vault-agent-config
+          configMap:
+            name: vault-agent-config-directus-auth-bridge
+        - name: vault-secrets
+          emptyDir: {}
+        - name: vault-templates
+          configMap:
+            name: vault-agent-config-directus-auth-bridge
+            items:
+              - key: directus-token.tpl
+                path: directus-token.tpl
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: directus-auth-bridge
+  namespace: directus
+  labels:
+    app: directus-auth-bridge
+spec:
+  selector:
+    app: directus-auth-bridge
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

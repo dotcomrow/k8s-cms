@@ -1,0 +1,71 @@
+# Directus Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: directus-service
+  namespace: directus
+  annotations:
+    teleport.dev/name: "directus-cms"
+    teleport.dev/protocol: "http"
+    teleport.dev/public-addr: "cms.teleport.app.suncoast.systems"
+    teleport.dev/description: "Directus CMS Service"
+    # Gravitee discovery
+    gravitee.io/expose: "true"
+    gravitee.io/context-path: "/directus"
+    gravitee.io/auth-required: "directus-token"
+    gravitee.io/approval-required: "admin"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
+
+    # Definition metadata (string)
+    gravitee.io/description: "Directus CMS API (GraphQL + REST)"
+    gravitee.io/version: "latest"
+    gravitee.io/tags: "directus,cms,graphql,rest"
+    gravitee.io/definition-name: "directus-api"
+    gravitee.io/definition-summary: "Directus CMS API"
+    gravitee.io/definition-description: "Directus CMS API (GraphQL + REST)"
+    gravitee.io/definition-version: "latest"
+    gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-openapi-url: "http://directus-openapi.directus.svc.cluster.local:8080/openapi.json"
+    gravitee.io/definition-context-path: "/directus"
+    gravitee.io/definition-visibility: "PUBLIC"
+    gravitee.io/definition-state: "STARTED"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
+
+    # Listener hints
+    gravitee.io/definition-listener-host: "directus-service.directus.svc.cluster.local"
+    gravitee.io/definition-listener-port: "8055"
+
+    # Definition list fields (comma-separated)
+    gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-tags: "directus,cms,graphql,rest"
+    gravitee.io/definition-labels: "internal,cms"
+    gravitee.io/definition-categories: "cms"
+    gravitee.io/definition-path-mappings: "/directus/*"
+
+    # Definition JSON fields (raw JSON strings)
+    gravitee.io/definition-metadata: '{"owner":"cms","slack":"#cms"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
+    gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/server/health","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"directus-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://directus-service.directus.svc.cluster.local:8055"},"secondary":false}]}]'
+    gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://directus-openapi.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+    gravitee.io/definition-resources: '[]'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"No auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"},"keycloak-oauth2":{"name":"Keycloak OAuth2","description":"Keycloak OAuth2 (disabled)","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"false"}}'
+    gravitee.io/definition-flows: '[]'
+    gravitee.io/definition-response-templates: '{}'
+    gravitee.io/definition-analytics: '{"enabled":true,"logging":{"condition":"true","content":{"headers":true,"payload":false,"messageHeaders":false,"messageMetadata":false,"messagePayload":false},"mode":{"entrypoint":true,"endpoint":true},"phase":{"request":true,"response":true}}}'
+
+    # Optional overrides (leave empty to let sync controller generate)
+    gravitee.io/definition-entrypoints: '[]'
+  labels:
+    app: directus
+    app.kubernetes.io/name: directus-cms
+    app.kubernetes.io/component: cms
+    teleport.dev/enroll: "true"
+spec:
+  selector:
+    app: directus
+  ports:
+  - name: http
+    port: 8055
+    targetPort: 8055
+    protocol: TCP
+  type: ClusterIP
