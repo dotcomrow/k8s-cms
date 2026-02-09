@@ -151,32 +151,17 @@ data:
     # OpenAI-compatible provider (useful for proxies / gateways / self-hosted OpenAI-compatible endpoints).
     # Note: api keys are encrypted at rest; the manifest startup script stores the key in encrypted form.
     ai_openai_compatible_api_key: "<path:secret/data/open_ai_key#value>" # OpenAI-compatible API key (encrypted at rest).
-    ai_openai_compatible_base_url: "https://api.openai.com/v1" # OpenAI-compatible base URL.
-    ai_openai_compatible_name: "openai-compatible" # Provider name (UI label / providerOptions key).
+    # Internal OpenAI-compatible provider.
+    # Ollama exposes an OpenAI-compatible API at /v1 (models: GET /v1/models, chat: POST /v1/chat/completions).
+    # Alternative: Open WebUI also exposes an OpenAI-like API under /api/v1, but typically requires auth.
+    ai_openai_compatible_base_url: "http://ollama.ollama.svc.cluster.local:11434/v1" # OpenAI-compatible base URL.
+    ai_openai_compatible_name: "ollama" # Provider name (UI label / providerOptions key).
     ai_openai_compatible_models:
-      - id: "gpt-4o-mini"
-        name: "GPT-4o Mini"
-        context: 128000
-        output: 16384
-        attachment: true
-        reasoning: false
-      - id: "gpt-5-nano"
-        name: "GPT-5 Nano"
-        context: 400000
-        output: 128000
-        attachment: true
-        reasoning: true
-      - id: "gpt-5-mini"
-        name: "GPT-5 Mini"
-        context: 400000
-        output: 128000
-        attachment: true
-        reasoning: true
-      - id: "gpt-5"
-        name: "GPT-5"
-        context: 400000
-        output: 128000
-        attachment: true
+      - id: "deepseek-r1:14b"
+        name: "DeepSeek R1 14B (Ollama)"
+        context: 8192
+        output: 4096
+        attachment: false
         reasoning: true
     ai_openai_compatible_headers: null # Optional: [{ header, value }, ...]
     # Allowed models (empty/null disables the provider in /ai/chat).
