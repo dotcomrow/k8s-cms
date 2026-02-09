@@ -164,6 +164,12 @@ data:
         output: 4096
         attachment: false
         reasoning: true
+      - id: "llama3.1:8b"
+        name: "Llama 3.1 8B (Ollama)"
+        context: 8192
+        output: 4096
+        attachment: false
+        reasoning: false
     ai_openai_compatible_headers: null # Optional: [{ header, value }, ...]
     # Allowed models (empty/null disables the provider in /ai/chat).
     ai_openai_allowed_models: ["gpt-4o-mini","gpt-5-nano","gpt-5-mini","gpt-5"]
