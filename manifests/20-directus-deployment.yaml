@@ -718,49 +718,49 @@ spec:
               echo "⚠️ project_owner column not found; skipping."
             fi
 
-	            echo "🧩 Ensuring local extensions are enabled..."
-	            EXT_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-	              "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_extensions' LIMIT 1;" || true)"
-	            if [ "$EXT_TABLE_EXISTS" = "1" ]; then
-	              EXT_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-	                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_extensions' ORDER BY column_name;" || true)"
-	              _ensure_local_ext_enabled() {
-	                ext_folder="$1"
-	                ext_folder_sql="$(printf '%s' "$ext_folder" | sed "s/'/''/g")"
+            echo "🧩 Ensuring local extensions are enabled..."
+            EXT_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_extensions' LIMIT 1;" || true)"
+            if [ "$EXT_TABLE_EXISTS" = "1" ]; then
+              EXT_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_extensions' ORDER BY column_name;" || true)"
+              _ensure_local_ext_enabled() {
+                ext_folder="$1"
+                ext_folder_sql="$(printf '%s' "$ext_folder" | sed "s/'/''/g")"
 
-	                if printf '%s\n' "$EXT_COLS" | grep -qx "folder"; then
-	                  EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-	                    "SELECT 1 FROM directus_extensions WHERE folder='${ext_folder_sql}' AND source='local' LIMIT 1;" || true)"
-	                  if [ "$EXISTS" = "1" ]; then
-	                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-	                      "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE folder='${ext_folder_sql}' AND source='local';"
-	                    echo "✅ ${ext_folder} extension enabled."
-	                  else
-	                    EXT_ID="$(cat /proc/sys/kernel/random/uuid)"
-	                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-	                      "SET search_path TO directus, public; INSERT INTO directus_extensions (id, enabled, source, folder, bundle) VALUES ('${EXT_ID}', true, 'local', '${ext_folder_sql}', NULL);"
-	                    echo "✅ ${ext_folder} extension registered."
-	                  fi
-	                else
-	                  EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-	                    "SELECT 1 FROM directus_extensions WHERE name='${ext_folder_sql}' LIMIT 1;" || true)"
-	                  if [ "$EXISTS" = "1" ]; then
-	                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-	                      "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE name='${ext_folder_sql}';"
-	                    echo "✅ ${ext_folder} extension enabled."
-	                  else
-	                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-	                      "SET search_path TO directus, public; INSERT INTO directus_extensions (name, enabled) VALUES ('${ext_folder_sql}', true);"
-	                    echo "✅ ${ext_folder} extension registered."
-	                  fi
-	                fi
-	              }
+                if printf '%s\n' "$EXT_COLS" | grep -qx "folder"; then
+                  EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT 1 FROM directus_extensions WHERE folder='${ext_folder_sql}' AND source='local' LIMIT 1;" || true)"
+                  if [ "$EXISTS" = "1" ]; then
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE folder='${ext_folder_sql}' AND source='local';"
+                    echo "✅ ${ext_folder} extension enabled."
+                  else
+                    EXT_ID="$(cat /proc/sys/kernel/random/uuid)"
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; INSERT INTO directus_extensions (id, enabled, source, folder, bundle) VALUES ('${EXT_ID}', true, 'local', '${ext_folder_sql}', NULL);"
+                    echo "✅ ${ext_folder} extension registered."
+                  fi
+                else
+                  EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT 1 FROM directus_extensions WHERE name='${ext_folder_sql}' LIMIT 1;" || true)"
+                  if [ "$EXISTS" = "1" ]; then
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE name='${ext_folder_sql}';"
+                    echo "✅ ${ext_folder} extension enabled."
+                  else
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; INSERT INTO directus_extensions (name, enabled) VALUES ('${ext_folder_sql}', true);"
+                    echo "✅ ${ext_folder} extension registered."
+                  fi
+                fi
+              }
 
-	              _ensure_local_ext_enabled "github-profile-sync"
-	              _ensure_local_ext_enabled "ai-provider-access"
-	            else
-	              echo "⚠️ directus_extensions table not found; skipping extension enable."
-	            fi
+              _ensure_local_ext_enabled "github-profile-sync"
+              _ensure_local_ext_enabled "ai-provider-access"
+            else
+              echo "⚠️ directus_extensions table not found; skipping extension enable."
+            fi
 
             echo "✅ Schema patch applied. Going idle."
             exec tail -f /dev/null
