@@ -500,7 +500,7 @@ data:
       logger.info('[ai-provider-access] hook loaded');
 
       // Hide external providers (OpenAI/Anthropic/Google) from non-admin users in the UI and API.
-      filter('directus_settings.items.read', (records, _meta, context) => {
+      filter('settings.read', (records, _meta, context) => {
         const acc = context?.accountability;
         if (!acc || acc.admin) return records;
         if (!Array.isArray(records)) return records;
