@@ -248,8 +248,10 @@ spec:
             # 2) Check sentinel; skip schema patch if already applied
             PATCH_KEY="github_profile_cols_v1"
             SKIP_PATCH="0"
+            # IMPORTANT: do not prepend `SET search_path ...;` in `-Atc` queries.
+            # psql prints `SET` to stdout, which pollutes captured values.
             ALREADY="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SET search_path TO directus, public; SELECT 1 FROM schema_patch_log WHERE patch_key='${PATCH_KEY}';" || true)"
+              "SELECT 1 FROM directus.schema_patch_log WHERE patch_key='${PATCH_KEY}' LIMIT 1;" || true)"
 
             if [ "$ALREADY" = "1" ]; then
               echo "✅ Patch already applied; skipping schema changes."
@@ -275,43 +277,13 @@ spec:
                 "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
             fi
 
-            # 5) Ensure a static role token exists for Gravitee -> Directus auth bridging.
-            # We attach the token to the built-in "Public" role (or closest match) so Directus can
-            # authenticate backend calls with a stable Bearer token.
-            echo "🔐 Ensuring Directus role token for Gravitee..."
-            GRAVITEE_TOKEN=""
-            GRAVITEE_CODE="$(curl -sS -o /tmp/gravitee.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
-              "${VAULT_ADDR}/v1/secret/data/directus/gravitee" || true)"
-            if [ "$GRAVITEE_CODE" = "200" ]; then
-              GRAVITEE_TOKEN="$(jq -r '.data.data.token // empty' /tmp/gravitee.json 2>/dev/null || true)"
-            fi
+            # 5) Static tokens are provisioned via service users (directus_users.token) in the site bootstrap below.
+            echo "🔐 Provisioning Directus static tokens via site service users..."
 
-            if [ -z "${GRAVITEE_TOKEN:-}" ] || [ "${GRAVITEE_TOKEN}" = "null" ]; then
-              echo "⚠️ Gravitee token missing in Vault at secret/directus/gravitee; skipping role token provisioning."
-            else
-              ROLE_TOKEN_COL_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_roles' AND column_name='token' LIMIT 1;" || true)"
-              if [ "${ROLE_TOKEN_COL_EXISTS:-0}" = "1" ]; then
-                ROLE_NAME="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                  "SET search_path TO directus, public; SELECT name FROM directus_roles WHERE name ILIKE 'public' ORDER BY name LIMIT 1;" || true)"
-                if [ -n "${ROLE_NAME:-}" ] && [ "${ROLE_NAME}" != "null" ]; then
-                  _tok_escaped="$(printf '%s' "$GRAVITEE_TOKEN" | sed "s/'/''/g")"
-                  _role_escaped="$(printf '%s' "$ROLE_NAME" | sed "s/'/''/g")"
-                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; UPDATE directus_roles SET token = '${_tok_escaped}' WHERE name = '${_role_escaped}';"
-                  echo "✅ Directus role token set on role '${ROLE_NAME}'."
-                else
-                  echo "⚠️ Could not find a 'Public' role in directus_roles; skipping role token provisioning."
-                fi
-              else
-                echo "⚠️ directus_roles.token column not found; skipping role token provisioning."
-              fi
-            fi
-
-            # 5b) Provision site-specific roles/tokens/permissions (GitOps-driven).
-            # - Each site maps from Keycloak `azp` (client id) -> Vault token -> Directus role token.
-            # - GraphQL schema/actions are permission-filtered; seed baseline read perms per site.
-            echo "🧭 Provisioning Directus site roles (if configured)..."
+            # 5b) Provision site-specific roles/policies/users/tokens/permissions (GitOps-driven).
+            # - Keycloak `azp` (client id) -> Vault token -> Directus service user token.
+            # - GraphQL schema/actions are permission-filtered; seed baseline read perms per site policy.
+            echo "🧭 Provisioning Directus sites (roles/policies/users/permissions)..."
             SITES_FILE="/directus-sites/sites.yaml"
             if [ -f "$SITES_FILE" ]; then
               SITES_JSON="$(yq -o=json '.' "$SITES_FILE" 2>/dev/null || true)"
@@ -320,6 +292,28 @@ spec:
                   "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_roles' ORDER BY column_name;" || true)"
                 _has_role_col() { printf '%s\n' "$ROLE_COLS_ALL" | grep -qx "$1"; }
 
+                POLICY_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_policies' LIMIT 1;" || true)"
+                POLICY_COLS_ALL=""
+                if [ "${POLICY_TABLE_EXISTS:-0}" = "1" ]; then
+                  POLICY_COLS_ALL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_policies' ORDER BY column_name;" || true)"
+                fi
+                _has_policy_col() { printf '%s\n' "$POLICY_COLS_ALL" | grep -qx "$1"; }
+
+                ACCESS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_access' LIMIT 1;" || true)"
+                ACCESS_COLS_ALL=""
+                if [ "${ACCESS_TABLE_EXISTS:-0}" = "1" ]; then
+                  ACCESS_COLS_ALL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_access' ORDER BY column_name;" || true)"
+                fi
+                _has_access_col() { printf '%s\n' "$ACCESS_COLS_ALL" | grep -qx "$1"; }
+
+                USER_COLS_ALL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' ORDER BY column_name;" || true)"
+                _has_user_col() { printf '%s\n' "$USER_COLS_ALL" | grep -qx "$1"; }
+
                 PERM_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                   "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_permissions' LIMIT 1;" || true)"
                 PERM_COLS_ALL=""
@@ -327,6 +321,9 @@ spec:
                 PERMISSIONS_TYPE=""
                 VALIDATION_TYPE=""
                 PRESETS_TYPE=""
+                PERM_ID_DEFAULT=""
+                PERM_ID_HAS_DEFAULT="0"
+                PERM_PRINC_COL=""
                 if [ "${PERM_TABLE_EXISTS:-0}" = "1" ]; then
                   PERM_COLS_ALL="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                     "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' ORDER BY column_name;" || true)"
@@ -339,6 +336,20 @@ spec:
                     "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' AND column_name='validation' LIMIT 1;" || true)"
                   PRESETS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                     "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' AND column_name='presets' LIMIT 1;" || true)"
+                  PERM_ID_DEFAULT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT column_default FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_permissions' AND column_name='id' LIMIT 1;" || true)"
+                  if [ -n "${PERM_ID_DEFAULT:-}" ] && [ "${PERM_ID_DEFAULT}" != "null" ]; then
+                    PERM_ID_HAS_DEFAULT="1"
+                  fi
+                  if _has_perm_col "policy"; then
+                    PERM_PRINC_COL="policy"
+                  elif _has_perm_col "role"; then
+                    PERM_PRINC_COL="role"
+                  elif _has_perm_col "role_id"; then
+                    PERM_PRINC_COL="role_id"
+                  elif _has_perm_col "policy_id"; then
+                    PERM_PRINC_COL="policy_id"
+                  fi
                 else
                   _has_perm_col() { return 1; }
                 fi
@@ -380,7 +391,7 @@ spec:
                     continue
                   fi
 
-                  # Ensure a per-client Directus role token exists in Vault.
+                  # Ensure a per-client Directus service-user token exists in Vault.
                   SITE_TOKEN=""
                   SITE_VAULT_PATH="secret/data/directus/gravitee/clients/${client_key}"
                   CODE="$(curl -sS -o /tmp/site-token.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
@@ -401,38 +412,95 @@ spec:
                     echo "🔐 Vault token created for client_key=${client_key}"
                   fi
 
-                  # Ensure Directus role exists (create if missing) and is pinned to the Vault token.
+                  # Ensure Directus role exists (create if missing).
                   role_name_sql="$(printf '%s' "$role_name" | sed "s/'/''/g")"
                   ROLE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                    "SET search_path TO directus, public; SELECT id FROM directus_roles WHERE name = '${role_name_sql}' LIMIT 1;" || true)"
+                    "SELECT id FROM directus.directus_roles WHERE name = '${role_name_sql}' LIMIT 1;" || true)"
                   ROLE_ID="$(printf '%s' "$ROLE_ID" | tr -d '\r')"
                   if [ -z "${ROLE_ID:-}" ] || [ "${ROLE_ID}" = "null" ]; then
                     ROLE_ID="$(cat /proc/sys/kernel/random/uuid)"
                     desc="Site role for ${site_key:-$client_key}"
                     desc_sql="$(printf '%s' "$desc" | sed "s/'/''/g")"
-                    token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
                     INS_COLS="id,name"
                     INS_VALS="'${ROLE_ID}','${role_name_sql}'"
                     if _has_role_col "description"; then INS_COLS="${INS_COLS},description"; INS_VALS="${INS_VALS},'${desc_sql}'"; fi
-                    if _has_role_col "icon"; then INS_COLS="${INS_COLS},icon"; INS_VALS="${INS_VALS},'shield'"; fi
-                    if _has_role_col "admin_access"; then INS_COLS="${INS_COLS},admin_access"; INS_VALS="${INS_VALS},false"; fi
-                    if _has_role_col "app_access"; then INS_COLS="${INS_COLS},app_access"; INS_VALS="${INS_VALS},false"; fi
-                    if _has_role_col "enforce_tfa"; then INS_COLS="${INS_COLS},enforce_tfa"; INS_VALS="${INS_VALS},false"; fi
-                    if _has_role_col "token"; then INS_COLS="${INS_COLS},token"; INS_VALS="${INS_VALS},'${token_sql}'"; fi
                     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
                       "SET search_path TO directus, public; INSERT INTO directus_roles (${INS_COLS}) VALUES (${INS_VALS});"
                     echo "✅ Created Directus role '${role_name}' (id=${ROLE_ID})"
                   fi
 
-                  if _has_role_col "token"; then
-                    token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
-                    role_id_sql="$(printf '%s' "$ROLE_ID" | sed "s/'/''/g")"
-                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                      "SET search_path TO directus, public; UPDATE directus_roles SET token = '${token_sql}' WHERE id = '${role_id_sql}';"
+                  # Ensure Directus policy exists and is linked to the site role.
+                  POLICY_ID=""
+                  if [ "${POLICY_TABLE_EXISTS:-0}" = "1" ]; then
+                    POLICY_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                      "SELECT id FROM directus.directus_policies WHERE name = '${role_name_sql}' LIMIT 1;" || true)"
+                    POLICY_ID="$(printf '%s' "$POLICY_ID" | tr -d '\r')"
+                    if [ -z "${POLICY_ID:-}" ] || [ "${POLICY_ID}" = "null" ]; then
+                      POLICY_ID="$(cat /proc/sys/kernel/random/uuid)"
+                      PDESC="Site policy for ${site_key:-$client_key}"
+                      PDESC_SQL="$(printf '%s' "$PDESC" | sed "s/'/''/g")"
+                      PCOLS="id,name"
+                      PVALS="'${POLICY_ID}','${role_name_sql}'"
+                      if _has_policy_col "description"; then PCOLS="${PCOLS},description"; PVALS="${PVALS},'${PDESC_SQL}'"; fi
+                      if _has_policy_col "icon"; then PCOLS="${PCOLS},icon"; PVALS="${PVALS},'badge'"; fi
+                      if _has_policy_col "admin_access"; then PCOLS="${PCOLS},admin_access"; PVALS="${PVALS},false"; fi
+                      if _has_policy_col "app_access"; then PCOLS="${PCOLS},app_access"; PVALS="${PVALS},false"; fi
+                      if _has_policy_col "enforce_tfa"; then PCOLS="${PCOLS},enforce_tfa"; PVALS="${PVALS},false"; fi
+                      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                        "SET search_path TO directus, public; INSERT INTO directus_policies (${PCOLS}) VALUES (${PVALS});"
+                      echo "✅ Created Directus policy '${role_name}' (id=${POLICY_ID})"
+                    fi
+                  else
+                    echo "⚠️ directus_policies table not found; skipping policy provisioning for client_key=${client_key}"
                   fi
 
-                  # Seed baseline read permissions for this role (drives available GraphQL actions).
-                  if [ "${PERM_TABLE_EXISTS:-0}" = "1" ]; then
+                  if [ -n "${POLICY_ID:-}" ] && [ "${ACCESS_TABLE_EXISTS:-0}" = "1" ]; then
+                    acc_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                      "SELECT 1 FROM directus.directus_access WHERE role = '${ROLE_ID}' AND policy = '${POLICY_ID}' LIMIT 1;" || true)"
+                    acc_exists="$(printf '%s' "$acc_exists" | tr -d '\r')"
+                    if [ "$acc_exists" != "1" ]; then
+                      acc_id="$(cat /proc/sys/kernel/random/uuid)"
+                      ACOLS="id,policy"
+                      AVALS="'${acc_id}','${POLICY_ID}'"
+                      if _has_access_col "role"; then ACOLS="${ACOLS},role"; AVALS="${AVALS},'${ROLE_ID}'"; fi
+                      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                        "SET search_path TO directus, public; INSERT INTO directus_access (${ACOLS}) VALUES (${AVALS});"
+                      echo "✅ Linked role '${role_name}' to policy '${role_name}'"
+                    fi
+                  fi
+
+                  # Ensure a service user exists for this site and set its static token (Directus uses directus_users.token).
+                  if _has_user_col "token"; then
+                    svc_email="svc-${client_key}@svc.local"
+                    svc_email_sql="$(printf '%s' "$svc_email" | sed "s/'/''/g")"
+                    USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                      "SELECT id FROM directus.directus_users WHERE email = '${svc_email_sql}' LIMIT 1;" || true)"
+                    USER_ID="$(printf '%s' "$USER_ID" | tr -d '\r')"
+                    token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
+                    if [ -z "${USER_ID:-}" ] || [ "${USER_ID}" = "null" ]; then
+                      USER_ID="$(cat /proc/sys/kernel/random/uuid)"
+                      UCOLS="id,email"
+                      UVALS="'${USER_ID}','${svc_email_sql}'"
+                      if _has_user_col "role"; then UCOLS="${UCOLS},role"; UVALS="${UVALS},'${ROLE_ID}'"; fi
+                      if _has_user_col "token"; then UCOLS="${UCOLS},token"; UVALS="${UVALS},'${token_sql}'"; fi
+                      if _has_user_col "status"; then UCOLS="${UCOLS},status"; UVALS="${UVALS},'active'"; fi
+                      if _has_user_col "first_name"; then UCOLS="${UCOLS},first_name"; UVALS="${UVALS},'svc'"; fi
+                      if _has_user_col "last_name"; then UCOLS="${UCOLS},last_name"; UVALS="${UVALS},'${role_name_sql}'"; fi
+                      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                        "SET search_path TO directus, public; INSERT INTO directus_users (${UCOLS}) VALUES (${UVALS});"
+                      echo "✅ Created site user ${svc_email}"
+                    else
+                      role_id_sql="$(printf '%s' "$ROLE_ID" | sed "s/'/''/g")"
+                      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                        "SET search_path TO directus, public; UPDATE directus_users SET role='${role_id_sql}', token='${token_sql}', status='active' WHERE id='${USER_ID}';"
+                      echo "✅ Updated site user ${svc_email}"
+                    fi
+                  else
+                    echo "⚠️ directus_users.token column not found; cannot provision site token for client_key=${client_key}"
+                  fi
+
+                  # Seed baseline read permissions for this policy (drives available GraphQL actions).
+                  if [ "${PERM_TABLE_EXISTS:-0}" = "1" ] && [ -n "${POLICY_ID:-}" ] && [ -n "${PERM_PRINC_COL:-}" ]; then
                     perms_empty="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
                     val_empty="$(_json_empty_for_type "${VALIDATION_TYPE:-}")"
                     pre_empty="$(_json_empty_for_type "${PRESETS_TYPE:-}")"
@@ -442,21 +510,25 @@ spec:
                       [ -z "${coll:-}" ] && continue
                       coll_sql="$(printf '%s' "$coll" | sed "s/'/''/g")"
                       exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                        "SET search_path TO directus, public; SELECT 1 FROM directus_permissions WHERE role = '${ROLE_ID}' AND collection = '${coll_sql}' AND action = 'read' LIMIT 1;" || true)"
+                        "SELECT 1 FROM directus.directus_permissions WHERE ${PERM_PRINC_COL} = '${POLICY_ID}' AND collection = '${coll_sql}' AND action = 'read' LIMIT 1;" || true)"
                       exists="$(printf '%s' "$exists" | tr -d '\r')"
                       if [ "$exists" = "1" ]; then
                         continue
                       fi
-                      pid="$(cat /proc/sys/kernel/random/uuid)"
-                      PCOLS="id,role,collection,action"
-                      PVALS="'${pid}','${ROLE_ID}','${coll_sql}','read'"
+                      PCOLS="${PERM_PRINC_COL},collection,action"
+                      PVALS="'${POLICY_ID}','${coll_sql}','read'"
+                      if [ "${PERM_ID_HAS_DEFAULT:-0}" != "1" ]; then
+                        pid="$(cat /proc/sys/kernel/random/uuid)"
+                        PCOLS="id,${PCOLS}"
+                        PVALS="'${pid}',${PVALS}"
+                      fi
                       if _has_perm_col "permissions"; then PCOLS="${PCOLS},permissions"; PVALS="${PVALS},${perms_empty}"; fi
                       if _has_perm_col "validation"; then PCOLS="${PCOLS},validation"; PVALS="${PVALS},${val_empty}"; fi
                       if _has_perm_col "presets"; then PCOLS="${PCOLS},presets"; PVALS="${PVALS},${pre_empty}"; fi
                       if _has_perm_col "fields"; then PCOLS="${PCOLS},fields"; PVALS="${PVALS},${fields_val}"; fi
                       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
                         "SET search_path TO directus, public; INSERT INTO directus_permissions (${PCOLS}) VALUES (${PVALS});"
-                      echo "✅ Granted read on ${coll} to role '${role_name}'"
+                      echo "✅ Granted read on ${coll} to policy '${role_name}'"
                     done
                   fi
                 done
