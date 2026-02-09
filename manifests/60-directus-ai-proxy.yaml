@@ -29,7 +29,7 @@ data:
 
     import httpx
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from fastapi.responses import JSONResponse, Response, StreamingResponse
 
     VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200").rstrip("/")
     VAULT_TOKEN_FILE = os.environ.get("VAULT_TOKEN_FILE", "/vault-secrets/vault-token")
@@ -207,6 +207,46 @@ data:
         out[k] = v
       return out
 
+    def _is_tools_unsupported_error(payload: bytes) -> bool:
+      if not payload:
+        return False
+      try:
+        obj = json.loads(payload.decode("utf-8"))
+        if isinstance(obj, dict):
+          err = obj.get("error")
+          if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str) and "does not support tools" in msg:
+              return True
+      except Exception:
+        pass
+      return b"does not support tools" in payload
+
+    def _strip_tools_from_body(body: bytes) -> Optional[bytes]:
+      if not body:
+        return None
+      try:
+        obj = json.loads(body.decode("utf-8"))
+      except Exception:
+        return None
+      if not isinstance(obj, dict):
+        return None
+      changed = False
+      for key in (
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+        # Older OpenAI-compatible fields; strip if present.
+        "functions",
+        "function_call",
+      ):
+        if key in obj:
+          obj.pop(key, None)
+          changed = True
+      if not changed:
+        return None
+      return json.dumps(obj).encode("utf-8")
+
     @app.on_event("startup")
     async def _startup():
       global _http
@@ -240,12 +280,15 @@ data:
 
       upstream = _upstream_url("/" + full_path, request.url.query)
       body = await request.body()
+      body_to_send = body
       base_headers = _filter_request_headers(request)
 
+      did_refresh = False
+      did_strip_tools = False
       last_err: Optional[Exception] = None
-      for attempt in range(2):
+      for _ in range(3):
         try:
-          token = await _mint_access_token(force_refresh=(attempt == 1))
+          token = await _mint_access_token(force_refresh=did_refresh)
           headers = list(base_headers)
           headers.append(("authorization", f"Bearer {token}"))
 
@@ -253,14 +296,39 @@ data:
             request.method,
             upstream,
             headers=headers,
-            content=body,
+            content=body_to_send,
           )
           resp = await cm.__aenter__()
 
           # If our cached token expired unexpectedly, refresh once.
-          if resp.status_code == 401 and attempt == 0:
+          if resp.status_code == 401 and not did_refresh:
             await cm.__aexit__(None, None, None)
+            did_refresh = True
             continue
+
+          # Ollama tool calling support is model-dependent. If the upstream returns the
+          # "does not support tools" error, retry once with tool definitions stripped.
+          if (
+            resp.status_code == 400
+            and request.method in ("POST", "PUT", "PATCH")
+            and not did_strip_tools
+          ):
+            err_bytes = await resp.aread()
+            resp_headers = _filter_response_headers(resp.headers)
+            await cm.__aexit__(None, None, None)
+
+            if _is_tools_unsupported_error(err_bytes):
+              stripped = _strip_tools_from_body(body_to_send)
+              if stripped is not None:
+                body_to_send = stripped
+                did_strip_tools = True
+                continue
+
+            return Response(
+              content=err_bytes,
+              status_code=resp.status_code,
+              headers=resp_headers,
+            )
 
           resp_headers = _filter_response_headers(resp.headers)
 
@@ -418,4 +486,3 @@ spec:
       port: 8080
       targetPort: 8080
   type: ClusterIP
-
