@@ -457,6 +457,80 @@ data:
         return applyGithubProfile(payload, meta, context, { importAvatar: true });
       });
     };
+
+  ai-provider-access.package.json: |
+    {
+      "name": "directus-extension-ai-provider-access",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "hook",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+
+  ai-provider-access.index.js: |
+    import { ForbiddenError } from '@directus/errors';
+
+    const EXTERNAL_PROVIDER_KEYS = [
+      'ai_openai_allowed_models',
+      'ai_anthropic_allowed_models',
+      'ai_google_allowed_models'
+    ];
+
+    const EXTERNAL_PROVIDER_SECRET_KEYS = [
+      'ai_openai_api_key',
+      'ai_anthropic_api_key',
+      'ai_google_api_key'
+    ];
+
+    const redactExternalProviders = (record) => {
+      if (!record || typeof record !== 'object') return record;
+      const next = { ...record };
+      for (const key of EXTERNAL_PROVIDER_KEYS) {
+        if (key in next) next[key] = [];
+      }
+      for (const key of EXTERNAL_PROVIDER_SECRET_KEYS) {
+        if (key in next) next[key] = null;
+      }
+      return next;
+    };
+
+    export default ({ filter, init }, { logger }) => {
+      logger.info('[ai-provider-access] hook loaded');
+
+      // Hide external providers (OpenAI/Anthropic/Google) from non-admin users in the UI and API.
+      filter('directus_settings.items.read', (records, _meta, context) => {
+        const acc = context?.accountability;
+        if (!acc || acc.admin) return records;
+        if (!Array.isArray(records)) return records;
+        return records.map(redactExternalProviders);
+      });
+
+      // Enforce cost controls server-side: only admins may call external providers via /ai/chat.
+      init('routes.before', ({ app }) => {
+        app.use('/ai/chat', (req, _res, next) => {
+          try {
+            const acc = req.accountability;
+            if (!acc || acc.admin) return next();
+            if (req.method !== 'POST') return next();
+
+            const provider = req.body?.provider;
+            if (!provider) return next(); // let Directus validate payload
+
+            if (provider !== 'openai-compatible') {
+              return next(new ForbiddenError({ reason: 'External AI providers are restricted to administrators' }));
+            }
+
+            return next();
+          } catch (error) {
+            return next(error);
+          }
+        });
+      });
+    };
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
