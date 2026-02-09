@@ -154,7 +154,8 @@ data:
     # Internal OpenAI-compatible provider.
     # Ollama exposes an OpenAI-compatible API at /v1 (models: GET /v1/models, chat: POST /v1/chat/completions).
     # Alternative: Open WebUI also exposes an OpenAI-like API under /api/v1, but typically requires auth.
-    ai_openai_compatible_base_url: "http://ollama.ollama.svc.cluster.local:11434/v1" # OpenAI-compatible base URL.
+    # Route internal AI traffic through Gravitee (via directus-ai-proxy which mints a Keycloak JWT).
+    ai_openai_compatible_base_url: "http://directus-ai-proxy.directus.svc.cluster.local:8080/v1" # OpenAI-compatible base URL.
     ai_openai_compatible_name: "ollama" # Provider name (UI label / providerOptions key).
     ai_openai_compatible_models:
       - id: "deepseek-r1:14b"

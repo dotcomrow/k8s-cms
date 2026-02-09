@@ -194,6 +194,19 @@ spec:
                 policies="directus" \
                 ttl="48h"
 
+              # Directus AI proxy uses Keycloak client_credentials to call Gravitee-protected APIs.
+              # Keep permissions narrow: only the specific Keycloak client creds are readable.
+              vault policy write "directus-ai-proxy" - <<'EOF'
+              path "secret/data/keycloak-client-id-cms-site-internal"     { capabilities = ["read"] }
+              path "secret/data/keycloak-client-secret-cms-site-internal" { capabilities = ["read"] }
+              EOF
+
+              vault write auth/kubernetes/role/directus-ai-proxy \
+                bound_service_account_names="directus-ai-proxy" \
+                bound_service_account_namespaces="directus" \
+                policies="directus-ai-proxy" \
+                ttl="48h"
+
               CREDS_JSON="$(vault read -format=json yugabyte-db/static-creds/directus-app)"
               DB_USER="$(printf '%s' "$CREDS_JSON" | jq -r .data.username)"
               DB_PASS="$(printf '%s' "$CREDS_JSON" | jq -r .data.password)"
