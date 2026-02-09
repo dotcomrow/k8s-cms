@@ -472,8 +472,6 @@ data:
     }
 
   ai-provider-access.index.js: |
-    import { ForbiddenError } from '@directus/errors';
-
     const EXTERNAL_PROVIDER_KEYS = [
       'ai_openai_allowed_models',
       'ai_anthropic_allowed_models',
@@ -511,7 +509,18 @@ data:
 
       // Enforce cost controls server-side: only admins may call external providers via /ai/chat.
       init('routes.before', ({ app }) => {
-        app.use('/ai/chat', (req, _res, next) => {
+        const sendForbidden = (res, message) => {
+          res.status(403).json({
+            errors: [
+              {
+                message: message || 'Forbidden',
+                extensions: { code: 'FORBIDDEN' }
+              }
+            ]
+          });
+        };
+
+        app.use('/ai/chat', (req, res, next) => {
           try {
             const acc = req.accountability;
             if (!acc || acc.admin) return next();
@@ -521,7 +530,8 @@ data:
             if (!provider) return next(); // let Directus validate payload
 
             if (provider !== 'openai-compatible') {
-              return next(new ForbiddenError({ reason: 'External AI providers are restricted to administrators' }));
+              sendForbidden(res, 'External AI providers are restricted to administrators');
+              return;
             }
 
             return next();
