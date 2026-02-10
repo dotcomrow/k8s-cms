@@ -503,8 +503,8 @@ data:
       filter('settings.read', (records, _meta, context) => {
         const acc = context?.accountability;
         if (!acc || acc.admin) return records;
-        if (!Array.isArray(records)) return records;
-        return records.map(redactExternalProviders);
+        if (Array.isArray(records)) return records.map(redactExternalProviders);
+        return redactExternalProviders(records);
       });
 
       // Enforce cost controls server-side: only admins may call external providers via /ai/chat.
