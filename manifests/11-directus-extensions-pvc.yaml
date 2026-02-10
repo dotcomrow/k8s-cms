@@ -1,0 +1,15 @@
+# PersistentVolumeClaim for Directus extensions
+# Required for installing extensions via the Directus UI (needs a writable EXTENSIONS_PATH).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: directus-extensions
+  namespace: directus
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: nfs-client
+

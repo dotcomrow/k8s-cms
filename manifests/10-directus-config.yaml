@@ -188,7 +188,7 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: directus-extensions
+  name: directus-extensions-seed
   namespace: directus
 data:
   github-profile-sync.package.json: |

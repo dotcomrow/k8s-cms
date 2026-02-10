@@ -62,9 +62,9 @@ spec:
             items:
               - key: sites.yaml
                 path: sites.yaml
-        - name: directus-extensions
+        - name: directus-extensions-seed
           configMap:
-            name: directus-extensions
+            name: directus-extensions-seed
             items:
               - key: github-profile-sync.package.json
                 path: github-profile-sync/package.json
@@ -74,7 +74,38 @@ spec:
                 path: ai-provider-access/package.json
               - key: ai-provider-access.index.js
                 path: ai-provider-access/index.js
+        - name: directus-extensions
+          persistentVolumeClaim:
+            claimName: directus-extensions
       initContainers:
+        - name: seed-directus-extensions
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              set -eu
+
+              echo "📦 Seeding Directus extensions into writable storage..."
+              mkdir -p /directus/extensions
+
+              # Keep our GitOps-managed extensions deterministic on every start.
+              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access
+              # ConfigMap volumes use symlinks; dereference so we copy real files into the PVC.
+              cp -RL /extensions-seed/* /directus/extensions/
+
+              # Best-effort: ensure the runtime can write here for marketplace installs.
+              chmod -R a+rwX /directus/extensions || true
+          securityContext:
+            runAsUser: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: directus-extensions
+              mountPath: /directus/extensions
+            - name: directus-extensions-seed
+              mountPath: /extensions-seed
+              readOnly: true
         - name: nuke-directus-roles
           image: postgres:16-alpine
           imagePullPolicy: IfNotPresent
