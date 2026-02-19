@@ -574,6 +574,72 @@ spec:
               echo "  └─ ${SITES_FILE} not found; skipping"
             fi
 
+            # 5c) Provision a dedicated admin-backed token for OpenAPI discovery sync.
+            # Directus only includes `/items/*` paths in OAS for admin-level users.
+            echo "🧾 Ensuring OpenAPI sync admin token exists..."
+            OPENAPI_SYNC_TOKEN_VAULT_PATH="${OPENAPI_SYNC_TOKEN_VAULT_PATH:-secret/data/directus/gravitee/openapi/admin}"
+            OPENAPI_USER_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' ORDER BY column_name;" || true)"
+            _openapi_has_user_col() { printf '%s\n' "$OPENAPI_USER_COLS" | grep -qx "$1"; }
+
+            if _openapi_has_user_col "token"; then
+              ADMIN_ROLE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT id FROM directus.directus_roles WHERE name='Administrator' LIMIT 1;" || true)"
+              ADMIN_ROLE_ID="$(printf '%s' "$ADMIN_ROLE_ID" | tr -d '\r')"
+
+              if [ -z "${ADMIN_ROLE_ID:-}" ] || [ "${ADMIN_ROLE_ID}" = "null" ]; then
+                echo "⚠️ Administrator role not found; skipping OpenAPI sync token provisioning."
+              else
+                OPENAPI_SYNC_TOKEN=""
+                RCODE="$(curl -sS -o /tmp/openapi-sync-token-read.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                  "${VAULT_ADDR}/v1/${OPENAPI_SYNC_TOKEN_VAULT_PATH}" || true)"
+                if [ "$RCODE" = "200" ]; then
+                  OPENAPI_SYNC_TOKEN="$(jq -r '.data.data.token // empty' /tmp/openapi-sync-token-read.json 2>/dev/null || true)"
+                fi
+                if [ -z "${OPENAPI_SYNC_TOKEN:-}" ] || [ "${OPENAPI_SYNC_TOKEN}" = "null" ]; then
+                  OPENAPI_SYNC_TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                fi
+
+                openapi_email="svc-openapi-admin@svc.local"
+                openapi_email_sql="$(printf '%s' "$openapi_email" | sed "s/'/''/g")"
+                ADMIN_USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT id FROM directus.directus_users WHERE email = '${openapi_email_sql}' LIMIT 1;" || true)"
+                ADMIN_USER_ID="$(printf '%s' "$ADMIN_USER_ID" | tr -d '\r')"
+                token_sql="$(printf '%s' "$OPENAPI_SYNC_TOKEN" | sed "s/'/''/g")"
+                admin_role_sql="$(printf '%s' "$ADMIN_ROLE_ID" | sed "s/'/''/g")"
+
+                if [ -z "${ADMIN_USER_ID:-}" ] || [ "${ADMIN_USER_ID}" = "null" ]; then
+                  ADMIN_USER_ID="$(cat /proc/sys/kernel/random/uuid)"
+                  UCOLS="id,email"
+                  UVALS="'${ADMIN_USER_ID}','${openapi_email_sql}'"
+                  if _openapi_has_user_col "role"; then UCOLS="${UCOLS},role"; UVALS="${UVALS},'${admin_role_sql}'"; fi
+                  if _openapi_has_user_col "token"; then UCOLS="${UCOLS},token"; UVALS="${UVALS},'${token_sql}'"; fi
+                  if _openapi_has_user_col "status"; then UCOLS="${UCOLS},status"; UVALS="${UVALS},'active'"; fi
+                  if _openapi_has_user_col "first_name"; then UCOLS="${UCOLS},first_name"; UVALS="${UVALS},'svc'"; fi
+                  if _openapi_has_user_col "last_name"; then UCOLS="${UCOLS},last_name"; UVALS="${UVALS},'openapi-admin'"; fi
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; INSERT INTO directus_users (${UCOLS}) VALUES (${UVALS});"
+                  echo "✅ Created OpenAPI sync user ${openapi_email}"
+                else
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; UPDATE directus_users SET role='${admin_role_sql}', token='${token_sql}', status='active' WHERE id='${ADMIN_USER_ID}';"
+                  echo "✅ Updated OpenAPI sync user ${openapi_email}"
+                fi
+
+                payload="$(jq -nc --arg t "$OPENAPI_SYNC_TOKEN" '{data:{token:$t}}')"
+                WCODE="$(curl -sS -o /tmp/openapi-sync-token-write.json -w '%{http_code}' -X POST \
+                  -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+                  -d "$payload" "${VAULT_ADDR}/v1/${OPENAPI_SYNC_TOKEN_VAULT_PATH}" || true)"
+                if [ "$WCODE" = "200" ] || [ "$WCODE" = "204" ]; then
+                  echo "✅ OpenAPI sync token stored in Vault (${OPENAPI_SYNC_TOKEN_VAULT_PATH})"
+                else
+                  echo "⚠️ Failed to store OpenAPI sync token in Vault (HTTP ${WCODE})"
+                fi
+              fi
+            else
+              echo "⚠️ directus_users.token column not found; cannot provision OpenAPI sync token."
+            fi
+
             # 6) Configure Directus settings directly in DB
             echo "🤖 Configuring Directus settings..."
             EXTRA_SETTINGS_FILE="/directus-settings/settings.yaml"
@@ -802,6 +868,8 @@ spec:
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
           - name: DB_DATABASE
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+          - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
+            value: "secret/data/directus/gravitee/openapi/admin"
         volumeMounts:
           - name: vault-root-token
             mountPath: /vault-token

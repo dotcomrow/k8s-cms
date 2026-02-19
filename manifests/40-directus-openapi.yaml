@@ -22,7 +22,9 @@ spec:
       labels:
         app: directus-openapi
     spec:
-      serviceAccountName: directus-openapi
+      # Reuse the Directus SA so this pod can authenticate to Vault and read
+      # the per-site Directus static token for authenticated OpenAPI fetches.
+      serviceAccountName: directus
       containers:
         - name: openapi-fetcher
           image: python:3.11-slim
@@ -33,6 +35,8 @@ spec:
               import os
               import re
               import time
+              import urllib.error
+              import urllib.parse
               import urllib.request
 
               url = os.environ.get(
@@ -43,6 +47,91 @@ spec:
 
               retry_seconds = int(os.environ.get("OPENAPI_RETRY_SECONDS", "5"))
               refresh_seconds = int(os.environ.get("OPENAPI_REFRESH_SECONDS", "300"))
+              fetch_timeout_seconds = int(os.environ.get("OPENAPI_FETCH_TIMEOUT_SECONDS", "15"))
+
+              vault_addr = os.environ.get("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200").rstrip("/")
+              vault_auth_path = os.environ.get("VAULT_AUTH_PATH", "kubernetes").strip("/")
+              vault_role = os.environ.get("VAULT_ROLE", "directus")
+              vault_k8s_token_file = os.environ.get(
+                  "VAULT_K8S_TOKEN_FILE",
+                  "/var/run/secrets/kubernetes.io/serviceaccount/token",
+              )
+              openapi_token_vault_path = os.environ.get(
+                  "OPENAPI_TOKEN_VAULT_PATH",
+                  "secret/data/directus/gravitee/openapi/admin",
+              )
+              openapi_token_vault_key = os.environ.get("OPENAPI_TOKEN_VAULT_KEY", "token")
+              openapi_token_cache_seconds = int(os.environ.get("OPENAPI_TOKEN_CACHE_SECONDS", "300"))
+
+              _vault_client_token = ""
+              _vault_client_token_expiry = 0.0
+              _openapi_token = ""
+              _openapi_token_loaded_at = 0.0
+
+              def _read_file(path):
+                  try:
+                      with open(path, "r", encoding="utf-8") as handle:
+                          return handle.read().strip()
+                  except Exception:
+                      return ""
+
+              def _vault_login():
+                  global _vault_client_token, _vault_client_token_expiry
+                  now = time.time()
+                  if _vault_client_token and now < (_vault_client_token_expiry - 5):
+                      return _vault_client_token
+
+                  jwt_token = _read_file(vault_k8s_token_file)
+                  if not jwt_token:
+                      raise RuntimeError("service-account token unavailable for Vault auth")
+
+                  payload = json.dumps({"role": vault_role, "jwt": jwt_token}).encode("utf-8")
+                  req = urllib.request.Request(
+                      f"{vault_addr}/v1/auth/{vault_auth_path}/login",
+                      data=payload,
+                      headers={"Content-Type": "application/json"},
+                      method="POST",
+                  )
+                  with urllib.request.urlopen(req, timeout=fetch_timeout_seconds) as resp:
+                      if resp.status != 200:
+                          raise RuntimeError(f"vault auth failed HTTP {resp.status}")
+                      body = json.load(resp)
+
+                  auth = body.get("auth") or {}
+                  client_token = auth.get("client_token") or ""
+                  lease = int(auth.get("lease_duration") or 300)
+                  if not client_token:
+                      raise RuntimeError("vault auth did not return client_token")
+
+                  _vault_client_token = client_token
+                  _vault_client_token_expiry = now + lease
+                  return _vault_client_token
+
+              def _vault_read(path):
+                  token = _vault_login()
+                  req = urllib.request.Request(
+                      f"{vault_addr}/v1/{path.lstrip('/')}",
+                      headers={"X-Vault-Token": token},
+                  )
+                  with urllib.request.urlopen(req, timeout=fetch_timeout_seconds) as resp:
+                      if resp.status != 200:
+                          raise RuntimeError(f"vault read failed HTTP {resp.status}")
+                      return json.load(resp)
+
+              def _get_openapi_token():
+                  global _openapi_token, _openapi_token_loaded_at
+                  now = time.time()
+                  if _openapi_token and now - _openapi_token_loaded_at < openapi_token_cache_seconds:
+                      return _openapi_token
+
+                  body = _vault_read(openapi_token_vault_path)
+                  token = ((body.get("data") or {}).get("data") or {}).get(openapi_token_vault_key, "") or ""
+                  if not token:
+                      raise RuntimeError("openapi token missing in Vault payload")
+
+                  _openapi_token = token
+                  _openapi_token_loaded_at = now
+                  return _openapi_token
 
               def normalize(obj):
                   if isinstance(obj, dict):
@@ -168,7 +257,16 @@ spec:
                       json.dump(stub, handle)
 
               def fetch_once():
-                  with urllib.request.urlopen(url, timeout=10) as resp:
+                  headers = {"Accept": "application/json"}
+                  try:
+                      token = _get_openapi_token()
+                      if token:
+                          headers["Authorization"] = f"Bearer {token}"
+                  except Exception as exc:
+                      print(f"OpenAPI auth token unavailable (fetching anonymously): {exc}")
+
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req, timeout=fetch_timeout_seconds) as resp:
                       if resp.status != 200:
                           raise RuntimeError(f"unexpected status {resp.status}")
                       data = json.load(resp)
@@ -200,6 +298,20 @@ spec:
               value: "5"
             - name: OPENAPI_REFRESH_SECONDS
               value: "300"
+            - name: OPENAPI_FETCH_TIMEOUT_SECONDS
+              value: "15"
+            - name: OPENAPI_TOKEN_VAULT_PATH
+              value: "secret/data/directus/gravitee/openapi/admin"
+            - name: OPENAPI_TOKEN_VAULT_KEY
+              value: "token"
+            - name: OPENAPI_TOKEN_CACHE_SECONDS
+              value: "300"
+            - name: VAULT_ADDR
+              value: "http://vault.vault.svc.cluster.local:8200"
+            - name: VAULT_AUTH_PATH
+              value: "kubernetes"
+            - name: VAULT_ROLE
+              value: "directus"
           volumeMounts:
             - name: openapi
               mountPath: /openapi

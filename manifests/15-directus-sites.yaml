@@ -14,9 +14,14 @@ data:
         client_key: cms-site-internal
         role_name: cms-site-internal
         read_collections:
-          # Minimal baseline so GraphQL can serve assets/files
+          # Baseline system collections required by client apps.
           - directus_files
           - directus_folders
+          # Content collections exposed to the site worker.
+          - demo_pages
+          - demo_page_blocks
+          - demo_block_rich_text
+          - demo_block_hero
 
       # External site (Cloudflare Worker service client)
       - site_key: external
@@ -25,3 +30,7 @@ data:
         read_collections:
           - directus_files
           - directus_folders
+          - demo_pages
+          - demo_page_blocks
+          - demo_block_rich_text
+          - demo_block_hero
