@@ -182,6 +182,7 @@ spec:
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
               path "secret/data/directus/gravitee"                 { capabilities = ["read"] }
               path "secret/data/directus/gravitee/clients/*"        { capabilities = ["read"] }
+              path "secret/data/directus/gravitee/openapi/*"        { capabilities = ["read"] }
               path "secret/data/open_ai_key"                       { capabilities = ["read"] }
               path "secret/data/redis"                             { capabilities = ["read"] }
               path "secret/data/vaultadmin"                        { capabilities = ["read"] }
