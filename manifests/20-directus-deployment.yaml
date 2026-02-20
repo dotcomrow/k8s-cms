@@ -315,6 +315,83 @@ spec:
             # 5) Static tokens are provisioned via service users (directus_users.token) in the site bootstrap below.
             echo "🔐 Provisioning Directus static tokens via site service users..."
 
+            # Ensure multi-site columns exist for GitOps-managed row-level site filters.
+            # This is idempotent and safe to run every startup.
+            echo "🧱 Ensuring multi-site columns exist..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               ALTER TABLE IF EXISTS demo_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS demo_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS demo_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+               ALTER TABLE IF EXISTS demo_block_rich_text ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS demo_block_rich_text ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+               ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS page_slug TEXT;"
+
+            # Allow each site to have its own homepage slug (e.g. both can use "home").
+            echo "🧱 Ensuring per-site slug uniqueness..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               DO \$\$ \
+               BEGIN \
+                 IF EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_constraint \
+                   WHERE conname = 'demo_pages_slug_unique' \
+                     AND conrelid = 'directus.demo_pages'::regclass \
+                 ) THEN \
+                   ALTER TABLE demo_pages DROP CONSTRAINT demo_pages_slug_unique; \
+                 END IF; \
+                 IF NOT EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_constraint \
+                   WHERE conname = 'demo_pages_site_slug_unique' \
+                     AND conrelid = 'directus.demo_pages'::regclass \
+                 ) THEN \
+                   ALTER TABLE demo_pages ADD CONSTRAINT demo_pages_site_slug_unique UNIQUE (site_key, slug); \
+                 END IF; \
+                 IF NOT EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_constraint \
+                   WHERE conname = 'demo_page_blocks_collection_item_unique' \
+                     AND conrelid = 'directus.demo_page_blocks'::regclass \
+                 ) THEN \
+                   IF NOT EXISTS ( \
+                     SELECT 1 \
+                     FROM demo_page_blocks \
+                     GROUP BY collection, item \
+                     HAVING COUNT(*) > 1 \
+                   ) THEN \
+                     ALTER TABLE demo_page_blocks ADD CONSTRAINT demo_page_blocks_collection_item_unique UNIQUE (collection, item); \
+                   ELSE \
+                     RAISE NOTICE 'Skipping demo_page_blocks_collection_item_unique due to duplicate (collection,item) rows'; \
+                   END IF; \
+                 END IF; \
+               END \
+               \$\$;"
+
+            # Keep derived site metadata on junction/content rows aligned to the page they belong to.
+            echo "🔄 Syncing site/page metadata onto blocks..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               UPDATE demo_page_blocks pb \
+               SET site_key = p.site_key, page_slug = p.slug \
+               FROM demo_pages p \
+               WHERE pb.page_id = p.id \
+                 AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.page_slug IS DISTINCT FROM p.slug); \
+               UPDATE demo_block_rich_text rt \
+               SET site_key = pb.site_key, page_slug = pb.page_slug \
+               FROM demo_page_blocks pb \
+               WHERE pb.collection = 'demo_block_rich_text' \
+                 AND pb.item = rt.id::text \
+                 AND (rt.site_key IS DISTINCT FROM pb.site_key OR rt.page_slug IS DISTINCT FROM pb.page_slug); \
+               UPDATE demo_block_hero h \
+               SET site_key = pb.site_key, page_slug = pb.page_slug \
+               FROM demo_page_blocks pb \
+               WHERE pb.collection = 'demo_block_hero' \
+                 AND pb.item = h.id::text \
+                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug);"
+
             # 5b) Provision site-specific roles/policies/users/tokens/permissions (GitOps-driven).
             # - Keycloak `azp` (client id) -> Vault token -> Directus service user token.
             # - GraphQL schema/actions are permission-filtered; seed baseline read perms per site policy.
@@ -409,8 +486,73 @@ spec:
                   esac
                 }
 
+                _json_value_for_type() {
+                  _t="$1"
+                  _json="$2"
+                  if [ -z "${_json:-}" ] || [ "${_json}" = "null" ]; then
+                    _json_empty_for_type "$_t"
+                    return
+                  fi
+                  _json_compact="$(printf '%s' "$_json" | jq -c '.' 2>/dev/null || true)"
+                  if [ -z "${_json_compact:-}" ] || [ "${_json_compact}" = "null" ]; then
+                    _json_empty_for_type "$_t"
+                    return
+                  fi
+                  _json_sql="$(printf '%s' "$_json_compact" | sed "s/'/''/g")"
+                  case "$_t" in
+                    jsonb) printf "'%s'::jsonb" "$_json_sql" ;;
+                    json) printf "'%s'::json" "$_json_sql" ;;
+                    *) printf "NULL" ;;
+                  esac
+                }
+
+                _fields_value_from_config_for_type() {
+                  _t="$1"
+                  _cfg="$2"
+                  if [ -z "${_cfg:-}" ] || [ "${_cfg}" = "null" ]; then
+                    _fields_value_for_type "$_t"
+                    return
+                  fi
+                  _fields_json="$(printf '%s' "$_cfg" | jq -c 'if type=="array" then map(tostring) elif type=="string" then [.] else null end' 2>/dev/null || true)"
+                  if [ -z "${_fields_json:-}" ] || [ "${_fields_json}" = "null" ]; then
+                    _fields_value_for_type "$_t"
+                    return
+                  fi
+                  case "$_t" in
+                    ARRAY:*)
+                      _csv="$(printf '%s' "$_fields_json" | jq -r 'map(tostring) | join(",")' 2>/dev/null || true)"
+                      if [ -z "${_csv:-}" ] || [ "${_csv}" = "null" ]; then
+                        printf "ARRAY['*']::text[]"
+                      else
+                        _arr_sql="$(printf '%s' "$_csv" | sed "s/'/''/g;s/,/','/g")"
+                        printf "ARRAY['%s']::text[]" "$_arr_sql"
+                      fi
+                      ;;
+                    jsonb:*|jsonb)
+                      _fields_sql="$(printf '%s' "$_fields_json" | sed "s/'/''/g")"
+                      printf "'%s'::jsonb" "$_fields_sql"
+                      ;;
+                    json:*|json)
+                      _fields_sql="$(printf '%s' "$_fields_json" | sed "s/'/''/g")"
+                      printf "'%s'::json" "$_fields_sql"
+                      ;;
+                    text:*|text|character\ varying:*|character\ varying)
+                      _csv="$(printf '%s' "$_fields_json" | jq -r 'map(tostring) | join(",")' 2>/dev/null || true)"
+                      if [ -z "${_csv:-}" ] || [ "${_csv}" = "null" ]; then
+                        _csv='*'
+                      fi
+                      _csv_sql="$(printf '%s' "$_csv" | sed "s/'/''/g")"
+                      printf "'%s'" "$_csv_sql"
+                      ;;
+                    *)
+                      printf "NULL"
+                      ;;
+                  esac
+                }
+
                 printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
                   site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
+                  homepage_slug="$(printf '%s' "$site" | jq -r '.homepage_slug // "home"')"
                   client_key="$(printf '%s' "$site" | jq -r '.client_key // .clientId // empty')"
                   role_name="$(printf '%s' "$site" | jq -r '.role_name // .role // empty')"
 
@@ -424,6 +566,126 @@ spec:
                   if ! printf '%s' "$client_key" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
                     echo "⚠️  invalid client_key '${client_key}' (site_key=${site_key}); skipping"
                     continue
+                  fi
+
+                  if [ -z "${homepage_slug:-}" ] || [ "${homepage_slug}" = "null" ]; then
+                    homepage_slug="home"
+                  fi
+
+                  # Ensure each site has a homepage row keyed by (site_key, homepage_slug).
+                  # If absent, claim an unscoped page first; otherwise clone page metadata from any existing slug match.
+                  if [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ]; then
+                    site_key_sql="$(printf '%s' "$site_key" | sed "s/'/''/g")"
+                    homepage_slug_sql="$(printf '%s' "$homepage_slug" | sed "s/'/''/g")"
+
+                    HOME_PAGE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                      "SELECT id FROM directus.demo_pages WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' LIMIT 1;" || true)"
+                    HOME_PAGE_ID="$(printf '%s' "$HOME_PAGE_ID" | tr -d '\r')"
+
+                    if [ -z "${HOME_PAGE_ID:-}" ] || [ "${HOME_PAGE_ID}" = "null" ]; then
+                      UNSCOPED_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                        "SELECT id FROM directus.demo_pages WHERE slug='${homepage_slug_sql}' AND (site_key IS NULL OR site_key='') ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
+                      UNSCOPED_ID="$(printf '%s' "$UNSCOPED_ID" | tr -d '\r')"
+
+                      if [ -n "${UNSCOPED_ID:-}" ] && [ "${UNSCOPED_ID}" != "null" ]; then
+                        unscoped_id_sql="$(printf '%s' "$UNSCOPED_ID" | sed "s/'/''/g")"
+                        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                          "SET search_path TO directus, public; UPDATE demo_pages SET site_key='${site_key_sql}' WHERE id='${unscoped_id_sql}';"
+                        HOME_PAGE_ID="$UNSCOPED_ID"
+                        echo "✅ Assigned existing homepage slug='${homepage_slug}' to site_key='${site_key}'"
+                      else
+                        SEED_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                          "SELECT id FROM directus.demo_pages WHERE slug='${homepage_slug_sql}' ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
+                        SEED_ID="$(printf '%s' "$SEED_ID" | tr -d '\r')"
+                        NEW_HOME_ID="$(cat /proc/sys/kernel/random/uuid)"
+                        new_home_sql="$(printf '%s' "$NEW_HOME_ID" | sed "s/'/''/g")"
+
+                        if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
+                          seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
+                          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, seo_title, seo_description, parent, site_key) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}' FROM demo_pages WHERE id='${seed_id_sql}';"
+
+                          # Clone supported homepage blocks so the new site homepage has immediate content.
+                          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -AtF '|' -c \
+                            "SELECT collection, item, COALESCE(sort, 0) FROM directus.demo_page_blocks WHERE page_id='${seed_id_sql}' ORDER BY sort NULLS LAST, id;" \
+                            | while IFS='|' read -r blk_collection blk_item blk_sort; do
+                                [ -z "${blk_collection:-}" ] && continue
+                                [ -z "${blk_item:-}" ] && continue
+
+                                src_item_sql="$(printf '%s' "$blk_item" | sed "s/'/''/g")"
+                                new_item_id="$(cat /proc/sys/kernel/random/uuid)"
+                                new_item_sql="$(printf '%s' "$new_item_id" | sed "s/'/''/g")"
+                                copied="0"
+
+                                case "$blk_collection" in
+                                  demo_block_rich_text)
+                                    copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                                      "WITH ins AS (INSERT INTO directus.demo_block_rich_text (id, status, sort, body, site_key, page_slug) SELECT '${new_item_sql}', status, sort, body, '${site_key_sql}', '${homepage_slug_sql}' FROM directus.demo_block_rich_text WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                                    ;;
+                                  demo_block_hero)
+                                    copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                                      "WITH ins AS (INSERT INTO directus.demo_block_hero (id, status, sort, headline, subheadline, background_image, cta_label, cta_url, site_key, page_slug) SELECT '${new_item_sql}', status, sort, headline, subheadline, background_image, cta_label, cta_url, '${site_key_sql}', '${homepage_slug_sql}' FROM directus.demo_block_hero WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                                    ;;
+                                  *)
+                                    echo "⚠️  skipping unsupported block collection '${blk_collection}' for site_key='${site_key}'"
+                                    continue
+                                    ;;
+                                esac
+
+                                copied="$(printf '%s' "$copied" | tr -d '\r')"
+                                if [ "${copied:-0}" != "1" ]; then
+                                  echo "⚠️  source block item '${blk_item}' missing for collection '${blk_collection}'; skipping"
+                                  continue
+                                fi
+
+                                new_pb_id="$(cat /proc/sys/kernel/random/uuid)"
+                                new_pb_sql="$(printf '%s' "$new_pb_id" | sed "s/'/''/g")"
+                                blk_coll_sql="$(printf '%s' "$blk_collection" | sed "s/'/''/g")"
+                                sort_sql="NULL"
+                                if [ -n "${blk_sort:-}" ] && [ "${blk_sort}" != "null" ] && printf '%s' "$blk_sort" | grep -Eq '^-?[0-9]+$'; then
+                                  sort_sql="$blk_sort"
+                                fi
+                                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                                  "SET search_path TO directus, public; INSERT INTO demo_page_blocks (id, page_id, collection, item, sort, site_key, page_slug) VALUES ('${new_pb_sql}', '${new_home_sql}', '${blk_coll_sql}', '${new_item_sql}', ${sort_sql}, '${site_key_sql}', '${homepage_slug_sql}');"
+                              done
+
+                          echo "✅ Cloned homepage metadata + supported blocks for site_key='${site_key}'"
+                        else
+                          title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
+                          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, site_key) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}');"
+                          echo "✅ Created default homepage for site_key='${site_key}'"
+                        fi
+                        HOME_PAGE_ID="$NEW_HOME_ID"
+                      fi
+                    fi
+
+                    # Keep derived metadata aligned for this site's homepage content graph.
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; \
+                       UPDATE demo_page_blocks pb \
+                       SET site_key = p.site_key, page_slug = p.slug \
+                       FROM demo_pages p \
+                       WHERE pb.page_id = p.id \
+                         AND p.site_key='${site_key_sql}' \
+                         AND p.slug='${homepage_slug_sql}' \
+                         AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.page_slug IS DISTINCT FROM p.slug); \
+                       UPDATE demo_block_rich_text rt \
+                       SET site_key = pb.site_key, page_slug = pb.page_slug \
+                       FROM demo_page_blocks pb \
+                       WHERE pb.collection = 'demo_block_rich_text' \
+                         AND pb.item = rt.id::text \
+                         AND pb.site_key='${site_key_sql}' \
+                         AND pb.page_slug='${homepage_slug_sql}' \
+                         AND (rt.site_key IS DISTINCT FROM pb.site_key OR rt.page_slug IS DISTINCT FROM pb.page_slug); \
+                       UPDATE demo_block_hero h \
+                       SET site_key = pb.site_key, page_slug = pb.page_slug \
+                       FROM demo_page_blocks pb \
+                       WHERE pb.collection = 'demo_block_hero' \
+                         AND pb.item = h.id::text \
+                         AND pb.site_key='${site_key_sql}' \
+                         AND pb.page_slug='${homepage_slug_sql}' \
+                         AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug);"
                   fi
 
                   # Ensure a per-client Directus service-user token exists in Vault.
@@ -536,20 +798,62 @@ spec:
 
                   # Seed baseline read permissions for this policy (drives available GraphQL actions).
                   if [ "${PERM_TABLE_EXISTS:-0}" = "1" ] && [ -n "${POLICY_ID:-}" ] && [ -n "${PERM_PRINC_COL:-}" ]; then
-                    perms_empty="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
-                    val_empty="$(_json_empty_for_type "${VALIDATION_TYPE:-}")"
-                    pre_empty="$(_json_empty_for_type "${PRESETS_TYPE:-}")"
-                    fields_val="$(_fields_value_for_type "${PERM_FIELDS_TYPE:-}")"
+                    # Reconcile desired read access from sites.yaml on every deploy.
+                    # This removes stale read grants so ArgoCD-driven config is authoritative.
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; DELETE FROM directus_permissions WHERE ${PERM_PRINC_COL}='${POLICY_ID}' AND action='read';"
 
-                    printf '%s' "$site" | jq -r '.read_collections[]? | strings' | while IFS= read -r coll; do
-                      [ -z "${coll:-}" ] && continue
-                      coll_sql="$(printf '%s' "$coll" | sed "s/'/''/g")"
-                      exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                        "SELECT 1 FROM directus.directus_permissions WHERE ${PERM_PRINC_COL} = '${POLICY_ID}' AND collection = '${coll_sql}' AND action = 'read' LIMIT 1;" || true)"
-                      exists="$(printf '%s' "$exists" | tr -d '\r')"
-                      if [ "$exists" = "1" ]; then
+                    printf '%s' "$site" | jq -c '.read_collections[]?' | while IFS= read -r coll_entry; do
+                      [ -z "${coll_entry:-}" ] && continue
+
+                      coll=""
+                      fields_cfg="null"
+                      permissions_cfg="null"
+                      validation_cfg="null"
+                      presets_cfg="null"
+
+                      coll_type="$(printf '%s' "$coll_entry" | jq -r 'type' 2>/dev/null || true)"
+                      if [ "$coll_type" = "string" ]; then
+                        coll="$(printf '%s' "$coll_entry" | jq -r '.' 2>/dev/null || true)"
+                      elif [ "$coll_type" = "object" ]; then
+                        coll="$(printf '%s' "$coll_entry" | jq -r '.collection // .name // empty' 2>/dev/null || true)"
+                        fields_cfg="$(printf '%s' "$coll_entry" | jq -c '.fields // null' 2>/dev/null || true)"
+                        permissions_cfg="$(printf '%s' "$coll_entry" | jq -c '.permissions // .filter // null' 2>/dev/null || true)"
+                        validation_cfg="$(printf '%s' "$coll_entry" | jq -c '.validation // null' 2>/dev/null || true)"
+                        presets_cfg="$(printf '%s' "$coll_entry" | jq -c '.presets // null' 2>/dev/null || true)"
+                      else
                         continue
                       fi
+
+                      if [ -z "${coll:-}" ] || [ "${coll}" = "null" ]; then
+                        continue
+                      fi
+
+                      coll_sql="$(printf '%s' "$coll" | sed "s/'/''/g")"
+                      perms_val="$(_json_value_for_type "${PERMISSIONS_TYPE:-}" "${permissions_cfg:-null}")"
+                      val_val="$(_json_value_for_type "${VALIDATION_TYPE:-}" "${validation_cfg:-null}")"
+                      pre_val="$(_json_value_for_type "${PRESETS_TYPE:-}" "${presets_cfg:-null}")"
+                      fields_val="$(_fields_value_from_config_for_type "${PERM_FIELDS_TYPE:-}" "${fields_cfg:-null}")"
+
+                      existing_perm_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                        "SELECT id FROM directus.directus_permissions WHERE ${PERM_PRINC_COL} = '${POLICY_ID}' AND collection = '${coll_sql}' AND action = 'read' LIMIT 1;" || true)"
+                      existing_perm_id="$(printf '%s' "$existing_perm_id" | tr -d '\r')"
+
+                      if [ -n "${existing_perm_id:-}" ] && [ "${existing_perm_id}" != "null" ]; then
+                        SETS=""
+                        if _has_perm_col "permissions"; then SETS="${SETS},permissions=${perms_val}"; fi
+                        if _has_perm_col "validation"; then SETS="${SETS},validation=${val_val}"; fi
+                        if _has_perm_col "presets"; then SETS="${SETS},presets=${pre_val}"; fi
+                        if _has_perm_col "fields"; then SETS="${SETS},fields=${fields_val}"; fi
+                        if [ -n "${SETS:-}" ]; then
+                          perm_id_sql="$(printf '%s' "$existing_perm_id" | sed "s/'/''/g")"
+                          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                            "SET search_path TO directus, public; UPDATE directus_permissions SET ${SETS#,} WHERE id='${perm_id_sql}';"
+                        fi
+                        echo "✅ Reconciled read on ${coll} for policy '${role_name}'"
+                        continue
+                      fi
+
                       PCOLS="${PERM_PRINC_COL},collection,action"
                       PVALS="'${POLICY_ID}','${coll_sql}','read'"
                       if [ "${PERM_ID_HAS_DEFAULT:-0}" != "1" ]; then
@@ -557,9 +861,9 @@ spec:
                         PCOLS="id,${PCOLS}"
                         PVALS="'${pid}',${PVALS}"
                       fi
-                      if _has_perm_col "permissions"; then PCOLS="${PCOLS},permissions"; PVALS="${PVALS},${perms_empty}"; fi
-                      if _has_perm_col "validation"; then PCOLS="${PCOLS},validation"; PVALS="${PVALS},${val_empty}"; fi
-                      if _has_perm_col "presets"; then PCOLS="${PCOLS},presets"; PVALS="${PVALS},${pre_empty}"; fi
+                      if _has_perm_col "permissions"; then PCOLS="${PCOLS},permissions"; PVALS="${PVALS},${perms_val}"; fi
+                      if _has_perm_col "validation"; then PCOLS="${PCOLS},validation"; PVALS="${PVALS},${val_val}"; fi
+                      if _has_perm_col "presets"; then PCOLS="${PCOLS},presets"; PVALS="${PVALS},${pre_val}"; fi
                       if _has_perm_col "fields"; then PCOLS="${PCOLS},fields"; PVALS="${PVALS},${fields_val}"; fi
                       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
                         "SET search_path TO directus, public; INSERT INTO directus_permissions (${PCOLS}) VALUES (${PVALS});"

@@ -11,26 +11,106 @@ data:
     sites:
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
+        homepage_slug: home
         client_key: cms-site-internal
         role_name: cms-site-internal
         read_collections:
-          # Baseline system collections required by client apps.
-          - directus_files
-          - directus_folders
-          # Content collections exposed to the site worker.
-          - demo_pages
-          - demo_page_blocks
-          - demo_block_rich_text
-          - demo_block_hero
+          - collection: demo_pages
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: internal
+                - slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: demo_page_blocks
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: internal
+                - page_slug:
+                    _eq: home
+                - collection:
+                    _in:
+                      - demo_block_rich_text
+                      - demo_block_hero
+          - collection: demo_block_rich_text
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: internal
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: demo_block_hero
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: internal
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
 
       # External site (Cloudflare Worker service client)
       - site_key: external
+        homepage_slug: home
         client_key: cms-site-external
         role_name: cms-site-external
         read_collections:
-          - directus_files
-          - directus_folders
-          - demo_pages
-          - demo_page_blocks
-          - demo_block_rich_text
-          - demo_block_hero
+          - collection: demo_pages
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: external
+                - slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: demo_page_blocks
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: external
+                - page_slug:
+                    _eq: home
+                - collection:
+                    _in:
+                      - demo_block_rich_text
+                      - demo_block_hero
+          - collection: demo_block_rich_text
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: external
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: demo_block_hero
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: external
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
