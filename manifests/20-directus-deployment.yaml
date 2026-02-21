@@ -1016,36 +1016,131 @@ spec:
                   jq -nr --arg v "${_raw}" '$v|@uri' 2>/dev/null || true
                 }
 
+                _directus_verify_token() {
+                  _candidate="$1"
+                  if [ -z "${_candidate:-}" ] || [ "${_candidate}" = "null" ]; then
+                    return 1
+                  fi
+                  _verify_code="$(curl -sS -o /tmp/directus-token-verify.json -w '%{http_code}' \
+                    -H "Authorization: Bearer ${_candidate}" \
+                    "${DIRECTUS_API_BASE}/users/me" || true)"
+                  [ "${_verify_code}" = "200" ]
+                }
+
                 echo "🔐 Preparing Directus API token for flow provisioning..."
-                ADMIN_CREDS_CODE="$(curl -sS -o /tmp/directus-admin-creds.json -w '%{http_code}' \
+                DIRECTUS_FLOW_API_TOKEN_VAULT_PATH="${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH:-secret/data/directus/gravitee/openapi/admin}"
+
+                FLOW_TOKEN_CODE="$(curl -sS -o /tmp/directus-flow-token.json -w '%{http_code}' \
                   -H "X-Vault-Token: ${VAULT_TOKEN}" \
-                  "${VAULT_ADDR}/v1/secret/data/directus/admin" || true)"
-                if [ "${ADMIN_CREDS_CODE}" = "200" ]; then
-                  DIRECTUS_ADMIN_EMAIL="$(jq -r '.data.data.email // empty' /tmp/directus-admin-creds.json 2>/dev/null || true)"
-                  DIRECTUS_ADMIN_PASSWORD="$(jq -r '.data.data.password // empty' /tmp/directus-admin-creds.json 2>/dev/null || true)"
-                  if [ -n "${DIRECTUS_ADMIN_EMAIL:-}" ] && [ -n "${DIRECTUS_ADMIN_PASSWORD:-}" ] \
-                    && [ "${DIRECTUS_ADMIN_EMAIL}" != "null" ] && [ "${DIRECTUS_ADMIN_PASSWORD}" != "null" ]; then
-                    LOGIN_PAYLOAD="$(jq -nc --arg email "${DIRECTUS_ADMIN_EMAIL}" --arg password "${DIRECTUS_ADMIN_PASSWORD}" '{email:$email,password:$password}')"
-                    LOGIN_CODE="$(curl -sS -o /tmp/directus-login.json -w '%{http_code}' -X POST \
-                      -H "Content-Type: application/json" \
-                      -d "${LOGIN_PAYLOAD}" \
-                      "${DIRECTUS_API_BASE}/auth/login" || true)"
-                    if [ "${LOGIN_CODE}" = "200" ]; then
-                      DIRECTUS_ACCESS_TOKEN="$(jq -r '.data.access_token // empty' /tmp/directus-login.json 2>/dev/null || true)"
-                      if [ -n "${DIRECTUS_ACCESS_TOKEN:-}" ] && [ "${DIRECTUS_ACCESS_TOKEN}" != "null" ]; then
-                        _directus_api_enabled="1"
-                        echo "✅ Directus API token acquired for flow reconciliation"
+                  "${VAULT_ADDR}/v1/${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH}" || true)"
+                if [ "${FLOW_TOKEN_CODE}" = "200" ]; then
+                  DIRECTUS_ACCESS_TOKEN="$(jq -r '.data.data.token // empty' /tmp/directus-flow-token.json 2>/dev/null || true)"
+                fi
+
+                if _directus_verify_token "${DIRECTUS_ACCESS_TOKEN:-}"; then
+                  _directus_api_enabled="1"
+                  echo "✅ Directus API token acquired from Vault (${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH})"
+                else
+                  if [ -n "${DIRECTUS_ACCESS_TOKEN:-}" ] && [ "${DIRECTUS_ACCESS_TOKEN}" != "null" ]; then
+                    echo "⚠️ Vault token at ${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH} is invalid for Directus API; rotating token"
+                  else
+                    echo "ℹ️ No Directus API token found at ${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH}; creating one"
+                  fi
+
+                  if _has_user_col "token"; then
+                    FLOW_ADMIN_ROLE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                      "SELECT id FROM directus.directus_roles WHERE name='Administrator' LIMIT 1;" || true)"
+                    FLOW_ADMIN_ROLE_ID="$(printf '%s' "$FLOW_ADMIN_ROLE_ID" | tr -d '\r')"
+                    if [ -n "${FLOW_ADMIN_ROLE_ID:-}" ] && [ "${FLOW_ADMIN_ROLE_ID}" != "null" ]; then
+                      flow_admin_email="svc-flow-admin@svc.local"
+                      flow_admin_email_sql="$(printf '%s' "$flow_admin_email" | sed "s/'/''/g")"
+                      FLOW_ADMIN_USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                        "SELECT id FROM directus.directus_users WHERE email = '${flow_admin_email_sql}' LIMIT 1;" || true)"
+                      FLOW_ADMIN_USER_ID="$(printf '%s' "$FLOW_ADMIN_USER_ID" | tr -d '\r')"
+
+                      FLOW_ADMIN_TOKEN="${DIRECTUS_ACCESS_TOKEN:-}"
+                      if [ -z "${FLOW_ADMIN_TOKEN:-}" ] || [ "${FLOW_ADMIN_TOKEN}" = "null" ]; then
+                        FLOW_ADMIN_TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                      fi
+                      flow_admin_role_sql="$(printf '%s' "$FLOW_ADMIN_ROLE_ID" | sed "s/'/''/g")"
+                      flow_admin_token_sql="$(printf '%s' "$FLOW_ADMIN_TOKEN" | sed "s/'/''/g")"
+
+                      if [ -z "${FLOW_ADMIN_USER_ID:-}" ] || [ "${FLOW_ADMIN_USER_ID}" = "null" ]; then
+                        FLOW_ADMIN_USER_ID="$(cat /proc/sys/kernel/random/uuid)"
+                        UCOLS="id,email"
+                        UVALS="'${FLOW_ADMIN_USER_ID}','${flow_admin_email_sql}'"
+                        if _has_user_col "role"; then UCOLS="${UCOLS},role"; UVALS="${UVALS},'${flow_admin_role_sql}'"; fi
+                        if _has_user_col "token"; then UCOLS="${UCOLS},token"; UVALS="${UVALS},'${flow_admin_token_sql}'"; fi
+                        if _has_user_col "status"; then UCOLS="${UCOLS},status"; UVALS="${UVALS},'active'"; fi
+                        if _has_user_col "first_name"; then UCOLS="${UCOLS},first_name"; UVALS="${UVALS},'svc'"; fi
+                        if _has_user_col "last_name"; then UCOLS="${UCOLS},last_name"; UVALS="${UVALS},'flow-admin'"; fi
+                        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                          "SET search_path TO directus, public; INSERT INTO directus_users (${UCOLS}) VALUES (${UVALS});"
+                        echo "✅ Created flow admin service user ${flow_admin_email}"
                       else
-                        echo "⚠️ Directus login succeeded but no access_token returned; skipping flow reconciliation"
+                        flow_admin_user_id_sql="$(printf '%s' "$FLOW_ADMIN_USER_ID" | sed "s/'/''/g")"
+                        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                          "SET search_path TO directus, public; UPDATE directus_users SET role='${flow_admin_role_sql}', token='${flow_admin_token_sql}', status='active' WHERE id='${flow_admin_user_id_sql}';"
+                        echo "✅ Updated flow admin service user ${flow_admin_email}"
+                      fi
+
+                      payload="$(jq -nc --arg t "$FLOW_ADMIN_TOKEN" '{data:{token:$t}}')"
+                      FLOW_TOKEN_WRITE_CODE="$(curl -sS -o /tmp/directus-flow-token-write.json -w '%{http_code}' -X POST \
+                        -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+                        -d "${payload}" "${VAULT_ADDR}/v1/${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH}" || true)"
+                      if [ "${FLOW_TOKEN_WRITE_CODE}" = "200" ] || [ "${FLOW_TOKEN_WRITE_CODE}" = "204" ]; then
+                        echo "✅ Directus flow API token stored in Vault (${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH})"
+                      else
+                        echo "⚠️ Failed to write Directus flow API token to Vault (HTTP ${FLOW_TOKEN_WRITE_CODE})"
+                      fi
+
+                      if _directus_verify_token "${FLOW_ADMIN_TOKEN:-}"; then
+                        DIRECTUS_ACCESS_TOKEN="${FLOW_ADMIN_TOKEN}"
+                        _directus_api_enabled="1"
+                        echo "✅ Directus API token prepared for flow reconciliation"
+                      else
+                        echo "⚠️ Generated Directus flow token did not authenticate; will attempt legacy login fallback"
                       fi
                     else
-                      echo "⚠️ Directus login failed (HTTP ${LOGIN_CODE}); skipping flow reconciliation"
+                      echo "⚠️ Administrator role not found; cannot mint Directus API token for flow reconciliation"
                     fi
                   else
-                    echo "⚠️ Vault secret secret/data/directus/admin missing email/password; skipping flow reconciliation"
+                    echo "⚠️ directus_users.token column not found; cannot mint Directus API token for flow reconciliation"
                   fi
-                else
-                  echo "⚠️ Could not read secret/data/directus/admin from Vault (HTTP ${ADMIN_CREDS_CODE}); skipping flow reconciliation"
+                fi
+
+                # Fallback for environments that still allow local email/password auth.
+                if [ "${_directus_api_enabled}" != "1" ]; then
+                  ADMIN_CREDS_CODE="$(curl -sS -o /tmp/directus-admin-creds.json -w '%{http_code}' \
+                    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                    "${VAULT_ADDR}/v1/secret/data/directus/admin" || true)"
+                  if [ "${ADMIN_CREDS_CODE}" = "200" ]; then
+                    DIRECTUS_ADMIN_EMAIL="$(jq -r '.data.data.email // empty' /tmp/directus-admin-creds.json 2>/dev/null || true)"
+                    DIRECTUS_ADMIN_PASSWORD="$(jq -r '.data.data.password // empty' /tmp/directus-admin-creds.json 2>/dev/null || true)"
+                    if [ -n "${DIRECTUS_ADMIN_EMAIL:-}" ] && [ -n "${DIRECTUS_ADMIN_PASSWORD:-}" ] \
+                      && [ "${DIRECTUS_ADMIN_EMAIL}" != "null" ] && [ "${DIRECTUS_ADMIN_PASSWORD}" != "null" ]; then
+                      LOGIN_PAYLOAD="$(jq -nc --arg email "${DIRECTUS_ADMIN_EMAIL}" --arg password "${DIRECTUS_ADMIN_PASSWORD}" '{email:$email,password:$password}')"
+                      LOGIN_CODE="$(curl -sS -o /tmp/directus-login.json -w '%{http_code}' -X POST \
+                        -H "Content-Type: application/json" \
+                        -d "${LOGIN_PAYLOAD}" \
+                        "${DIRECTUS_API_BASE}/auth/login" || true)"
+                      if [ "${LOGIN_CODE}" = "200" ]; then
+                        DIRECTUS_ACCESS_TOKEN="$(jq -r '.data.access_token // empty' /tmp/directus-login.json 2>/dev/null || true)"
+                        if [ -n "${DIRECTUS_ACCESS_TOKEN:-}" ] && [ "${DIRECTUS_ACCESS_TOKEN}" != "null" ]; then
+                          _directus_api_enabled="1"
+                          echo "✅ Directus API token acquired from /auth/login fallback"
+                        else
+                          echo "⚠️ Directus login succeeded but no access_token returned; skipping flow reconciliation"
+                        fi
+                      else
+                        echo "⚠️ Directus login fallback failed (HTTP ${LOGIN_CODE}); skipping flow reconciliation"
+                      fi
+                    else
+                      echo "⚠️ Vault secret secret/data/directus/admin missing email/password; skipping flow reconciliation"
+                    fi
+                  else
+                    echo "⚠️ Could not read secret/data/directus/admin from Vault (HTTP ${ADMIN_CREDS_CODE}); skipping flow reconciliation"
+                  fi
                 fi
 
                 printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
@@ -2013,6 +2108,8 @@ spec:
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
           - name: DB_DATABASE
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+          - name: DIRECTUS_FLOW_API_TOKEN_VAULT_PATH
+            value: "secret/data/directus/gravitee/openapi/admin"
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/openapi/admin"
         volumeMounts:
