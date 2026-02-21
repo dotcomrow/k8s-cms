@@ -62,6 +62,9 @@ spec:
             items:
               - key: sites.yaml
                 path: sites.yaml
+        - name: directus-layout-templates
+          configMap:
+            name: directus-layout-templates
         - name: directus-extensions-seed
           configMap:
             name: directus-extensions-seed
@@ -321,6 +324,7 @@ spec:
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; \
                ALTER TABLE IF EXISTS demo_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS demo_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
                ALTER TABLE IF EXISTS demo_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
                ALTER TABLE IF EXISTS demo_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
                ALTER TABLE IF EXISTS demo_block_rich_text ADD COLUMN IF NOT EXISTS site_key TEXT; \
@@ -392,7 +396,181 @@ spec:
                  AND pb.item = h.id::text \
                  AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug);"
 
-            # 5b) Provision site-specific roles/policies/users/tokens/permissions (GitOps-driven).
+            # 5b) Ensure layout template collection exists and seed templates from GitOps config.
+            echo "🧱 Ensuring demo_layout_templates exists..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               CREATE TABLE IF NOT EXISTS demo_layout_templates ( \
+                 id UUID PRIMARY KEY, \
+                 template_key TEXT NOT NULL, \
+                 name TEXT NOT NULL, \
+                 description TEXT NULL, \
+                 status TEXT NOT NULL DEFAULT 'draft', \
+                 site_key TEXT NULL, \
+                 html TEXT NOT NULL, \
+                 css TEXT NULL, \
+                 date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+                 date_updated TIMESTAMPTZ NULL \
+               ); \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS template_key TEXT; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS name TEXT; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS description TEXT; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS status TEXT; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS html TEXT; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS css TEXT; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+               ALTER TABLE IF EXISTS demo_layout_templates ALTER COLUMN status SET DEFAULT 'draft'; \
+               ALTER TABLE IF EXISTS demo_layout_templates ALTER COLUMN date_created SET DEFAULT now(); \
+               DO \$\$ \
+               BEGIN \
+                 IF EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_constraint \
+                   WHERE conname = 'demo_layout_templates_template_key_unique' \
+                     AND conrelid = 'directus.demo_layout_templates'::regclass \
+                 ) THEN \
+                   ALTER TABLE demo_layout_templates DROP CONSTRAINT demo_layout_templates_template_key_unique; \
+                 END IF; \
+                 IF NOT EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_indexes \
+                   WHERE schemaname = 'directus' \
+                     AND indexname = 'demo_layout_templates_scope_template_unique' \
+                 ) THEN \
+                   IF NOT EXISTS ( \
+                     SELECT 1 \
+                     FROM ( \
+                       SELECT COALESCE(site_key, '') AS site_scope, template_key, COUNT(*) AS c \
+                       FROM demo_layout_templates \
+                       GROUP BY COALESCE(site_key, ''), template_key \
+                       HAVING COUNT(*) > 1 \
+                     ) dups \
+                   ) THEN \
+                     CREATE UNIQUE INDEX demo_layout_templates_scope_template_unique \
+                     ON demo_layout_templates (COALESCE(site_key, ''), template_key); \
+                   ELSE \
+                     RAISE NOTICE 'Skipping demo_layout_templates_scope_template_unique due to duplicate (site_key,template_key) rows'; \
+                   END IF; \
+                 END IF; \
+               END \
+               \$\$;"
+
+            LAYOUTS_FILE="/directus-layout-templates/templates.yaml"
+            if [ -f "$LAYOUTS_FILE" ]; then
+              LAYOUTS_JSON="$(yq -o=json '.' "$LAYOUTS_FILE" 2>/dev/null || true)"
+              if printf '%s' "$LAYOUTS_JSON" | jq -e '.templates | type=="array" and length>0' >/dev/null 2>&1; then
+                printf '%s' "$LAYOUTS_JSON" | jq -c '.templates[]' | while IFS= read -r tpl; do
+                  tpl_key="$(printf '%s' "$tpl" | jq -r '.template_key // empty')"
+                  tpl_name="$(printf '%s' "$tpl" | jq -r '.name // empty')"
+                  tpl_status="$(printf '%s' "$tpl" | jq -r '.status // "published"')"
+                  tpl_desc="$(printf '%s' "$tpl" | jq -r '.description // empty')"
+                  tpl_site="$(printf '%s' "$tpl" | jq -r 'if .site_key == null then "" else (.site_key | tostring) end')"
+                  tpl_html="$(printf '%s' "$tpl" | jq -r '.html // empty')"
+                  tpl_css="$(printf '%s' "$tpl" | jq -r '.css // empty')"
+                  tpl_html_file="$(printf '%s' "$tpl" | jq -r '.html_file // empty')"
+                  tpl_css_file="$(printf '%s' "$tpl" | jq -r '.css_file // empty')"
+
+                  if [ -z "${tpl_html:-}" ] && [ -n "${tpl_html_file:-}" ]; then
+                    case "$tpl_html_file" in
+                      /*|*..*)
+                        echo "⚠️  skipping template '${tpl_key}': invalid html_file path '${tpl_html_file}'"
+                        continue
+                        ;;
+                    esac
+                    tpl_html_path="/directus-layout-templates/${tpl_html_file}"
+                    if [ ! -f "$tpl_html_path" ]; then
+                      echo "⚠️  skipping template '${tpl_key}': html file not found at ${tpl_html_path}"
+                      continue
+                    fi
+                    tpl_html="$(cat "$tpl_html_path")"
+                  fi
+
+                  if [ -z "${tpl_css:-}" ] && [ -n "${tpl_css_file:-}" ]; then
+                    case "$tpl_css_file" in
+                      /*|*..*)
+                        echo "⚠️  template '${tpl_key}' has invalid css_file path '${tpl_css_file}'; ignoring css"
+                        tpl_css=""
+                        ;;
+                      *)
+                        tpl_css_path="/directus-layout-templates/${tpl_css_file}"
+                        if [ -f "$tpl_css_path" ]; then
+                          tpl_css="$(cat "$tpl_css_path")"
+                        else
+                          echo "⚠️  template '${tpl_key}' css file not found at ${tpl_css_path}; continuing without css"
+                          tpl_css=""
+                        fi
+                        ;;
+                    esac
+                  fi
+
+                  if [ -z "${tpl_key:-}" ] || [ -z "${tpl_name:-}" ] || [ -z "${tpl_html:-}" ]; then
+                    echo "⚠️  skipping invalid layout template entry (template_key/name/html required)"
+                    continue
+                  fi
+
+                  tpl_key_sql="$(printf '%s' "$tpl_key" | sed "s/'/''/g")"
+                  tpl_name_sql="$(printf '%s' "$tpl_name" | sed "s/'/''/g")"
+                  tpl_status_sql="$(printf '%s' "$tpl_status" | sed "s/'/''/g")"
+                  tpl_html_sql="$(printf '%s' "$tpl_html" | sed "s/'/''/g")"
+
+                  tpl_desc_sql="NULL"
+                  if [ -n "${tpl_desc:-}" ]; then
+                    tpl_desc_esc="$(printf '%s' "$tpl_desc" | sed "s/'/''/g")"
+                    tpl_desc_sql="'${tpl_desc_esc}'"
+                  fi
+
+                  tpl_site_sql="NULL"
+                  tpl_scope_condition="site_key IS NULL"
+                  if [ -n "${tpl_site:-}" ]; then
+                    tpl_site_esc="$(printf '%s' "$tpl_site" | sed "s/'/''/g")"
+                    tpl_site_sql="'${tpl_site_esc}'"
+                    tpl_scope_condition="site_key='${tpl_site_esc}'"
+                  fi
+
+                  tpl_css_sql="NULL"
+                  if [ -n "${tpl_css:-}" ]; then
+                    tpl_css_esc="$(printf '%s' "$tpl_css" | sed "s/'/''/g")"
+                    tpl_css_sql="'${tpl_css_esc}'"
+                  fi
+
+                  existing_tpl_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                    "SELECT id FROM directus.demo_layout_templates WHERE template_key='${tpl_key_sql}' AND ${tpl_scope_condition} LIMIT 1;" || true)"
+                  existing_tpl_id="$(printf '%s' "$existing_tpl_id" | tr -d '\r')"
+
+                  if [ -n "${existing_tpl_id:-}" ] && [ "${existing_tpl_id}" != "null" ]; then
+                    existing_tpl_id_sql="$(printf '%s' "$existing_tpl_id" | sed "s/'/''/g")"
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; \
+                       UPDATE demo_layout_templates \
+                       SET name='${tpl_name_sql}', \
+                           description=${tpl_desc_sql}, \
+                           status='${tpl_status_sql}', \
+                           site_key=${tpl_site_sql}, \
+                           html='${tpl_html_sql}', \
+                           css=${tpl_css_sql}, \
+                           date_updated=now() \
+                       WHERE id='${existing_tpl_id_sql}';"
+                    echo "✅ Reconciled layout template '${tpl_key}'"
+                  else
+                    new_tpl_id="$(cat /proc/sys/kernel/random/uuid)"
+                    new_tpl_id_sql="$(printf '%s' "$new_tpl_id" | sed "s/'/''/g")"
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; \
+                       INSERT INTO demo_layout_templates (id, template_key, name, description, status, site_key, html, css, date_created, date_updated) \
+                       VALUES ('${new_tpl_id_sql}','${tpl_key_sql}','${tpl_name_sql}',${tpl_desc_sql},'${tpl_status_sql}',${tpl_site_sql},'${tpl_html_sql}',${tpl_css_sql},now(),now());"
+                    echo "✅ Seeded layout template '${tpl_key}'"
+                  fi
+                done
+              else
+                echo "  └─ no templates configured in ${LAYOUTS_FILE}; skipping"
+              fi
+            else
+              echo "  └─ ${LAYOUTS_FILE} not found; skipping"
+            fi
+
+            # 5c) Provision site-specific roles/policies/users/tokens/permissions (GitOps-driven).
             # - Keycloak `azp` (client id) -> Vault token -> Directus service user token.
             # - GraphQL schema/actions are permission-filtered; seed baseline read perms per site policy.
             echo "🧭 Provisioning Directus sites (roles/policies/users/permissions)..."
@@ -553,6 +731,7 @@ spec:
                 printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
                   site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
                   homepage_slug="$(printf '%s' "$site" | jq -r '.homepage_slug // "home"')"
+                  homepage_layout_template_key="$(printf '%s' "$site" | jq -r '.homepage_layout_template_key // .layout_template_key // "spa-default"')"
                   client_key="$(printf '%s' "$site" | jq -r '.client_key // .clientId // empty')"
                   role_name="$(printf '%s' "$site" | jq -r '.role_name // .role // empty')"
 
@@ -571,12 +750,21 @@ spec:
                   if [ -z "${homepage_slug:-}" ] || [ "${homepage_slug}" = "null" ]; then
                     homepage_slug="home"
                   fi
+                  if [ -z "${homepage_layout_template_key:-}" ] || [ "${homepage_layout_template_key}" = "null" ]; then
+                    homepage_layout_template_key=""
+                  fi
 
                   # Ensure each site has a homepage row keyed by (site_key, homepage_slug).
                   # If absent, claim an unscoped page first; otherwise clone page metadata from any existing slug match.
                   if [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ]; then
                     site_key_sql="$(printf '%s' "$site_key" | sed "s/'/''/g")"
                     homepage_slug_sql="$(printf '%s' "$homepage_slug" | sed "s/'/''/g")"
+                    homepage_layout_template_key_sql=""
+                    homepage_layout_template_value_sql="NULL"
+                    if [ -n "${homepage_layout_template_key:-}" ]; then
+                      homepage_layout_template_key_sql="$(printf '%s' "$homepage_layout_template_key" | sed "s/'/''/g")"
+                      homepage_layout_template_value_sql="'${homepage_layout_template_key_sql}'"
+                    fi
 
                     HOME_PAGE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                       "SELECT id FROM directus.demo_pages WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' LIMIT 1;" || true)"
@@ -603,7 +791,7 @@ spec:
                         if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
                           seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
                           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, seo_title, seo_description, parent, site_key) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}' FROM demo_pages WHERE id='${seed_id_sql}';"
+                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key FROM demo_pages WHERE id='${seed_id_sql}';"
 
                           # Clone supported homepage blocks so the new site homepage has immediate content.
                           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -AtF '|' -c \
@@ -653,7 +841,7 @@ spec:
                         else
                           title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
                           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, site_key) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}');"
+                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, site_key, layout_template_key) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql});"
                           echo "✅ Created default homepage for site_key='${site_key}'"
                         fi
                         HOME_PAGE_ID="$NEW_HOME_ID"
@@ -686,6 +874,20 @@ spec:
                          AND pb.site_key='${site_key_sql}' \
                          AND pb.page_slug='${homepage_slug_sql}' \
                          AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug);"
+
+                    # Set homepage layout assignment from sites.yaml if configured.
+                    if [ -n "${homepage_layout_template_key_sql:-}" ]; then
+                      layout_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                        "SELECT 1 FROM directus.demo_layout_templates WHERE template_key='${homepage_layout_template_key_sql}' AND (site_key='${site_key_sql}' OR site_key IS NULL OR site_key='') ORDER BY CASE WHEN site_key='${site_key_sql}' THEN 0 ELSE 1 END LIMIT 1;" || true)"
+                      layout_exists="$(printf '%s' "$layout_exists" | tr -d '\r')"
+                      if [ "$layout_exists" = "1" ]; then
+                        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                          "SET search_path TO directus, public; UPDATE demo_pages SET layout_template_key='${homepage_layout_template_key_sql}' WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' AND (layout_template_key IS DISTINCT FROM '${homepage_layout_template_key_sql}');"
+                        echo "✅ Set homepage layout '${homepage_layout_template_key}' for site_key='${site_key}'"
+                      else
+                        echo "⚠️  homepage layout '${homepage_layout_template_key}' not found for site_key='${site_key}' (or global); leaving page unchanged"
+                      fi
+                    fi
                   fi
 
                   # Ensure a per-client Directus service-user token exists in Vault.
@@ -878,7 +1080,7 @@ spec:
               echo "  └─ ${SITES_FILE} not found; skipping"
             fi
 
-            # 5c) Provision a dedicated admin-backed token for OpenAPI discovery sync.
+            # 5d) Provision a dedicated admin-backed token for OpenAPI discovery sync.
             # Directus only includes `/items/*` paths in OAS for admin-level users.
             echo "🧾 Ensuring OpenAPI sync admin token exists..."
             OPENAPI_SYNC_TOKEN_VAULT_PATH="${OPENAPI_SYNC_TOKEN_VAULT_PATH:-secret/data/directus/gravitee/openapi/admin}"
@@ -1183,6 +1385,9 @@ spec:
             readOnly: true
           - name: directus-sites
             mountPath: /directus-sites
+            readOnly: true
+          - name: directus-layout-templates
+            mountPath: /directus-layout-templates
             readOnly: true
       - name: vault-agent
         image: hashicorp/vault:1.15.4

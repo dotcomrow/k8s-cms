@@ -1,0 +1,24 @@
+templates:
+  - template_key: spa-default
+    name: SPA Default
+    description: "Default single-page layout with header, main, and footer slots."
+    status: published
+    site_key: null
+    html_file: spa-default.html
+    css_file: spa-default.css
+
+  - template_key: spa-split-hero
+    name: SPA Split Hero
+    description: "Single-page layout with a prominent hero region and content region."
+    status: published
+    site_key: null
+    html_file: spa-split-hero.html
+    css_file: spa-split-hero.css
+
+  - template_key: spa-dashboard
+    name: SPA Dashboard
+    description: "Two-column app shell layout with nav rail and content panel."
+    status: published
+    site_key: null
+    html_file: spa-dashboard.html
+    css_file: spa-dashboard.css

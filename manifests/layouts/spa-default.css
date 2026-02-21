@@ -1,0 +1,22 @@
+.layout-default {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: #ffffff;
+  color: #111111;
+}
+
+.layout-default .layout__header,
+.layout-default .layout__footer {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.layout-default .layout__footer {
+  border-bottom: 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.layout-default .layout__main {
+  padding: 1.5rem;
+}

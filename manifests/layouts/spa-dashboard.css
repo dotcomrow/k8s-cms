@@ -1,0 +1,29 @@
+.layout-dashboard {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.layout-dashboard .layout__sidebar {
+  border-right: 1px solid #cbd5e1;
+  background: #ffffff;
+  padding: 1rem;
+}
+
+.layout-dashboard .layout__content {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+}
+
+.layout-dashboard .layout__header,
+.layout-dashboard .layout__footer {
+  padding: 1rem 1.5rem;
+  background: #ffffff;
+}
+
+.layout-dashboard .layout__main {
+  padding: 1.5rem;
+}

@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace-directus.yaml
+  - 05-vault-bootstrap.yaml
+  - 10-directus-config.yaml
+  - 11-directus-extensions-pvc.yaml
+  - 15-directus-sites.yaml
+  - 20-directus-deployment.yaml
+  - 30-directus-service.yaml
+  - 40-directus-openapi.yaml
+  - 50-directus-auth-bridge.yaml
+  - 60-directus-ai-proxy.yaml
+
+configMapGenerator:
+  - name: directus-layout-templates
+    namespace: directus
+    files:
+      - layouts/templates.yaml
+      - layouts/spa-default.html
+      - layouts/spa-default.css
+      - layouts/spa-split-hero.html
+      - layouts/spa-split-hero.css
+      - layouts/spa-dashboard.html
+      - layouts/spa-dashboard.css
+
+generatorOptions:
+  disableNameSuffixHash: true

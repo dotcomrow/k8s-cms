@@ -1,0 +1,20 @@
+.layout-split-hero {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: linear-gradient(180deg, #f9fafb 0%, #ffffff 100%);
+  color: #111111;
+}
+
+.layout-split-hero .layout__header,
+.layout-split-hero .layout__footer {
+  padding: 1rem 1.5rem;
+}
+
+.layout-split-hero .layout__hero {
+  padding: 2.5rem 1.5rem 1.5rem;
+}
+
+.layout-split-hero .layout__main {
+  padding: 1.5rem;
+}

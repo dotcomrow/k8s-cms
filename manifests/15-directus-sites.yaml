@@ -12,6 +12,7 @@ data:
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
         homepage_slug: home
+        homepage_layout_template_key: spa-default
         client_key: cms-site-internal
         role_name: cms-site-internal
         read_collections:
@@ -26,6 +27,18 @@ data:
                     _eq: home
                 - status:
                     _eq: published
+          - collection: demo_layout_templates
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: internal
           - collection: demo_page_blocks
             fields:
               - "*"
@@ -65,6 +78,7 @@ data:
       # External site (Cloudflare Worker service client)
       - site_key: external
         homepage_slug: home
+        homepage_layout_template_key: spa-default
         client_key: cms-site-external
         role_name: cms-site-external
         read_collections:
@@ -79,6 +93,18 @@ data:
                     _eq: home
                 - status:
                     _eq: published
+          - collection: demo_layout_templates
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: external
           - collection: demo_page_blocks
             fields:
               - "*"
