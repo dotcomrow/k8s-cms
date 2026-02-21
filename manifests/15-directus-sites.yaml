@@ -19,9 +19,17 @@ data:
         # but this GitOps config is authoritative on deploy.
         cache_refresh:
           enabled: false
-          endpoint: ""
-          method: POST
-          headers: []
+          targets:
+            prod:
+              enabled: false
+              endpoint: ""
+              method: POST
+              headers: []
+            preview:
+              enabled: false
+              endpoint: ""
+              method: POST
+              headers: []
           auth:
             enabled: true
             token_url: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/token"
@@ -101,9 +109,17 @@ data:
         role_name: cms-site-external
         cache_refresh:
           enabled: false
-          endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh"
-          method: POST
-          headers: []
+          targets:
+            prod:
+              enabled: false
+              endpoint: ""
+              method: POST
+              headers: []
+            preview:
+              enabled: false
+              endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh"
+              method: POST
+              headers: []
           auth:
             enabled: true
             token_url: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/token"
