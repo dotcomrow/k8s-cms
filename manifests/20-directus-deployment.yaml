@@ -1090,7 +1090,7 @@ spec:
                 }
 
                 echo "🔐 Preparing Directus API token for flow provisioning..."
-                DIRECTUS_FLOW_API_TOKEN_VAULT_PATH="${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH:-secret/data/directus/gravitee/openapi/admin}"
+                DIRECTUS_FLOW_API_TOKEN_VAULT_PATH="${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH:-secret/data/directus/gravitee/flows/admin}"
 
                 FLOW_TOKEN_CODE="$(curl -sS -o /tmp/directus-flow-token.json -w '%{http_code}' \
                   -H "X-Vault-Token: ${VAULT_TOKEN}" \
@@ -2171,7 +2171,7 @@ spec:
           - name: DB_DATABASE
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
           - name: DIRECTUS_FLOW_API_TOKEN_VAULT_PATH
-            value: "secret/data/directus/gravitee/openapi/admin"
+            value: "secret/data/directus/gravitee/flows/admin"
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/openapi/admin"
         volumeMounts:
