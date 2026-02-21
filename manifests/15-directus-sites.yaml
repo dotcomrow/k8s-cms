@@ -117,7 +117,7 @@ data:
               headers: []
             preview:
               enabled: true
-              endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh"
+              endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh?mode=purge-and-refresh"
               method: POST
               headers: []
           auth:
