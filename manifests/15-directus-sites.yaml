@@ -15,6 +15,24 @@ data:
         homepage_layout_template_key: spa-default
         client_key: cms-site-internal
         role_name: cms-site-internal
+        # Flow endpoints can be edited in Directus UI (Settings -> Flows),
+        # but this GitOps config is authoritative on deploy.
+        cache_refresh:
+          enabled: false
+          endpoint: ""
+          method: POST
+          headers: []
+          auth:
+            enabled: true
+            token_url: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/token"
+            audience: ""
+            scope: ""
+            audience_vault_path: "secret/data/keycloak-client-id-graphql-api"
+            audience_vault_field: "value"
+            client_id_vault_path: "secret/data/keycloak-client-id-cms-site-internal"
+            client_id_vault_field: "value"
+            client_secret_vault_path: "secret/data/keycloak-client-secret-cms-site-internal"
+            client_secret_vault_field: "value"
         read_collections:
           - collection: demo_pages
             fields:
@@ -81,6 +99,22 @@ data:
         homepage_layout_template_key: spa-default
         client_key: cms-site-external
         role_name: cms-site-external
+        cache_refresh:
+          enabled: false
+          endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh"
+          method: POST
+          headers: []
+          auth:
+            enabled: true
+            token_url: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/token"
+            audience: ""
+            scope: ""
+            audience_vault_path: "secret/data/keycloak-client-id-graphql-api"
+            audience_vault_field: "value"
+            client_id_vault_path: "secret/data/keycloak-client-id-cms-site-external"
+            client_id_vault_field: "value"
+            client_secret_vault_path: "secret/data/keycloak-client-secret-cms-site-external"
+            client_secret_vault_field: "value"
         read_collections:
           - collection: demo_pages
             fields:

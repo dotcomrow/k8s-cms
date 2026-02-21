@@ -728,6 +728,157 @@ spec:
                   esac
                 }
 
+                DIRECTUS_API_BASE="http://127.0.0.1:8055"
+                DIRECTUS_ACCESS_TOKEN=""
+                _directus_api_enabled="0"
+
+                _directus_api_get() {
+                  _path="$1"
+                  shift || true
+                  curl -sS -f \
+                    -H "Authorization: Bearer ${DIRECTUS_ACCESS_TOKEN}" \
+                    --get "${DIRECTUS_API_BASE}${_path}" "$@"
+                }
+
+                _directus_api_write() {
+                  _method="$1"
+                  _path="$2"
+                  _payload="$3"
+                  curl -sS -f -X "${_method}" \
+                    -H "Authorization: Bearer ${DIRECTUS_ACCESS_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    -d "${_payload}" \
+                    "${DIRECTUS_API_BASE}${_path}"
+                }
+
+                _directus_find_flow_id_by_name() {
+                  _name="$1"
+                  _id="$(_directus_api_get "/flows" \
+                    --data-urlencode "filter[name][_eq]=${_name}" \
+                    --data-urlencode "limit=1" \
+                    --data-urlencode "fields=id" \
+                    2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
+                  printf '%s' "${_id:-}"
+                }
+
+                _directus_find_operation_id() {
+                  _flow_id="$1"
+                  _key="$2"
+                  _id="$(_directus_api_get "/operations" \
+                    --data-urlencode "filter[flow][_eq]=${_flow_id}" \
+                    --data-urlencode "filter[key][_eq]=${_key}" \
+                    --data-urlencode "limit=1" \
+                    --data-urlencode "fields=id" \
+                    2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
+                  printf '%s' "${_id:-}"
+                }
+
+                _directus_upsert_operation() {
+                  _flow_id="$1"
+                  _op_key="$2"
+                  _op_type="$3"
+                  _op_name="$4"
+                  _pos_x="$5"
+                  _pos_y="$6"
+                  _options_json="$7"
+
+                  _op_id="$(_directus_find_operation_id "${_flow_id}" "${_op_key}")"
+                  _create_payload="$(jq -nc \
+                    --arg flow "${_flow_id}" \
+                    --arg key "${_op_key}" \
+                    --arg type "${_op_type}" \
+                    --arg name "${_op_name}" \
+                    --argjson position_x "${_pos_x}" \
+                    --argjson position_y "${_pos_y}" \
+                    --argjson options "${_options_json}" \
+                    '{flow:$flow,key:$key,type:$type,name:$name,position_x:$position_x,position_y:$position_y,options:$options,resolve:null,reject:null}')"
+                  _update_payload="$(jq -nc \
+                    --arg key "${_op_key}" \
+                    --arg type "${_op_type}" \
+                    --arg name "${_op_name}" \
+                    --argjson position_x "${_pos_x}" \
+                    --argjson position_y "${_pos_y}" \
+                    --argjson options "${_options_json}" \
+                    '{key:$key,type:$type,name:$name,position_x:$position_x,position_y:$position_y,options:$options,resolve:null,reject:null}')"
+
+                  if [ -n "${_op_id:-}" ] && [ "${_op_id}" != "null" ]; then
+                    _directus_api_write "PATCH" "/operations/${_op_id}" "${_update_payload}" >/tmp/directus-op-upsert.json 2>/dev/null || true
+                    printf '%s' "${_op_id}"
+                    return
+                  fi
+
+                  _created="$(_directus_api_write "POST" "/operations" "${_create_payload}" 2>/dev/null || true)"
+                  _op_id="$(printf '%s' "${_created}" | jq -r '.data.id // empty' 2>/dev/null || true)"
+                  printf '%s' "${_op_id:-}"
+                }
+
+                _directus_set_operation_links() {
+                  _op_id="$1"
+                  _resolve="$2"
+                  _reject="$3"
+                  if [ -z "${_op_id:-}" ] || [ "${_op_id}" = "null" ]; then
+                    return 0
+                  fi
+                  _payload="$(jq -nc --arg resolve "${_resolve}" --arg reject "${_reject}" \
+                    '{resolve:(if $resolve=="" then null else $resolve end),reject:(if $reject=="" then null else $reject end)}')"
+                  _directus_api_write "PATCH" "/operations/${_op_id}" "${_payload}" >/tmp/directus-op-links.json 2>/dev/null || true
+                }
+
+                _vault_kv_read_field() {
+                  _path="$1"
+                  _field="$2"
+                  if [ -z "${_path:-}" ] || [ "${_path}" = "null" ] || [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+                    return 1
+                  fi
+                  _response="$(curl -sS -f -H "X-Vault-Token: ${VAULT_TOKEN}" "${VAULT_ADDR}/v1/${_path}" 2>/dev/null || true)"
+                  if [ -z "${_response:-}" ]; then
+                    return 1
+                  fi
+                  _value="$(printf '%s' "${_response}" | jq -r --arg field "${_field}" '.data.data[$field] // empty' 2>/dev/null || true)"
+                  _value="$(printf '%s' "${_value}" | tr -d '\r')"
+                  if [ -z "${_value:-}" ] || [ "${_value}" = "null" ]; then
+                    return 1
+                  fi
+                  printf '%s' "${_value}"
+                }
+
+                _urlencode_value() {
+                  _raw="$1"
+                  jq -nr --arg v "${_raw}" '$v|@uri' 2>/dev/null || true
+                }
+
+                echo "🔐 Preparing Directus API token for flow provisioning..."
+                ADMIN_CREDS_CODE="$(curl -sS -o /tmp/directus-admin-creds.json -w '%{http_code}' \
+                  -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                  "${VAULT_ADDR}/v1/secret/data/directus/admin" || true)"
+                if [ "${ADMIN_CREDS_CODE}" = "200" ]; then
+                  DIRECTUS_ADMIN_EMAIL="$(jq -r '.data.data.email // empty' /tmp/directus-admin-creds.json 2>/dev/null || true)"
+                  DIRECTUS_ADMIN_PASSWORD="$(jq -r '.data.data.password // empty' /tmp/directus-admin-creds.json 2>/dev/null || true)"
+                  if [ -n "${DIRECTUS_ADMIN_EMAIL:-}" ] && [ -n "${DIRECTUS_ADMIN_PASSWORD:-}" ] \
+                    && [ "${DIRECTUS_ADMIN_EMAIL}" != "null" ] && [ "${DIRECTUS_ADMIN_PASSWORD}" != "null" ]; then
+                    LOGIN_PAYLOAD="$(jq -nc --arg email "${DIRECTUS_ADMIN_EMAIL}" --arg password "${DIRECTUS_ADMIN_PASSWORD}" '{email:$email,password:$password}')"
+                    LOGIN_CODE="$(curl -sS -o /tmp/directus-login.json -w '%{http_code}' -X POST \
+                      -H "Content-Type: application/json" \
+                      -d "${LOGIN_PAYLOAD}" \
+                      "${DIRECTUS_API_BASE}/auth/login" || true)"
+                    if [ "${LOGIN_CODE}" = "200" ]; then
+                      DIRECTUS_ACCESS_TOKEN="$(jq -r '.data.access_token // empty' /tmp/directus-login.json 2>/dev/null || true)"
+                      if [ -n "${DIRECTUS_ACCESS_TOKEN:-}" ] && [ "${DIRECTUS_ACCESS_TOKEN}" != "null" ]; then
+                        _directus_api_enabled="1"
+                        echo "✅ Directus API token acquired for flow reconciliation"
+                      else
+                        echo "⚠️ Directus login succeeded but no access_token returned; skipping flow reconciliation"
+                      fi
+                    else
+                      echo "⚠️ Directus login failed (HTTP ${LOGIN_CODE}); skipping flow reconciliation"
+                    fi
+                  else
+                    echo "⚠️ Vault secret secret/data/directus/admin missing email/password; skipping flow reconciliation"
+                  fi
+                else
+                  echo "⚠️ Could not read secret/data/directus/admin from Vault (HTTP ${ADMIN_CREDS_CODE}); skipping flow reconciliation"
+                fi
+
                 printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
                   site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
                   homepage_slug="$(printf '%s' "$site" | jq -r '.homepage_slug // "home"')"
@@ -1071,6 +1222,236 @@ spec:
                         "SET search_path TO directus, public; INSERT INTO directus_permissions (${PCOLS}) VALUES (${PVALS});"
                       echo "✅ Granted read on ${coll} to policy '${role_name}'"
                     done
+                  fi
+
+                  # Provision per-site Directus flows that call the app cache refresh endpoint after content saves.
+                  # These are seeded from sites.yaml and can also be adjusted from the Directus Flow UI.
+                  if [ "${_directus_api_enabled}" = "1" ]; then
+                    refresh_enabled_raw="$(printf '%s' "$site" | jq -r '.cache_refresh.enabled // false' 2>/dev/null || true)"
+                    refresh_endpoint="$(printf '%s' "$site" | jq -r '.cache_refresh.endpoint // empty' 2>/dev/null || true)"
+                    refresh_method="$(printf '%s' "$site" | jq -r '.cache_refresh.method // "POST"' 2>/dev/null || true)"
+                    refresh_headers_json="$(printf '%s' "$site" | jq -c \
+                      '(.cache_refresh.headers // []) | if type=="array" then map(select(type=="object") | {header:((.header // "")|tostring), value:((.value // "")|tostring)} | select(.header != "")) else [] end' \
+                      2>/dev/null || true)"
+                    refresh_auth_enabled_raw="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.enabled // true' 2>/dev/null || true)"
+                    refresh_auth_token_url_raw="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.token_url // empty' 2>/dev/null || true)"
+                    refresh_auth_scope="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.scope // empty' 2>/dev/null || true)"
+                    refresh_auth_audience="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.audience // empty' 2>/dev/null || true)"
+                    refresh_auth_audience_vault_path="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.audience_vault_path // "secret/data/keycloak-client-id-graphql-api"' 2>/dev/null || true)"
+                    refresh_auth_audience_vault_field="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.audience_vault_field // "value"' 2>/dev/null || true)"
+                    refresh_auth_client_id_vault_path="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.client_id_vault_path // empty' 2>/dev/null || true)"
+                    refresh_auth_client_id_vault_field="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.client_id_vault_field // "value"' 2>/dev/null || true)"
+                    refresh_auth_client_secret_vault_path="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.client_secret_vault_path // empty' 2>/dev/null || true)"
+                    refresh_auth_client_secret_vault_field="$(printf '%s' "$site" | jq -r '.cache_refresh.auth.client_secret_vault_field // "value"' 2>/dev/null || true)"
+
+                    case "$(printf '%s' "${refresh_enabled_raw:-}" | tr '[:upper:]' '[:lower:]')" in
+                      1|true|yes|on) refresh_enabled="true" ;;
+                      *) refresh_enabled="false" ;;
+                    esac
+
+                    case "$(printf '%s' "${refresh_auth_enabled_raw:-}" | tr '[:upper:]' '[:lower:]')" in
+                      1|true|yes|on) refresh_auth_enabled="true" ;;
+                      *) refresh_auth_enabled="false" ;;
+                    esac
+
+                    refresh_method="$(printf '%s' "${refresh_method:-POST}" | tr '[:lower:]' '[:upper:]')"
+                    case "${refresh_method}" in
+                      GET|POST|PUT|PATCH|DELETE) ;;
+                      *) refresh_method="POST" ;;
+                    esac
+
+                    if [ -z "${refresh_headers_json:-}" ] || [ "${refresh_headers_json}" = "null" ]; then
+                      refresh_headers_json="[]"
+                    fi
+
+                    flow_status="active"
+                    if [ "${refresh_enabled}" != "true" ]; then
+                      flow_status="inactive"
+                    fi
+
+                    refresh_endpoint_effective="$(printf '%s' "${refresh_endpoint:-}" | tr -d '\r')"
+                    if [ -z "${refresh_endpoint_effective:-}" ] || [ "${refresh_endpoint_effective}" = "null" ]; then
+                      flow_status="inactive"
+                      refresh_endpoint_effective="https://replace-me-${site_key}.invalid/api/cache/refresh"
+                    fi
+
+                    refresh_auth_token_url="$(printf '%s' "${refresh_auth_token_url_raw:-}" | tr -d '\r')"
+                    if [ -z "${refresh_auth_token_url:-}" ] || [ "${refresh_auth_token_url}" = "null" ]; then
+                      refresh_auth_token_url="https://auth.suncoast.systems/realms/external/protocol/openid-connect/token"
+                    fi
+
+                    refresh_auth_client_id_vault_path="$(printf '%s' "${refresh_auth_client_id_vault_path:-}" | tr -d '\r')"
+                    if [ -z "${refresh_auth_client_id_vault_path:-}" ] || [ "${refresh_auth_client_id_vault_path}" = "null" ]; then
+                      refresh_auth_client_id_vault_path="secret/data/keycloak-client-id-${client_key}"
+                    fi
+
+                    refresh_auth_client_secret_vault_path="$(printf '%s' "${refresh_auth_client_secret_vault_path:-}" | tr -d '\r')"
+                    if [ -z "${refresh_auth_client_secret_vault_path:-}" ] || [ "${refresh_auth_client_secret_vault_path}" = "null" ]; then
+                      refresh_auth_client_secret_vault_path="secret/data/keycloak-client-secret-${client_key}"
+                    fi
+
+                    refresh_auth_client_id_vault_field="$(printf '%s' "${refresh_auth_client_id_vault_field:-value}" | tr -d '\r')"
+                    if [ -z "${refresh_auth_client_id_vault_field:-}" ] || [ "${refresh_auth_client_id_vault_field}" = "null" ]; then
+                      refresh_auth_client_id_vault_field="value"
+                    fi
+
+                    refresh_auth_client_secret_vault_field="$(printf '%s' "${refresh_auth_client_secret_vault_field:-value}" | tr -d '\r')"
+                    if [ -z "${refresh_auth_client_secret_vault_field:-}" ] || [ "${refresh_auth_client_secret_vault_field}" = "null" ]; then
+                      refresh_auth_client_secret_vault_field="value"
+                    fi
+
+                    refresh_auth_audience_vault_path="$(printf '%s' "${refresh_auth_audience_vault_path:-}" | tr -d '\r')"
+                    refresh_auth_audience_vault_field="$(printf '%s' "${refresh_auth_audience_vault_field:-value}" | tr -d '\r')"
+                    if [ -z "${refresh_auth_audience_vault_field:-}" ] || [ "${refresh_auth_audience_vault_field}" = "null" ]; then
+                      refresh_auth_audience_vault_field="value"
+                    fi
+
+                    refresh_auth_client_id=""
+                    refresh_auth_client_secret=""
+                    refresh_auth_token_body=""
+                    refresh_headers_effective_json="${refresh_headers_json}"
+
+                    if [ "${refresh_auth_enabled}" = "true" ]; then
+                      refresh_auth_client_id="$(_vault_kv_read_field "${refresh_auth_client_id_vault_path}" "${refresh_auth_client_id_vault_field}" || true)"
+                      refresh_auth_client_secret="$(_vault_kv_read_field "${refresh_auth_client_secret_vault_path}" "${refresh_auth_client_secret_vault_field}" || true)"
+                      refresh_auth_audience="$(printf '%s' "${refresh_auth_audience:-}" | tr -d '\r')"
+                      if [ -z "${refresh_auth_audience:-}" ] && [ -n "${refresh_auth_audience_vault_path:-}" ] && [ "${refresh_auth_audience_vault_path}" != "null" ]; then
+                        refresh_auth_audience="$(_vault_kv_read_field "${refresh_auth_audience_vault_path}" "${refresh_auth_audience_vault_field}" || true)"
+                      fi
+
+                      if [ -z "${refresh_auth_client_id:-}" ] || [ -z "${refresh_auth_client_secret:-}" ]; then
+                        flow_status="inactive"
+                        echo "⚠️ cache refresh auth enabled but Keycloak client credentials missing for site_key='${site_key}' (client_id_path='${refresh_auth_client_id_vault_path}', client_secret_path='${refresh_auth_client_secret_vault_path}')"
+                      else
+                        enc_client_id="$(_urlencode_value "${refresh_auth_client_id}")"
+                        enc_client_secret="$(_urlencode_value "${refresh_auth_client_secret}")"
+                        refresh_auth_token_body="grant_type=client_credentials&client_id=${enc_client_id}&client_secret=${enc_client_secret}"
+
+                        refresh_auth_scope="$(printf '%s' "${refresh_auth_scope:-}" | tr -d '\r')"
+                        if [ -n "${refresh_auth_scope:-}" ] && [ "${refresh_auth_scope}" != "null" ]; then
+                          enc_scope="$(_urlencode_value "${refresh_auth_scope}")"
+                          refresh_auth_token_body="${refresh_auth_token_body}&scope=${enc_scope}"
+                        fi
+
+                        if [ -n "${refresh_auth_audience:-}" ] && [ "${refresh_auth_audience}" != "null" ]; then
+                          enc_audience="$(_urlencode_value "${refresh_auth_audience}")"
+                          refresh_auth_token_body="${refresh_auth_token_body}&audience=${enc_audience}"
+                        fi
+
+                        refresh_headers_effective_json="$(jq -nc --argjson headers "${refresh_headers_json}" \
+                          '[{header:"Authorization",value:"Bearer {{ $last.data.access_token }}"}] + ($headers // [])')"
+                      fi
+                    fi
+
+                    refresh_collections_json='["demo_pages","demo_page_blocks","demo_block_rich_text","demo_block_hero"]'
+
+                    create_flow_name="CMS Cache Refresh (${site_key}) - Create"
+                    update_flow_name="CMS Cache Refresh (${site_key}) - Update"
+                    create_flow_desc="Refreshes app cache endpoint for site '${site_key}' after create events."
+                    update_flow_desc="Refreshes app cache endpoint for site '${site_key}' after update events."
+
+                    create_flow_payload="$(jq -nc \
+                      --arg name "${create_flow_name}" \
+                      --arg status "${flow_status}" \
+                      --arg desc "${create_flow_desc}" \
+                      --argjson collections "${refresh_collections_json}" \
+                      '{name:$name,trigger:"event",status:$status,accountability:"all",icon:"sync",color:"#2E7D32",description:$desc,options:{type:"action",scope:["items.create"],collections:$collections}}')"
+                    update_flow_payload="$(jq -nc \
+                      --arg name "${update_flow_name}" \
+                      --arg status "${flow_status}" \
+                      --arg desc "${update_flow_desc}" \
+                      --argjson collections "${refresh_collections_json}" \
+                      '{name:$name,trigger:"event",status:$status,accountability:"all",icon:"sync",color:"#2E7D32",description:$desc,options:{type:"action",scope:["items.update"],collections:$collections}}')"
+
+                    create_flow_id="$(_directus_find_flow_id_by_name "${create_flow_name}")"
+                    if [ -n "${create_flow_id:-}" ] && [ "${create_flow_id}" != "null" ]; then
+                      _directus_api_write "PATCH" "/flows/${create_flow_id}" "${create_flow_payload}" >/tmp/directus-flow-upsert.json 2>/dev/null || true
+                    else
+                      created_flow="$(_directus_api_write "POST" "/flows" "${create_flow_payload}" 2>/dev/null || true)"
+                      create_flow_id="$(printf '%s' "${created_flow}" | jq -r '.data.id // empty' 2>/dev/null || true)"
+                    fi
+
+                    update_flow_id="$(_directus_find_flow_id_by_name "${update_flow_name}")"
+                    if [ -n "${update_flow_id:-}" ] && [ "${update_flow_id}" != "null" ]; then
+                      _directus_api_write "PATCH" "/flows/${update_flow_id}" "${update_flow_payload}" >/tmp/directus-flow-upsert.json 2>/dev/null || true
+                    else
+                      updated_flow="$(_directus_api_write "POST" "/flows" "${update_flow_payload}" 2>/dev/null || true)"
+                      update_flow_id="$(printf '%s' "${updated_flow}" | jq -r '.data.id // empty' 2>/dev/null || true)"
+                    fi
+
+                    if [ -z "${create_flow_id:-}" ] || [ -z "${update_flow_id:-}" ]; then
+                      echo "⚠️ Failed to ensure cache-refresh flows for site_key='${site_key}'"
+                    else
+                      create_match_options="$(jq -nc --arg site "${site_key}" \
+                        '{filter:{"$trigger":{"payload":{"site_key":{"_eq":$site}}}}}')"
+                      create_request_options="$(jq -nc \
+                        --arg method "${refresh_method}" \
+                        --arg url "${refresh_endpoint_effective}" \
+                        --arg site "${site_key}" \
+                        --argjson headers "${refresh_headers_effective_json}" \
+                        '{method:$method,url:$url,headers:$headers,body:{source:"directus",site_key:$site,event:"items.create",collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}"}}')"
+                      create_token_options="$(jq -nc \
+                        --arg url "${refresh_auth_token_url}" \
+                        --arg body "${refresh_auth_token_body}" \
+                        '{method:"POST",url:$url,headers:[{header:"Content-Type",value:"application/x-www-form-urlencoded"},{header:"Accept",value:"application/json"}],body:$body}')"
+
+                      create_match_op_id="$(_directus_upsert_operation "${create_flow_id}" "match_site" "condition" "Match Site Key" 19 1 "${create_match_options}")"
+                      if [ "${refresh_auth_enabled}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
+                        create_token_op_id="$(_directus_upsert_operation "${create_flow_id}" "mint_refresh_token" "request" "Mint Refresh Token" 37 1 "${create_token_options}")"
+                        create_request_op_id="$(_directus_upsert_operation "${create_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 55 1 "${create_request_options}")"
+                        _directus_set_operation_links "${create_match_op_id}" "${create_token_op_id}" ""
+                        _directus_set_operation_links "${create_token_op_id}" "${create_request_op_id}" ""
+                      else
+                        create_request_op_id="$(_directus_upsert_operation "${create_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 37 1 "${create_request_options}")"
+                        _directus_set_operation_links "${create_match_op_id}" "${create_request_op_id}" ""
+                      fi
+                      _directus_set_operation_links "${create_request_op_id}" "" ""
+                      _directus_api_write "PATCH" "/flows/${create_flow_id}" \
+                        "$(jq -nc --arg operation "${create_match_op_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
+                        >/tmp/directus-flow-entry.json 2>/dev/null || true
+
+                      update_read_options="$(jq -nc \
+                        '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}",query:{fields:["id","site_key"]},emitEvents:false,permissions:"$full"}')"
+                      update_match_options="$(jq -nc --arg site "${site_key}" '{filter:{site_key:{_eq:$site}}}')"
+                      update_request_options="$(jq -nc \
+                        --arg method "${refresh_method}" \
+                        --arg url "${refresh_endpoint_effective}" \
+                        --arg site "${site_key}" \
+                        --argjson headers "${refresh_headers_effective_json}" \
+                        '{method:$method,url:$url,headers:$headers,body:{source:"directus",site_key:$site,event:"items.update",collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}"}}')"
+                      update_token_options="$(jq -nc \
+                        --arg url "${refresh_auth_token_url}" \
+                        --arg body "${refresh_auth_token_body}" \
+                        '{method:"POST",url:$url,headers:[{header:"Content-Type",value:"application/x-www-form-urlencoded"},{header:"Accept",value:"application/json"}],body:$body}')"
+
+                      update_read_op_id="$(_directus_upsert_operation "${update_flow_id}" "read_item" "item-read" "Read Updated Item" 19 1 "${update_read_options}")"
+                      update_match_op_id="$(_directus_upsert_operation "${update_flow_id}" "match_site" "condition" "Match Site Key" 37 1 "${update_match_options}")"
+                      if [ "${refresh_auth_enabled}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
+                        update_token_op_id="$(_directus_upsert_operation "${update_flow_id}" "mint_refresh_token" "request" "Mint Refresh Token" 55 1 "${update_token_options}")"
+                        update_request_op_id="$(_directus_upsert_operation "${update_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 73 1 "${update_request_options}")"
+                      else
+                        update_request_op_id="$(_directus_upsert_operation "${update_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 55 1 "${update_request_options}")"
+                      fi
+                      _directus_set_operation_links "${update_read_op_id}" "${update_match_op_id}" ""
+                      if [ "${refresh_auth_enabled}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
+                        _directus_set_operation_links "${update_match_op_id}" "${update_token_op_id}" ""
+                        _directus_set_operation_links "${update_token_op_id}" "${update_request_op_id}" ""
+                      else
+                        _directus_set_operation_links "${update_match_op_id}" "${update_request_op_id}" ""
+                      fi
+                      _directus_set_operation_links "${update_request_op_id}" "" ""
+                      _directus_api_write "PATCH" "/flows/${update_flow_id}" \
+                        "$(jq -nc --arg operation "${update_read_op_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
+                        >/tmp/directus-flow-entry.json 2>/dev/null || true
+
+                      if [ "${flow_status}" = "active" ]; then
+                        echo "✅ Reconciled active cache-refresh flows for site_key='${site_key}' (${refresh_method} ${refresh_endpoint_effective})"
+                      else
+                        echo "✅ Reconciled cache-refresh flows for site_key='${site_key}' as inactive (set cache_refresh.enabled=true and endpoint in sites.yaml or update in Directus UI)"
+                      fi
+                    fi
+                  else
+                    echo "⚠️ Skipping cache-refresh flow provisioning for site_key='${site_key}' (Directus API token unavailable)"
                   fi
                 done
               else
