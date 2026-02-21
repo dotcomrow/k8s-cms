@@ -380,8 +380,7 @@ spec:
 
             # Keep derived site metadata on junction/content rows aligned to the page they belong to.
             echo "🔄 Syncing site/page metadata onto blocks..."
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
+            SYNC_SITE_METADATA_SQL="SET search_path TO directus, public; \
                UPDATE demo_pages p \
                SET refresh_target = CASE \
                  WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
@@ -455,6 +454,25 @@ spec:
                  END IF; \
                END \
                \$\$;"
+            sync_retry_max=5
+            sync_retry_attempt=1
+            while :; do
+              if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c "${SYNC_SITE_METADATA_SQL}" >/tmp/directus-sync-site-metadata.log 2>&1; then
+                cat /tmp/directus-sync-site-metadata.log
+                break
+              fi
+              if grep -Eiq 'current transaction is expired or aborted|YB001|serialization failure|restart read required' /tmp/directus-sync-site-metadata.log; then
+                if [ "${sync_retry_attempt}" -lt "${sync_retry_max}" ]; then
+                  echo "⚠️ Transient Yugabyte conflict while syncing site metadata (attempt ${sync_retry_attempt}/${sync_retry_max}); retrying..."
+                  sync_retry_attempt=$((sync_retry_attempt + 1))
+                  sleep 2
+                  continue
+                fi
+              fi
+              cat /tmp/directus-sync-site-metadata.log
+              echo "❌ Failed syncing site/page metadata onto blocks"
+              exit 1
+            done
 
             echo "🧭 Configuring refresh_target field UX in Directus..."
             DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
