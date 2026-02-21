@@ -334,11 +334,7 @@ spec:
                ALTER TABLE IF EXISTS demo_block_rich_text ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
                ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS site_key TEXT; \
                ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS page_slug TEXT; \
-               ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
-               ALTER TABLE IF EXISTS demo_pages ALTER COLUMN refresh_target SET DEFAULT 'both'; \
-               ALTER TABLE IF EXISTS demo_page_blocks ALTER COLUMN refresh_target SET DEFAULT 'both'; \
-               ALTER TABLE IF EXISTS demo_block_rich_text ALTER COLUMN refresh_target SET DEFAULT 'both'; \
-               ALTER TABLE IF EXISTS demo_block_hero ALTER COLUMN refresh_target SET DEFAULT 'both';"
+               ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
 
             # Allow each site to have its own homepage slug (e.g. both can use "home").
             echo "🧱 Ensuring per-site slug uniqueness..."
@@ -393,10 +389,22 @@ spec:
                END \
                WHERE p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target); \
                UPDATE demo_page_blocks pb \
+               SET refresh_target = CASE \
+                 WHEN LOWER(COALESCE(pb.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(pb.refresh_target) \
+                 ELSE 'both' \
+               END \
+               WHERE pb.refresh_target IS NULL OR LOWER(COALESCE(pb.refresh_target, '')) NOT IN ('preview','prod','both') OR pb.refresh_target <> LOWER(pb.refresh_target); \
+               UPDATE demo_page_blocks pb \
                SET site_key = p.site_key, page_slug = p.slug, refresh_target = p.refresh_target \
                FROM demo_pages p \
                WHERE pb.page_id = p.id \
                  AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.page_slug IS DISTINCT FROM p.slug OR pb.refresh_target IS DISTINCT FROM p.refresh_target); \
+               UPDATE demo_block_rich_text rt \
+               SET refresh_target = CASE \
+                 WHEN LOWER(COALESCE(rt.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(rt.refresh_target) \
+                 ELSE 'both' \
+               END \
+               WHERE rt.refresh_target IS NULL OR LOWER(COALESCE(rt.refresh_target, '')) NOT IN ('preview','prod','both') OR rt.refresh_target <> LOWER(rt.refresh_target); \
                UPDATE demo_block_rich_text rt \
                SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
                FROM demo_page_blocks pb \
@@ -404,11 +412,158 @@ spec:
                  AND pb.item = rt.id::text \
                  AND (rt.site_key IS DISTINCT FROM pb.site_key OR rt.page_slug IS DISTINCT FROM pb.page_slug OR rt.refresh_target IS DISTINCT FROM pb.refresh_target); \
                UPDATE demo_block_hero h \
+               SET refresh_target = CASE \
+                 WHEN LOWER(COALESCE(h.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(h.refresh_target) \
+                 ELSE 'both' \
+               END \
+               WHERE h.refresh_target IS NULL OR LOWER(COALESCE(h.refresh_target, '')) NOT IN ('preview','prod','both') OR h.refresh_target <> LOWER(h.refresh_target); \
+               UPDATE demo_block_hero h \
                SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
                FROM demo_page_blocks pb \
                WHERE pb.collection = 'demo_block_hero' \
                  AND pb.item = h.id::text \
-                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug OR h.refresh_target IS DISTINCT FROM pb.refresh_target);"
+                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
+               DO \$\$ \
+               BEGIN \
+                 IF to_regclass('directus.demo_pages') IS NOT NULL THEN \
+                   ALTER TABLE demo_pages ALTER COLUMN refresh_target DROP DEFAULT; \
+                   ALTER TABLE demo_pages ALTER COLUMN refresh_target SET NOT NULL; \
+                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_pages_refresh_target_check' AND conrelid = 'directus.demo_pages'::regclass) THEN \
+                     ALTER TABLE demo_pages ADD CONSTRAINT demo_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
+                   END IF; \
+                 END IF; \
+                 IF to_regclass('directus.demo_page_blocks') IS NOT NULL THEN \
+                   ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target DROP DEFAULT; \
+                   ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target SET NOT NULL; \
+                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_page_blocks_refresh_target_check' AND conrelid = 'directus.demo_page_blocks'::regclass) THEN \
+                     ALTER TABLE demo_page_blocks ADD CONSTRAINT demo_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
+                   END IF; \
+                 END IF; \
+                 IF to_regclass('directus.demo_block_rich_text') IS NOT NULL THEN \
+                   ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target DROP DEFAULT; \
+                   ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target SET NOT NULL; \
+                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_rich_text_refresh_target_check' AND conrelid = 'directus.demo_block_rich_text'::regclass) THEN \
+                     ALTER TABLE demo_block_rich_text ADD CONSTRAINT demo_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
+                   END IF; \
+                 END IF; \
+                 IF to_regclass('directus.demo_block_hero') IS NOT NULL THEN \
+                   ALTER TABLE demo_block_hero ALTER COLUMN refresh_target DROP DEFAULT; \
+                   ALTER TABLE demo_block_hero ALTER COLUMN refresh_target SET NOT NULL; \
+                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_hero_refresh_target_check' AND conrelid = 'directus.demo_block_hero'::regclass) THEN \
+                     ALTER TABLE demo_block_hero ADD CONSTRAINT demo_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
+                   END IF; \
+                 END IF; \
+               END \
+               \$\$;"
+
+            echo "🧭 Configuring refresh_target field UX in Directus..."
+            DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_fields' LIMIT 1;" || true)"
+            if [ "${DIRECTUS_FIELDS_EXISTS:-0}" = "1" ]; then
+              DF_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' ORDER BY column_name;" || true)"
+              _df_has_col() { printf '%s\n' "$DF_COLS" | grep -qx "$1"; }
+
+              DF_OPTIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='options' LIMIT 1;" || true)"
+              DF_DISPLAY_OPTIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='display_options' LIMIT 1;" || true)"
+
+              _df_json_sql() {
+                _t="$1"
+                _json="$2"
+                if [ -z "${_json:-}" ] || [ "${_json}" = "null" ]; then
+                  printf "NULL"
+                  return
+                fi
+                _json_sql="$(printf '%s' "$_json" | sed "s/'/''/g")"
+                case "$_t" in
+                  jsonb) printf "'%s'::jsonb" "$_json_sql" ;;
+                  json) printf "'%s'::json" "$_json_sql" ;;
+                  text|character\ varying) printf "'%s'" "$_json_sql" ;;
+                  *) printf "NULL" ;;
+                esac
+              }
+
+              refresh_choices_json="$(jq -nc '[
+                {"text":"Preview Only","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"},
+                {"text":"Prod Only","value":"prod","foreground":"#92400E","background":"#FEF3C7"},
+                {"text":"Both Preview + Prod","value":"both","foreground":"#065F46","background":"#D1FAE5"}
+              ]')"
+              refresh_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" \
+                '{choices:$choices,allowNone:false}')"
+              refresh_display_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" \
+                '{choices:$choices}')"
+              refresh_note="Required: choose where cache refresh runs after save (Preview, Prod, or Both)."
+              refresh_note_sql="$(printf '%s' "${refresh_note}" | sed "s/'/''/g")"
+              refresh_field_name_sql="$(printf '%s' "refresh_target" | sed "s/'/''/g")"
+
+              _upsert_refresh_target_field_meta() {
+                _collection="$1"
+                if [ -z "${_collection:-}" ] || [ "${_collection}" = "null" ]; then
+                  return 0
+                fi
+
+                _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+                _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+                if [ "${_collection_exists}" != "1" ]; then
+                  return 0
+                fi
+
+                _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+                _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='refresh_target' LIMIT 1;" || true)"
+                _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+                _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${refresh_options_json}")"
+                _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${refresh_display_options_json}")"
+
+                if [ "${_exists}" = "1" ]; then
+                  SETS=""
+                  if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+                  if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+                  if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+                  if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+                  if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+                  if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+                  if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+                  if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+                  if _df_has_col "sort"; then SETS="${SETS},sort=1"; fi
+                  if _df_has_col "note"; then SETS="${SETS},note='${refresh_note_sql}'"; fi
+                  if [ -n "${SETS:-}" ]; then
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='refresh_target';"
+                    echo "✅ Updated refresh_target field UX on ${_collection}"
+                  fi
+                  return 0
+                fi
+
+                FCOLS="collection,field"
+                FVALS="'${_collection_sql}','${refresh_field_name_sql}'"
+                if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+                if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+                if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+                if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+                if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+                if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+                if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+                if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+                if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},1"; fi
+                if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${refresh_note_sql}'"; fi
+
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                  "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+                echo "✅ Created refresh_target field UX on ${_collection}"
+              }
+
+              _upsert_refresh_target_field_meta "demo_pages"
+              _upsert_refresh_target_field_meta "demo_page_blocks"
+              _upsert_refresh_target_field_meta "demo_block_rich_text"
+              _upsert_refresh_target_field_meta "demo_block_hero"
+            else
+              echo "  └─ directus_fields metadata table not found; skipping refresh_target UX config"
+            fi
 
             # 5b) Ensure layout template collection exists and seed templates from GitOps config.
             echo "🧱 Ensuring demo_layout_templates exists..."
