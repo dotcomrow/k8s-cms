@@ -1781,7 +1781,7 @@ spec:
                         create_read_options="$(jq -nc \
                           '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                         create_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                          '{filter:{_and:[{site_key:{_eq:$site}},{_or:[{refresh_target:{_eq:$target}},{refresh_target:{_eq:"both"}},{refresh_target:{_null:true}},{refresh_target:{_eq:""}}]}]}}')"
+                          '{filter:{_and:[{read_item:{site_key:{_eq:$site}}},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                         create_request_options="$(jq -nc \
                           --arg method "${target_method}" \
                           --arg url "${target_endpoint_effective}" \
@@ -1815,7 +1815,7 @@ spec:
                         update_read_options="$(jq -nc \
                           '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                         update_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                          '{filter:{_and:[{site_key:{_eq:$site}},{_or:[{refresh_target:{_eq:$target}},{refresh_target:{_eq:"both"}},{refresh_target:{_null:true}},{refresh_target:{_eq:""}}]}]}}')"
+                          '{filter:{_and:[{read_item:{site_key:{_eq:$site}}},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                         update_request_options="$(jq -nc \
                           --arg method "${target_method}" \
                           --arg url "${target_endpoint_effective}" \
