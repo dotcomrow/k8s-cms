@@ -108,7 +108,7 @@ data:
         client_key: cms-site-external
         role_name: cms-site-external
         cache_refresh:
-          enabled: false
+          enabled: true
           targets:
             prod:
               enabled: false
@@ -116,7 +116,7 @@ data:
               method: POST
               headers: []
             preview:
-              enabled: false
+              enabled: true
               endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh"
               method: POST
               headers: []
