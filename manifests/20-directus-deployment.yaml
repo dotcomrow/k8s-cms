@@ -380,99 +380,143 @@ spec:
 
             # Keep derived site metadata on junction/content rows aligned to the page they belong to.
             echo "🔄 Syncing site/page metadata onto blocks..."
-            SYNC_SITE_METADATA_SQL="SET search_path TO directus, public; \
-               UPDATE demo_pages p \
-               SET refresh_target = CASE \
-                 WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
-                 ELSE 'both' \
-               END \
-               WHERE p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target); \
-               UPDATE demo_page_blocks pb \
-               SET refresh_target = CASE \
-                 WHEN LOWER(COALESCE(pb.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(pb.refresh_target) \
-                 ELSE 'both' \
-               END \
-               WHERE pb.refresh_target IS NULL OR LOWER(COALESCE(pb.refresh_target, '')) NOT IN ('preview','prod','both') OR pb.refresh_target <> LOWER(pb.refresh_target); \
-               UPDATE demo_page_blocks pb \
-               SET site_key = p.site_key, page_slug = p.slug, refresh_target = p.refresh_target \
-               FROM demo_pages p \
-               WHERE pb.page_id = p.id \
-                 AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.page_slug IS DISTINCT FROM p.slug OR pb.refresh_target IS DISTINCT FROM p.refresh_target); \
-               UPDATE demo_block_rich_text rt \
-               SET refresh_target = CASE \
-                 WHEN LOWER(COALESCE(rt.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(rt.refresh_target) \
-                 ELSE 'both' \
-               END \
-               WHERE rt.refresh_target IS NULL OR LOWER(COALESCE(rt.refresh_target, '')) NOT IN ('preview','prod','both') OR rt.refresh_target <> LOWER(rt.refresh_target); \
-               UPDATE demo_block_rich_text rt \
-               SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
-               FROM demo_page_blocks pb \
-               WHERE pb.collection = 'demo_block_rich_text' \
-                 AND pb.item = rt.id::text \
-                 AND (rt.site_key IS DISTINCT FROM pb.site_key OR rt.page_slug IS DISTINCT FROM pb.page_slug OR rt.refresh_target IS DISTINCT FROM pb.refresh_target); \
-               UPDATE demo_block_hero h \
-               SET refresh_target = CASE \
-                 WHEN LOWER(COALESCE(h.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(h.refresh_target) \
-                 ELSE 'both' \
-               END \
-               WHERE h.refresh_target IS NULL OR LOWER(COALESCE(h.refresh_target, '')) NOT IN ('preview','prod','both') OR h.refresh_target <> LOWER(h.refresh_target); \
-               UPDATE demo_block_hero h \
-               SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
-               FROM demo_page_blocks pb \
-               WHERE pb.collection = 'demo_block_hero' \
-                 AND pb.item = h.id::text \
-                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
-               DO \$\$ \
-               BEGIN \
-                 IF to_regclass('directus.demo_pages') IS NOT NULL THEN \
-                   ALTER TABLE demo_pages ALTER COLUMN refresh_target DROP DEFAULT; \
-                   ALTER TABLE demo_pages ALTER COLUMN refresh_target SET NOT NULL; \
-                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_pages_refresh_target_check' AND conrelid = 'directus.demo_pages'::regclass) THEN \
-                     ALTER TABLE demo_pages ADD CONSTRAINT demo_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
-                   END IF; \
-                 END IF; \
-                 IF to_regclass('directus.demo_page_blocks') IS NOT NULL THEN \
-                   ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target DROP DEFAULT; \
-                   ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target SET NOT NULL; \
-                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_page_blocks_refresh_target_check' AND conrelid = 'directus.demo_page_blocks'::regclass) THEN \
-                     ALTER TABLE demo_page_blocks ADD CONSTRAINT demo_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
-                   END IF; \
-                 END IF; \
-                 IF to_regclass('directus.demo_block_rich_text') IS NOT NULL THEN \
-                   ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target DROP DEFAULT; \
-                   ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target SET NOT NULL; \
-                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_rich_text_refresh_target_check' AND conrelid = 'directus.demo_block_rich_text'::regclass) THEN \
-                     ALTER TABLE demo_block_rich_text ADD CONSTRAINT demo_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
-                   END IF; \
-                 END IF; \
-                 IF to_regclass('directus.demo_block_hero') IS NOT NULL THEN \
-                   ALTER TABLE demo_block_hero ALTER COLUMN refresh_target DROP DEFAULT; \
-                   ALTER TABLE demo_block_hero ALTER COLUMN refresh_target SET NOT NULL; \
-                   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_hero_refresh_target_check' AND conrelid = 'directus.demo_block_hero'::regclass) THEN \
-                     ALTER TABLE demo_block_hero ADD CONSTRAINT demo_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both')); \
-                   END IF; \
-                 END IF; \
-               END \
-               \$\$;"
-            sync_retry_max=5
-            sync_retry_attempt=1
-            while :; do
-              if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c "${SYNC_SITE_METADATA_SQL}" >/tmp/directus-sync-site-metadata.log 2>&1; then
-                cat /tmp/directus-sync-site-metadata.log
-                break
-              fi
-              if grep -Eiq 'current transaction is expired or aborted|YB001|serialization failure|restart read required' /tmp/directus-sync-site-metadata.log; then
-                if [ "${sync_retry_attempt}" -lt "${sync_retry_max}" ]; then
-                  echo "⚠️ Transient Yugabyte conflict while syncing site metadata (attempt ${sync_retry_attempt}/${sync_retry_max}); retrying..."
-                  sync_retry_attempt=$((sync_retry_attempt + 1))
-                  sleep 2
-                  continue
+            _psql_yb_retry() {
+              _sql="$1"
+              _label="$2"
+              _max="${3:-12}"
+              _attempt=1
+              while :; do
+                if psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c "SET search_path TO directus, public; ${_sql}" >/tmp/directus-sync-site-metadata.log 2>&1; then
+                  cat /tmp/directus-sync-site-metadata.log
+                  return 0
                 fi
-              fi
-              cat /tmp/directus-sync-site-metadata.log
-              echo "❌ Failed syncing site/page metadata onto blocks"
-              exit 1
-            done
+                if grep -Eiq 'current transaction is expired or aborted|YB001|serialization failure|restart read required' /tmp/directus-sync-site-metadata.log; then
+                  if [ "${_attempt}" -lt "${_max}" ]; then
+                    echo "⚠️ Transient Yugabyte conflict during ${_label} (attempt ${_attempt}/${_max}); retrying..."
+                    _attempt=$((_attempt + 1))
+                    sleep 2
+                    continue
+                  fi
+                fi
+                cat /tmp/directus-sync-site-metadata.log
+                echo "⚠️ ${_label} failed after retries."
+                return 1
+              done
+            }
+
+            sync_site_metadata_failed="0"
+            if ! _psql_yb_retry "UPDATE demo_pages p
+              SET refresh_target = CASE
+                WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target)
+                ELSE 'both'
+              END
+              WHERE p.refresh_target IS NULL
+                 OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both')
+                 OR p.refresh_target <> LOWER(p.refresh_target);" "normalize demo_pages.refresh_target"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "UPDATE demo_page_blocks pb
+              SET refresh_target = CASE
+                WHEN LOWER(COALESCE(pb.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(pb.refresh_target)
+                ELSE 'both'
+              END
+              WHERE pb.refresh_target IS NULL
+                 OR LOWER(COALESCE(pb.refresh_target, '')) NOT IN ('preview','prod','both')
+                 OR pb.refresh_target <> LOWER(pb.refresh_target);" "normalize demo_page_blocks.refresh_target"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "UPDATE demo_page_blocks pb
+              SET site_key = p.site_key,
+                  page_slug = p.slug,
+                  refresh_target = p.refresh_target
+              FROM demo_pages p
+              WHERE pb.page_id = p.id
+                AND (pb.site_key IS DISTINCT FROM p.site_key
+                  OR pb.page_slug IS DISTINCT FROM p.slug
+                  OR pb.refresh_target IS DISTINCT FROM p.refresh_target);" "propagate metadata to demo_page_blocks"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "UPDATE demo_block_rich_text rt
+              SET refresh_target = CASE
+                WHEN LOWER(COALESCE(rt.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(rt.refresh_target)
+                ELSE 'both'
+              END
+              WHERE rt.refresh_target IS NULL
+                 OR LOWER(COALESCE(rt.refresh_target, '')) NOT IN ('preview','prod','both')
+                 OR rt.refresh_target <> LOWER(rt.refresh_target);" "normalize demo_block_rich_text.refresh_target"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "UPDATE demo_block_rich_text rt
+              SET site_key = pb.site_key,
+                  page_slug = pb.page_slug,
+                  refresh_target = pb.refresh_target
+              FROM demo_page_blocks pb
+              WHERE pb.collection = 'demo_block_rich_text'
+                AND pb.item = rt.id::text
+                AND (rt.site_key IS DISTINCT FROM pb.site_key
+                  OR rt.page_slug IS DISTINCT FROM pb.page_slug
+                  OR rt.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to demo_block_rich_text"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "UPDATE demo_block_hero h
+              SET refresh_target = CASE
+                WHEN LOWER(COALESCE(h.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(h.refresh_target)
+                ELSE 'both'
+              END
+              WHERE h.refresh_target IS NULL
+                 OR LOWER(COALESCE(h.refresh_target, '')) NOT IN ('preview','prod','both')
+                 OR h.refresh_target <> LOWER(h.refresh_target);" "normalize demo_block_hero.refresh_target"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "UPDATE demo_block_hero h
+              SET site_key = pb.site_key,
+                  page_slug = pb.page_slug,
+                  refresh_target = pb.refresh_target
+              FROM demo_page_blocks pb
+              WHERE pb.collection = 'demo_block_hero'
+                AND pb.item = h.id::text
+                AND (h.site_key IS DISTINCT FROM pb.site_key
+                  OR h.page_slug IS DISTINCT FROM pb.page_slug
+                  OR h.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to demo_block_hero"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "DO \$\$
+              BEGIN
+                IF to_regclass('directus.demo_pages') IS NOT NULL THEN
+                  ALTER TABLE demo_pages ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE demo_pages ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_pages_refresh_target_check' AND conrelid = 'directus.demo_pages'::regclass) THEN
+                    ALTER TABLE demo_pages ADD CONSTRAINT demo_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                  END IF;
+                END IF;
+                IF to_regclass('directus.demo_page_blocks') IS NOT NULL THEN
+                  ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_page_blocks_refresh_target_check' AND conrelid = 'directus.demo_page_blocks'::regclass) THEN
+                    ALTER TABLE demo_page_blocks ADD CONSTRAINT demo_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                  END IF;
+                END IF;
+                IF to_regclass('directus.demo_block_rich_text') IS NOT NULL THEN
+                  ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_rich_text_refresh_target_check' AND conrelid = 'directus.demo_block_rich_text'::regclass) THEN
+                    ALTER TABLE demo_block_rich_text ADD CONSTRAINT demo_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                  END IF;
+                END IF;
+                IF to_regclass('directus.demo_block_hero') IS NOT NULL THEN
+                  ALTER TABLE demo_block_hero ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE demo_block_hero ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_hero_refresh_target_check' AND conrelid = 'directus.demo_block_hero'::regclass) THEN
+                    ALTER TABLE demo_block_hero ADD CONSTRAINT demo_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                  END IF;
+                END IF;
+              END
+              \$\$;" "enforce refresh_target constraints"; then
+              sync_site_metadata_failed="1"
+            fi
+            if [ "${sync_site_metadata_failed}" != "0" ]; then
+              echo "⚠️ Some site metadata sync steps failed after retries; continuing startup and retrying on next deploy."
+            fi
 
             echo "🧭 Configuring refresh_target field UX in Directus..."
             DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
