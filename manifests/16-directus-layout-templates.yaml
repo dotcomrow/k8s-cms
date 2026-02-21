@@ -1,0 +1,131 @@
+# Directus layout templates (GitOps source of truth).
+# Generated from ./layouts via scripts/sync-layout-configmap.sh
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-layout-templates
+  namespace: directus
+  labels:
+    app: directus
+data:
+  templates.yaml: |
+    templates:
+      - template_key: spa-default
+        name: SPA Default
+        description: "Default single-page layout with header, main, and footer slots."
+        status: published
+        site_key: null
+        html_file: spa-default.html
+        css_file: spa-default.css
+    
+      - template_key: spa-split-hero
+        name: SPA Split Hero
+        description: "Single-page layout with a prominent hero region and content region."
+        status: published
+        site_key: null
+        html_file: spa-split-hero.html
+        css_file: spa-split-hero.css
+    
+      - template_key: spa-dashboard
+        name: SPA Dashboard
+        description: "Two-column app shell layout with nav rail and content panel."
+        status: published
+        site_key: null
+        html_file: spa-dashboard.html
+        css_file: spa-dashboard.css
+  spa-default.html: |
+    <div class="layout layout-default" data-layout="spa-default">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-default.css: |
+    .layout-default {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: #ffffff;
+      color: #111111;
+    }
+    
+    .layout-default .layout__header,
+    .layout-default .layout__footer {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    
+    .layout-default .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #e5e7eb;
+    }
+    
+    .layout-default .layout__main {
+      padding: 1.5rem;
+    }
+  spa-split-hero.html: |
+    <div class="layout layout-split-hero" data-layout="spa-split-hero">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <section class="layout__hero" data-slot="hero">{{ slot:hero }}</section>
+      <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-split-hero.css: |
+    .layout-split-hero {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      background: linear-gradient(180deg, #f9fafb 0%, #ffffff 100%);
+      color: #111111;
+    }
+    
+    .layout-split-hero .layout__header,
+    .layout-split-hero .layout__footer {
+      padding: 1rem 1.5rem;
+    }
+    
+    .layout-split-hero .layout__hero {
+      padding: 2.5rem 1.5rem 1.5rem;
+    }
+    
+    .layout-split-hero .layout__main {
+      padding: 1.5rem;
+    }
+  spa-dashboard.html: |
+    <div class="layout layout-dashboard" data-layout="spa-dashboard">
+      <aside class="layout__sidebar" data-slot="sidebar">{{ slot:sidebar }}</aside>
+      <div class="layout__content">
+        <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+        <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+        <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+      </div>
+    </div>
+  spa-dashboard.css: |
+    .layout-dashboard {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    
+    .layout-dashboard .layout__sidebar {
+      border-right: 1px solid #cbd5e1;
+      background: #ffffff;
+      padding: 1rem;
+    }
+    
+    .layout-dashboard .layout__content {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 100vh;
+    }
+    
+    .layout-dashboard .layout__header,
+    .layout-dashboard .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+    }
+    
+    .layout-dashboard .layout__main {
+      padding: 1.5rem;
+    }
