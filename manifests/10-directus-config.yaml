@@ -611,6 +611,8 @@ data:
         disabled: { type: Boolean, default: false },
         options: { type: Object, default: () => ({}) },
         values: { type: Object, default: () => ({}) },
+        field: { type: String, default: '' },
+        collection: { type: String, default: '' },
       },
       emits: ['input'],
       setup(props, { emit }) {
@@ -620,9 +622,15 @@ data:
         const missingContext = ref('');
         
         const resolvedOptions = computed(() => parseOptions(props.options));
+        const fieldKey = computed(() => asString(props.field).toLowerCase());
+        const collectionKey = computed(() => asString(props.collection).toLowerCase());
         const mode = computed(() => {
           const explicit = asString(resolvedOptions.value?.mode).toLowerCase();
           if (explicit === 'template' || explicit === 'slot') return explicit;
+          if (fieldKey.value === 'slot') return 'slot';
+          if (fieldKey.value === 'layout_template_key') return 'template';
+          if (collectionKey.value === 'cms_page_blocks' && fieldKey.value.includes('slot')) return 'slot';
+          if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('layout_template')) return 'template';
           if (resolvedOptions.value?.slots_collection || resolvedOptions.value?.slot_value_field || resolvedOptions.value?.slot_label_field) {
             return 'slot';
           }
@@ -782,6 +790,8 @@ data:
             siteKey: asString(props.values?.[pageSiteField.value]),
             pageId: parseId(props.values?.[pageIdField.value]),
             pageTemplate: asString(props.values?.[pageTemplateField.value]),
+            field: fieldKey.value,
+            collection: collectionKey.value,
           }),
           () => { void loadChoices(); },
           { immediate: true }
