@@ -636,6 +636,7 @@ data:
         const loadError = ref('');
         const choices = ref([]);
         const missingContext = ref('');
+        const savedValue = ref('');
         
         const resolvedOptions = computed(() => parseOptions(props.options));
         const fieldKey = computed(() => asString(props.field).toLowerCase());
@@ -678,6 +679,13 @@ data:
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
           return v !== false;
         });
+        const recordUpdatedAt = computed(() =>
+          asString(
+            props.values?.date_updated
+              ?? props.values?.updated_at
+              ?? props.values?.dateUpdated
+          )
+        );
         let requestId = 0;
         
         const apiGet = async (path, params = {}) => {
@@ -849,6 +857,29 @@ data:
           );
         };
 
+        const loadSavedValue = async () => {
+          const recordCollection = collectionKey.value || pagesCollection.value;
+          const recordField = fieldKey.value;
+          let recordId = parseId(props.values?.[itemIdField.value]);
+          if (!recordId && recordCollection) {
+            recordId = getPrimaryKeyFromLocation(recordCollection);
+          }
+
+          if (!recordCollection || !recordField || !recordId) {
+            savedValue.value = '';
+            return;
+          }
+
+          try {
+            const response = await apiGet(`/items/${recordCollection}/${encodeURIComponent(recordId)}`, {
+              fields: recordField,
+            });
+            savedValue.value = asString(response?.data?.[recordField]);
+          } catch {
+            savedValue.value = '';
+          }
+        };
+
         const loadChoices = async () => {
           const currentRequest = ++requestId;
           loading.value = true;
@@ -888,24 +919,35 @@ data:
             slotsCollection: slotsCollection.value,
             themesCollection: themesCollection.value,
             pagesCollection: pagesCollection.value,
+            itemId: parseId(props.values?.[itemIdField.value]),
+            updatedAt: recordUpdatedAt.value,
             siteKey: asString(props.values?.[pageSiteField.value]),
             pageId: parseId(props.values?.[pageIdField.value]),
             pageTemplate: asString(props.values?.[pageTemplateField.value]),
             field: fieldKey.value,
             collection: collectionKey.value,
           }),
-          () => { void loadChoices(); },
+          () => {
+            void loadChoices();
+            void loadSavedValue();
+          },
           { immediate: true }
         );
 
         const selectItems = computed(() => {
           const currentValue = asString(props.value);
+          const persistedValue = asString(savedValue.value);
           const items = choices.value.map((choice) => ({
-            text: asString(choice.value) === currentValue ? `${choice.text} (current)` : choice.text,
+            text: persistedValue && asString(choice.value) === persistedValue
+              ? `${choice.text} (current)`
+              : choice.text,
             value: choice.value,
           }));
+          if (persistedValue && !items.some((item) => asString(item.value) === persistedValue)) {
+            items.unshift({ text: `${persistedValue} (current)`, value: persistedValue });
+          }
           if (currentValue && !items.some((item) => asString(item.value) === currentValue)) {
-            items.unshift({ text: `${currentValue} (current)`, value: currentValue });
+            items.unshift({ text: currentValue, value: currentValue });
           }
           return items;
         });
