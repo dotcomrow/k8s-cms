@@ -620,6 +620,14 @@ data:
         const templateValueField = computed(() => asString(props.options?.template_value_field) || 'template_key');
         const templateLabelField = computed(() => asString(props.options?.template_label_field) || 'name');
         const includeGlobal = computed(() => props.options?.include_global !== false);
+        const configuredChoices = computed(() => uniqueChoices(
+          Array.isArray(props.options?.choices)
+            ? props.options.choices.map((choice) => ({
+                value: choice?.value,
+                text: choice?.text || choice?.label || choice?.value,
+              }))
+            : []
+        ));
 
         let requestId = 0;
 
@@ -712,22 +720,30 @@ data:
 
         const loadChoices = async () => {
           const currentRequest = ++requestId;
+          const fallbackChoices = configuredChoices.value;
           loading.value = true;
           loadError.value = '';
           missingContext.value = '';
+          if (fallbackChoices.length > 0 && choices.value.length === 0) {
+            choices.value = fallbackChoices;
+          }
           try {
             const nextChoices = mode.value === 'template'
               ? await loadTemplateChoices()
               : await loadSlotChoices();
             if (currentRequest !== requestId) return;
-            choices.value = nextChoices;
+            choices.value = uniqueChoices([...nextChoices, ...fallbackChoices]);
           } catch (error) {
             if (currentRequest !== requestId) return;
-            choices.value = [];
+            choices.value = fallbackChoices;
             missingContext.value = '';
-            loadError.value = error?.response?.data?.errors?.[0]?.message
-              || error?.message
-              || 'Failed to load options';
+            if (fallbackChoices.length > 0) {
+              loadError.value = '';
+            } else {
+              loadError.value = error?.response?.data?.errors?.[0]?.message
+                || error?.message
+                || 'Failed to load options';
+            }
           } finally {
             if (currentRequest === requestId) loading.value = false;
           }
@@ -751,6 +767,7 @@ data:
           const next = asString(event?.target?.value);
           emit('input', next || null);
         };
+        const onFocus = () => { void loadChoices(); };
 
         return () => {
           const currentValue = asString(props.value);
@@ -771,6 +788,7 @@ data:
                 disabled: props.disabled || loading.value,
                 value: currentValue,
                 onChange: onInput,
+                onFocus,
               },
               [h('option', { value: '' }, placeholderText), ...opts]
             ),
