@@ -556,7 +556,7 @@ data:
     }
 
   cms-content-model-select.index.js: |
-    import { defineInterface, useApi } from '@directus/extensions-sdk';
+    import { defineInterface } from '@directus/extensions-sdk';
     import { defineComponent, h, ref, computed, watch } from 'vue';
 
     const asString = (value) => {
@@ -590,6 +590,20 @@ data:
       }
       return result;
     };
+    
+    const DEFAULT_TEMPLATE_CHOICES = [
+      { text: 'SPA Default', value: 'spa-default' },
+      { text: 'SPA Split Hero', value: 'spa-split-hero' },
+      { text: 'SPA Dashboard', value: 'spa-dashboard' },
+    ];
+    
+    const DEFAULT_SLOT_CHOICES = [
+      { text: 'header', value: 'header' },
+      { text: 'hero', value: 'hero' },
+      { text: 'main', value: 'main' },
+      { text: 'footer', value: 'footer' },
+      { text: 'sidebar', value: 'sidebar' },
+    ];
 
     const InterfaceComponent = defineComponent({
       name: 'CmsContentModelSelect',
@@ -601,7 +615,6 @@ data:
       },
       emits: ['input'],
       setup(props, { emit }) {
-        const api = useApi();
         const loading = ref(false);
         const loadError = ref('');
         const choices = ref([]);
@@ -628,8 +641,33 @@ data:
               }))
             : []
         ));
+        const defaultChoices = computed(() => (
+          mode.value === 'template' ? DEFAULT_TEMPLATE_CHOICES : DEFAULT_SLOT_CHOICES
+        ));
 
         let requestId = 0;
+        
+        const apiGet = async (path, params = {}) => {
+          const url = new URL(path, window.location.origin);
+          Object.entries(params).forEach(([key, value]) => {
+            if (value === null || value === undefined) return;
+            url.searchParams.set(key, String(value));
+          });
+        
+          const response = await fetch(url.toString(), {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' },
+          });
+        
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const message = payload?.errors?.[0]?.message || `Request failed (${response.status})`;
+            throw new Error(message);
+          }
+        
+          return payload;
+        };
 
         const buildScopedFilter = (siteKey) => {
           if (!includeGlobal.value && siteKey) {
@@ -660,13 +698,11 @@ data:
               buildScopedFilter(siteKey),
             ],
           };
-          const response = await api.get(`/items/${templatesCollection.value}`, {
-            params: {
-              fields: [templateValueField.value, templateLabelField.value, 'site_key', 'status'].join(','),
-              limit: -1,
-              sort: templateValueField.value,
-              filter: JSON.stringify(filter),
-            },
+          const response = await apiGet(`/items/${templatesCollection.value}`, {
+            fields: [templateValueField.value, templateLabelField.value, 'site_key', 'status'].join(','),
+            limit: -1,
+            sort: templateValueField.value,
+            filter: JSON.stringify(filter),
           });
           return uniqueChoices(
             normalizeRows(response).map((row) => ({
@@ -682,10 +718,10 @@ data:
           const pageId = parseId(props.values?.[pageIdField.value]);
 
           if (!templateKey && pageId) {
-            const pageResp = await api.get(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
-              params: { fields: [pageTemplateField.value, pageSiteField.value].join(',') },
+            const pageResp = await apiGet(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
+              fields: [pageTemplateField.value, pageSiteField.value].join(','),
             });
-            const page = pageResp?.data?.data || {};
+            const page = pageResp?.data || {};
             templateKey = asString(page?.[pageTemplateField.value]);
             if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
           }
@@ -701,13 +737,11 @@ data:
               buildScopedFilter(siteKey),
             ],
           };
-          const response = await api.get(`/items/${slotsCollection.value}`, {
-            params: {
-              fields: [slotValueField.value, slotLabelField.value, 'site_key', 'template_key'].join(','),
-              limit: -1,
-              sort: slotValueField.value,
-              filter: JSON.stringify(filter),
-            },
+          const response = await apiGet(`/items/${slotsCollection.value}`, {
+            fields: [slotValueField.value, slotLabelField.value, 'site_key', 'template_key'].join(','),
+            limit: -1,
+            sort: slotValueField.value,
+            filter: JSON.stringify(filter),
           });
 
           return uniqueChoices(
@@ -720,7 +754,9 @@ data:
 
         const loadChoices = async () => {
           const currentRequest = ++requestId;
-          const fallbackChoices = configuredChoices.value;
+          const fallbackChoices = configuredChoices.value.length > 0
+            ? configuredChoices.value
+            : defaultChoices.value;
           loading.value = true;
           loadError.value = '';
           missingContext.value = '';
