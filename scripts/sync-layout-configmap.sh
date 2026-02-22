@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAYOUT_DIR="${ROOT_DIR}/layouts"
-TEMPLATES_FILE="${LAYOUT_DIR}/templates.yaml"
+TEMPLATES_FILE="${LAYOUT_DIR}/templates.data"
 OUT_FILE="${ROOT_DIR}/manifests/16-directus-layout-templates.yaml"
 
 if ! command -v yq >/dev/null 2>&1; then
@@ -27,7 +27,7 @@ done < <(
 
 for asset in "${asset_files[@]}"; do
   if [ ! -f "${LAYOUT_DIR}/${asset}" ]; then
-    echo "Missing layout asset referenced by templates.yaml: ${asset}" >&2
+    echo "Missing layout asset referenced by templates.data: ${asset}" >&2
     exit 1
   fi
 done
