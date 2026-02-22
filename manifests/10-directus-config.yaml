@@ -958,13 +958,18 @@ data:
 
               try {
                 const response = await apiGet('/items/cms_page_blocks', {
-                  fields: ['id', fieldName].join(','),
-                  limit: 1,
+                  fields: ['id', fieldName, pageIdField.value, pageSiteField.value, pageSlugField.value].join(','),
+                  limit: -1,
                   sort: '-date_updated',
                   filter: JSON.stringify({ _and: clauses }),
                 });
-                const row = normalizeRows(response)?.[0] || {};
-                nextPersisted = asString(row?.[fieldName]);
+                const rows = normalizeRows(response);
+                const currentFieldValue = asString(props.value);
+                const preferredRow =
+                  rows.find((row) => currentFieldValue && asString(row?.[fieldName]) === currentFieldValue)
+                  || rows[0]
+                  || {};
+                nextPersisted = asString(preferredRow?.[fieldName]);
               } catch {
                 nextPersisted = '';
               }
