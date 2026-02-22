@@ -541,6 +541,303 @@ data:
         });
       });
     };
+
+  cms-content-model-select.package.json: |
+    {
+      "name": "directus-extension-cms-content-model-select",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "interface",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+
+  cms-content-model-select.index.js: |
+    import { defineInterface, useApi } from '@directus/extensions-sdk';
+    import { defineComponent, h, ref, computed, watch } from 'vue';
+
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const normalizeRows = (response) => {
+      const payload = response?.data;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    };
+
+    const parseId = (value) => {
+      if (value && typeof value === 'object') {
+        if ('id' in value) return asString(value.id);
+        if ('primaryKey' in value) return asString(value.primaryKey);
+      }
+      return asString(value);
+    };
+
+    const uniqueChoices = (items) => {
+      const seen = new Set();
+      const result = [];
+      for (const item of items) {
+        const value = asString(item?.value);
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        result.push({ value, text: asString(item?.text) || value });
+      }
+      return result;
+    };
+
+    const InterfaceComponent = defineComponent({
+      name: 'CmsContentModelSelect',
+      props: {
+        value: { type: [String, Number, null], default: null },
+        disabled: { type: Boolean, default: false },
+        options: { type: Object, default: () => ({}) },
+        values: { type: Object, default: () => ({}) },
+      },
+      emits: ['input'],
+      setup(props, { emit }) {
+        const api = useApi();
+        const loading = ref(false);
+        const loadError = ref('');
+        const choices = ref([]);
+        const missingContext = ref('');
+
+        const mode = computed(() => (props.options?.mode === 'template' ? 'template' : 'slot'));
+        const templatesCollection = computed(() => asString(props.options?.templates_collection) || 'cms_layout_templates');
+        const slotsCollection = computed(() => asString(props.options?.slots_collection) || 'cms_layout_template_slots');
+        const pagesCollection = computed(() => asString(props.options?.pages_collection) || 'cms_pages');
+
+        const pageIdField = computed(() => asString(props.options?.page_id_field) || 'page_id');
+        const pageTemplateField = computed(() => asString(props.options?.page_template_field) || 'layout_template_key');
+        const pageSiteField = computed(() => asString(props.options?.page_site_field) || 'site_key');
+        const slotValueField = computed(() => asString(props.options?.slot_value_field) || 'slot_key');
+        const slotLabelField = computed(() => asString(props.options?.slot_label_field) || 'slot_label');
+        const templateValueField = computed(() => asString(props.options?.template_value_field) || 'template_key');
+        const templateLabelField = computed(() => asString(props.options?.template_label_field) || 'name');
+        const includeGlobal = computed(() => props.options?.include_global !== false);
+
+        let requestId = 0;
+
+        const buildScopedFilter = (siteKey) => {
+          if (!includeGlobal.value && siteKey) {
+            return { site_key: { _eq: siteKey } };
+          }
+          if (siteKey) {
+            return {
+              _or: [
+                { site_key: { _null: true } },
+                { site_key: { _eq: '' } },
+                { site_key: { _eq: siteKey } },
+              ],
+            };
+          }
+          return {
+            _or: [
+              { site_key: { _null: true } },
+              { site_key: { _eq: '' } },
+            ],
+          };
+        };
+
+        const loadTemplateChoices = async () => {
+          const siteKey = asString(props.values?.[pageSiteField.value]);
+          const filter = {
+            _and: [
+              { status: { _eq: 'published' } },
+              buildScopedFilter(siteKey),
+            ],
+          };
+          const response = await api.get(`/items/${templatesCollection.value}`, {
+            params: {
+              fields: [templateValueField.value, templateLabelField.value, 'site_key', 'status'].join(','),
+              limit: -1,
+              sort: templateValueField.value,
+              filter: JSON.stringify(filter),
+            },
+          });
+          return uniqueChoices(
+            normalizeRows(response).map((row) => ({
+              value: row?.[templateValueField.value],
+              text: row?.[templateLabelField.value] || row?.[templateValueField.value],
+            }))
+          );
+        };
+
+        const loadSlotChoices = async () => {
+          let siteKey = asString(props.values?.[pageSiteField.value]);
+          let templateKey = asString(props.values?.[pageTemplateField.value]);
+          const pageId = parseId(props.values?.[pageIdField.value]);
+
+          if (!templateKey && pageId) {
+            const pageResp = await api.get(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
+              params: { fields: [pageTemplateField.value, pageSiteField.value].join(',') },
+            });
+            const page = pageResp?.data?.data || {};
+            templateKey = asString(page?.[pageTemplateField.value]);
+            if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
+          }
+
+          if (!templateKey) {
+            missingContext.value = 'Select a page template before assigning a slot.';
+            return [];
+          }
+
+          const filter = {
+            _and: [
+              { template_key: { _eq: templateKey } },
+              buildScopedFilter(siteKey),
+            ],
+          };
+          const response = await api.get(`/items/${slotsCollection.value}`, {
+            params: {
+              fields: [slotValueField.value, slotLabelField.value, 'site_key', 'template_key'].join(','),
+              limit: -1,
+              sort: slotValueField.value,
+              filter: JSON.stringify(filter),
+            },
+          });
+
+          return uniqueChoices(
+            normalizeRows(response).map((row) => ({
+              value: row?.[slotValueField.value],
+              text: row?.[slotLabelField.value] || row?.[slotValueField.value],
+            }))
+          );
+        };
+
+        const loadChoices = async () => {
+          const currentRequest = ++requestId;
+          loading.value = true;
+          loadError.value = '';
+          missingContext.value = '';
+          try {
+            const nextChoices = mode.value === 'template'
+              ? await loadTemplateChoices()
+              : await loadSlotChoices();
+            if (currentRequest !== requestId) return;
+            choices.value = nextChoices;
+          } catch (error) {
+            if (currentRequest !== requestId) return;
+            choices.value = [];
+            missingContext.value = '';
+            loadError.value = error?.response?.data?.errors?.[0]?.message
+              || error?.message
+              || 'Failed to load options';
+          } finally {
+            if (currentRequest === requestId) loading.value = false;
+          }
+        };
+
+        watch(
+          () => JSON.stringify({
+            mode: mode.value,
+            templatesCollection: templatesCollection.value,
+            slotsCollection: slotsCollection.value,
+            pagesCollection: pagesCollection.value,
+            siteKey: asString(props.values?.[pageSiteField.value]),
+            pageId: parseId(props.values?.[pageIdField.value]),
+            pageTemplate: asString(props.values?.[pageTemplateField.value]),
+          }),
+          () => { void loadChoices(); },
+          { immediate: true }
+        );
+
+        const onInput = (event) => {
+          const next = asString(event?.target?.value);
+          emit('input', next || null);
+        };
+
+        return () => {
+          const currentValue = asString(props.value);
+          const opts = choices.value.map((choice) => h('option', { value: choice.value }, choice.text));
+          const placeholderText = loading.value
+            ? 'Loading options...'
+            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : 'Select a slot'));
+
+          if (!opts.some((opt) => asString(opt.props?.value) === currentValue) && currentValue) {
+            opts.unshift(h('option', { value: currentValue }, `${currentValue} (current)`));
+          }
+
+          return h('div', { class: 'cms-content-model-select' }, [
+            h(
+              'select',
+              {
+                class: 'cms-content-model-select__input',
+                disabled: props.disabled || loading.value,
+                value: currentValue,
+                onChange: onInput,
+              },
+              [h('option', { value: '' }, placeholderText), ...opts]
+            ),
+            loadError.value
+              ? h('p', { class: 'cms-content-model-select__error' }, loadError.value)
+              : null,
+          ]);
+        };
+      },
+    });
+
+    export default defineInterface({
+      id: 'cms-content-model-select',
+      name: 'CMS Content Model Select',
+      icon: 'view_quilt',
+      description: 'Context-aware selector for CMS templates and slots.',
+      component: InterfaceComponent,
+      types: ['string'],
+      group: 'selection',
+      options: [
+        {
+          field: 'mode',
+          name: 'Mode',
+          type: 'string',
+          meta: {
+            width: 'half',
+            interface: 'select-dropdown',
+            options: {
+              allowNone: false,
+              choices: [
+                { text: 'Template Selector', value: 'template' },
+                { text: 'Slot Selector', value: 'slot' },
+              ],
+            },
+          },
+          schema: { default_value: 'slot' },
+        },
+        {
+          field: 'templates_collection',
+          name: 'Templates Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_layout_templates' },
+        },
+        {
+          field: 'slots_collection',
+          name: 'Slots Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_layout_template_slots' },
+        },
+        {
+          field: 'pages_collection',
+          name: 'Pages Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_pages' },
+        },
+        {
+          field: 'include_global',
+          name: 'Include Global (site_key null)',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: true },
+        },
+      ],
+    });
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1

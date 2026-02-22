@@ -42,7 +42,7 @@ data:
             client_secret_vault_path: "secret/data/keycloak-client-secret-cms-site-internal"
             client_secret_vault_field: "value"
         read_collections:
-          - collection: demo_pages
+          - collection: cms_pages
             fields:
               - "*"
             permissions:
@@ -53,7 +53,7 @@ data:
                     _eq: home
                 - status:
                     _eq: published
-          - collection: demo_layout_templates
+          - collection: cms_layout_templates
             fields:
               - "*"
             permissions:
@@ -65,7 +65,7 @@ data:
                         _null: true
                     - site_key:
                         _eq: internal
-          - collection: demo_page_blocks
+          - collection: cms_page_blocks
             fields:
               - "*"
             permissions:
@@ -76,9 +76,9 @@ data:
                     _eq: home
                 - collection:
                     _in:
-                      - demo_block_rich_text
-                      - demo_block_hero
-          - collection: demo_block_rich_text
+                      - cms_block_rich_text
+                      - cms_block_hero
+          - collection: cms_block_rich_text
             fields:
               - "*"
             permissions:
@@ -89,7 +89,7 @@ data:
                     _eq: home
                 - status:
                     _eq: published
-          - collection: demo_block_hero
+          - collection: cms_block_hero
             fields:
               - "*"
             permissions:
@@ -132,7 +132,7 @@ data:
             client_secret_vault_path: "secret/data/keycloak-client-secret-cms-site-external"
             client_secret_vault_field: "value"
         read_collections:
-          - collection: demo_pages
+          - collection: cms_pages
             fields:
               - "*"
             permissions:
@@ -143,7 +143,7 @@ data:
                     _eq: home
                 - status:
                     _eq: published
-          - collection: demo_layout_templates
+          - collection: cms_layout_templates
             fields:
               - "*"
             permissions:
@@ -155,7 +155,7 @@ data:
                         _null: true
                     - site_key:
                         _eq: external
-          - collection: demo_page_blocks
+          - collection: cms_page_blocks
             fields:
               - "*"
             permissions:
@@ -166,9 +166,9 @@ data:
                     _eq: home
                 - collection:
                     _in:
-                      - demo_block_rich_text
-                      - demo_block_hero
-          - collection: demo_block_rich_text
+                      - cms_block_rich_text
+                      - cms_block_hero
+          - collection: cms_block_rich_text
             fields:
               - "*"
             permissions:
@@ -179,7 +179,7 @@ data:
                     _eq: home
                 - status:
                     _eq: published
-          - collection: demo_block_hero
+          - collection: cms_block_hero
             fields:
               - "*"
             permissions:

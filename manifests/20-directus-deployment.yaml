@@ -77,6 +77,10 @@ spec:
                 path: ai-provider-access/package.json
               - key: ai-provider-access.index.js
                 path: ai-provider-access/index.js
+              - key: cms-content-model-select.package.json
+                path: cms-content-model-select/package.json
+              - key: cms-content-model-select.index.js
+                path: cms-content-model-select/index.js
         - name: directus-extensions
           persistentVolumeClaim:
             claimName: directus-extensions
@@ -93,7 +97,7 @@ spec:
               mkdir -p /directus/extensions
 
               # Keep our GitOps-managed extensions deterministic on every start.
-              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access
+              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select
               # ConfigMap volumes use symlinks; dereference so we copy real files into the PVC.
               cp -RL /extensions-seed/* /directus/extensions/
 
@@ -318,23 +322,106 @@ spec:
             # 5) Static tokens are provisioned via service users (directus_users.token) in the site bootstrap below.
             echo "🔐 Provisioning Directus static tokens via site service users..."
 
+            # Migrate legacy "demo_*" collection names to production "cms_*" names.
+            # This keeps existing data while removing demo naming from runtime/editor usage.
+            echo "🧱 Migrating legacy demo_* collection names to cms_*..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               DO \$\$ \
+               BEGIN \
+                 IF to_regclass('directus.cms_pages') IS NULL AND to_regclass('directus.demo_pages') IS NOT NULL THEN \
+                   ALTER TABLE demo_pages RENAME TO cms_pages; \
+                 END IF; \
+                 IF to_regclass('directus.cms_page_blocks') IS NULL AND to_regclass('directus.demo_page_blocks') IS NOT NULL THEN \
+                   ALTER TABLE demo_page_blocks RENAME TO cms_page_blocks; \
+                 END IF; \
+                 IF to_regclass('directus.cms_block_rich_text') IS NULL AND to_regclass('directus.demo_block_rich_text') IS NOT NULL THEN \
+                   ALTER TABLE demo_block_rich_text RENAME TO cms_block_rich_text; \
+                 END IF; \
+                 IF to_regclass('directus.cms_block_hero') IS NULL AND to_regclass('directus.demo_block_hero') IS NOT NULL THEN \
+                   ALTER TABLE demo_block_hero RENAME TO cms_block_hero; \
+                 END IF; \
+                 IF to_regclass('directus.cms_layout_templates') IS NULL AND to_regclass('directus.demo_layout_templates') IS NOT NULL THEN \
+                   ALTER TABLE demo_layout_templates RENAME TO cms_layout_templates; \
+                 END IF; \
+                 IF to_regclass('directus.cms_layout_template_slots') IS NULL AND to_regclass('directus.demo_layout_template_slots') IS NOT NULL THEN \
+                   ALTER TABLE demo_layout_template_slots RENAME TO cms_layout_template_slots; \
+                 END IF; \
+                 IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN \
+                   UPDATE cms_page_blocks SET collection='cms_block_rich_text' WHERE collection='demo_block_rich_text'; \
+                   UPDATE cms_page_blocks SET collection='cms_block_hero' WHERE collection='demo_block_hero'; \
+                 END IF; \
+               END \
+               \$\$; \
+               DO \$\$ \
+               BEGIN \
+                 IF to_regclass('directus.directus_collections') IS NOT NULL THEN \
+                   UPDATE directus_collections SET collection='cms_pages' WHERE collection='demo_pages'; \
+                   UPDATE directus_collections SET collection='cms_page_blocks' WHERE collection='demo_page_blocks'; \
+                   UPDATE directus_collections SET collection='cms_block_rich_text' WHERE collection='demo_block_rich_text'; \
+                   UPDATE directus_collections SET collection='cms_block_hero' WHERE collection='demo_block_hero'; \
+                   UPDATE directus_collections SET collection='cms_layout_templates' WHERE collection='demo_layout_templates'; \
+                   UPDATE directus_collections SET collection='cms_layout_template_slots' WHERE collection='demo_layout_template_slots'; \
+                 END IF; \
+                 IF to_regclass('directus.directus_fields') IS NOT NULL THEN \
+                   UPDATE directus_fields SET collection='cms_pages' WHERE collection='demo_pages'; \
+                   UPDATE directus_fields SET collection='cms_page_blocks' WHERE collection='demo_page_blocks'; \
+                   UPDATE directus_fields SET collection='cms_block_rich_text' WHERE collection='demo_block_rich_text'; \
+                   UPDATE directus_fields SET collection='cms_block_hero' WHERE collection='demo_block_hero'; \
+                   UPDATE directus_fields SET collection='cms_layout_templates' WHERE collection='demo_layout_templates'; \
+                   UPDATE directus_fields SET collection='cms_layout_template_slots' WHERE collection='demo_layout_template_slots'; \
+                 END IF; \
+                 IF to_regclass('directus.directus_relations') IS NOT NULL THEN \
+                   UPDATE directus_relations SET many_collection='cms_pages' WHERE many_collection='demo_pages'; \
+                   UPDATE directus_relations SET many_collection='cms_page_blocks' WHERE many_collection='demo_page_blocks'; \
+                   UPDATE directus_relations SET many_collection='cms_block_rich_text' WHERE many_collection='demo_block_rich_text'; \
+                   UPDATE directus_relations SET many_collection='cms_block_hero' WHERE many_collection='demo_block_hero'; \
+                   UPDATE directus_relations SET many_collection='cms_layout_templates' WHERE many_collection='demo_layout_templates'; \
+                   UPDATE directus_relations SET many_collection='cms_layout_template_slots' WHERE many_collection='demo_layout_template_slots'; \
+                   UPDATE directus_relations SET one_collection='cms_pages' WHERE one_collection='demo_pages'; \
+                   UPDATE directus_relations SET one_collection='cms_page_blocks' WHERE one_collection='demo_page_blocks'; \
+                   UPDATE directus_relations SET one_collection='cms_block_rich_text' WHERE one_collection='demo_block_rich_text'; \
+                   UPDATE directus_relations SET one_collection='cms_block_hero' WHERE one_collection='demo_block_hero'; \
+                   UPDATE directus_relations SET one_collection='cms_layout_templates' WHERE one_collection='demo_layout_templates'; \
+                   UPDATE directus_relations SET one_collection='cms_layout_template_slots' WHERE one_collection='demo_layout_template_slots'; \
+                 END IF; \
+                 IF to_regclass('directus.directus_permissions') IS NOT NULL THEN \
+                   UPDATE directus_permissions SET collection='cms_pages' WHERE collection='demo_pages'; \
+                   UPDATE directus_permissions SET collection='cms_page_blocks' WHERE collection='demo_page_blocks'; \
+                   UPDATE directus_permissions SET collection='cms_block_rich_text' WHERE collection='demo_block_rich_text'; \
+                   UPDATE directus_permissions SET collection='cms_block_hero' WHERE collection='demo_block_hero'; \
+                   UPDATE directus_permissions SET collection='cms_layout_templates' WHERE collection='demo_layout_templates'; \
+                   UPDATE directus_permissions SET collection='cms_layout_template_slots' WHERE collection='demo_layout_template_slots'; \
+                 END IF; \
+                 IF to_regclass('directus.directus_presets') IS NOT NULL THEN \
+                   UPDATE directus_presets SET collection='cms_pages' WHERE collection='demo_pages'; \
+                   UPDATE directus_presets SET collection='cms_page_blocks' WHERE collection='demo_page_blocks'; \
+                   UPDATE directus_presets SET collection='cms_block_rich_text' WHERE collection='demo_block_rich_text'; \
+                   UPDATE directus_presets SET collection='cms_block_hero' WHERE collection='demo_block_hero'; \
+                   UPDATE directus_presets SET collection='cms_layout_templates' WHERE collection='demo_layout_templates'; \
+                   UPDATE directus_presets SET collection='cms_layout_template_slots' WHERE collection='demo_layout_template_slots'; \
+                 END IF; \
+               END \
+               \$\$;"
+
             # Ensure multi-site columns exist for GitOps-managed row-level site filters.
             # This is idempotent and safe to run every startup.
             echo "🧱 Ensuring multi-site columns exist..."
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; \
-               ALTER TABLE IF EXISTS demo_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
-               ALTER TABLE IF EXISTS demo_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
-               ALTER TABLE IF EXISTS demo_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
-               ALTER TABLE IF EXISTS demo_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
-               ALTER TABLE IF EXISTS demo_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
-               ALTER TABLE IF EXISTS demo_page_blocks ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
-               ALTER TABLE IF EXISTS demo_block_rich_text ADD COLUMN IF NOT EXISTS site_key TEXT; \
-               ALTER TABLE IF EXISTS demo_block_rich_text ADD COLUMN IF NOT EXISTS page_slug TEXT; \
-               ALTER TABLE IF EXISTS demo_block_rich_text ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
-               ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS site_key TEXT; \
-               ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS page_slug TEXT; \
-               ALTER TABLE IF EXISTS demo_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
+               ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
+               ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+               ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+               ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS slot TEXT; \
+               ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+               ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+               ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+               ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+               ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
 
             # Allow each site to have its own homepage slug (e.g. both can use "home").
             echo "🧱 Ensuring per-site slug uniqueness..."
@@ -345,34 +432,39 @@ spec:
                  IF EXISTS ( \
                    SELECT 1 \
                    FROM pg_constraint \
-                   WHERE conname = 'demo_pages_slug_unique' \
-                     AND conrelid = 'directus.demo_pages'::regclass \
+                   WHERE conname IN ('cms_pages_slug_unique', 'demo_pages_slug_unique') \
+                     AND conrelid = 'directus.cms_pages'::regclass \
                  ) THEN \
-                   ALTER TABLE demo_pages DROP CONSTRAINT demo_pages_slug_unique; \
+                   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_pages_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
+                     ALTER TABLE cms_pages DROP CONSTRAINT cms_pages_slug_unique; \
+                   END IF; \
+                   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_pages_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
+                     ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_slug_unique; \
+                   END IF; \
                  END IF; \
                  IF NOT EXISTS ( \
                    SELECT 1 \
                    FROM pg_constraint \
-                   WHERE conname = 'demo_pages_site_slug_unique' \
-                     AND conrelid = 'directus.demo_pages'::regclass \
+                   WHERE conname IN ('cms_pages_site_slug_unique', 'demo_pages_site_slug_unique') \
+                     AND conrelid = 'directus.cms_pages'::regclass \
                  ) THEN \
-                   ALTER TABLE demo_pages ADD CONSTRAINT demo_pages_site_slug_unique UNIQUE (site_key, slug); \
+                   ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_site_slug_unique UNIQUE (site_key, slug); \
                  END IF; \
                  IF NOT EXISTS ( \
                    SELECT 1 \
                    FROM pg_constraint \
-                   WHERE conname = 'demo_page_blocks_collection_item_unique' \
-                     AND conrelid = 'directus.demo_page_blocks'::regclass \
+                   WHERE conname IN ('cms_page_blocks_collection_item_unique', 'demo_page_blocks_collection_item_unique') \
+                     AND conrelid = 'directus.cms_page_blocks'::regclass \
                  ) THEN \
                    IF NOT EXISTS ( \
                      SELECT 1 \
-                     FROM demo_page_blocks \
+                     FROM cms_page_blocks \
                      GROUP BY collection, item \
                      HAVING COUNT(*) > 1 \
                    ) THEN \
-                     ALTER TABLE demo_page_blocks ADD CONSTRAINT demo_page_blocks_collection_item_unique UNIQUE (collection, item); \
+                     ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_collection_item_unique UNIQUE (collection, item); \
                    ELSE \
-                     RAISE NOTICE 'Skipping demo_page_blocks_collection_item_unique due to duplicate (collection,item) rows'; \
+                     RAISE NOTICE 'Skipping cms_page_blocks_collection_item_unique due to duplicate (collection,item) rows'; \
                    END IF; \
                  END IF; \
                END \
@@ -405,109 +497,118 @@ spec:
             }
 
             sync_site_metadata_failed="0"
-            if ! _psql_yb_retry "UPDATE demo_pages p
+            if ! _psql_yb_retry "UPDATE cms_pages p
               SET refresh_target = CASE
                 WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target)
                 ELSE 'both'
               END
               WHERE p.refresh_target IS NULL
                  OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both')
-                 OR p.refresh_target <> LOWER(p.refresh_target);" "normalize demo_pages.refresh_target"; then
+                 OR p.refresh_target <> LOWER(p.refresh_target);" "normalize cms_pages.refresh_target"; then
               sync_site_metadata_failed="1"
             fi
-            if ! _psql_yb_retry "UPDATE demo_page_blocks pb
+            if ! _psql_yb_retry "UPDATE cms_page_blocks pb
               SET refresh_target = CASE
                 WHEN LOWER(COALESCE(pb.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(pb.refresh_target)
                 ELSE 'both'
               END
               WHERE pb.refresh_target IS NULL
                  OR LOWER(COALESCE(pb.refresh_target, '')) NOT IN ('preview','prod','both')
-                 OR pb.refresh_target <> LOWER(pb.refresh_target);" "normalize demo_page_blocks.refresh_target"; then
+                 OR pb.refresh_target <> LOWER(pb.refresh_target);" "normalize cms_page_blocks.refresh_target"; then
               sync_site_metadata_failed="1"
             fi
-            if ! _psql_yb_retry "UPDATE demo_page_blocks pb
+            if ! _psql_yb_retry "UPDATE cms_page_blocks pb
+              SET slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main')
+              WHERE pb.slot IS NULL
+                 OR BTRIM(COALESCE(pb.slot, '')) = ''
+                 OR pb.slot <> COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main');" "normalize cms_page_blocks.slot"; then
+              sync_site_metadata_failed="1"
+            fi
+            if ! _psql_yb_retry "UPDATE cms_page_blocks pb
               SET site_key = p.site_key,
                   page_slug = p.slug,
                   refresh_target = p.refresh_target
-              FROM demo_pages p
+              FROM cms_pages p
               WHERE pb.page_id = p.id
                 AND (pb.site_key IS DISTINCT FROM p.site_key
                   OR pb.page_slug IS DISTINCT FROM p.slug
-                  OR pb.refresh_target IS DISTINCT FROM p.refresh_target);" "propagate metadata to demo_page_blocks"; then
+                  OR pb.refresh_target IS DISTINCT FROM p.refresh_target);" "propagate metadata to cms_page_blocks"; then
               sync_site_metadata_failed="1"
             fi
-            if ! _psql_yb_retry "UPDATE demo_block_rich_text rt
+            if ! _psql_yb_retry "UPDATE cms_block_rich_text rt
               SET refresh_target = CASE
                 WHEN LOWER(COALESCE(rt.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(rt.refresh_target)
                 ELSE 'both'
               END
               WHERE rt.refresh_target IS NULL
                  OR LOWER(COALESCE(rt.refresh_target, '')) NOT IN ('preview','prod','both')
-                 OR rt.refresh_target <> LOWER(rt.refresh_target);" "normalize demo_block_rich_text.refresh_target"; then
+                 OR rt.refresh_target <> LOWER(rt.refresh_target);" "normalize cms_block_rich_text.refresh_target"; then
               sync_site_metadata_failed="1"
             fi
-            if ! _psql_yb_retry "UPDATE demo_block_rich_text rt
+            if ! _psql_yb_retry "UPDATE cms_block_rich_text rt
               SET site_key = pb.site_key,
                   page_slug = pb.page_slug,
                   refresh_target = pb.refresh_target
-              FROM demo_page_blocks pb
-              WHERE pb.collection = 'demo_block_rich_text'
+              FROM cms_page_blocks pb
+              WHERE pb.collection = 'cms_block_rich_text'
                 AND pb.item = rt.id::text
                 AND (rt.site_key IS DISTINCT FROM pb.site_key
                   OR rt.page_slug IS DISTINCT FROM pb.page_slug
-                  OR rt.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to demo_block_rich_text"; then
+                  OR rt.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_rich_text"; then
               sync_site_metadata_failed="1"
             fi
-            if ! _psql_yb_retry "UPDATE demo_block_hero h
+            if ! _psql_yb_retry "UPDATE cms_block_hero h
               SET refresh_target = CASE
                 WHEN LOWER(COALESCE(h.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(h.refresh_target)
                 ELSE 'both'
               END
               WHERE h.refresh_target IS NULL
                  OR LOWER(COALESCE(h.refresh_target, '')) NOT IN ('preview','prod','both')
-                 OR h.refresh_target <> LOWER(h.refresh_target);" "normalize demo_block_hero.refresh_target"; then
+                 OR h.refresh_target <> LOWER(h.refresh_target);" "normalize cms_block_hero.refresh_target"; then
               sync_site_metadata_failed="1"
             fi
-            if ! _psql_yb_retry "UPDATE demo_block_hero h
+            if ! _psql_yb_retry "UPDATE cms_block_hero h
               SET site_key = pb.site_key,
                   page_slug = pb.page_slug,
                   refresh_target = pb.refresh_target
-              FROM demo_page_blocks pb
-              WHERE pb.collection = 'demo_block_hero'
+              FROM cms_page_blocks pb
+              WHERE pb.collection = 'cms_block_hero'
                 AND pb.item = h.id::text
                 AND (h.site_key IS DISTINCT FROM pb.site_key
                   OR h.page_slug IS DISTINCT FROM pb.page_slug
-                  OR h.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to demo_block_hero"; then
+                  OR h.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_hero"; then
               sync_site_metadata_failed="1"
             fi
             if ! _psql_yb_retry "DO \$\$
               BEGIN
-                IF to_regclass('directus.demo_pages') IS NOT NULL THEN
-                  ALTER TABLE demo_pages ALTER COLUMN refresh_target DROP DEFAULT;
-                  ALTER TABLE demo_pages ALTER COLUMN refresh_target SET NOT NULL;
-                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_pages_refresh_target_check' AND conrelid = 'directus.demo_pages'::regclass) THEN
-                    ALTER TABLE demo_pages ADD CONSTRAINT demo_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                IF to_regclass('directus.cms_pages') IS NOT NULL THEN
+                  ALTER TABLE cms_pages ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE cms_pages ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_refresh_target_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+                    ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
                   END IF;
                 END IF;
-                IF to_regclass('directus.demo_page_blocks') IS NOT NULL THEN
-                  ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target DROP DEFAULT;
-                  ALTER TABLE demo_page_blocks ALTER COLUMN refresh_target SET NOT NULL;
-                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_page_blocks_refresh_target_check' AND conrelid = 'directus.demo_page_blocks'::regclass) THEN
-                    ALTER TABLE demo_page_blocks ADD CONSTRAINT demo_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN
+                  ALTER TABLE cms_page_blocks ALTER COLUMN slot SET DEFAULT 'main';
+                  ALTER TABLE cms_page_blocks ALTER COLUMN slot SET NOT NULL;
+                  ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_refresh_target_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
+                    ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
                   END IF;
                 END IF;
-                IF to_regclass('directus.demo_block_rich_text') IS NOT NULL THEN
-                  ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target DROP DEFAULT;
-                  ALTER TABLE demo_block_rich_text ALTER COLUMN refresh_target SET NOT NULL;
-                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_rich_text_refresh_target_check' AND conrelid = 'directus.demo_block_rich_text'::regclass) THEN
-                    ALTER TABLE demo_block_rich_text ADD CONSTRAINT demo_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                IF to_regclass('directus.cms_block_rich_text') IS NOT NULL THEN
+                  ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_refresh_target_check' AND conrelid = 'directus.cms_block_rich_text'::regclass) THEN
+                    ALTER TABLE cms_block_rich_text ADD CONSTRAINT cms_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
                   END IF;
                 END IF;
-                IF to_regclass('directus.demo_block_hero') IS NOT NULL THEN
-                  ALTER TABLE demo_block_hero ALTER COLUMN refresh_target DROP DEFAULT;
-                  ALTER TABLE demo_block_hero ALTER COLUMN refresh_target SET NOT NULL;
-                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'demo_block_hero_refresh_target_check' AND conrelid = 'directus.demo_block_hero'::regclass) THEN
-                    ALTER TABLE demo_block_hero ADD CONSTRAINT demo_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+                IF to_regclass('directus.cms_block_hero') IS NOT NULL THEN
+                  ALTER TABLE cms_block_hero ALTER COLUMN refresh_target DROP DEFAULT;
+                  ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET NOT NULL;
+                  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_refresh_target_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
+                    ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
                   END IF;
                 END IF;
               END
@@ -559,6 +660,19 @@ spec:
               refresh_note="Required: choose where cache refresh runs after save (Preview, Prod, or Both)."
               refresh_note_sql="$(printf '%s' "${refresh_note}" | sed "s/'/''/g")"
               refresh_field_name_sql="$(printf '%s' "refresh_target" | sed "s/'/''/g")"
+              slot_choices_json="$(jq -nc '[
+                {"text":"Header","value":"header","foreground":"#1E3A8A","background":"#DBEAFE"},
+                {"text":"Main","value":"main","foreground":"#065F46","background":"#D1FAE5"},
+                {"text":"Footer","value":"footer","foreground":"#7C2D12","background":"#FFEDD5"},
+                {"text":"Hero","value":"hero","foreground":"#7C3AED","background":"#EDE9FE"}
+              ]')"
+              slot_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
+                '{choices:$choices,allowNone:false}')"
+              slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
+                '{choices:$choices}')"
+              slot_note="Choose which layout slot this block should render into."
+              slot_note_sql="$(printf '%s' "${slot_note}" | sed "s/'/''/g")"
+              slot_field_name_sql="$(printf '%s' "slot" | sed "s/'/''/g")"
 
               _upsert_refresh_target_field_meta() {
                 _collection="$1"
@@ -619,19 +733,76 @@ spec:
                 echo "✅ Created refresh_target field UX on ${_collection}"
               }
 
-              _upsert_refresh_target_field_meta "demo_pages"
-              _upsert_refresh_target_field_meta "demo_page_blocks"
-              _upsert_refresh_target_field_meta "demo_block_rich_text"
-              _upsert_refresh_target_field_meta "demo_block_hero"
+              _upsert_refresh_target_field_meta "cms_pages"
+              _upsert_refresh_target_field_meta "cms_page_blocks"
+              _upsert_refresh_target_field_meta "cms_block_rich_text"
+              _upsert_refresh_target_field_meta "cms_block_hero"
+
+              _upsert_page_block_slot_field_meta() {
+                _collection="cms_page_blocks"
+                _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+                _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+                if [ "${_collection_exists}" != "1" ]; then
+                  return 0
+                fi
+
+                _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+                _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='slot' LIMIT 1;" || true)"
+                _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+                _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${slot_options_json}")"
+                _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${slot_display_options_json}")"
+
+                if [ "${_exists}" = "1" ]; then
+                  SETS=""
+                  if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+                  if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+                  if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+                  if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+                  if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+                  if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+                  if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+                  if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+                  if _df_has_col "sort"; then SETS="${SETS},sort=2"; fi
+                  if _df_has_col "note"; then SETS="${SETS},note='${slot_note_sql}'"; fi
+                  if [ -n "${SETS:-}" ]; then
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='slot';"
+                    echo "✅ Updated slot field UX on ${_collection}"
+                  fi
+                  return 0
+                fi
+
+                FCOLS="collection,field"
+                FVALS="'${_collection_sql}','${slot_field_name_sql}'"
+                if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+                if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+                if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+                if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+                if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+                if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+                if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+                if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+                if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},2"; fi
+                if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${slot_note_sql}'"; fi
+
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                  "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+                echo "✅ Created slot field UX on ${_collection}"
+              }
+
+              _upsert_page_block_slot_field_meta
             else
               echo "  └─ directus_fields metadata table not found; skipping refresh_target UX config"
             fi
 
             # 5b) Ensure layout template collection exists and seed templates from GitOps config.
-            echo "🧱 Ensuring demo_layout_templates exists..."
+            echo "🧱 Ensuring cms_layout_templates exists..."
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; \
-               CREATE TABLE IF NOT EXISTS demo_layout_templates ( \
+               CREATE TABLE IF NOT EXISTS cms_layout_templates ( \
                  id UUID PRIMARY KEY, \
                  template_key TEXT NOT NULL, \
                  name TEXT NOT NULL, \
@@ -643,46 +814,112 @@ spec:
                  date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
                  date_updated TIMESTAMPTZ NULL \
                ); \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS template_key TEXT; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS name TEXT; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS description TEXT; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS status TEXT; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS site_key TEXT; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS html TEXT; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS css TEXT; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
-               ALTER TABLE IF EXISTS demo_layout_templates ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
-               ALTER TABLE IF EXISTS demo_layout_templates ALTER COLUMN status SET DEFAULT 'draft'; \
-               ALTER TABLE IF EXISTS demo_layout_templates ALTER COLUMN date_created SET DEFAULT now(); \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS template_key TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS name TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS description TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS status TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS html TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS css TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+               ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+               ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN status SET DEFAULT 'draft'; \
+               ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN date_created SET DEFAULT now(); \
                DO \$\$ \
                BEGIN \
                  IF EXISTS ( \
                    SELECT 1 \
                    FROM pg_constraint \
-                   WHERE conname = 'demo_layout_templates_template_key_unique' \
-                     AND conrelid = 'directus.demo_layout_templates'::regclass \
+                   WHERE conname IN ('cms_layout_templates_template_key_unique', 'demo_layout_templates_template_key_unique') \
+                     AND conrelid = 'directus.cms_layout_templates'::regclass \
                  ) THEN \
-                   ALTER TABLE demo_layout_templates DROP CONSTRAINT demo_layout_templates_template_key_unique; \
+                   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_layout_templates_template_key_unique' AND conrelid='directus.cms_layout_templates'::regclass) THEN \
+                     ALTER TABLE cms_layout_templates DROP CONSTRAINT cms_layout_templates_template_key_unique; \
+                   END IF; \
+                   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_layout_templates_template_key_unique' AND conrelid='directus.cms_layout_templates'::regclass) THEN \
+                     ALTER TABLE cms_layout_templates DROP CONSTRAINT demo_layout_templates_template_key_unique; \
+                   END IF; \
                  END IF; \
-                 IF NOT EXISTS ( \
+                 IF EXISTS ( \
                    SELECT 1 \
                    FROM pg_indexes \
                    WHERE schemaname = 'directus' \
                      AND indexname = 'demo_layout_templates_scope_template_unique' \
                  ) THEN \
+                   DROP INDEX directus.demo_layout_templates_scope_template_unique; \
+                 END IF; \
+                 IF NOT EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_indexes \
+                   WHERE schemaname = 'directus' \
+                     AND indexname = 'cms_layout_templates_scope_template_unique' \
+                 ) THEN \
                    IF NOT EXISTS ( \
                      SELECT 1 \
                      FROM ( \
                        SELECT COALESCE(site_key, '') AS site_scope, template_key, COUNT(*) AS c \
-                       FROM demo_layout_templates \
+                       FROM cms_layout_templates \
                        GROUP BY COALESCE(site_key, ''), template_key \
                        HAVING COUNT(*) > 1 \
                      ) dups \
                    ) THEN \
-                     CREATE UNIQUE INDEX demo_layout_templates_scope_template_unique \
-                     ON demo_layout_templates (COALESCE(site_key, ''), template_key); \
+                     CREATE UNIQUE INDEX cms_layout_templates_scope_template_unique \
+                     ON cms_layout_templates (COALESCE(site_key, ''), template_key); \
                    ELSE \
-                     RAISE NOTICE 'Skipping demo_layout_templates_scope_template_unique due to duplicate (site_key,template_key) rows'; \
+                     RAISE NOTICE 'Skipping cms_layout_templates_scope_template_unique due to duplicate (site_key,template_key) rows'; \
+                   END IF; \
+                 END IF; \
+               END \
+               \$\$;"
+
+            echo "🧱 Ensuring cms_layout_template_slots exists..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               CREATE TABLE IF NOT EXISTS cms_layout_template_slots ( \
+                 id UUID PRIMARY KEY, \
+                 template_key TEXT NOT NULL, \
+                 site_key TEXT NULL, \
+                 slot_key TEXT NOT NULL, \
+                 slot_label TEXT NULL, \
+                 date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+                 date_updated TIMESTAMPTZ NULL \
+               ); \
+               ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS template_key TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS site_key TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS slot_key TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS slot_label TEXT; \
+               ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+               ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+               ALTER TABLE IF EXISTS cms_layout_template_slots ALTER COLUMN date_created SET DEFAULT now(); \
+               DO \$\$ \
+               BEGIN \
+                 IF EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_indexes \
+                   WHERE schemaname = 'directus' \
+                     AND indexname = 'demo_layout_template_slots_scope_slot_unique' \
+                 ) THEN \
+                   DROP INDEX directus.demo_layout_template_slots_scope_slot_unique; \
+                 END IF; \
+                 IF NOT EXISTS ( \
+                   SELECT 1 \
+                   FROM pg_indexes \
+                   WHERE schemaname = 'directus' \
+                     AND indexname = 'cms_layout_template_slots_scope_slot_unique' \
+                 ) THEN \
+                   IF NOT EXISTS ( \
+                     SELECT 1 \
+                     FROM ( \
+                       SELECT COALESCE(site_key, '') AS site_scope, template_key, slot_key, COUNT(*) AS c \
+                       FROM cms_layout_template_slots \
+                       GROUP BY COALESCE(site_key, ''), template_key, slot_key \
+                       HAVING COUNT(*) > 1 \
+                     ) dups \
+                   ) THEN \
+                     CREATE UNIQUE INDEX cms_layout_template_slots_scope_slot_unique \
+                     ON cms_layout_template_slots (COALESCE(site_key, ''), template_key, slot_key); \
+                   ELSE \
+                     RAISE NOTICE 'Skipping cms_layout_template_slots_scope_slot_unique due to duplicate rows'; \
                    END IF; \
                  END IF; \
                END \
@@ -753,7 +990,7 @@ spec:
                   fi
 
                   tpl_site_sql="NULL"
-                  tpl_scope_condition="site_key IS NULL"
+                  tpl_scope_condition="(site_key IS NULL OR site_key='')"
                   if [ -n "${tpl_site:-}" ]; then
                     tpl_site_esc="$(printf '%s' "$tpl_site" | sed "s/'/''/g")"
                     tpl_site_sql="'${tpl_site_esc}'"
@@ -767,14 +1004,14 @@ spec:
                   fi
 
                   existing_tpl_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                    "SELECT id FROM directus.demo_layout_templates WHERE template_key='${tpl_key_sql}' AND ${tpl_scope_condition} LIMIT 1;" || true)"
+                    "SELECT id FROM directus.cms_layout_templates WHERE template_key='${tpl_key_sql}' AND ${tpl_scope_condition} LIMIT 1;" || true)"
                   existing_tpl_id="$(printf '%s' "$existing_tpl_id" | tr -d '\r')"
 
                   if [ -n "${existing_tpl_id:-}" ] && [ "${existing_tpl_id}" != "null" ]; then
                     existing_tpl_id_sql="$(printf '%s' "$existing_tpl_id" | sed "s/'/''/g")"
                     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
                       "SET search_path TO directus, public; \
-                       UPDATE demo_layout_templates \
+                       UPDATE cms_layout_templates \
                        SET name='${tpl_name_sql}', \
                            description=${tpl_desc_sql}, \
                            status='${tpl_status_sql}', \
@@ -789,16 +1026,300 @@ spec:
                     new_tpl_id_sql="$(printf '%s' "$new_tpl_id" | sed "s/'/''/g")"
                     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
                       "SET search_path TO directus, public; \
-                       INSERT INTO demo_layout_templates (id, template_key, name, description, status, site_key, html, css, date_created, date_updated) \
+                       INSERT INTO cms_layout_templates (id, template_key, name, description, status, site_key, html, css, date_created, date_updated) \
                        VALUES ('${new_tpl_id_sql}','${tpl_key_sql}','${tpl_name_sql}',${tpl_desc_sql},'${tpl_status_sql}',${tpl_site_sql},'${tpl_html_sql}',${tpl_css_sql},now(),now());"
                     echo "✅ Seeded layout template '${tpl_key}'"
                   fi
+
+                  parsed_slot_keys="$(
+                    {
+                      printf '%s\n' "$tpl_html" | grep -Eo '\{\{[[:space:]]*slot:[A-Za-z0-9_-]+[[:space:]]*\}\}' | sed -E 's/\{\{[[:space:]]*slot:([A-Za-z0-9_-]+)[[:space:]]*\}\}/\1/' || true
+                      printf '%s\n' "$tpl_html" | grep -Eo 'data-slot="[A-Za-z0-9_-]+"' | sed -E 's/data-slot="([A-Za-z0-9_-]+)"/\1/' || true
+                    } | tr '[:upper:]' '[:lower:]' | awk 'NF { if (!seen[$0]++) print $0 }'
+                  )"
+                  if [ -z "${parsed_slot_keys:-}" ]; then
+                    parsed_slot_keys="main"
+                  fi
+
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; DELETE FROM cms_layout_template_slots WHERE template_key='${tpl_key_sql}' AND ${tpl_scope_condition};"
+
+                  printf '%s\n' "${parsed_slot_keys}" | while IFS= read -r slot_key; do
+                    [ -z "${slot_key:-}" ] && continue
+                    slot_key_sql="$(printf '%s' "$slot_key" | sed "s/'/''/g")"
+                    slot_label="$(printf '%s' "$slot_key" | tr '_' ' ' | tr '-' ' ')"
+                    slot_label_sql="$(printf '%s' "$slot_label" | sed "s/'/''/g")"
+                    slot_id="$(cat /proc/sys/kernel/random/uuid)"
+                    slot_id_sql="$(printf '%s' "$slot_id" | sed "s/'/''/g")"
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; \
+                       INSERT INTO cms_layout_template_slots (id, template_key, site_key, slot_key, slot_label, date_created, date_updated) \
+                       VALUES ('${slot_id_sql}', '${tpl_key_sql}', ${tpl_site_sql}, '${slot_key_sql}', '${slot_label_sql}', now(), now());"
+                  done
+
+                  parsed_slot_list="$(printf '%s' "${parsed_slot_keys}" | tr '\n' ',' | sed 's/,$//')"
+                  echo "✅ Registered slots for layout template '${tpl_key}': ${parsed_slot_list}"
                 done
               else
                 echo "  └─ no templates configured in ${LAYOUTS_FILE}; skipping"
               fi
             else
               echo "  └─ ${LAYOUTS_FILE} not found; skipping"
+            fi
+
+            echo "🧱 Enforcing cms_page_blocks.slot against selected layout template..."
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               CREATE OR REPLACE FUNCTION directus.enforce_cms_page_block_slot() \
+               RETURNS trigger \
+               LANGUAGE plpgsql \
+               AS \$\$ \
+               DECLARE \
+                 _template_key TEXT; \
+                 _site_key TEXT; \
+                 _slot_key TEXT; \
+                 _slot_exists BOOLEAN; \
+               BEGIN \
+                 _slot_key := COALESCE(NULLIF(LOWER(BTRIM(NEW.slot)), ''), 'main'); \
+                 NEW.slot := _slot_key; \
+                 SELECT COALESCE(NULLIF(BTRIM(p.layout_template_key), ''), ''), COALESCE(NULLIF(BTRIM(p.site_key), ''), '') \
+                   INTO _template_key, _site_key \
+                 FROM directus.cms_pages p \
+                 WHERE p.id = NEW.page_id \
+                 LIMIT 1; \
+                 IF COALESCE(_template_key, '') = '' THEN \
+                   RETURN NEW; \
+                 END IF; \
+                 SELECT EXISTS ( \
+                   SELECT 1 \
+                   FROM directus.cms_layout_template_slots s \
+                   WHERE s.template_key = _template_key \
+                     AND s.slot_key = _slot_key \
+                     AND (COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = '' OR COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = _site_key) \
+                 ) INTO _slot_exists; \
+                 IF NOT COALESCE(_slot_exists, false) THEN \
+                   RAISE EXCEPTION 'Invalid slot % for layout template %', _slot_key, _template_key; \
+                 END IF; \
+                 RETURN NEW; \
+               END; \
+               \$\$; \
+               DO \$\$ \
+               BEGIN \
+                 IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
+                    AND to_regclass('directus.cms_pages') IS NOT NULL \
+                    AND to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN \
+                   DROP TRIGGER IF EXISTS cms_page_blocks_slot_guard ON cms_page_blocks; \
+                   CREATE TRIGGER cms_page_blocks_slot_guard \
+                   BEFORE INSERT OR UPDATE OF page_id, slot \
+                   ON cms_page_blocks \
+                   FOR EACH ROW \
+                   EXECUTE FUNCTION directus.enforce_cms_page_block_slot(); \
+                 END IF; \
+               END \
+               \$\$;"
+
+            echo "🧭 Configuring layout/slot dropdown UX from registered templates..."
+            DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_fields' LIMIT 1;" || true)"
+            if [ "${DIRECTUS_FIELDS_EXISTS:-0}" = "1" ]; then
+              DF_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' ORDER BY column_name;" || true)"
+              _df_has_col() { printf '%s\n' "$DF_COLS" | grep -qx "$1"; }
+
+              DF_OPTIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='options' LIMIT 1;" || true)"
+              DF_DISPLAY_OPTIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='display_options' LIMIT 1;" || true)"
+
+              _df_json_sql() {
+                _t="$1"
+                _json="$2"
+                if [ -z "${_json:-}" ] || [ "${_json}" = "null" ]; then
+                  printf "NULL"
+                  return
+                fi
+                _json_sql="$(printf '%s' "$_json" | sed "s/'/''/g")"
+                case "$_t" in
+                  jsonb) printf "'%s'::jsonb" "$_json_sql" ;;
+                  json) printf "'%s'::json" "$_json_sql" ;;
+                  text|character\ varying) printf "'%s'" "$_json_sql" ;;
+                  *) printf "NULL" ;;
+                esac
+              }
+
+              template_choices_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT COALESCE( \
+                   json_agg(json_build_object('text', display_name, 'value', template_key) ORDER BY template_key)::text, \
+                   '[]' \
+                 ) \
+                 FROM ( \
+                   SELECT DISTINCT ON (template_key) \
+                     template_key, \
+                     COALESCE(NULLIF(BTRIM(name), ''), template_key) AS display_name, \
+                     CASE WHEN COALESCE(NULLIF(BTRIM(site_key), ''), '') = '' THEN 1 ELSE 0 END AS scope_rank, \
+                     COALESCE(date_updated, date_created, now()) AS ord_ts \
+                   FROM directus.cms_layout_templates \
+                   WHERE COALESCE(NULLIF(BTRIM(template_key), ''), '') <> '' \
+                     AND LOWER(COALESCE(status, 'published')) = 'published' \
+                   ORDER BY template_key, scope_rank, ord_ts DESC \
+                 ) t;" || true)"
+              template_choices_json="$(printf '%s' "${template_choices_json}" | tr -d '\r\n')"
+              if [ -z "${template_choices_json:-}" ] || [ "${template_choices_json}" = "null" ] || [ "${template_choices_json}" = "[]" ]; then
+                template_choices_json='[{"text":"SPA Default","value":"spa-default"}]'
+              fi
+
+              slot_choices_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT COALESCE( \
+                   json_agg(json_build_object('text', slot_label, 'value', slot_key) ORDER BY slot_key)::text, \
+                   '[]' \
+                 ) \
+                 FROM ( \
+                   SELECT s.slot_key, COALESCE(NULLIF(MAX(s.slot_label), ''), s.slot_key) AS slot_label \
+                   FROM directus.cms_layout_template_slots s \
+                   JOIN directus.cms_layout_templates t \
+                     ON t.template_key = s.template_key \
+                    AND COALESCE(t.site_key, '') = COALESCE(s.site_key, '') \
+                   WHERE COALESCE(NULLIF(BTRIM(s.slot_key), ''), '') <> '' \
+                     AND LOWER(COALESCE(t.status, 'published')) = 'published' \
+                   GROUP BY s.slot_key \
+                 ) slots;" || true)"
+              slot_choices_json="$(printf '%s' "${slot_choices_json}" | tr -d '\r\n')"
+              if [ -z "${slot_choices_json:-}" ] || [ "${slot_choices_json}" = "null" ] || [ "${slot_choices_json}" = "[]" ]; then
+                slot_choices_json='[{"text":"main","value":"main"}]'
+              fi
+
+              template_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices,allowNone:false}')"
+              template_interface_options_json="$(jq -nc --argjson choices "${template_choices_json}" \
+                '{mode:"template",templates_collection:"cms_layout_templates",pages_collection:"cms_pages",template_value_field:"template_key",template_label_field:"name",page_site_field:"site_key",include_global:true,choices:$choices}')"
+              template_display_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices}')"
+              slot_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices,allowNone:false}')"
+              slot_interface_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
+                '{mode:"slot",templates_collection:"cms_layout_templates",slots_collection:"cms_layout_template_slots",pages_collection:"cms_pages",page_id_field:"page_id",page_template_field:"layout_template_key",page_site_field:"site_key",slot_value_field:"slot_key",slot_label_field:"slot_label",include_global:true,choices:$choices}')"
+              slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices}')"
+
+              template_note="Required: choose which registered layout template this page uses."
+              slot_note="Choose a slot for this block. Validation enforces slot compatibility with the page layout template."
+              template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
+              slot_note_sql="$(printf '%s' "${slot_note}" | sed "s/'/''/g")"
+
+              _upsert_page_layout_template_field_meta() {
+                _collection="cms_pages"
+                _field="layout_template_key"
+                _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+                _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+                if [ "${_collection_exists}" != "1" ]; then
+                  return 0
+                fi
+
+                _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+                _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+                _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+                _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+                _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${template_interface_options_json}")"
+                _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${template_display_options_json}")"
+
+                if [ "${_exists}" = "1" ]; then
+                  SETS=""
+                  if _df_has_col "interface"; then SETS="${SETS},interface='cms-content-model-select'"; fi
+                  if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+                  if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+                  if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+                  if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+                  if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+                  if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+                  if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+                  if _df_has_col "sort"; then SETS="${SETS},sort=2"; fi
+                  if _df_has_col "note"; then SETS="${SETS},note='${template_note_sql}'"; fi
+                  if [ -n "${SETS:-}" ]; then
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+                    echo "✅ Updated layout_template_key field UX on ${_collection}"
+                  fi
+                  return 0
+                fi
+
+                FCOLS="collection,field"
+                FVALS="'${_collection_sql}','${_field_sql}'"
+                if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-content-model-select'"; fi
+                if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+                if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+                if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+                if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+                if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+                if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+                if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+                if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},2"; fi
+                if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${template_note_sql}'"; fi
+
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                  "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+                echo "✅ Created layout_template_key field UX on ${_collection}"
+              }
+
+              _upsert_page_block_slot_field_meta_dynamic() {
+                _collection="cms_page_blocks"
+                _field="slot"
+                _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+                _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+                if [ "${_collection_exists}" != "1" ]; then
+                  return 0
+                fi
+
+                _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+                _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+                _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+                _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+                _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${slot_interface_options_json}")"
+                _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${slot_display_options_json}")"
+
+                if [ "${_exists}" = "1" ]; then
+                  SETS=""
+                  if _df_has_col "interface"; then SETS="${SETS},interface='cms-content-model-select'"; fi
+                  if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+                  if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+                  if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+                  if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+                  if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+                  if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+                  if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+                  if _df_has_col "sort"; then SETS="${SETS},sort=2"; fi
+                  if _df_has_col "note"; then SETS="${SETS},note='${slot_note_sql}'"; fi
+                  if [ -n "${SETS:-}" ]; then
+                    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                      "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+                    echo "✅ Updated slot field UX on ${_collection}"
+                  fi
+                  return 0
+                fi
+
+                FCOLS="collection,field"
+                FVALS="'${_collection_sql}','${_field_sql}'"
+                if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-content-model-select'"; fi
+                if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+                if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+                if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+                if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+                if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+                if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+                if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+                if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},2"; fi
+                if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${slot_note_sql}'"; fi
+
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                  "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+                echo "✅ Created slot field UX on ${_collection}"
+              }
+
+              _upsert_page_layout_template_field_meta
+              _upsert_page_block_slot_field_meta_dynamic
+            else
+              echo "  └─ directus_fields metadata table not found; skipping layout/slot UX config"
             fi
 
             # 5c) Provision site-specific roles/policies/users/tokens/permissions (GitOps-driven).
@@ -1244,23 +1765,23 @@ spec:
                     fi
 
                     HOME_PAGE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                      "SELECT id FROM directus.demo_pages WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' LIMIT 1;" || true)"
+                      "SELECT id FROM directus.cms_pages WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' LIMIT 1;" || true)"
                     HOME_PAGE_ID="$(printf '%s' "$HOME_PAGE_ID" | tr -d '\r')"
 
                     if [ -z "${HOME_PAGE_ID:-}" ] || [ "${HOME_PAGE_ID}" = "null" ]; then
                       UNSCOPED_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                        "SELECT id FROM directus.demo_pages WHERE slug='${homepage_slug_sql}' AND (site_key IS NULL OR site_key='') ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
+                        "SELECT id FROM directus.cms_pages WHERE slug='${homepage_slug_sql}' AND (site_key IS NULL OR site_key='') ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
                       UNSCOPED_ID="$(printf '%s' "$UNSCOPED_ID" | tr -d '\r')"
 
                       if [ -n "${UNSCOPED_ID:-}" ] && [ "${UNSCOPED_ID}" != "null" ]; then
                         unscoped_id_sql="$(printf '%s' "$UNSCOPED_ID" | sed "s/'/''/g")"
                         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                          "SET search_path TO directus, public; UPDATE demo_pages SET site_key='${site_key_sql}' WHERE id='${unscoped_id_sql}';"
+                          "SET search_path TO directus, public; UPDATE cms_pages SET site_key='${site_key_sql}' WHERE id='${unscoped_id_sql}';"
                         HOME_PAGE_ID="$UNSCOPED_ID"
                         echo "✅ Assigned existing homepage slug='${homepage_slug}' to site_key='${site_key}'"
                       else
                         SEED_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                          "SELECT id FROM directus.demo_pages WHERE slug='${homepage_slug_sql}' ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
+                          "SELECT id FROM directus.cms_pages WHERE slug='${homepage_slug_sql}' ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
                         SEED_ID="$(printf '%s' "$SEED_ID" | tr -d '\r')"
                         NEW_HOME_ID="$(cat /proc/sys/kernel/random/uuid)"
                         new_home_sql="$(printf '%s' "$NEW_HOME_ID" | sed "s/'/''/g")"
@@ -1268,12 +1789,12 @@ spec:
                         if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
                           seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
                           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM demo_pages WHERE id='${seed_id_sql}';"
+                            "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
 
                           # Clone supported homepage blocks so the new site homepage has immediate content.
                           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -AtF '|' -c \
-                            "SELECT collection, item, COALESCE(sort, 0) FROM directus.demo_page_blocks WHERE page_id='${seed_id_sql}' ORDER BY sort NULLS LAST, id;" \
-                            | while IFS='|' read -r blk_collection blk_item blk_sort; do
+                            "SELECT collection, item, COALESCE(sort, 0), COALESCE(NULLIF(LOWER(BTRIM(slot)),''), 'main') FROM directus.cms_page_blocks WHERE page_id='${seed_id_sql}' ORDER BY sort NULLS LAST, id;" \
+                            | while IFS='|' read -r blk_collection blk_item blk_sort blk_slot; do
                                 [ -z "${blk_collection:-}" ] && continue
                                 [ -z "${blk_item:-}" ] && continue
 
@@ -1283,13 +1804,13 @@ spec:
                                 copied="0"
 
                                 case "$blk_collection" in
-                                  demo_block_rich_text)
+                                  cms_block_rich_text)
                                     copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                                      "WITH ins AS (INSERT INTO directus.demo_block_rich_text (id, status, sort, body, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, body, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.demo_block_rich_text WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                                      "WITH ins AS (INSERT INTO directus.cms_block_rich_text (id, status, sort, body, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, body, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_rich_text WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                                     ;;
-                                  demo_block_hero)
+                                  cms_block_hero)
                                     copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                                      "WITH ins AS (INSERT INTO directus.demo_block_hero (id, status, sort, headline, subheadline, background_image, cta_label, cta_url, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, headline, subheadline, background_image, cta_label, cta_url, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.demo_block_hero WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                                      "WITH ins AS (INSERT INTO directus.cms_block_hero (id, status, sort, headline, subheadline, background_image, cta_label, cta_url, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, headline, subheadline, background_image, cta_label, cta_url, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_hero WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                                     ;;
                                   *)
                                     echo "⚠️  skipping unsupported block collection '${blk_collection}' for site_key='${site_key}'"
@@ -1310,15 +1831,19 @@ spec:
                                 if [ -n "${blk_sort:-}" ] && [ "${blk_sort}" != "null" ] && printf '%s' "$blk_sort" | grep -Eq '^-?[0-9]+$'; then
                                   sort_sql="$blk_sort"
                                 fi
+                                blk_slot_sql="$(printf '%s' "${blk_slot:-main}" | sed "s/'/''/g")"
+                                if [ -z "${blk_slot_sql:-}" ]; then
+                                  blk_slot_sql="main"
+                                fi
                                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                                  "SET search_path TO directus, public; INSERT INTO demo_page_blocks (id, page_id, collection, item, sort, site_key, page_slug, refresh_target) VALUES ('${new_pb_sql}', '${new_home_sql}', '${blk_coll_sql}', '${new_item_sql}', ${sort_sql}, '${site_key_sql}', '${homepage_slug_sql}', 'both');"
+                                  "SET search_path TO directus, public; INSERT INTO cms_page_blocks (id, page_id, collection, item, sort, slot, site_key, page_slug, refresh_target) VALUES ('${new_pb_sql}', '${new_home_sql}', '${blk_coll_sql}', '${new_item_sql}', ${sort_sql}, '${blk_slot_sql}', '${site_key_sql}', '${homepage_slug_sql}', 'both');"
                               done
 
                           echo "✅ Cloned homepage metadata + supported blocks for site_key='${site_key}'"
                         else
                           title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
                           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                            "SET search_path TO directus, public; INSERT INTO demo_pages (id, slug, title, status, site_key, layout_template_key, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},'both');"
+                            "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},'both');"
                           echo "✅ Created default homepage for site_key='${site_key}'"
                         fi
                         HOME_PAGE_ID="$NEW_HOME_ID"
@@ -1328,7 +1853,7 @@ spec:
                     # Keep derived metadata aligned for this site's homepage content graph.
                     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
                       "SET search_path TO directus, public; \
-                       UPDATE demo_pages p \
+                       UPDATE cms_pages p \
                        SET refresh_target = CASE \
                          WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
                          ELSE 'both' \
@@ -1336,25 +1861,25 @@ spec:
                        WHERE p.site_key='${site_key_sql}' \
                          AND p.slug='${homepage_slug_sql}' \
                          AND (p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target)); \
-                       UPDATE demo_page_blocks pb \
-                       SET site_key = p.site_key, page_slug = p.slug, refresh_target = p.refresh_target \
-                       FROM demo_pages p \
+                       UPDATE cms_page_blocks pb \
+                       SET site_key = p.site_key, page_slug = p.slug, refresh_target = p.refresh_target, slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main') \
+                       FROM cms_pages p \
                        WHERE pb.page_id = p.id \
                          AND p.site_key='${site_key_sql}' \
                          AND p.slug='${homepage_slug_sql}' \
-                         AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.page_slug IS DISTINCT FROM p.slug OR pb.refresh_target IS DISTINCT FROM p.refresh_target); \
-                       UPDATE demo_block_rich_text rt \
+                         AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.page_slug IS DISTINCT FROM p.slug OR pb.refresh_target IS DISTINCT FROM p.refresh_target OR pb.slot IS DISTINCT FROM COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main')); \
+                       UPDATE cms_block_rich_text rt \
                        SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
-                       FROM demo_page_blocks pb \
-                       WHERE pb.collection = 'demo_block_rich_text' \
+                       FROM cms_page_blocks pb \
+                       WHERE pb.collection = 'cms_block_rich_text' \
                          AND pb.item = rt.id::text \
                          AND pb.site_key='${site_key_sql}' \
                          AND pb.page_slug='${homepage_slug_sql}' \
                          AND (rt.site_key IS DISTINCT FROM pb.site_key OR rt.page_slug IS DISTINCT FROM pb.page_slug OR rt.refresh_target IS DISTINCT FROM pb.refresh_target); \
-                       UPDATE demo_block_hero h \
+                       UPDATE cms_block_hero h \
                        SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
-                       FROM demo_page_blocks pb \
-                       WHERE pb.collection = 'demo_block_hero' \
+                       FROM cms_page_blocks pb \
+                       WHERE pb.collection = 'cms_block_hero' \
                          AND pb.item = h.id::text \
                          AND pb.site_key='${site_key_sql}' \
                          AND pb.page_slug='${homepage_slug_sql}' \
@@ -1363,11 +1888,11 @@ spec:
                     # Set homepage layout assignment from sites.yaml if configured.
                     if [ -n "${homepage_layout_template_key_sql:-}" ]; then
                       layout_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                        "SELECT 1 FROM directus.demo_layout_templates WHERE template_key='${homepage_layout_template_key_sql}' AND (site_key='${site_key_sql}' OR site_key IS NULL OR site_key='') ORDER BY CASE WHEN site_key='${site_key_sql}' THEN 0 ELSE 1 END LIMIT 1;" || true)"
+                        "SELECT 1 FROM directus.cms_layout_templates WHERE template_key='${homepage_layout_template_key_sql}' AND (site_key='${site_key_sql}' OR site_key IS NULL OR site_key='') ORDER BY CASE WHEN site_key='${site_key_sql}' THEN 0 ELSE 1 END LIMIT 1;" || true)"
                       layout_exists="$(printf '%s' "$layout_exists" | tr -d '\r')"
                       if [ "$layout_exists" = "1" ]; then
                         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                          "SET search_path TO directus, public; UPDATE demo_pages SET layout_template_key='${homepage_layout_template_key_sql}' WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' AND (layout_template_key IS DISTINCT FROM '${homepage_layout_template_key_sql}');"
+                          "SET search_path TO directus, public; UPDATE cms_pages SET layout_template_key='${homepage_layout_template_key_sql}' WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' AND (layout_template_key IS DISTINCT FROM '${homepage_layout_template_key_sql}');"
                         echo "✅ Set homepage layout '${homepage_layout_template_key}' for site_key='${site_key}'"
                       else
                         echo "⚠️  homepage layout '${homepage_layout_template_key}' not found for site_key='${site_key}' (or global); leaving page unchanged"
@@ -1686,7 +2211,7 @@ spec:
                       refresh_targets_json="[]"
                     fi
 
-                    refresh_collections_json='["demo_pages","demo_page_blocks","demo_block_rich_text","demo_block_hero"]'
+                    refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero"]'
                     targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
                     if [ "${targets_count:-0}" = "0" ]; then
                       echo "⚠️ No cache refresh targets configured for site_key='${site_key}'"
@@ -2044,6 +2569,8 @@ spec:
             fi
 
             if [ "$EXTRA_SETTINGS_HAS_KEYS" = "1" ]; then
+              EXTRA_SETTINGS_KEYS_FILE="$(mktemp)"
+              printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r 'keys[]' >"${EXTRA_SETTINGS_KEYS_FILE}"
               while IFS= read -r key; do
                 if printf '%s' "$key" | grep -Eq 'openai.*key$'; then
                   # handled separately via OPENAI_KEY logic above
@@ -2078,7 +2605,8 @@ spec:
                 else
                   echo "⚠️ settings.yaml key '${key}' not found in directus_settings; skipping."
                 fi
-              done < <(printf '%s' "$EXTRA_SETTINGS_JSON" | jq -r 'keys[]')
+              done < "${EXTRA_SETTINGS_KEYS_FILE}"
+              rm -f "${EXTRA_SETTINGS_KEYS_FILE}"
             fi
 
             if [ "$UPDATED" != "1" ]; then
@@ -2157,6 +2685,7 @@ spec:
 
               _ensure_local_ext_enabled "github-profile-sync"
               _ensure_local_ext_enabled "ai-provider-access"
+              _ensure_local_ext_enabled "cms-content-model-select"
             else
               echo "⚠️ directus_extensions table not found; skipping extension enable."
             fi
