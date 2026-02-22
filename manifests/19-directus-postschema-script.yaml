@@ -979,10 +979,12 @@ data:
       fi
     
       template_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices,allowNone:false}')"
-      template_interface_options_json="${template_options_json}"
+      template_interface_options_json="$(jq -nc --argjson choices "${template_choices_json}" \
+        '{mode:"template",templates_collection:"cms_layout_templates",pages_collection:"cms_pages",template_value_field:"template_key",template_label_field:"name",page_site_field:"site_key",include_global:true,choices:$choices}')"
       template_display_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices}')"
       slot_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices,allowNone:false}')"
-      slot_interface_options_json="${slot_options_json}"
+      slot_interface_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
+        '{mode:"slot",templates_collection:"cms_layout_templates",slots_collection:"cms_layout_template_slots",pages_collection:"cms_pages",page_id_field:"page_id",page_template_field:"layout_template_key",page_site_field:"site_key",slot_value_field:"slot_key",slot_label_field:"slot_label",include_global:true,choices:$choices}')"
       slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices}')"
     
       template_note="Required: choose which registered layout template this page uses."
@@ -1011,7 +1013,7 @@ data:
     
         if [ "${_exists}" = "1" ]; then
           SETS=""
-          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "interface"; then SETS="${SETS},interface='cms-content-model-select'"; fi
           if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
           if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
           if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
@@ -1031,7 +1033,7 @@ data:
     
         FCOLS="collection,field"
         FVALS="'${_collection_sql}','${_field_sql}'"
-        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-content-model-select'"; fi
         if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
         if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
         if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
@@ -1068,7 +1070,7 @@ data:
     
         if [ "${_exists}" = "1" ]; then
           SETS=""
-          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "interface"; then SETS="${SETS},interface='cms-content-model-select'"; fi
           if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
           if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
           if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
@@ -1088,7 +1090,7 @@ data:
     
         FCOLS="collection,field"
         FVALS="'${_collection_sql}','${_field_sql}'"
-        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-content-model-select'"; fi
         if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
         if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
         if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
