@@ -1336,16 +1336,38 @@ data:
             --argjson position_x "${_pos_x}" \
             --argjson position_y "${_pos_y}" \
             --argjson options "${_options_json}" \
-            '{key:$key,type:$type,name:$name,position_x:$position_x,position_y:$position_y,options:$options,resolve:null,reject:null}')"
+            '{key:$key,type:$type,name:$name,position_x:$position_x,position_y:$position_y,options:$options}')"
     
           if [ -n "${_op_id:-}" ] && [ "${_op_id}" != "null" ]; then
-            _directus_api_write "PATCH" "/operations/${_op_id}" "${_update_payload}" >/tmp/directus-op-upsert.json 2>/dev/null || true
+            _attempt=1
+            _max_attempts=8
+            while [ "${_attempt}" -le "${_max_attempts}" ]; do
+              if _directus_api_write "PATCH" "/operations/${_op_id}" "${_update_payload}" >/tmp/directus-op-upsert.json 2>/dev/null; then
+                break
+              fi
+              sleep 1
+              _attempt=$(( _attempt + 1 ))
+            done
             printf '%s' "${_op_id}"
             return
           fi
     
-          _created="$(_directus_api_write "POST" "/operations" "${_create_payload}" 2>/dev/null || true)"
-          _op_id="$(printf '%s' "${_created}" | jq -r '.data.id // empty' 2>/dev/null || true)"
+          _attempt=1
+          _max_attempts=8
+          _op_id=""
+          while [ "${_attempt}" -le "${_max_attempts}" ]; do
+            _created="$(_directus_api_write "POST" "/operations" "${_create_payload}" 2>/dev/null || true)"
+            _op_id="$(printf '%s' "${_created}" | jq -r '.data.id // empty' 2>/dev/null || true)"
+            if [ -n "${_op_id:-}" ] && [ "${_op_id}" != "null" ]; then
+              break
+            fi
+            _op_id="$(_directus_find_operation_id "${_flow_id}" "${_op_key}")"
+            if [ -n "${_op_id:-}" ] && [ "${_op_id}" != "null" ]; then
+              break
+            fi
+            sleep 1
+            _attempt=$(( _attempt + 1 ))
+          done
           printf '%s' "${_op_id:-}"
         }
     
@@ -1358,7 +1380,21 @@ data:
           fi
           _payload="$(jq -nc --arg resolve "${_resolve}" --arg reject "${_reject}" \
             '{resolve:(if $resolve=="" then null else $resolve end),reject:(if $reject=="" then null else $reject end)}')"
-          _directus_api_write "PATCH" "/operations/${_op_id}" "${_payload}" >/tmp/directus-op-links.json 2>/dev/null || true
+          _attempt=1
+          _max_attempts=12
+          while [ "${_attempt}" -le "${_max_attempts}" ]; do
+            _directus_api_write "PATCH" "/operations/${_op_id}" "${_payload}" >/tmp/directus-op-links.json 2>/dev/null || true
+            _current="$(_directus_api_get "/operations/${_op_id}" --data-urlencode "fields=resolve,reject" 2>/dev/null || true)"
+            _current_resolve="$(printf '%s' "${_current}" | jq -r '.data.resolve // empty' 2>/dev/null || true)"
+            _current_reject="$(printf '%s' "${_current}" | jq -r '.data.reject // empty' 2>/dev/null || true)"
+            if [ "${_current_resolve}" = "${_resolve}" ] && [ "${_current_reject}" = "${_reject}" ]; then
+              return 0
+            fi
+            sleep 1
+            _attempt=$(( _attempt + 1 ))
+          done
+          echo "⚠️ Failed to persist links for operation '${_op_id}' (resolve='${_resolve}', reject='${_reject}') after retries"
+          return 0
         }
     
         _vault_kv_read_field() {
