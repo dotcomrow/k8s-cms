@@ -1021,10 +1021,6 @@ data:
           (nextValue) => {
             if (!nextValue || hasUserInput.value) return;
             if (fieldKey.value === 'slot') {
-              const hasBlockIdentity =
-                Boolean(asString(props.values?.collection)) &&
-                Boolean(parseId(props.values?.item));
-              if (!hasBlockIdentity) return;
               if (!fallbackCommittedValue.value) {
                 fallbackCommittedValue.value = nextValue;
                 return;
@@ -1065,8 +1061,11 @@ data:
         });
 
         const onInput = (nextValue) => {
-          hasUserInput.value = true;
           const next = asString(nextValue);
+          const current = asString(props.value);
+          if (next !== current) {
+            hasUserInput.value = true;
+          }
           emit('input', next || null);
         };
 
