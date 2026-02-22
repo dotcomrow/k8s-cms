@@ -1423,8 +1423,13 @@ data:
             if [ -n "${FLOW_ADMIN_ROLE_ID:-}" ] && [ "${FLOW_ADMIN_ROLE_ID}" != "null" ]; then
               # Ensure Administrator role has an attached admin/app policy before token verification.
               if [ "${POLICY_TABLE_EXISTS:-0}" = "1" ] && [ "${ACCESS_TABLE_EXISTS:-0}" = "1" ]; then
+                FLOW_ADMIN_POLICY_WHERE="LOWER(name)=LOWER('Policy for Administrator')"
+                if _has_policy_col "admin_access"; then FLOW_ADMIN_POLICY_WHERE="${FLOW_ADMIN_POLICY_WHERE} AND admin_access=true"; fi
+                if _has_policy_col "app_access"; then FLOW_ADMIN_POLICY_WHERE="${FLOW_ADMIN_POLICY_WHERE} AND app_access=true"; fi
+                FLOW_ADMIN_POLICY_ORDER="id DESC"
+                if _has_policy_col "date_created"; then FLOW_ADMIN_POLICY_ORDER="date_created DESC NULLS LAST, id DESC"; fi
                 FLOW_ADMIN_POLICY_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                  "SELECT id FROM directus.directus_policies WHERE LOWER(name)=LOWER('Policy for Administrator') AND admin_access=true AND app_access=true ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
+                  "SELECT id FROM directus.directus_policies WHERE ${FLOW_ADMIN_POLICY_WHERE} ORDER BY ${FLOW_ADMIN_POLICY_ORDER} LIMIT 1;" || true)"
                 FLOW_ADMIN_POLICY_ID="$(printf '%s' "$FLOW_ADMIN_POLICY_ID" | tr -d '\r')"
 
                 if [ -z "${FLOW_ADMIN_POLICY_ID:-}" ] || [ "${FLOW_ADMIN_POLICY_ID}" = "null" ]; then
@@ -1442,13 +1447,15 @@ data:
                   echo "✅ Created fallback admin policy for flow provisioning"
                 fi
 
+                FLOW_ACCESS_WHERE="role='${FLOW_ADMIN_ROLE_ID}' AND policy='${FLOW_ADMIN_POLICY_ID}'"
+                if _has_access_col "user"; then FLOW_ACCESS_WHERE="${FLOW_ACCESS_WHERE} AND \"user\" IS NULL"; fi
                 _FLOW_ACCESS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                  "SELECT 1 FROM directus.directus_access WHERE role='${FLOW_ADMIN_ROLE_ID}' AND policy='${FLOW_ADMIN_POLICY_ID}' LIMIT 1;" || true)"
+                  "SELECT 1 FROM directus.directus_access WHERE ${FLOW_ACCESS_WHERE} LIMIT 1;" || true)"
                 _FLOW_ACCESS_EXISTS="$(printf '%s' "$_FLOW_ACCESS_EXISTS" | tr -d '\r')"
                 if [ "${_FLOW_ACCESS_EXISTS}" != "1" ]; then
                   FACOLS="id,policy,role"
                   FAVALS="'$(cat /proc/sys/kernel/random/uuid)','${FLOW_ADMIN_POLICY_ID}','${FLOW_ADMIN_ROLE_ID}'"
-                  if _has_access_col "user"; then FACOLS="${FACOLS},user"; FAVALS="${FAVALS},NULL"; fi
+                  if _has_access_col "user"; then FACOLS="${FACOLS},\"user\""; FAVALS="${FAVALS},NULL"; fi
                   if _has_access_col "sort"; then FACOLS="${FACOLS},sort"; FAVALS="${FAVALS},NULL"; fi
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
                     "SET search_path TO directus, public; INSERT INTO directus_access (${FACOLS}) VALUES (${FAVALS});"
