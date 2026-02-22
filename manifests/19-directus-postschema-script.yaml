@@ -91,13 +91,15 @@ data:
     SITES_FILE="/directus-sites/sites.yaml"
     LAYOUTS_FILE="/directus-layout-templates/templates.yaml"
     EXTRA_SETTINGS_FILE="/directus-settings/settings.yaml"
+    RECON_SCRIPT_FILE="/scripts/directus-postschema.sh"
     RECON_SITES_SHA="$(_file_sha256 "${SITES_FILE}")"
     RECON_LAYOUTS_SHA="$(_file_sha256 "${LAYOUTS_FILE}")"
     RECON_SETTINGS_SHA="$(_file_sha256 "${EXTRA_SETTINGS_FILE}")"
+    RECON_SCRIPT_SHA="$(_file_sha256 "${RECON_SCRIPT_FILE}")"
     RECON_PATCH_KEY="postschema_reconcile_v1"
     RECON_PATCH_GROUP="directus-postschema"
-    RECON_PATCH_CHECKSUM="$(printf '%s|%s|%s|%s' \
-      "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" "${RECON_SITES_SHA}" "${RECON_LAYOUTS_SHA}" "${RECON_SETTINGS_SHA}" \
+    RECON_PATCH_CHECKSUM="$(printf '%s|%s|%s|%s|%s' \
+      "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" "${RECON_SITES_SHA}" "${RECON_LAYOUTS_SHA}" "${RECON_SETTINGS_SHA}" "${RECON_SCRIPT_SHA}" \
       | sha256sum | awk '{print $1}')"
 
     RECON_PATCH_KEY_SQL="$(printf '%s' "${RECON_PATCH_KEY}" | sed "s/'/''/g")"
@@ -110,7 +112,8 @@ data:
       --arg sites_sha "${RECON_SITES_SHA}" \
       --arg layouts_sha "${RECON_LAYOUTS_SHA}" \
       --arg settings_sha "${RECON_SETTINGS_SHA}" \
-      '{version:$version,inputs:{sites_yaml_sha256:$sites_sha,layout_templates_yaml_sha256:$layouts_sha,directus_settings_yaml_sha256:$settings_sha}}')"
+      --arg script_sha "${RECON_SCRIPT_SHA}" \
+      '{version:$version,inputs:{sites_yaml_sha256:$sites_sha,layout_templates_yaml_sha256:$layouts_sha,directus_settings_yaml_sha256:$settings_sha,postschema_script_sha256:$script_sha}}')"
     RECON_PATCH_DETAILS_SQL="$(printf '%s' "${RECON_PATCH_DETAILS_JSON}" | sed "s/'/''/g")"
 
     RECON_ALREADY_CURRENT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -1577,6 +1580,24 @@ data:
           fi
           _payload="$(jq -nc --arg resolve "${_resolve}" --arg reject "${_reject}" \
             '{} | (if $resolve != "" and $resolve != "null" then .resolve=$resolve else . end) | (if $reject != "" and $reject != "null" then .reject=$reject else . end)')"
+
+          # Directus enforces unique(resolve) and unique(reject) on directus_operations.
+          # Clear conflicting links within the same flow before writing this operation's links.
+          if [ "${_resolve_sql}" != "NULL" ]; then
+            if ! _psql_yb_retry \
+              "SET search_path TO directus, public; UPDATE directus_operations SET resolve=NULL WHERE id<>'${_op_id_sql}' AND flow=(SELECT flow FROM directus_operations WHERE id='${_op_id_sql}') AND resolve=${_resolve_sql};" \
+              "clear conflicting resolve link for ${_op_id}"; then
+              echo "⚠️ Unable to clear conflicting resolve links for operation '${_op_id}'"
+            fi
+          fi
+          if [ "${_reject_sql}" != "NULL" ]; then
+            if ! _psql_yb_retry \
+              "SET search_path TO directus, public; UPDATE directus_operations SET reject=NULL WHERE id<>'${_op_id_sql}' AND flow=(SELECT flow FROM directus_operations WHERE id='${_op_id_sql}') AND reject=${_reject_sql};" \
+              "clear conflicting reject link for ${_op_id}"; then
+              echo "⚠️ Unable to clear conflicting reject links for operation '${_op_id}'"
+            fi
+          fi
+
           if [ "${_payload}" = "{}" ]; then
             if _psql_yb_retry \
               "SET search_path TO directus, public; UPDATE directus_operations SET resolve=${_resolve_sql}, reject=${_reject_sql} WHERE id='${_op_id_sql}';" \
@@ -2477,39 +2498,10 @@ data:
                 done
 
                 if [ "${refresh_auth_enabled}" = "true" ] && [ "${refresh_auth_ready}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
-                  create_token_first_op_id=""
-                  create_token_prev_sleep_op_id=""
-                  create_token_attempt=1
-                  while [ "${create_token_attempt}" -le "${target_retry_attempts}" ]; do
-                    create_token_key="mint_refresh_token_attempt_${create_token_attempt}"
-                    create_token_name="Mint Refresh Token (Attempt ${create_token_attempt}/${target_retry_attempts})"
-                    create_token_pos_x=$((55 + (create_token_attempt - 1) * 28))
-                    create_token_op_id="$(_directus_upsert_operation "${create_flow_id}" "${create_token_key}" "request" "${create_token_name}" "${create_token_pos_x}" 1 "${create_token_options}")"
-
-                    if [ -z "${create_token_first_op_id:-}" ]; then
-                      create_token_first_op_id="${create_token_op_id}"
-                    fi
-
-                    if [ -n "${create_token_prev_sleep_op_id:-}" ] && [ "${create_token_prev_sleep_op_id}" != "null" ]; then
-                      _directus_set_operation_links "${create_token_prev_sleep_op_id}" "${create_token_op_id}" ""
-                      create_token_prev_sleep_op_id=""
-                    fi
-
-                    if [ "${create_token_attempt}" -lt "${target_retry_attempts}" ]; then
-                      create_token_sleep_key="mint_token_backoff_${create_token_attempt}"
-                      create_token_sleep_name="Token Retry Delay (${create_token_attempt}/${target_retry_attempts})"
-                      create_token_sleep_pos_x=$((create_token_pos_x + 14))
-                      create_token_sleep_op_id="$(_directus_upsert_operation "${create_flow_id}" "${create_token_sleep_key}" "sleep" "${create_token_sleep_name}" "${create_token_sleep_pos_x}" 19 "${create_sleep_options}")"
-                      _directus_set_operation_links "${create_token_op_id}" "${create_first_request_op_id}" "${create_token_sleep_op_id}"
-                      create_token_prev_sleep_op_id="${create_token_sleep_op_id}"
-                    else
-                      _directus_set_operation_links "${create_token_op_id}" "${create_first_request_op_id}" ""
-                    fi
-
-                    create_token_attempt=$((create_token_attempt + 1))
-                  done
-
-                  _directus_set_operation_links "${create_match_op_id}" "${create_token_first_op_id}" ""
+                  # Directus operation graph uses unique(resolve/reject) links. Keep token minting single-step.
+                  create_token_op_id="$(_directus_upsert_operation "${create_flow_id}" "mint_refresh_token_attempt_1" "request" "Mint Refresh Token" 55 1 "${create_token_options}")"
+                  _directus_set_operation_links "${create_token_op_id}" "${create_first_request_op_id}" ""
+                  _directus_set_operation_links "${create_match_op_id}" "${create_token_op_id}" ""
                 else
                   _directus_set_operation_links "${create_match_op_id}" "${create_first_request_op_id}" ""
                 fi
@@ -2571,39 +2563,10 @@ data:
                 done
 
                 if [ "${refresh_auth_enabled}" = "true" ] && [ "${refresh_auth_ready}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
-                  update_token_first_op_id=""
-                  update_token_prev_sleep_op_id=""
-                  update_token_attempt=1
-                  while [ "${update_token_attempt}" -le "${target_retry_attempts}" ]; do
-                    update_token_key="mint_refresh_token_attempt_${update_token_attempt}"
-                    update_token_name="Mint Refresh Token (Attempt ${update_token_attempt}/${target_retry_attempts})"
-                    update_token_pos_x=$((55 + (update_token_attempt - 1) * 28))
-                    update_token_op_id="$(_directus_upsert_operation "${update_flow_id}" "${update_token_key}" "request" "${update_token_name}" "${update_token_pos_x}" 61 "${update_token_options}")"
-
-                    if [ -z "${update_token_first_op_id:-}" ]; then
-                      update_token_first_op_id="${update_token_op_id}"
-                    fi
-
-                    if [ -n "${update_token_prev_sleep_op_id:-}" ] && [ "${update_token_prev_sleep_op_id}" != "null" ]; then
-                      _directus_set_operation_links "${update_token_prev_sleep_op_id}" "${update_token_op_id}" ""
-                      update_token_prev_sleep_op_id=""
-                    fi
-
-                    if [ "${update_token_attempt}" -lt "${target_retry_attempts}" ]; then
-                      update_token_sleep_key="mint_token_backoff_${update_token_attempt}"
-                      update_token_sleep_name="Token Retry Delay (${update_token_attempt}/${target_retry_attempts})"
-                      update_token_sleep_pos_x=$((update_token_pos_x + 14))
-                      update_token_sleep_op_id="$(_directus_upsert_operation "${update_flow_id}" "${update_token_sleep_key}" "sleep" "${update_token_sleep_name}" "${update_token_sleep_pos_x}" 79 "${update_sleep_options}")"
-                      _directus_set_operation_links "${update_token_op_id}" "${update_first_request_op_id}" "${update_token_sleep_op_id}"
-                      update_token_prev_sleep_op_id="${update_token_sleep_op_id}"
-                    else
-                      _directus_set_operation_links "${update_token_op_id}" "${update_first_request_op_id}" ""
-                    fi
-
-                    update_token_attempt=$((update_token_attempt + 1))
-                  done
-
-                  _directus_set_operation_links "${update_match_op_id}" "${update_token_first_op_id}" ""
+                  # Directus operation graph uses unique(resolve/reject) links. Keep token minting single-step.
+                  update_token_op_id="$(_directus_upsert_operation "${update_flow_id}" "mint_refresh_token_attempt_1" "request" "Mint Refresh Token" 55 61 "${update_token_options}")"
+                  _directus_set_operation_links "${update_token_op_id}" "${update_first_request_op_id}" ""
+                  _directus_set_operation_links "${update_match_op_id}" "${update_token_op_id}" ""
                 else
                   _directus_set_operation_links "${update_match_op_id}" "${update_first_request_op_id}" ""
                 fi

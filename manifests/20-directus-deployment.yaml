@@ -266,7 +266,7 @@ spec:
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/openapi/admin"
           - name: DIRECTUS_POSTSCHEMA_RECONCILE_VERSION
-            value: "2026-02-22.2"
+            value: "2026-02-22.3"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
             value: "false"
         volumeMounts:
