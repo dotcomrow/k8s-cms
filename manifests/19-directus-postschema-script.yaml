@@ -121,7 +121,20 @@ data:
 
     RECON_ALREADY_CURRENT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
       "SELECT 1 FROM directus.schema_patch_log WHERE patch_key='${RECON_PATCH_KEY_SQL}' AND patch_status='success' AND COALESCE(patch_checksum,'')='${RECON_PATCH_CHECKSUM_SQL}' LIMIT 1;" || true)"
-    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ]; then
+    RECON_FLOW_HEALTHY="1"
+    FLOW_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_flows' LIMIT 1;" || true)"
+    if [ "${FLOW_TABLE_EXISTS:-0}" = "1" ]; then
+      FLOW_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT COUNT(*) FROM directus.directus_flows;" || true)"
+      FLOW_COUNT="$(printf '%s' "${FLOW_COUNT:-0}" | tr -d '\r')"
+      if [ -z "${FLOW_COUNT:-}" ] || [ "${FLOW_COUNT}" = "0" ]; then
+        RECON_FLOW_HEALTHY="0"
+        echo "⚠️ directus_flows is empty; forcing reconcile despite checksum match."
+      fi
+    fi
+
+    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ]; then
       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
         "SET search_path TO directus, public; UPDATE schema_patch_log SET last_checked_at=now() WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null
       echo "✅ Postschema reconcile already up to date (version=${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}, checksum=${RECON_PATCH_CHECKSUM})."

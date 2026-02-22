@@ -130,6 +130,16 @@ spec:
             - |
               set -eu
 
+              RESET_DIRECTUS_USERS_ROLES_RAW="${RESET_DIRECTUS_USERS_ROLES:-false}"
+              case "$(printf '%s' "${RESET_DIRECTUS_USERS_ROLES_RAW}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes|on) RESET_DIRECTUS_USERS_ROLES="true" ;;
+                *) RESET_DIRECTUS_USERS_ROLES="false" ;;
+              esac
+              if [ "${RESET_DIRECTUS_USERS_ROLES}" != "true" ]; then
+                echo "ℹ️ Skipping destructive Directus role/user reset (RESET_DIRECTUS_USERS_ROLES=false)."
+                exit 0
+              fi
+
               # tools we need (alpine base)
               apk add --no-cache curl jq >/dev/null
 
@@ -192,6 +202,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
             - name: DB_DATABASE
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+            - name: RESET_DIRECTUS_USERS_ROLES
+              value: "false"
           volumeMounts:
             - name: vault-root-token
               mountPath: /vault-token
@@ -269,7 +281,7 @@ spec:
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/openapi/admin"
           - name: DIRECTUS_POSTSCHEMA_RECONCILE_VERSION
-            value: "2026-02-23.2"
+            value: "2026-02-23.3"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
             value: "false"
         volumeMounts:
