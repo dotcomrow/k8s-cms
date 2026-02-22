@@ -636,7 +636,6 @@ data:
         const loadError = ref('');
         const choices = ref([]);
         const missingContext = ref('');
-        const committedValue = ref('');
         
         const resolvedOptions = computed(() => parseOptions(props.options));
         const fieldKey = computed(() => asString(props.field).toLowerCase());
@@ -679,6 +678,7 @@ data:
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
           return v !== false;
         });
+        const persistedValue = ref('');
         const recordUpdatedAt = computed(() =>
           asString(
             props.values?.date_updated
@@ -687,26 +687,25 @@ data:
           )
         );
         let requestId = 0;
+        let persistedRequestId = 0;
 
         const resolveRecordContext = () => {
           const recordCollection = collectionKey.value || pagesCollection.value;
-          const explicitRecordId =
+          let recordId =
             parseId(props.values?.[itemIdField.value]) ||
             parseId(props.values?.id);
 
-          if (explicitRecordId) {
-            return { recordCollection, recordId: explicitRecordId };
+          // For top-level editors, recover record id from URL.
+          if (!recordId && recordCollection === pagesCollection.value) {
+            recordId = getPrimaryKeyFromLocation(recordCollection);
           }
 
-          // Only use URL PK fallback for top-level page editor context.
-          if (recordCollection === pagesCollection.value) {
-            const urlRecordId = getPrimaryKeyFromLocation(recordCollection);
-            if (urlRecordId) {
-              return { recordCollection, recordId: urlRecordId };
-            }
+          // For nested block editors, fallback to block item URL id when available.
+          if (!recordId && recordCollection === 'cms_page_blocks') {
+            recordId = getPrimaryKeyFromLocation(recordCollection);
           }
 
-          return { recordCollection, recordId: '' };
+          return { recordCollection, recordId };
         };
         
         const apiGet = async (path, params = {}) => {
@@ -910,6 +909,27 @@ data:
           }
         };
 
+        const loadPersistedValue = async () => {
+          const currentRequest = ++persistedRequestId;
+          persistedValue.value = '';
+
+          const { recordCollection, recordId } = resolveRecordContext();
+          const fieldName = asString(props.field);
+          if (!recordCollection || !recordId || !fieldName) return;
+
+          try {
+            const response = await apiGet(
+              `/items/${recordCollection}/${encodeURIComponent(recordId)}`,
+              { fields: fieldName }
+            );
+            if (currentRequest !== persistedRequestId) return;
+            persistedValue.value = asString(response?.data?.[fieldName]);
+          } catch {
+            if (currentRequest !== persistedRequestId) return;
+            persistedValue.value = '';
+          }
+        };
+
         watch(
           () => JSON.stringify({
             mode: mode.value,
@@ -929,38 +949,28 @@ data:
 
         watch(
           () => JSON.stringify({
-            field: fieldKey.value,
-            collection: collectionKey.value,
+            field: asString(props.field),
             recordCollection: resolveRecordContext().recordCollection,
             recordId: resolveRecordContext().recordId,
             updatedAt: recordUpdatedAt.value,
           }),
-          () => {
-            // Capture the persisted value baseline when this editor context loads.
-            // We intentionally do not move this baseline on local unsaved edits.
-            const context = resolveRecordContext();
-            if (!context.recordId) {
-              committedValue.value = '';
-              return;
-            }
-            committedValue.value = asString(props.value);
-          },
+          () => { void loadPersistedValue(); },
           { immediate: true }
         );
 
         const selectItems = computed(() => {
           const currentValue = asString(props.value);
-          const persistedValue = asString(committedValue.value);
+          const committed = asString(persistedValue.value);
           const items = choices.value.map((choice) => ({
-            text: persistedValue && asString(choice.value) === persistedValue
+            text: committed && asString(choice.value) === committed
               ? `${choice.text} (current)`
               : choice.text,
             value: choice.value,
           }));
-          if (persistedValue && !items.some((item) => asString(item.value) === persistedValue)) {
-            items.unshift({ text: `${persistedValue} (current)`, value: persistedValue });
+          if (committed && !items.some((item) => asString(item.value) === committed)) {
+            items.unshift({ text: `${committed} (current)`, value: committed });
           }
-          if (currentValue && !items.some((item) => asString(item.value) === currentValue)) {
+          if (currentValue && currentValue !== committed && !items.some((item) => asString(item.value) === currentValue)) {
             items.unshift({ text: currentValue, value: currentValue });
           }
           return items;
