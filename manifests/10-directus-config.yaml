@@ -701,11 +701,6 @@ data:
             recordId = getPrimaryKeyFromLocation(recordCollection);
           }
 
-          // For nested block editors, fallback to block item URL id when available.
-          if (!recordId && recordCollection === 'cms_page_blocks') {
-            recordId = getPrimaryKeyFromLocation(recordCollection);
-          }
-
           return { recordCollection, recordId };
         };
         
@@ -1011,9 +1006,9 @@ data:
             updatedAt: recordUpdatedAt.value,
           }),
           () => {
-            // Fallback baseline for contexts where persisted lookup is unavailable.
-            // This value is captured only when editor context changes or record updates.
-            fallbackCommittedValue.value = asString(props.value);
+            // Reset fallback baseline when editor context changes.
+            // Slot mode relies on persisted lookup only to avoid false "current" markers.
+            fallbackCommittedValue.value = '';
             void loadPersistedValue();
           },
           { immediate: true }
@@ -1022,12 +1017,10 @@ data:
         watch(
           () => asString(props.value),
           (nextValue) => {
+            if (fieldKey.value === 'slot') return;
             if (!nextValue || fallbackCommittedValue.value) return;
             const { recordId } = resolveRecordContext();
-            const hasBlockIdentity = fieldKey.value === 'slot'
-              && Boolean(asString(props.values?.collection))
-              && Boolean(parseId(props.values?.item));
-            if (recordId || hasBlockIdentity) {
+            if (recordId) {
               // Capture delayed initial value once for existing records only.
               fallbackCommittedValue.value = nextValue;
             }
