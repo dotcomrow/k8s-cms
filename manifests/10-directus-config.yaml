@@ -679,7 +679,35 @@ data:
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
           return v !== false;
         });
+        const recordUpdatedAt = computed(() =>
+          asString(
+            props.values?.date_updated
+              ?? props.values?.updated_at
+              ?? props.values?.dateUpdated
+          )
+        );
         let requestId = 0;
+
+        const resolveRecordContext = () => {
+          const recordCollection = collectionKey.value || pagesCollection.value;
+          const explicitRecordId =
+            parseId(props.values?.[itemIdField.value]) ||
+            parseId(props.values?.id);
+
+          if (explicitRecordId) {
+            return { recordCollection, recordId: explicitRecordId };
+          }
+
+          // Only use URL PK fallback for top-level page editor context.
+          if (recordCollection === pagesCollection.value) {
+            const urlRecordId = getPrimaryKeyFromLocation(recordCollection);
+            if (urlRecordId) {
+              return { recordCollection, recordId: urlRecordId };
+            }
+          }
+
+          return { recordCollection, recordId: '' };
+        };
         
         const apiGet = async (path, params = {}) => {
           const url = new URL(path, window.location.origin);
@@ -903,12 +931,18 @@ data:
           () => JSON.stringify({
             field: fieldKey.value,
             collection: collectionKey.value,
-            itemId: parseId(props.values?.[itemIdField.value]),
-            pageId: parseId(props.values?.[pageIdField.value]),
+            recordCollection: resolveRecordContext().recordCollection,
+            recordId: resolveRecordContext().recordId,
+            updatedAt: recordUpdatedAt.value,
           }),
           () => {
             // Capture the persisted value baseline when this editor context loads.
             // We intentionally do not move this baseline on local unsaved edits.
+            const context = resolveRecordContext();
+            if (!context.recordId) {
+              committedValue.value = '';
+              return;
+            }
             committedValue.value = asString(props.value);
           },
           { immediate: true }
