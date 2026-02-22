@@ -1,0 +1,48 @@
+themes:
+  - theme_key: theme-clear-light
+    name: Clear Light
+    description: "Clean neutral theme suitable for default business and app layouts."
+    status: published
+    site_key: null
+    refresh_target: both
+    css_file: theme-clear-light.css
+
+  - theme_key: theme-modern-slate
+    name: Modern Slate
+    description: "Muted slate palette with polished enterprise UI styling."
+    status: published
+    site_key: null
+    refresh_target: both
+    css_file: theme-modern-slate.css
+
+  - theme_key: theme-ocean-blue
+    name: Ocean Blue
+    description: "Blue-forward product theme with crisp accents and high readability."
+    status: published
+    site_key: null
+    refresh_target: both
+    css_file: theme-ocean-blue.css
+
+  - theme_key: theme-forest-green
+    name: Forest Green
+    description: "Natural green theme for sustainability and operations-focused apps."
+    status: published
+    site_key: null
+    refresh_target: both
+    css_file: theme-forest-green.css
+
+  - theme_key: theme-sandstone
+    name: Sandstone Warm
+    description: "Warm neutral theme with approachable marketing-friendly tones."
+    status: published
+    site_key: null
+    refresh_target: both
+    css_file: theme-sandstone.css
+
+  - theme_key: theme-midnight-contrast
+    name: Midnight Contrast
+    description: "Dark, high-contrast theme for dashboard-heavy interfaces."
+    status: published
+    site_key: null
+    refresh_target: both
+    css_file: theme-midnight-contrast.css

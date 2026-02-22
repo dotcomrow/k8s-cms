@@ -1,0 +1,36 @@
+:root {
+  --cms-bg: #fdf6ec;
+  --cms-surface: #fffdf8;
+  --cms-elevated: #fef3c7;
+  --cms-border: #f5d9a8;
+  --cms-text: #3f2d1d;
+  --cms-muted: #7a6149;
+  --cms-accent: #b45309;
+}
+
+.layout,
+.cms-page {
+  background: linear-gradient(180deg, #fffaf0 0%, var(--cms-bg) 100%);
+  color: var(--cms-text);
+  font-family: "Source Sans 3", "Segoe UI", sans-serif;
+}
+
+.layout [class*="layout__"],
+.cms-section,
+.cms-hero {
+  background: var(--cms-surface);
+  border-color: var(--cms-border);
+}
+
+.cms-section-subtitle,
+.cms-hero-subtitle {
+  color: var(--cms-muted);
+}
+
+.cms-section-cta a {
+  color: #ffffff;
+  background: var(--cms-accent);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.8rem;
+  text-decoration: none;
+}

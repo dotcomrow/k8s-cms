@@ -22,3 +22,59 @@ templates:
     site_key: null
     html_file: spa-dashboard.html
     css_file: spa-dashboard.css
+
+  - template_key: spa-two-column-equal
+    name: SPA Two Column Equal
+    description: "Balanced two-column layout with optional header and footer regions."
+    status: published
+    site_key: null
+    html_file: spa-two-column-equal.html
+    css_file: spa-two-column-equal.css
+
+  - template_key: spa-two-column-content-rail
+    name: SPA Content + Rail
+    description: "Main content region with secondary right rail for supporting content."
+    status: published
+    site_key: null
+    html_file: spa-two-column-content-rail.html
+    css_file: spa-two-column-content-rail.css
+
+  - template_key: spa-three-column
+    name: SPA Three Column
+    description: "Three-column desktop layout with responsive collapse to a single column."
+    status: published
+    site_key: null
+    html_file: spa-three-column.html
+    css_file: spa-three-column.css
+
+  - template_key: spa-holy-grail
+    name: SPA Holy Grail
+    description: "Classic app layout with header, nav, main, aside, and footer slots."
+    status: published
+    site_key: null
+    html_file: spa-holy-grail.html
+    css_file: spa-holy-grail.css
+
+  - template_key: spa-docs
+    name: SPA Docs
+    description: "Documentation-style layout with sidebar navigation, content, and table of contents rail."
+    status: published
+    site_key: null
+    html_file: spa-docs.html
+    css_file: spa-docs.css
+
+  - template_key: spa-bento
+    name: SPA Bento Grid
+    description: "Modular dashboard grid with six independent content slots."
+    status: published
+    site_key: null
+    html_file: spa-bento.html
+    css_file: spa-bento.css
+
+  - template_key: spa-marketing-columns
+    name: SPA Marketing Columns
+    description: "Marketing-focused layout with hero, feature columns, body content, and CTA strip."
+    status: published
+    site_key: null
+    html_file: spa-marketing-columns.html
+    css_file: spa-marketing-columns.css

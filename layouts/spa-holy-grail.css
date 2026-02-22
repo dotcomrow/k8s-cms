@@ -1,0 +1,40 @@
+.layout-holy-grail {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: #f7fafc;
+}
+
+.layout-holy-grail .layout__header,
+.layout-holy-grail .layout__nav,
+.layout-holy-grail .layout__footer {
+  padding: 1rem 1.5rem;
+  background: #ffffff;
+  border-bottom: 1px solid #d9e2ec;
+}
+
+.layout-holy-grail .layout__footer {
+  border-bottom: 0;
+  border-top: 1px solid #d9e2ec;
+}
+
+.layout-holy-grail .layout__body {
+  display: grid;
+  grid-template-columns: minmax(0, 2.4fr) minmax(260px, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.layout-holy-grail .layout__main,
+.layout-holy-grail .layout__aside {
+  background: #ffffff;
+  border: 1px solid #d9e2ec;
+  border-radius: 0.75rem;
+  padding: 1rem;
+}
+
+@media (max-width: 1000px) {
+  .layout-holy-grail .layout__body {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,36 @@
+:root {
+  --cms-bg: #f8fafc;
+  --cms-surface: #ffffff;
+  --cms-elevated: #f1f5f9;
+  --cms-border: #dbe3ee;
+  --cms-text: #0f172a;
+  --cms-muted: #475569;
+  --cms-accent: #1d4ed8;
+}
+
+.layout,
+.cms-page {
+  background: var(--cms-bg);
+  color: var(--cms-text);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+.layout [class*="layout__"],
+.cms-section,
+.cms-hero {
+  background: var(--cms-surface);
+  border-color: var(--cms-border);
+}
+
+.cms-section-subtitle,
+.cms-hero-subtitle {
+  color: var(--cms-muted);
+}
+
+.cms-section-cta a {
+  color: #ffffff;
+  background: var(--cms-accent);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.8rem;
+  text-decoration: none;
+}

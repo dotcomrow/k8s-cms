@@ -1,0 +1,282 @@
+# Directus theme packages (GitOps source of truth).
+# Generated from ./themes via scripts/sync-theme-configmap.sh
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-theme-packages
+  namespace: directus
+  labels:
+    app: directus
+data:
+  themes.yaml: |
+    themes:
+      - theme_key: theme-clear-light
+        name: Clear Light
+        description: "Clean neutral theme suitable for default business and app layouts."
+        status: published
+        site_key: null
+        refresh_target: both
+        css_file: theme-clear-light.css
+    
+      - theme_key: theme-modern-slate
+        name: Modern Slate
+        description: "Muted slate palette with polished enterprise UI styling."
+        status: published
+        site_key: null
+        refresh_target: both
+        css_file: theme-modern-slate.css
+    
+      - theme_key: theme-ocean-blue
+        name: Ocean Blue
+        description: "Blue-forward product theme with crisp accents and high readability."
+        status: published
+        site_key: null
+        refresh_target: both
+        css_file: theme-ocean-blue.css
+    
+      - theme_key: theme-forest-green
+        name: Forest Green
+        description: "Natural green theme for sustainability and operations-focused apps."
+        status: published
+        site_key: null
+        refresh_target: both
+        css_file: theme-forest-green.css
+    
+      - theme_key: theme-sandstone
+        name: Sandstone Warm
+        description: "Warm neutral theme with approachable marketing-friendly tones."
+        status: published
+        site_key: null
+        refresh_target: both
+        css_file: theme-sandstone.css
+    
+      - theme_key: theme-midnight-contrast
+        name: Midnight Contrast
+        description: "Dark, high-contrast theme for dashboard-heavy interfaces."
+        status: published
+        site_key: null
+        refresh_target: both
+        css_file: theme-midnight-contrast.css
+  theme-clear-light.css: |
+    :root {
+      --cms-bg: #f8fafc;
+      --cms-surface: #ffffff;
+      --cms-elevated: #f1f5f9;
+      --cms-border: #dbe3ee;
+      --cms-text: #0f172a;
+      --cms-muted: #475569;
+      --cms-accent: #1d4ed8;
+    }
+    
+    .layout,
+    .cms-page {
+      background: var(--cms-bg);
+      color: var(--cms-text);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #ffffff;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
+  theme-modern-slate.css: |
+    :root {
+      --cms-bg: #eef2f7;
+      --cms-surface: #ffffff;
+      --cms-elevated: #e2e8f0;
+      --cms-border: #c9d4e4;
+      --cms-text: #142033;
+      --cms-muted: #4f6077;
+      --cms-accent: #334155;
+    }
+    
+    .layout,
+    .cms-page {
+      background: linear-gradient(180deg, #f8fafc 0%, var(--cms-bg) 100%);
+      color: var(--cms-text);
+      font-family: "Manrope", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #ffffff;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
+  theme-ocean-blue.css: |
+    :root {
+      --cms-bg: #eff6ff;
+      --cms-surface: #ffffff;
+      --cms-elevated: #dbeafe;
+      --cms-border: #bfdbfe;
+      --cms-text: #0b1d3a;
+      --cms-muted: #30507d;
+      --cms-accent: #2563eb;
+    }
+    
+    .layout,
+    .cms-page {
+      background: radial-gradient(circle at top, #dbeafe 0%, var(--cms-bg) 48%, #f8fbff 100%);
+      color: var(--cms-text);
+      font-family: "Public Sans", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #ffffff;
+      background: var(--cms-accent);
+      border-radius: 999px;
+      padding: 0.45rem 0.9rem;
+      text-decoration: none;
+    }
+  theme-forest-green.css: |
+    :root {
+      --cms-bg: #edf7f1;
+      --cms-surface: #ffffff;
+      --cms-elevated: #d1fae5;
+      --cms-border: #a7f3d0;
+      --cms-text: #103224;
+      --cms-muted: #335e4c;
+      --cms-accent: #0f766e;
+    }
+    
+    .layout,
+    .cms-page {
+      background: linear-gradient(180deg, #f0fdf4 0%, var(--cms-bg) 100%);
+      color: var(--cms-text);
+      font-family: "Lato", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #ffffff;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
+  theme-sandstone.css: |
+    :root {
+      --cms-bg: #fdf6ec;
+      --cms-surface: #fffdf8;
+      --cms-elevated: #fef3c7;
+      --cms-border: #f5d9a8;
+      --cms-text: #3f2d1d;
+      --cms-muted: #7a6149;
+      --cms-accent: #b45309;
+    }
+    
+    .layout,
+    .cms-page {
+      background: linear-gradient(180deg, #fffaf0 0%, var(--cms-bg) 100%);
+      color: var(--cms-text);
+      font-family: "Source Sans 3", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #ffffff;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
+  theme-midnight-contrast.css: |
+    :root {
+      --cms-bg: #0b1220;
+      --cms-surface: #121c2f;
+      --cms-elevated: #1f2a40;
+      --cms-border: #30415f;
+      --cms-text: #e2ebfb;
+      --cms-muted: #9bb0d2;
+      --cms-accent: #60a5fa;
+    }
+    
+    .layout,
+    .cms-page {
+      background: radial-gradient(circle at top, #17233a 0%, #0b1220 55%, #070d18 100%);
+      color: var(--cms-text);
+      font-family: "DM Sans", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #0b1220;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }

@@ -80,7 +80,7 @@ data:
       fi
     }
 
-    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-02-22.2}"
+    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-02-23.1}"
     DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW="${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE:-false}"
     case "$(printf '%s' "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW}" | tr '[:upper:]' '[:lower:]')" in
       1|true|yes|on) DIRECTUS_POSTSCHEMA_FORCE_RECONCILE="true" ;;
@@ -90,16 +90,18 @@ data:
     # Inputs that define desired reconciled state from GitOps.
     SITES_FILE="/directus-sites/sites.yaml"
     LAYOUTS_FILE="/directus-layout-templates/templates.yaml"
+    THEMES_FILE="/directus-theme-packages/themes.yaml"
     EXTRA_SETTINGS_FILE="/directus-settings/settings.yaml"
     RECON_SCRIPT_FILE="/scripts/directus-postschema.sh"
     RECON_SITES_SHA="$(_file_sha256 "${SITES_FILE}")"
     RECON_LAYOUTS_SHA="$(_file_sha256 "${LAYOUTS_FILE}")"
+    RECON_THEMES_SHA="$(_file_sha256 "${THEMES_FILE}")"
     RECON_SETTINGS_SHA="$(_file_sha256 "${EXTRA_SETTINGS_FILE}")"
     RECON_SCRIPT_SHA="$(_file_sha256 "${RECON_SCRIPT_FILE}")"
     RECON_PATCH_KEY="postschema_reconcile_v1"
     RECON_PATCH_GROUP="directus-postschema"
-    RECON_PATCH_CHECKSUM="$(printf '%s|%s|%s|%s|%s' \
-      "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" "${RECON_SITES_SHA}" "${RECON_LAYOUTS_SHA}" "${RECON_SETTINGS_SHA}" "${RECON_SCRIPT_SHA}" \
+    RECON_PATCH_CHECKSUM="$(printf '%s|%s|%s|%s|%s|%s' \
+      "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" "${RECON_SITES_SHA}" "${RECON_LAYOUTS_SHA}" "${RECON_THEMES_SHA}" "${RECON_SETTINGS_SHA}" "${RECON_SCRIPT_SHA}" \
       | sha256sum | awk '{print $1}')"
 
     RECON_PATCH_KEY_SQL="$(printf '%s' "${RECON_PATCH_KEY}" | sed "s/'/''/g")"
@@ -111,9 +113,10 @@ data:
       --arg version "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" \
       --arg sites_sha "${RECON_SITES_SHA}" \
       --arg layouts_sha "${RECON_LAYOUTS_SHA}" \
+      --arg themes_sha "${RECON_THEMES_SHA}" \
       --arg settings_sha "${RECON_SETTINGS_SHA}" \
       --arg script_sha "${RECON_SCRIPT_SHA}" \
-      '{version:$version,inputs:{sites_yaml_sha256:$sites_sha,layout_templates_yaml_sha256:$layouts_sha,directus_settings_yaml_sha256:$settings_sha,postschema_script_sha256:$script_sha}}')"
+      '{version:$version,inputs:{sites_yaml_sha256:$sites_sha,layout_templates_yaml_sha256:$layouts_sha,theme_packages_yaml_sha256:$themes_sha,directus_settings_yaml_sha256:$settings_sha,postschema_script_sha256:$script_sha}}')"
     RECON_PATCH_DETAILS_SQL="$(printf '%s' "${RECON_PATCH_DETAILS_JSON}" | sed "s/'/''/g")"
 
     RECON_ALREADY_CURRENT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -304,6 +307,7 @@ data:
       "SET search_path TO directus, public; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_package_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
@@ -474,6 +478,22 @@ data:
     fi
     if ! _psql_yb_retry "DO \$\$
       BEGIN
+        IF to_regclass('directus.cms_theme_packages') IS NOT NULL THEN
+          UPDATE cms_theme_packages tp
+          SET refresh_target = CASE
+            WHEN LOWER(COALESCE(tp.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(tp.refresh_target)
+            ELSE 'both'
+          END
+          WHERE tp.refresh_target IS NULL
+             OR LOWER(COALESCE(tp.refresh_target, '')) NOT IN ('preview','prod','both')
+             OR tp.refresh_target <> LOWER(tp.refresh_target);
+        END IF;
+      END
+      \$\$;" "normalize cms_theme_packages.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "DO \$\$
+      BEGIN
         IF to_regclass('directus.cms_pages') IS NOT NULL THEN
           ALTER TABLE cms_pages ALTER COLUMN refresh_target DROP DEFAULT;
           ALTER TABLE cms_pages ALTER COLUMN refresh_target SET NOT NULL;
@@ -502,6 +522,13 @@ data:
           ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_refresh_target_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
             ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+        END IF;
+        IF to_regclass('directus.cms_theme_packages') IS NOT NULL THEN
+          ALTER TABLE cms_theme_packages ALTER COLUMN refresh_target DROP DEFAULT;
+          ALTER TABLE cms_theme_packages ALTER COLUMN refresh_target SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_theme_packages_refresh_target_check' AND conrelid = 'directus.cms_theme_packages'::regclass) THEN
+            ALTER TABLE cms_theme_packages ADD CONSTRAINT cms_theme_packages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
       END
@@ -625,6 +652,7 @@ data:
       _upsert_refresh_target_field_meta "cms_page_blocks"
       _upsert_refresh_target_field_meta "cms_block_rich_text"
       _upsert_refresh_target_field_meta "cms_block_hero"
+      _upsert_refresh_target_field_meta "cms_theme_packages"
     
       _upsert_page_block_slot_field_meta() {
         _collection="cms_page_blocks"
@@ -712,7 +740,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","refresh_target","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","theme_package_key","refresh_target","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -1012,6 +1040,162 @@ data:
     else
       echo "  └─ ${LAYOUTS_FILE} not found; skipping"
     fi
+
+    # 5b.1) Ensure theme package collection exists and seed CSS bundles from GitOps config.
+    echo "🧱 Ensuring cms_theme_packages exists..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE TABLE IF NOT EXISTS cms_theme_packages ( \
+         id UUID PRIMARY KEY, \
+         theme_key TEXT NOT NULL, \
+         name TEXT NOT NULL, \
+         description TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         site_key TEXT NULL, \
+         refresh_target TEXT NOT NULL DEFAULT 'both', \
+         css TEXT NOT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS theme_key TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS description TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS css TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN refresh_target SET DEFAULT 'both'; \
+       ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN date_created SET DEFAULT now(); \
+       DO \$\$ \
+       BEGIN \
+         IF EXISTS ( \
+           SELECT 1 \
+           FROM pg_indexes \
+           WHERE schemaname = 'directus' \
+             AND indexname = 'cms_theme_packages_scope_theme_unique' \
+         ) THEN \
+           RETURN; \
+         END IF; \
+         IF NOT EXISTS ( \
+           SELECT 1 \
+           FROM ( \
+             SELECT COALESCE(site_key, '') AS site_scope, theme_key, COUNT(*) AS c \
+             FROM cms_theme_packages \
+             GROUP BY COALESCE(site_key, ''), theme_key \
+             HAVING COUNT(*) > 1 \
+           ) dups \
+         ) THEN \
+           CREATE UNIQUE INDEX cms_theme_packages_scope_theme_unique \
+           ON cms_theme_packages (COALESCE(site_key, ''), theme_key); \
+         ELSE \
+           RAISE NOTICE 'Skipping cms_theme_packages_scope_theme_unique due to duplicate (site_key,theme_key) rows'; \
+         END IF; \
+       END \
+       \$\$;"
+
+    THEMES_FILE="/directus-theme-packages/themes.yaml"
+    if [ -f "$THEMES_FILE" ]; then
+      THEMES_JSON="$(yq -o=json '.' "$THEMES_FILE" 2>/dev/null || true)"
+      if printf '%s' "$THEMES_JSON" | jq -e '.themes | type=="array" and length>0' >/dev/null 2>&1; then
+        printf '%s' "$THEMES_JSON" | jq -c '.themes[]' | while IFS= read -r theme; do
+          theme_key="$(printf '%s' "$theme" | jq -r '.theme_key // empty')"
+          theme_name="$(printf '%s' "$theme" | jq -r '.name // empty')"
+          theme_status="$(printf '%s' "$theme" | jq -r '.status // "published"')"
+          theme_desc="$(printf '%s' "$theme" | jq -r '.description // empty')"
+          theme_site="$(printf '%s' "$theme" | jq -r 'if .site_key == null then "" else (.site_key | tostring) end')"
+          theme_refresh_target_raw="$(printf '%s' "$theme" | jq -r '.refresh_target // "both"')"
+          theme_css="$(printf '%s' "$theme" | jq -r '.css // empty')"
+          theme_css_file="$(printf '%s' "$theme" | jq -r '.css_file // empty')"
+
+          if [ -z "${theme_css:-}" ] && [ -n "${theme_css_file:-}" ]; then
+            case "$theme_css_file" in
+              /*|*..*)
+                echo "⚠️  theme '${theme_key}' has invalid css_file path '${theme_css_file}'; skipping"
+                continue
+                ;;
+              *)
+                theme_css_path="/directus-theme-packages/${theme_css_file}"
+                if [ -f "$theme_css_path" ]; then
+                  theme_css="$(cat "$theme_css_path")"
+                else
+                  echo "⚠️  theme '${theme_key}' css file not found at ${theme_css_path}; skipping"
+                  continue
+                fi
+                ;;
+            esac
+          fi
+
+          if [ -z "${theme_key:-}" ] || [ -z "${theme_name:-}" ] || [ -z "${theme_css:-}" ]; then
+            echo "⚠️  skipping invalid theme package entry (theme_key/name/css required)"
+            continue
+          fi
+
+          case "$(printf '%s' "${theme_refresh_target_raw:-both}" | tr '[:upper:]' '[:lower:]')" in
+            preview|prod|both) theme_refresh_target="$(printf '%s' "${theme_refresh_target_raw:-both}" | tr '[:upper:]' '[:lower:]')" ;;
+            *) theme_refresh_target="both" ;;
+          esac
+
+          theme_key_sql="$(printf '%s' "$theme_key" | sed "s/'/''/g")"
+          theme_name_sql="$(printf '%s' "$theme_name" | sed "s/'/''/g")"
+          theme_status_sql="$(printf '%s' "$theme_status" | sed "s/'/''/g")"
+          theme_refresh_target_sql="$(printf '%s' "$theme_refresh_target" | sed "s/'/''/g")"
+          theme_css_sql="$(printf '%s' "$theme_css" | sed "s/'/''/g")"
+
+          theme_desc_sql="NULL"
+          if [ -n "${theme_desc:-}" ]; then
+            theme_desc_esc="$(printf '%s' "$theme_desc" | sed "s/'/''/g")"
+            theme_desc_sql="'${theme_desc_esc}'"
+          fi
+
+          theme_site_sql="NULL"
+          theme_scope_condition="(site_key IS NULL OR site_key='')"
+          if [ -n "${theme_site:-}" ]; then
+            theme_site_esc="$(printf '%s' "$theme_site" | sed "s/'/''/g")"
+            theme_site_sql="'${theme_site_esc}'"
+            theme_scope_condition="site_key='${theme_site_esc}'"
+          fi
+
+          existing_theme_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id FROM directus.cms_theme_packages WHERE theme_key='${theme_key_sql}' AND ${theme_scope_condition} LIMIT 1;" || true)"
+          existing_theme_id="$(printf '%s' "$existing_theme_id" | tr -d '\r')"
+
+          if [ -n "${existing_theme_id:-}" ] && [ "${existing_theme_id}" != "null" ]; then
+            existing_theme_id_sql="$(printf '%s' "$existing_theme_id" | sed "s/'/''/g")"
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               UPDATE cms_theme_packages \
+               SET name='${theme_name_sql}', \
+                   description=${theme_desc_sql}, \
+                   status='${theme_status_sql}', \
+                   site_key=${theme_site_sql}, \
+                   refresh_target='${theme_refresh_target_sql}', \
+                   css='${theme_css_sql}', \
+                   date_updated=now() \
+               WHERE id='${existing_theme_id_sql}';"
+            echo "✅ Reconciled theme package '${theme_key}'"
+          else
+            new_theme_id="$(cat /proc/sys/kernel/random/uuid)"
+            new_theme_id_sql="$(printf '%s' "$new_theme_id" | sed "s/'/''/g")"
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               INSERT INTO cms_theme_packages (id, theme_key, name, description, status, site_key, refresh_target, css, date_created, date_updated) \
+               VALUES ('${new_theme_id_sql}','${theme_key_sql}','${theme_name_sql}',${theme_desc_sql},'${theme_status_sql}',${theme_site_sql},'${theme_refresh_target_sql}','${theme_css_sql}',now(),now());"
+            echo "✅ Seeded theme package '${theme_key}'"
+          fi
+        done
+      else
+        echo "  └─ no themes configured in ${THEMES_FILE}; skipping"
+      fi
+    else
+      echo "  └─ ${THEMES_FILE} not found; skipping"
+    fi
+
+    if command -v _upsert_refresh_target_field_meta >/dev/null 2>&1; then
+      _upsert_refresh_target_field_meta "cms_theme_packages"
+    fi
     
     echo "🧱 Ensuring cms_page_blocks M2A relation allows cms block collections..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -1094,7 +1278,7 @@ data:
        END \
        \$\$;"
     
-    echo "🧭 Configuring layout/slot dropdown UX from registered templates..."
+    echo "🧭 Configuring layout/theme/slot dropdown UX from registered templates..."
     DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
       "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_fields' LIMIT 1;" || true)"
     if [ "${DIRECTUS_FIELDS_EXISTS:-0}" = "1" ]; then
@@ -1163,19 +1347,46 @@ data:
       if [ -z "${slot_choices_json:-}" ] || [ "${slot_choices_json}" = "null" ] || [ "${slot_choices_json}" = "[]" ]; then
         slot_choices_json='[]'
       fi
-    
+
+      theme_choices_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT COALESCE( \
+           json_agg(json_build_object('text', display_name, 'value', theme_key) ORDER BY theme_key)::text, \
+           '[]' \
+         ) \
+         FROM ( \
+           SELECT DISTINCT ON (theme_key) \
+             theme_key, \
+             COALESCE(NULLIF(BTRIM(name), ''), theme_key) AS display_name, \
+             CASE WHEN COALESCE(NULLIF(BTRIM(site_key), ''), '') = '' THEN 1 ELSE 0 END AS scope_rank, \
+             COALESCE(date_updated, date_created, now()) AS ord_ts \
+           FROM directus.cms_theme_packages \
+           WHERE COALESCE(NULLIF(BTRIM(theme_key), ''), '') <> '' \
+             AND LOWER(COALESCE(status, 'published')) = 'published' \
+           ORDER BY theme_key, scope_rank, ord_ts DESC \
+         ) themes;" || true)"
+      theme_choices_json="$(printf '%s' "${theme_choices_json}" | tr -d '\r\n')"
+      if [ -z "${theme_choices_json:-}" ] || [ "${theme_choices_json}" = "null" ] || [ "${theme_choices_json}" = "[]" ]; then
+        theme_choices_json='[]'
+      fi
+
       template_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices,allowNone:false}')"
       template_interface_options_json="$(jq -nc --argjson choices "${template_choices_json}" \
         '{mode:"template",templates_collection:"cms_layout_templates",pages_collection:"cms_pages",template_value_field:"template_key",template_label_field:"name",page_site_field:"site_key",include_global:true,choices:$choices}')"
       template_display_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices}')"
+      theme_options_json="$(jq -nc --argjson choices "${theme_choices_json}" '{choices:$choices,allowNone:false}')"
+      theme_interface_options_json="$(jq -nc --argjson choices "${theme_choices_json}" \
+        '{mode:"theme",themes_collection:"cms_theme_packages",pages_collection:"cms_pages",theme_value_field:"theme_key",theme_label_field:"name",page_site_field:"site_key",include_global:true,choices:$choices}')"
+      theme_display_options_json="$(jq -nc --argjson choices "${theme_choices_json}" '{choices:$choices}')"
       slot_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices,allowNone:false}')"
       slot_interface_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
         '{mode:"slot",templates_collection:"cms_layout_templates",slots_collection:"cms_layout_template_slots",pages_collection:"cms_pages",page_id_field:"page_id",page_template_field:"layout_template_key",page_site_field:"site_key",slot_value_field:"slot_key",slot_label_field:"slot_label",include_global:true,choices:$choices}')"
       slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices}')"
-    
+
       template_note="Required: choose which registered layout template this page uses."
+      theme_note="Required: choose which published theme package this page uses."
       slot_note="Choose a slot for this block. Validation enforces slot compatibility with the page layout template."
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
+      theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
       slot_note_sql="$(printf '%s' "${slot_note}" | sed "s/'/''/g")"
     
       _upsert_page_layout_template_field_meta() {
@@ -1234,7 +1445,64 @@ data:
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created layout_template_key field UX on ${_collection}"
       }
-    
+
+      _upsert_page_theme_package_field_meta() {
+        _collection="cms_pages"
+        _field="theme_package_key"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${theme_interface_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${theme_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='cms-content-model-select'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=3"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${theme_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated theme_package_key field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-content-model-select'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},3"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${theme_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created theme_package_key field UX on ${_collection}"
+      }
+
       _upsert_page_block_slot_field_meta_dynamic() {
         _collection="cms_page_blocks"
         _field="slot"
@@ -1293,9 +1561,10 @@ data:
       }
     
       _upsert_page_layout_template_field_meta
+      _upsert_page_theme_package_field_meta
       _upsert_page_block_slot_field_meta_dynamic
     else
-      echo "  └─ directus_fields metadata table not found; skipping layout/slot UX config"
+      echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot UX config"
     fi
     
     # 5c) Provision site-specific roles/policies/users/tokens/permissions (GitOps-driven).
@@ -1847,6 +2116,7 @@ data:
           site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
           homepage_slug="$(printf '%s' "$site" | jq -r '.homepage_slug // "home"')"
           homepage_layout_template_key="$(printf '%s' "$site" | jq -r '.homepage_layout_template_key // .layout_template_key // "spa-default"')"
+          homepage_theme_package_key="$(printf '%s' "$site" | jq -r '.homepage_theme_package_key // .theme_package_key // empty')"
           client_key="$(printf '%s' "$site" | jq -r '.client_key // .clientId // empty')"
           role_name="$(printf '%s' "$site" | jq -r '.role_name // .role // empty')"
     
@@ -1868,7 +2138,10 @@ data:
           if [ -z "${homepage_layout_template_key:-}" ] || [ "${homepage_layout_template_key}" = "null" ]; then
             homepage_layout_template_key=""
           fi
-    
+          if [ -z "${homepage_theme_package_key:-}" ] || [ "${homepage_theme_package_key}" = "null" ]; then
+            homepage_theme_package_key=""
+          fi
+
           # Ensure each site has a homepage row keyed by (site_key, homepage_slug).
           # If absent, claim an unscoped page first; otherwise clone page metadata from any existing slug match.
           if [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ]; then
@@ -1876,9 +2149,15 @@ data:
             homepage_slug_sql="$(printf '%s' "$homepage_slug" | sed "s/'/''/g")"
             homepage_layout_template_key_sql=""
             homepage_layout_template_value_sql="NULL"
+            homepage_theme_package_key_sql=""
+            homepage_theme_package_value_sql="NULL"
             if [ -n "${homepage_layout_template_key:-}" ]; then
               homepage_layout_template_key_sql="$(printf '%s' "$homepage_layout_template_key" | sed "s/'/''/g")"
               homepage_layout_template_value_sql="'${homepage_layout_template_key_sql}'"
+            fi
+            if [ -n "${homepage_theme_package_key:-}" ]; then
+              homepage_theme_package_key_sql="$(printf '%s' "$homepage_theme_package_key" | sed "s/'/''/g")"
+              homepage_theme_package_value_sql="'${homepage_theme_package_key_sql}'"
             fi
     
             HOME_PAGE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -1906,7 +2185,7 @@ data:
                 if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
                   seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, theme_package_key, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
     
                   # Clone supported homepage blocks so the new site homepage has immediate content.
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -AtF '|' -c \
@@ -1960,7 +2239,7 @@ data:
                 else
                   title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},'both');"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, theme_package_key, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'both');"
                   echo "✅ Created default homepage for site_key='${site_key}'"
                 fi
                 HOME_PAGE_ID="$NEW_HOME_ID"
@@ -2013,6 +2292,20 @@ data:
                 echo "✅ Set homepage layout '${homepage_layout_template_key}' for site_key='${site_key}'"
               else
                 echo "⚠️  homepage layout '${homepage_layout_template_key}' not found for site_key='${site_key}' (or global); leaving page unchanged"
+              fi
+            fi
+
+            # Set homepage theme assignment from sites.yaml if configured.
+            if [ -n "${homepage_theme_package_key_sql:-}" ]; then
+              theme_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT 1 FROM directus.cms_theme_packages WHERE theme_key='${homepage_theme_package_key_sql}' AND LOWER(COALESCE(status, 'published'))='published' AND (site_key='${site_key_sql}' OR site_key IS NULL OR site_key='') ORDER BY CASE WHEN site_key='${site_key_sql}' THEN 0 ELSE 1 END LIMIT 1;" || true)"
+              theme_exists="$(printf '%s' "$theme_exists" | tr -d '\r')"
+              if [ "$theme_exists" = "1" ]; then
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                  "SET search_path TO directus, public; UPDATE cms_pages SET theme_package_key='${homepage_theme_package_key_sql}' WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' AND (theme_package_key IS DISTINCT FROM '${homepage_theme_package_key_sql}');"
+                echo "✅ Set homepage theme '${homepage_theme_package_key}' for site_key='${site_key}'"
+              else
+                echo "⚠️  homepage theme '${homepage_theme_package_key}' not found for site_key='${site_key}' (or global published); leaving page unchanged"
               fi
             fi
           fi
@@ -2334,7 +2627,7 @@ data:
               refresh_targets_json="[]"
             fi
     
-            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero"]'
+            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_theme_packages"]'
             targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
             if [ "${targets_count:-0}" = "0" ]; then
               echo "⚠️ No cache refresh targets configured for site_key='${site_key}'"
@@ -2455,7 +2748,7 @@ data:
                 create_read_options="$(jq -nc \
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                 create_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                  '{filter:{_and:[{read_item:{site_key:{_eq:$site}}},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
+                  '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                 create_request_options="$(jq -nc \
                   --arg method "${target_method}" \
                   --arg url "${target_endpoint_effective}" \
@@ -2520,7 +2813,7 @@ data:
                 update_read_options="$(jq -nc \
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                 update_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                  '{filter:{_and:[{read_item:{site_key:{_eq:$site}}},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
+                  '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                 update_request_options="$(jq -nc \
                   --arg method "${target_method}" \
                   --arg url "${target_endpoint_effective}" \

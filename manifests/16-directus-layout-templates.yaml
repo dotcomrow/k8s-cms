@@ -33,6 +33,62 @@ data:
         site_key: null
         html_file: spa-dashboard.html
         css_file: spa-dashboard.css
+    
+      - template_key: spa-two-column-equal
+        name: SPA Two Column Equal
+        description: "Balanced two-column layout with optional header and footer regions."
+        status: published
+        site_key: null
+        html_file: spa-two-column-equal.html
+        css_file: spa-two-column-equal.css
+    
+      - template_key: spa-two-column-content-rail
+        name: SPA Content + Rail
+        description: "Main content region with secondary right rail for supporting content."
+        status: published
+        site_key: null
+        html_file: spa-two-column-content-rail.html
+        css_file: spa-two-column-content-rail.css
+    
+      - template_key: spa-three-column
+        name: SPA Three Column
+        description: "Three-column desktop layout with responsive collapse to a single column."
+        status: published
+        site_key: null
+        html_file: spa-three-column.html
+        css_file: spa-three-column.css
+    
+      - template_key: spa-holy-grail
+        name: SPA Holy Grail
+        description: "Classic app layout with header, nav, main, aside, and footer slots."
+        status: published
+        site_key: null
+        html_file: spa-holy-grail.html
+        css_file: spa-holy-grail.css
+    
+      - template_key: spa-docs
+        name: SPA Docs
+        description: "Documentation-style layout with sidebar navigation, content, and table of contents rail."
+        status: published
+        site_key: null
+        html_file: spa-docs.html
+        css_file: spa-docs.css
+    
+      - template_key: spa-bento
+        name: SPA Bento Grid
+        description: "Modular dashboard grid with six independent content slots."
+        status: published
+        site_key: null
+        html_file: spa-bento.html
+        css_file: spa-bento.css
+    
+      - template_key: spa-marketing-columns
+        name: SPA Marketing Columns
+        description: "Marketing-focused layout with hero, feature columns, body content, and CTA strip."
+        status: published
+        site_key: null
+        html_file: spa-marketing-columns.html
+        css_file: spa-marketing-columns.css
   spa-default.html: |
     <div class="layout layout-default" data-layout="spa-default">
       <header class="layout__header" data-slot="header">{{ slot:header }}</header>
@@ -128,4 +184,388 @@ data:
     
     .layout-dashboard .layout__main {
       padding: 1.5rem;
+    }
+  spa-two-column-equal.html: |
+    <div class="layout layout-two-column-equal" data-layout="spa-two-column-equal">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <div class="layout__columns">
+        <section class="layout__left" data-slot="left">{{ slot:left }}</section>
+        <section class="layout__right" data-slot="right">{{ slot:right }}</section>
+      </div>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-two-column-equal.css: |
+    .layout-two-column-equal {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: #f8fafc;
+    }
+    
+    .layout-two-column-equal .layout__header,
+    .layout-two-column-equal .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    
+    .layout-two-column-equal .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #e2e8f0;
+    }
+    
+    .layout-two-column-equal .layout__columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      padding: 1rem;
+    }
+    
+    .layout-two-column-equal .layout__left,
+    .layout-two-column-equal .layout__right {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    
+    @media (max-width: 900px) {
+      .layout-two-column-equal .layout__columns {
+        grid-template-columns: 1fr;
+      }
+    }
+  spa-two-column-content-rail.html: |
+    <div class="layout layout-two-column-content-rail" data-layout="spa-two-column-content-rail">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <div class="layout__body">
+        <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+        <aside class="layout__rail" data-slot="rail">{{ slot:rail }}</aside>
+      </div>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-two-column-content-rail.css: |
+    .layout-two-column-content-rail {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: #f1f5f9;
+    }
+    
+    .layout-two-column-content-rail .layout__header,
+    .layout-two-column-content-rail .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #dbe3ee;
+    }
+    
+    .layout-two-column-content-rail .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #dbe3ee;
+    }
+    
+    .layout-two-column-content-rail .layout__body {
+      display: grid;
+      grid-template-columns: minmax(0, 2.2fr) minmax(260px, 1fr);
+      gap: 1rem;
+      padding: 1rem;
+    }
+    
+    .layout-two-column-content-rail .layout__main,
+    .layout-two-column-content-rail .layout__rail {
+      background: #ffffff;
+      border: 1px solid #dbe3ee;
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    
+    @media (max-width: 1000px) {
+      .layout-two-column-content-rail .layout__body {
+        grid-template-columns: 1fr;
+      }
+    }
+  spa-three-column.html: |
+    <div class="layout layout-three-column" data-layout="spa-three-column">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <div class="layout__columns">
+        <aside class="layout__left" data-slot="left">{{ slot:left }}</aside>
+        <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+        <aside class="layout__right" data-slot="right">{{ slot:right }}</aside>
+      </div>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-three-column.css: |
+    .layout-three-column {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: #f8fafc;
+    }
+    
+    .layout-three-column .layout__header,
+    .layout-three-column .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    
+    .layout-three-column .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #e2e8f0;
+    }
+    
+    .layout-three-column .layout__columns {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr) minmax(180px, 1fr);
+      gap: 1rem;
+      padding: 1rem;
+    }
+    
+    .layout-three-column .layout__left,
+    .layout-three-column .layout__main,
+    .layout-three-column .layout__right {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    
+    @media (max-width: 1100px) {
+      .layout-three-column .layout__columns {
+        grid-template-columns: 1fr;
+      }
+    }
+  spa-holy-grail.html: |
+    <div class="layout layout-holy-grail" data-layout="spa-holy-grail">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <nav class="layout__nav" data-slot="nav">{{ slot:nav }}</nav>
+      <div class="layout__body">
+        <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+        <aside class="layout__aside" data-slot="aside">{{ slot:aside }}</aside>
+      </div>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-holy-grail.css: |
+    .layout-holy-grail {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      background: #f7fafc;
+    }
+    
+    .layout-holy-grail .layout__header,
+    .layout-holy-grail .layout__nav,
+    .layout-holy-grail .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #d9e2ec;
+    }
+    
+    .layout-holy-grail .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #d9e2ec;
+    }
+    
+    .layout-holy-grail .layout__body {
+      display: grid;
+      grid-template-columns: minmax(0, 2.4fr) minmax(260px, 1fr);
+      gap: 1rem;
+      padding: 1rem;
+    }
+    
+    .layout-holy-grail .layout__main,
+    .layout-holy-grail .layout__aside {
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    
+    @media (max-width: 1000px) {
+      .layout-holy-grail .layout__body {
+        grid-template-columns: 1fr;
+      }
+    }
+  spa-docs.html: |
+    <div class="layout layout-docs" data-layout="spa-docs">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <div class="layout__body">
+        <aside class="layout__sidebar" data-slot="sidebar">{{ slot:sidebar }}</aside>
+        <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+        <aside class="layout__toc" data-slot="toc">{{ slot:toc }}</aside>
+      </div>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-docs.css: |
+    .layout-docs {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: #f8fafc;
+    }
+    
+    .layout-docs .layout__header,
+    .layout-docs .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #dbe3ee;
+    }
+    
+    .layout-docs .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #dbe3ee;
+    }
+    
+    .layout-docs .layout__body {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr) 260px;
+      gap: 1rem;
+      padding: 1rem;
+    }
+    
+    .layout-docs .layout__sidebar,
+    .layout-docs .layout__main,
+    .layout-docs .layout__toc {
+      background: #ffffff;
+      border: 1px solid #dbe3ee;
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    
+    @media (max-width: 1200px) {
+      .layout-docs .layout__body {
+        grid-template-columns: 1fr;
+      }
+    }
+  spa-bento.html: |
+    <div class="layout layout-bento" data-layout="spa-bento">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <div class="layout__grid">
+        <section class="layout__cell layout__cell--a" data-slot="cell_a">{{ slot:cell_a }}</section>
+        <section class="layout__cell layout__cell--b" data-slot="cell_b">{{ slot:cell_b }}</section>
+        <section class="layout__cell layout__cell--c" data-slot="cell_c">{{ slot:cell_c }}</section>
+        <section class="layout__cell layout__cell--d" data-slot="cell_d">{{ slot:cell_d }}</section>
+        <section class="layout__cell layout__cell--e" data-slot="cell_e">{{ slot:cell_e }}</section>
+        <section class="layout__cell layout__cell--f" data-slot="cell_f">{{ slot:cell_f }}</section>
+      </div>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-bento.css: |
+    .layout-bento {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: #f1f5f9;
+    }
+    
+    .layout-bento .layout__header,
+    .layout-bento .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #dbe3ee;
+    }
+    
+    .layout-bento .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #dbe3ee;
+    }
+    
+    .layout-bento .layout__grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 1rem;
+      padding: 1rem;
+    }
+    
+    .layout-bento .layout__cell {
+      background: #ffffff;
+      border: 1px solid #dbe3ee;
+      border-radius: 0.75rem;
+      padding: 1rem;
+      min-height: 140px;
+    }
+    
+    .layout-bento .layout__cell--a,
+    .layout-bento .layout__cell--b {
+      grid-column: span 6;
+    }
+    
+    .layout-bento .layout__cell--c,
+    .layout-bento .layout__cell--d,
+    .layout-bento .layout__cell--e,
+    .layout-bento .layout__cell--f {
+      grid-column: span 3;
+    }
+    
+    @media (max-width: 1100px) {
+      .layout-bento .layout__cell--a,
+      .layout-bento .layout__cell--b,
+      .layout-bento .layout__cell--c,
+      .layout-bento .layout__cell--d,
+      .layout-bento .layout__cell--e,
+      .layout-bento .layout__cell--f {
+        grid-column: span 12;
+      }
+    }
+  spa-marketing-columns.html: |
+    <div class="layout layout-marketing-columns" data-layout="spa-marketing-columns">
+      <header class="layout__header" data-slot="header">{{ slot:header }}</header>
+      <section class="layout__hero" data-slot="hero">{{ slot:hero }}</section>
+      <section class="layout__features">
+        <article class="layout__feature" data-slot="feature_1">{{ slot:feature_1 }}</article>
+        <article class="layout__feature" data-slot="feature_2">{{ slot:feature_2 }}</article>
+        <article class="layout__feature" data-slot="feature_3">{{ slot:feature_3 }}</article>
+      </section>
+      <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+      <section class="layout__cta" data-slot="cta">{{ slot:cta }}</section>
+      <footer class="layout__footer" data-slot="footer">{{ slot:footer }}</footer>
+    </div>
+  spa-marketing-columns.css: |
+    .layout-marketing-columns {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto auto auto 1fr auto auto;
+      background: #f8fafc;
+    }
+    
+    .layout-marketing-columns .layout__header,
+    .layout-marketing-columns .layout__footer {
+      padding: 1rem 1.5rem;
+      background: #ffffff;
+      border-bottom: 1px solid #dbe3ee;
+    }
+    
+    .layout-marketing-columns .layout__footer {
+      border-bottom: 0;
+      border-top: 1px solid #dbe3ee;
+    }
+    
+    .layout-marketing-columns .layout__hero,
+    .layout-marketing-columns .layout__main,
+    .layout-marketing-columns .layout__cta {
+      margin: 1rem;
+      margin-bottom: 0;
+      background: #ffffff;
+      border: 1px solid #dbe3ee;
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    
+    .layout-marketing-columns .layout__features {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1rem;
+      margin: 1rem;
+    }
+    
+    .layout-marketing-columns .layout__feature {
+      background: #ffffff;
+      border: 1px solid #dbe3ee;
+      border-radius: 0.75rem;
+      padding: 1rem;
+    }
+    
+    @media (max-width: 1000px) {
+      .layout-marketing-columns .layout__features {
+        grid-template-columns: 1fr;
+      }
     }
