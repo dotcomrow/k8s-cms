@@ -557,7 +557,7 @@ data:
 
   cms-content-model-select.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
-    import { defineComponent, h, ref, computed, watch } from 'vue';
+    import { defineComponent, h, ref, computed, watch, resolveComponent } from 'vue';
 
     const asString = (value) => {
       if (value === null || value === undefined) return '';
@@ -604,20 +604,6 @@ data:
       return typeof value === 'object' ? value : {};
     };
     
-    const DEFAULT_TEMPLATE_CHOICES = [
-      { text: 'SPA Default', value: 'spa-default' },
-      { text: 'SPA Split Hero', value: 'spa-split-hero' },
-      { text: 'SPA Dashboard', value: 'spa-dashboard' },
-    ];
-    
-    const DEFAULT_SLOT_CHOICES = [
-      { text: 'header', value: 'header' },
-      { text: 'hero', value: 'hero' },
-      { text: 'main', value: 'main' },
-      { text: 'footer', value: 'footer' },
-      { text: 'sidebar', value: 'sidebar' },
-    ];
-
     const InterfaceComponent = defineComponent({
       name: 'CmsContentModelSelect',
       props: {
@@ -658,18 +644,6 @@ data:
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
           return v !== false;
         });
-        const configuredChoices = computed(() => uniqueChoices(
-          Array.isArray(resolvedOptions.value?.choices)
-            ? resolvedOptions.value.choices.map((choice) => ({
-                value: choice?.value,
-                text: choice?.text || choice?.label || choice?.value,
-              }))
-            : []
-        ));
-        const defaultChoices = computed(() => (
-          mode.value === 'template' ? DEFAULT_TEMPLATE_CHOICES : DEFAULT_SLOT_CHOICES
-        ));
-
         let requestId = 0;
         
         const apiGet = async (path, params = {}) => {
@@ -773,33 +747,27 @@ data:
 
         const loadChoices = async () => {
           const currentRequest = ++requestId;
-          const fallbackChoices = uniqueChoices([
-            ...configuredChoices.value,
-            ...defaultChoices.value,
-          ]);
           loading.value = true;
           loadError.value = '';
           missingContext.value = '';
-          if (fallbackChoices.length > 0 && choices.value.length === 0) {
-            choices.value = fallbackChoices;
-          }
           try {
             const nextChoices = mode.value === 'template'
               ? await loadTemplateChoices()
               : await loadSlotChoices();
             if (currentRequest !== requestId) return;
-            choices.value = uniqueChoices([...nextChoices, ...fallbackChoices]);
+            choices.value = uniqueChoices(nextChoices);
+            if (choices.value.length === 0) {
+              loadError.value = mode.value === 'template'
+                ? 'No published templates available for this site scope.'
+                : 'No valid slots available for this page template and site scope.';
+            }
           } catch (error) {
             if (currentRequest !== requestId) return;
-            choices.value = fallbackChoices;
+            choices.value = [];
             missingContext.value = '';
-            if (fallbackChoices.length > 0) {
-              loadError.value = '';
-            } else {
-              loadError.value = error?.response?.data?.errors?.[0]?.message
-                || error?.message
-                || 'Failed to load options';
-            }
+            loadError.value = error?.response?.data?.errors?.[0]?.message
+              || error?.message
+              || 'Failed to load options';
           } finally {
             if (currentRequest === requestId) loading.value = false;
           }
@@ -819,36 +787,71 @@ data:
           { immediate: true }
         );
 
-        const onInput = (event) => {
-          const next = asString(event?.target?.value);
+        const selectItems = computed(() => {
+          const currentValue = asString(props.value);
+          const items = choices.value.map((choice) => ({
+            text: choice.text,
+            value: choice.value,
+          }));
+          if (currentValue && !items.some((item) => asString(item.value) === currentValue)) {
+            items.unshift({ text: `${currentValue} (current)`, value: currentValue });
+          }
+          return items;
+        });
+
+        const onInput = (nextValue) => {
+          const next = asString(nextValue);
           emit('input', next || null);
         };
 
         return () => {
           const currentValue = asString(props.value);
-          const opts = choices.value.map((choice) => h('option', { value: choice.value }, choice.text));
+          const resolvedSelect = resolveComponent('v-select');
+          const resolvedNotice = resolveComponent('v-notice');
+          const hasDirectusSelect = typeof resolvedSelect !== 'string';
           const placeholderText = loading.value
             ? 'Loading options...'
             : (missingContext.value || (mode.value === 'template' ? 'Select a template' : 'Select a slot'));
 
-          if (!opts.some((opt) => asString(opt.props?.value) === currentValue) && currentValue) {
-            opts.unshift(h('option', { value: currentValue }, `${currentValue} (current)`));
+          const errorNotice = loadError.value
+            ? (typeof resolvedNotice !== 'string'
+                ? h(
+                    resolvedNotice,
+                    { type: 'danger', icon: 'warning' },
+                    { default: () => loadError.value }
+                  )
+                : h('p', { class: 'cms-content-model-select__error' }, loadError.value))
+            : null;
+
+          if (hasDirectusSelect) {
+            return h('div', { class: 'cms-content-model-select' }, [
+              h(resolvedSelect, {
+                modelValue: currentValue || null,
+                items: selectItems.value,
+                placeholder: placeholderText,
+                disabled: props.disabled || loading.value,
+                nonEditable: props.disabled || loading.value,
+                showDeselect: false,
+                'onUpdate:modelValue': onInput,
+              }),
+              errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
+            ]);
           }
+
+          const opts = selectItems.value.map((choice) => h('option', { value: choice.value }, choice.text));
 
           return h('div', { class: 'cms-content-model-select' }, [
             h(
               'select',
               {
                 class: 'cms-content-model-select__input',
-                disabled: props.disabled,
+                disabled: props.disabled || loading.value,
                 value: currentValue,
-                onChange: onInput,
+                onChange: (event) => onInput(event?.target?.value),
               },
               [h('option', { value: '' }, placeholderText), ...opts]
             ),
-            loadError.value
-              ? h('p', { class: 'cms-content-model-select__error' }, loadError.value)
-              : null,
+            errorNotice,
           ]);
         };
       },

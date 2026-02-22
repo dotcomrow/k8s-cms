@@ -420,12 +420,7 @@ data:
       refresh_note="Required: choose where cache refresh runs after save (Preview, Prod, or Both)."
       refresh_note_sql="$(printf '%s' "${refresh_note}" | sed "s/'/''/g")"
       refresh_field_name_sql="$(printf '%s' "refresh_target" | sed "s/'/''/g")"
-      slot_choices_json="$(jq -nc '[
-        {"text":"Header","value":"header","foreground":"#1E3A8A","background":"#DBEAFE"},
-        {"text":"Main","value":"main","foreground":"#065F46","background":"#D1FAE5"},
-        {"text":"Footer","value":"footer","foreground":"#7C2D12","background":"#FFEDD5"},
-        {"text":"Hero","value":"hero","foreground":"#7C3AED","background":"#EDE9FE"}
-      ]')"
+      slot_choices_json='[]'
       slot_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
         '{choices:$choices,allowNone:false}')"
       slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
@@ -955,7 +950,7 @@ data:
          ) t;" || true)"
       template_choices_json="$(printf '%s' "${template_choices_json}" | tr -d '\r\n')"
       if [ -z "${template_choices_json:-}" ] || [ "${template_choices_json}" = "null" ] || [ "${template_choices_json}" = "[]" ]; then
-        template_choices_json='[{"text":"SPA Default","value":"spa-default"}]'
+        template_choices_json='[]'
       fi
     
       slot_choices_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -975,7 +970,7 @@ data:
          ) slots;" || true)"
       slot_choices_json="$(printf '%s' "${slot_choices_json}" | tr -d '\r\n')"
       if [ -z "${slot_choices_json:-}" ] || [ "${slot_choices_json}" = "null" ] || [ "${slot_choices_json}" = "[]" ]; then
-        slot_choices_json='[{"text":"main","value":"main"}]'
+        slot_choices_json='[]'
       fi
     
       template_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices,allowNone:false}')"
