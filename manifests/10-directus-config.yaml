@@ -915,19 +915,63 @@ data:
 
           const { recordCollection, recordId } = resolveRecordContext();
           const fieldName = asString(props.field);
-          if (!recordCollection || !recordId || !fieldName) return;
+          if (!recordCollection || !fieldName) return;
 
-          try {
-            const response = await apiGet(
-              `/items/${recordCollection}/${encodeURIComponent(recordId)}`,
-              { fields: fieldName }
-            );
-            if (currentRequest !== persistedRequestId) return;
-            persistedValue.value = asString(response?.data?.[fieldName]);
-          } catch {
-            if (currentRequest !== persistedRequestId) return;
-            persistedValue.value = '';
+          let nextPersisted = '';
+
+          if (recordId) {
+            try {
+              const response = await apiGet(
+                `/items/${recordCollection}/${encodeURIComponent(recordId)}`,
+                { fields: fieldName }
+              );
+              nextPersisted = asString(response?.data?.[fieldName]);
+            } catch {
+              nextPersisted = '';
+            }
           }
+
+          // Block drawers don't always expose the page_blocks row id in values.
+          // When selecting slot, resolve persisted value from cms_page_blocks by (collection,item).
+          if (!nextPersisted && fieldKey.value === 'slot') {
+            const blockCollection = asString(props.values?.collection);
+            const blockItem = parseId(props.values?.item);
+            const blockPageId = parseId(props.values?.[pageIdField.value]);
+            const blockSiteKey = asString(props.values?.[pageSiteField.value]);
+            const blockPageSlug = asString(props.values?.[pageSlugField.value]);
+
+            if (blockCollection && blockItem) {
+              const clauses = [
+                { collection: { _eq: blockCollection } },
+                { item: { _eq: blockItem } },
+              ];
+              if (blockPageId) {
+                clauses.push({ [pageIdField.value]: { _eq: blockPageId } });
+              }
+              if (blockSiteKey) {
+                clauses.push({ [pageSiteField.value]: { _eq: blockSiteKey } });
+              }
+              if (blockPageSlug) {
+                clauses.push({ [pageSlugField.value]: { _eq: blockPageSlug } });
+              }
+
+              try {
+                const response = await apiGet('/items/cms_page_blocks', {
+                  fields: ['id', fieldName].join(','),
+                  limit: 1,
+                  sort: '-date_updated',
+                  filter: JSON.stringify({ _and: clauses }),
+                });
+                const row = normalizeRows(response)?.[0] || {};
+                nextPersisted = asString(row?.[fieldName]);
+              } catch {
+                nextPersisted = '';
+              }
+            }
+          }
+
+          if (currentRequest !== persistedRequestId) return;
+          persistedValue.value = nextPersisted;
         };
 
         watch(
@@ -950,8 +994,14 @@ data:
         watch(
           () => JSON.stringify({
             field: asString(props.field),
+            fieldKey: fieldKey.value,
             recordCollection: resolveRecordContext().recordCollection,
             recordId: resolveRecordContext().recordId,
+            blockCollection: asString(props.values?.collection),
+            blockItem: parseId(props.values?.item),
+            blockPageId: parseId(props.values?.[pageIdField.value]),
+            blockSiteKey: asString(props.values?.[pageSiteField.value]),
+            blockPageSlug: asString(props.values?.[pageSlugField.value]),
             updatedAt: recordUpdatedAt.value,
           }),
           () => { void loadPersistedValue(); },
