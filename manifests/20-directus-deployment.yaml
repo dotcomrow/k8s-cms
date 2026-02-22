@@ -677,26 +677,91 @@ spec:
             export CACHE_ENABLED=false
             export RATE_LIMITER_ENABLED=false
 
-            # Parse the first UUID-looking token from a file
-            _extract_uuid_from_file() {
-              # greedy-safe: match canonical 8-4-4-4-12 hex UUID
-              grep -Eo '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "$1" | head -n1
+            # Resolve/create roles directly in DB to avoid CLI hangs during startup.
+            _resolve_role_ids() {
+              node - <<'NODE'
+            const fs = require("fs");
+            const path = require("path");
+            const crypto = require("crypto");
+            
+            const pnpmRoot = "/directus/node_modules/.pnpm";
+            const knexEntry = fs
+              .readdirSync(pnpmRoot)
+              .find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex")));
+            
+            if (!knexEntry) {
+              console.error("knex not found");
+              process.exit(1);
             }
-
-            # Create role and capture UUID from *its own* output stream
-            _create_role_and_get_id() {
-              local role_name="$1"; shift
-              local tmp="$(mktemp)"
-              # run create; don’t fail the script if it errors (already exists etc.)
-              node cli.js roles create --role "$role_name" "$@" >"$tmp" 2>&1 || true
-              local id="$(_extract_uuid_from_file "$tmp")"
-              rm -f "$tmp"
-              printf "%s" "$id"
+            
+            const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex"));
+            const schema = process.env.DB_SCHEMA || "directus";
+            const db = knex({
+              client: "pg",
+              connection: {
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT || 5432),
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD,
+                database: process.env.DB_DATABASE
+              }
+            });
+            
+            async function tableColumns(tableName) {
+              const rows = await db("information_schema.columns")
+                .select("column_name")
+                .where({ table_schema: schema, table_name: tableName });
+              return new Set(rows.map((row) => row.column_name));
             }
-
-            # Try to create (or re-create) roles and grab their IDs
-            ADMIN_ROLE_ID="$(_create_role_and_get_id "Administrator" --admin --app)"
-            EDITOR_ROLE_ID="$(_create_role_and_get_id "Editor" --app)"
+            
+            async function ensureRole(name, flags, cols) {
+              const existing = await db("directus_roles")
+                .withSchema(schema)
+                .select("id")
+                .whereRaw("LOWER(name) = LOWER(?)", [name])
+                .first();
+            
+              if (existing?.id) return existing.id;
+            
+              const row = {};
+              if (cols.has("id")) row.id = crypto.randomUUID();
+              if (cols.has("name")) row.name = name;
+              if (cols.has("icon")) row.icon = flags.admin ? "verified" : "supervised_user_circle";
+              if (cols.has("description")) row.description = flags.admin ? "System Administrator" : "Content Editor";
+              if (cols.has("admin_access")) row.admin_access = !!flags.admin;
+              if (cols.has("app_access")) row.app_access = !!flags.app;
+              if (cols.has("enforce_tfa")) row.enforce_tfa = false;
+              if (cols.has("ip_access")) row.ip_access = null;
+            
+              await db("directus_roles").withSchema(schema).insert(row);
+              return row.id;
+            }
+            
+            async function run() {
+              const cols = await tableColumns("directus_roles");
+              const adminRoleId = await ensureRole("Administrator", { admin: true, app: true }, cols);
+              const editorRoleId = await ensureRole("Editor", { admin: false, app: true }, cols);
+            
+              process.stdout.write(`ADMIN_ROLE_ID=${adminRoleId}\n`);
+              process.stdout.write(`EDITOR_ROLE_ID=${editorRoleId}\n`);
+            }
+            
+            run()
+              .catch((error) => {
+                console.error(error);
+                process.exit(1);
+              })
+              .finally(() => db.destroy());
+            NODE
+            }
+            
+            role_ids_env="$(mktemp)"
+            if _resolve_role_ids >"${role_ids_env}"; then
+              . "${role_ids_env}"
+            else
+              echo "❌ Failed to resolve Directus role IDs"; rm -f "${role_ids_env}"; exit 1
+            fi
+            rm -f "${role_ids_env}"
 
             # IDs printed above; make sure they are in the environment for everything that follows
             export ADMIN_ROLE_ID
