@@ -35,7 +35,7 @@ data:
     export PGPASSWORD="$DB_PASS"
     
     # 1) Ensure schema_patch_log exists (no heredocs)
-    echo "🔎 Ensuring sentinel table…"
+    echo "🔎 Ensuring patch ledger table…"
     printf '%s\n' \
       'SET search_path TO directus, public;' \
       'CREATE TABLE IF NOT EXISTS schema_patch_log (' \
@@ -44,6 +44,136 @@ data:
       ');' \
     | psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 >/dev/null
     
+    # Expand legacy sentinel table into a richer patch ledger (idempotent).
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS patch_checksum TEXT; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS patch_status TEXT NOT NULL DEFAULT 'success'; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS patch_group TEXT; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS details JSONB; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS last_error TEXT; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS last_started_at TIMESTAMPTZ; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ NOT NULL DEFAULT now(); \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS duration_ms INTEGER; \
+       ALTER TABLE schema_patch_log ADD COLUMN IF NOT EXISTS apply_count INTEGER NOT NULL DEFAULT 0;"
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE TABLE IF NOT EXISTS schema_patch_runs ( \
+         run_id TEXT PRIMARY KEY, \
+         patch_key TEXT NOT NULL, \
+         patch_checksum TEXT NULL, \
+         patch_status TEXT NOT NULL, \
+         patch_group TEXT NULL, \
+         details JSONB NULL, \
+         error TEXT NULL, \
+         started_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         finished_at TIMESTAMPTZ NULL, \
+         duration_ms INTEGER NULL \
+       );"
+
+    _file_sha256() {
+      _path="$1"
+      if [ -f "${_path}" ]; then
+        sha256sum "${_path}" | awk '{print $1}'
+      else
+        printf 'missing'
+      fi
+    }
+
+    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-02-22.2}"
+    DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW="${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE:-false}"
+    case "$(printf '%s' "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW}" | tr '[:upper:]' '[:lower:]')" in
+      1|true|yes|on) DIRECTUS_POSTSCHEMA_FORCE_RECONCILE="true" ;;
+      *) DIRECTUS_POSTSCHEMA_FORCE_RECONCILE="false" ;;
+    esac
+
+    # Inputs that define desired reconciled state from GitOps.
+    SITES_FILE="/directus-sites/sites.yaml"
+    LAYOUTS_FILE="/directus-layout-templates/templates.yaml"
+    EXTRA_SETTINGS_FILE="/directus-settings/settings.yaml"
+    RECON_SITES_SHA="$(_file_sha256 "${SITES_FILE}")"
+    RECON_LAYOUTS_SHA="$(_file_sha256 "${LAYOUTS_FILE}")"
+    RECON_SETTINGS_SHA="$(_file_sha256 "${EXTRA_SETTINGS_FILE}")"
+    RECON_PATCH_KEY="postschema_reconcile_v1"
+    RECON_PATCH_GROUP="directus-postschema"
+    RECON_PATCH_CHECKSUM="$(printf '%s|%s|%s|%s' \
+      "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" "${RECON_SITES_SHA}" "${RECON_LAYOUTS_SHA}" "${RECON_SETTINGS_SHA}" \
+      | sha256sum | awk '{print $1}')"
+
+    RECON_PATCH_KEY_SQL="$(printf '%s' "${RECON_PATCH_KEY}" | sed "s/'/''/g")"
+    RECON_PATCH_GROUP_SQL="$(printf '%s' "${RECON_PATCH_GROUP}" | sed "s/'/''/g")"
+    RECON_PATCH_CHECKSUM_SQL="$(printf '%s' "${RECON_PATCH_CHECKSUM}" | sed "s/'/''/g")"
+    RECON_RUN_ID="$(cat /proc/sys/kernel/random/uuid)"
+    RECON_RUN_ID_SQL="$(printf '%s' "${RECON_RUN_ID}" | sed "s/'/''/g")"
+    RECON_PATCH_DETAILS_JSON="$(jq -nc \
+      --arg version "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" \
+      --arg sites_sha "${RECON_SITES_SHA}" \
+      --arg layouts_sha "${RECON_LAYOUTS_SHA}" \
+      --arg settings_sha "${RECON_SETTINGS_SHA}" \
+      '{version:$version,inputs:{sites_yaml_sha256:$sites_sha,layout_templates_yaml_sha256:$layouts_sha,directus_settings_yaml_sha256:$settings_sha}}')"
+    RECON_PATCH_DETAILS_SQL="$(printf '%s' "${RECON_PATCH_DETAILS_JSON}" | sed "s/'/''/g")"
+
+    RECON_ALREADY_CURRENT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT 1 FROM directus.schema_patch_log WHERE patch_key='${RECON_PATCH_KEY_SQL}' AND patch_status='success' AND COALESCE(patch_checksum,'')='${RECON_PATCH_CHECKSUM_SQL}' LIMIT 1;" || true)"
+    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ]; then
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; UPDATE schema_patch_log SET last_checked_at=now() WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null
+      echo "✅ Postschema reconcile already up to date (version=${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}, checksum=${RECON_PATCH_CHECKSUM})."
+      echo "✅ Schema patch applied. Going idle."
+      exec tail -f /dev/null
+    fi
+    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" = "true" ]; then
+      echo "⚠️ Forced reconcile requested (DIRECTUS_POSTSCHEMA_FORCE_RECONCILE=true); skipping checksum short-circuit."
+    fi
+
+    RECON_STARTED_EPOCH="$(date +%s)"
+    RECON_DONE="0"
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       INSERT INTO schema_patch_log (patch_key, patch_checksum, patch_status, patch_group, details, last_error, last_started_at, last_checked_at, apply_count) \
+       VALUES ('${RECON_PATCH_KEY_SQL}', '${RECON_PATCH_CHECKSUM_SQL}', 'running', '${RECON_PATCH_GROUP_SQL}', '${RECON_PATCH_DETAILS_SQL}'::jsonb, NULL, now(), now(), 1) \
+       ON CONFLICT (patch_key) DO UPDATE SET \
+         patch_checksum=EXCLUDED.patch_checksum, \
+         patch_status='running', \
+         patch_group=EXCLUDED.patch_group, \
+         details=EXCLUDED.details, \
+         last_error=NULL, \
+         last_started_at=now(), \
+         last_checked_at=now(), \
+         apply_count=COALESCE(schema_patch_log.apply_count,0)+1;"
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       INSERT INTO schema_patch_runs (run_id, patch_key, patch_checksum, patch_status, patch_group, details, started_at) \
+       VALUES ('${RECON_RUN_ID_SQL}', '${RECON_PATCH_KEY_SQL}', '${RECON_PATCH_CHECKSUM_SQL}', 'running', '${RECON_PATCH_GROUP_SQL}', '${RECON_PATCH_DETAILS_SQL}'::jsonb, now());"
+
+    _reconcile_mark_failed() {
+      _rc="$1"
+      if [ "${RECON_DONE:-0}" = "1" ]; then
+        return 0
+      fi
+      _duration_ms=$(( ($(date +%s) - RECON_STARTED_EPOCH) * 1000 ))
+      _err="postschema exited with code ${_rc}"
+      _err_sql="$(printf '%s' "${_err}" | sed "s/'/''/g")"
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         UPDATE schema_patch_log \
+            SET patch_status='failed', \
+                last_error='${_err_sql}', \
+                duration_ms=${_duration_ms}, \
+                last_checked_at=now() \
+          WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null 2>&1 || true
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         UPDATE schema_patch_runs \
+            SET patch_status='failed', \
+                error='${_err_sql}', \
+                finished_at=now(), \
+                duration_ms=${_duration_ms} \
+          WHERE run_id='${RECON_RUN_ID_SQL}';" >/dev/null 2>&1 || true
+      return 0
+    }
+    trap '_reconcile_mark_failed "$?"' EXIT
+
     # 2) Check sentinel; skip schema patch if already applied
     PATCH_KEY="github_profile_cols_v1"
     SKIP_PATCH="0"
@@ -551,6 +681,64 @@ data:
       _upsert_page_block_slot_field_meta
     else
       echo "  └─ directus_fields metadata table not found; skipping refresh_target UX config"
+    fi
+
+    echo "🧭 Ensuring cms_pages list view shows site_key..."
+    PRESETS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_presets' LIMIT 1;" || true)"
+    PRESETS_TABLE_EXISTS="$(printf '%s' "$PRESETS_TABLE_EXISTS" | tr -d '\r')"
+    if [ "${PRESETS_TABLE_EXISTS}" = "1" ]; then
+      DP_LAYOUT_QUERY_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_presets' AND column_name='layout_query' LIMIT 1;" || true)"
+      DP_LAYOUT_OPTIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_presets' AND column_name='layout_options' LIMIT 1;" || true)"
+
+      _dp_json_sql() {
+        _t="$1"
+        _json="$2"
+        if [ -z "${_json:-}" ] || [ "${_json}" = "null" ]; then
+          printf "NULL"
+          return
+        fi
+        _json_sql="$(printf '%s' "$_json" | sed "s/'/''/g")"
+        case "$_t" in
+          jsonb) printf "'%s'::jsonb" "$_json_sql" ;;
+          json) printf "'%s'::json" "$_json_sql" ;;
+          text|character\ varying) printf "'%s'" "$_json_sql" ;;
+          *) printf "NULL" ;;
+        esac
+      }
+
+      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","refresh_target","date_updated"]'
+      cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
+        '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
+      cms_pages_layout_options_json="$(jq -nc '{}')"
+      cms_pages_layout_query_sql="$(_dp_json_sql "${DP_LAYOUT_QUERY_TYPE:-}" "${cms_pages_layout_query_json}")"
+      cms_pages_layout_options_sql="$(_dp_json_sql "${DP_LAYOUT_OPTIONS_TYPE:-}" "${cms_pages_layout_options_json}")"
+
+      cms_pages_preset_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT id FROM directus.directus_presets WHERE collection='cms_pages' AND COALESCE(bookmark,'')='all' AND role IS NULL AND \"user\" IS NULL ORDER BY id DESC LIMIT 1;" || true)"
+      cms_pages_preset_id="$(printf '%s' "${cms_pages_preset_id}" | tr -d '\r')"
+
+      if [ -n "${cms_pages_preset_id:-}" ] && [ "${cms_pages_preset_id}" != "null" ]; then
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; \
+           UPDATE directus_presets \
+              SET layout='tabular', \
+                  layout_query=${cms_pages_layout_query_sql}, \
+                  layout_options=${cms_pages_layout_options_sql}, \
+                  icon='view_column' \
+            WHERE id=${cms_pages_preset_id};"
+        echo "✅ Updated cms_pages global tabular preset to include site_key"
+      else
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; \
+           INSERT INTO directus_presets (bookmark, collection, layout, layout_query, layout_options, icon) \
+           VALUES ('all', 'cms_pages', 'tabular', ${cms_pages_layout_query_sql}, ${cms_pages_layout_options_sql}, 'view_column');"
+        echo "✅ Created cms_pages global tabular preset with site_key column"
+      fi
+    else
+      echo "  └─ directus_presets table not found; skipping cms_pages list preset"
     fi
     
     # 5b) Ensure layout template collection exists and seed templates from GitOps config.
@@ -2741,6 +2929,30 @@ data:
     else
       echo "⚠️ directus_extensions table not found; skipping extension enable."
     fi
+
+    RECON_DURATION_MS=$(( ($(date +%s) - RECON_STARTED_EPOCH) * 1000 ))
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       UPDATE schema_patch_log \
+          SET patch_status='success', \
+              patch_checksum='${RECON_PATCH_CHECKSUM_SQL}', \
+              patch_group='${RECON_PATCH_GROUP_SQL}', \
+              details='${RECON_PATCH_DETAILS_SQL}'::jsonb, \
+              last_error=NULL, \
+              applied_at=now(), \
+              last_checked_at=now(), \
+              duration_ms=${RECON_DURATION_MS} \
+        WHERE patch_key='${RECON_PATCH_KEY_SQL}';"
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       UPDATE schema_patch_runs \
+          SET patch_status='success', \
+              error=NULL, \
+              finished_at=now(), \
+              duration_ms=${RECON_DURATION_MS} \
+        WHERE run_id='${RECON_RUN_ID_SQL}';"
+    RECON_DONE="1"
+    trap - EXIT
     
     echo "✅ Schema patch applied. Going idle."
     exec tail -f /dev/null
