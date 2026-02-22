@@ -2028,7 +2028,9 @@ data:
                   enabled:(.value.enabled // false),
                   endpoint:(.value.endpoint // "" | tostring),
                   method:(.value.method // (.cache_refresh.method // "POST") | tostring),
-                  headers:(norm_headers(.value.headers))
+                  headers:(norm_headers(.value.headers)),
+                  retry_attempts:(.value.retry_attempts // .value.retries // .cache_refresh.retry_attempts // .cache_refresh.retries // 6),
+                  retry_delay_ms:(.value.retry_delay_ms // .value.retry_delay // .cache_refresh.retry_delay_ms // .cache_refresh.retry_delay // 1500)
                 }))
               elif (.cache_refresh.targets | type) == "array" then
                 (.cache_refresh.targets | map({
@@ -2036,7 +2038,9 @@ data:
                   enabled:(.enabled // false),
                   endpoint:(.endpoint // "" | tostring),
                   method:(.method // (.cache_refresh.method // "POST") | tostring),
-                  headers:(norm_headers(.headers))
+                  headers:(norm_headers(.headers)),
+                  retry_attempts:(.retry_attempts // .retries // .cache_refresh.retry_attempts // .cache_refresh.retries // 6),
+                  retry_delay_ms:(.retry_delay_ms // .retry_delay // .cache_refresh.retry_delay_ms // .cache_refresh.retry_delay // 1500)
                 }) | map(select(.target_key != "")))
               else
                 [{
@@ -2044,7 +2048,9 @@ data:
                   enabled:(.cache_refresh.enabled // false),
                   endpoint:(.cache_refresh.endpoint // "" | tostring),
                   method:(.cache_refresh.method // "POST" | tostring),
-                  headers:(norm_headers(.cache_refresh.headers))
+                  headers:(norm_headers(.cache_refresh.headers)),
+                  retry_attempts:(.cache_refresh.retry_attempts // .cache_refresh.retries // 6),
+                  retry_delay_ms:(.cache_refresh.retry_delay_ms // .cache_refresh.retry_delay // 1500)
                 }]
               end' 2>/dev/null || true)"
             if [ -z "${refresh_targets_json:-}" ] || [ "${refresh_targets_json}" = "null" ]; then
@@ -2065,6 +2071,8 @@ data:
               target_enabled_raw="$(printf '%s' "$target" | jq -r '.enabled // false' 2>/dev/null || true)"
               target_endpoint_raw="$(printf '%s' "$target" | jq -r '.endpoint // empty' 2>/dev/null || true)"
               target_method_raw="$(printf '%s' "$target" | jq -r '.method // "POST"' 2>/dev/null || true)"
+              target_retry_attempts_raw="$(printf '%s' "$target" | jq -r '.retry_attempts // 6' 2>/dev/null || true)"
+              target_retry_delay_ms_raw="$(printf '%s' "$target" | jq -r '.retry_delay_ms // 1500' 2>/dev/null || true)"
               target_headers_json="$(printf '%s' "$target" | jq -c \
                 '(.headers // []) | if type=="array" then map(select(type=="object") | {header:((.header // "")|tostring), value:((.value // "")|tostring)} | select(.header != "")) else [] end' \
                 2>/dev/null || true)"
@@ -2086,6 +2094,25 @@ data:
     
               if [ -z "${target_headers_json:-}" ] || [ "${target_headers_json}" = "null" ]; then
                 target_headers_json="[]"
+              fi
+
+              target_retry_attempts="$(printf '%s' "${target_retry_attempts_raw:-6}" | tr -dc '0-9')"
+              if [ -z "${target_retry_attempts:-}" ]; then
+                target_retry_attempts=6
+              fi
+              if [ "${target_retry_attempts}" -lt 1 ]; then
+                target_retry_attempts=1
+              fi
+              if [ "${target_retry_attempts}" -gt 15 ]; then
+                target_retry_attempts=15
+              fi
+
+              target_retry_delay_ms="$(printf '%s' "${target_retry_delay_ms_raw:-1500}" | tr -dc '0-9')"
+              if [ -z "${target_retry_delay_ms:-}" ]; then
+                target_retry_delay_ms=1500
+              fi
+              if [ "${target_retry_delay_ms}" -gt 120000 ]; then
+                target_retry_delay_ms=120000
               fi
     
               flow_status="active"
@@ -2157,29 +2184,62 @@ data:
                   --arg target "${target_key}" \
                   --argjson headers "${target_headers_effective_json}" \
                   '{method:$method,url:$url,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"items.create",collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}"}}')"
+                create_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
                 create_token_options="$(jq -nc \
                   --arg url "${refresh_auth_token_url}" \
                   --arg body "${refresh_auth_token_body}" \
                   '{method:"POST",url:$url,headers:[{header:"Content-Type",value:"application/x-www-form-urlencoded"},{header:"Accept",value:"application/json"}],body:$body}')"
-    
+
                 create_read_op_id="$(_directus_upsert_operation "${create_flow_id}" "read_item" "item-read" "Read Created Item" 19 1 "${create_read_options}")"
                 create_match_op_id="$(_directus_upsert_operation "${create_flow_id}" "match_site_target" "condition" "Match Site + Target" 37 1 "${create_match_options}")"
+                create_flow_entry_op_id=""
                 if [ "${refresh_auth_enabled}" = "true" ] && [ "${refresh_auth_ready}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
                   create_token_op_id="$(_directus_upsert_operation "${create_flow_id}" "mint_refresh_token" "request" "Mint Refresh Token" 55 1 "${create_token_options}")"
-                  create_request_op_id="$(_directus_upsert_operation "${create_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 73 1 "${create_request_options}")"
                   _directus_set_operation_links "${create_read_op_id}" "${create_match_op_id}" ""
                   _directus_set_operation_links "${create_match_op_id}" "${create_token_op_id}" ""
-                  _directus_set_operation_links "${create_token_op_id}" "${create_request_op_id}" ""
+                  create_flow_entry_op_id="${create_token_op_id}"
                 else
-                  create_request_op_id="$(_directus_upsert_operation "${create_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 55 1 "${create_request_options}")"
                   _directus_set_operation_links "${create_read_op_id}" "${create_match_op_id}" ""
-                  _directus_set_operation_links "${create_match_op_id}" "${create_request_op_id}" ""
+                  create_flow_entry_op_id="${create_match_op_id}"
                 fi
-                _directus_set_operation_links "${create_request_op_id}" "" ""
+
+                create_first_request_op_id=""
+                create_prev_sleep_op_id=""
+                create_attempt=1
+                while [ "${create_attempt}" -le "${target_retry_attempts}" ]; do
+                  create_request_key="refresh_cache_attempt_${create_attempt}"
+                  create_request_name="Refresh Cache Endpoint (Attempt ${create_attempt}/${target_retry_attempts})"
+                  create_request_pos_x=$((73 + (create_attempt - 1) * 56))
+                  create_request_op_id="$(_directus_upsert_operation "${create_flow_id}" "${create_request_key}" "request" "${create_request_name}" "${create_request_pos_x}" 1 "${create_request_options}")"
+
+                  if [ -z "${create_first_request_op_id:-}" ]; then
+                    create_first_request_op_id="${create_request_op_id}"
+                  fi
+
+                  if [ -n "${create_prev_sleep_op_id:-}" ] && [ "${create_prev_sleep_op_id}" != "null" ]; then
+                    _directus_set_operation_links "${create_prev_sleep_op_id}" "${create_request_op_id}" ""
+                    create_prev_sleep_op_id=""
+                  fi
+
+                  if [ "${create_attempt}" -lt "${target_retry_attempts}" ]; then
+                    create_sleep_key="refresh_backoff_${create_attempt}"
+                    create_sleep_name="Retry Delay (${create_attempt}/${target_retry_attempts})"
+                    create_sleep_pos_x=$((create_request_pos_x + 28))
+                    create_sleep_op_id="$(_directus_upsert_operation "${create_flow_id}" "${create_sleep_key}" "sleep" "${create_sleep_name}" "${create_sleep_pos_x}" 19 "${create_sleep_options}")"
+                    _directus_set_operation_links "${create_request_op_id}" "" "${create_sleep_op_id}"
+                    create_prev_sleep_op_id="${create_sleep_op_id}"
+                  else
+                    _directus_set_operation_links "${create_request_op_id}" "" ""
+                  fi
+
+                  create_attempt=$((create_attempt + 1))
+                done
+
+                _directus_set_operation_links "${create_flow_entry_op_id}" "${create_first_request_op_id}" ""
                 _directus_api_write "PATCH" "/flows/${create_flow_id}" \
                   "$(jq -nc --arg operation "${create_read_op_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
                   >/tmp/directus-flow-entry.json 2>/dev/null || true
-    
+
                 update_read_options="$(jq -nc \
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                 update_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
@@ -2191,31 +2251,64 @@ data:
                   --arg target "${target_key}" \
                   --argjson headers "${target_headers_effective_json}" \
                   '{method:$method,url:$url,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"items.update",collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}"}}')"
+                update_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
                 update_token_options="$(jq -nc \
                   --arg url "${refresh_auth_token_url}" \
                   --arg body "${refresh_auth_token_body}" \
                   '{method:"POST",url:$url,headers:[{header:"Content-Type",value:"application/x-www-form-urlencoded"},{header:"Accept",value:"application/json"}],body:$body}')"
-    
+
                 update_read_op_id="$(_directus_upsert_operation "${update_flow_id}" "read_item" "item-read" "Read Updated Item" 19 1 "${update_read_options}")"
                 update_match_op_id="$(_directus_upsert_operation "${update_flow_id}" "match_site_target" "condition" "Match Site + Target" 37 1 "${update_match_options}")"
+                update_flow_entry_op_id=""
                 if [ "${refresh_auth_enabled}" = "true" ] && [ "${refresh_auth_ready}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
                   update_token_op_id="$(_directus_upsert_operation "${update_flow_id}" "mint_refresh_token" "request" "Mint Refresh Token" 55 1 "${update_token_options}")"
-                  update_request_op_id="$(_directus_upsert_operation "${update_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 73 1 "${update_request_options}")"
                   _directus_set_operation_links "${update_read_op_id}" "${update_match_op_id}" ""
                   _directus_set_operation_links "${update_match_op_id}" "${update_token_op_id}" ""
-                  _directus_set_operation_links "${update_token_op_id}" "${update_request_op_id}" ""
+                  update_flow_entry_op_id="${update_token_op_id}"
                 else
-                  update_request_op_id="$(_directus_upsert_operation "${update_flow_id}" "refresh_cache" "request" "Refresh Cache Endpoint" 55 1 "${update_request_options}")"
                   _directus_set_operation_links "${update_read_op_id}" "${update_match_op_id}" ""
-                  _directus_set_operation_links "${update_match_op_id}" "${update_request_op_id}" ""
+                  update_flow_entry_op_id="${update_match_op_id}"
                 fi
-                _directus_set_operation_links "${update_request_op_id}" "" ""
+
+                update_first_request_op_id=""
+                update_prev_sleep_op_id=""
+                update_attempt=1
+                while [ "${update_attempt}" -le "${target_retry_attempts}" ]; do
+                  update_request_key="refresh_cache_attempt_${update_attempt}"
+                  update_request_name="Refresh Cache Endpoint (Attempt ${update_attempt}/${target_retry_attempts})"
+                  update_request_pos_x=$((73 + (update_attempt - 1) * 56))
+                  update_request_op_id="$(_directus_upsert_operation "${update_flow_id}" "${update_request_key}" "request" "${update_request_name}" "${update_request_pos_x}" 61 "${update_request_options}")"
+
+                  if [ -z "${update_first_request_op_id:-}" ]; then
+                    update_first_request_op_id="${update_request_op_id}"
+                  fi
+
+                  if [ -n "${update_prev_sleep_op_id:-}" ] && [ "${update_prev_sleep_op_id}" != "null" ]; then
+                    _directus_set_operation_links "${update_prev_sleep_op_id}" "${update_request_op_id}" ""
+                    update_prev_sleep_op_id=""
+                  fi
+
+                  if [ "${update_attempt}" -lt "${target_retry_attempts}" ]; then
+                    update_sleep_key="refresh_backoff_${update_attempt}"
+                    update_sleep_name="Retry Delay (${update_attempt}/${target_retry_attempts})"
+                    update_sleep_pos_x=$((update_request_pos_x + 28))
+                    update_sleep_op_id="$(_directus_upsert_operation "${update_flow_id}" "${update_sleep_key}" "sleep" "${update_sleep_name}" "${update_sleep_pos_x}" 79 "${update_sleep_options}")"
+                    _directus_set_operation_links "${update_request_op_id}" "" "${update_sleep_op_id}"
+                    update_prev_sleep_op_id="${update_sleep_op_id}"
+                  else
+                    _directus_set_operation_links "${update_request_op_id}" "" ""
+                  fi
+
+                  update_attempt=$((update_attempt + 1))
+                done
+
+                _directus_set_operation_links "${update_flow_entry_op_id}" "${update_first_request_op_id}" ""
                 _directus_api_write "PATCH" "/flows/${update_flow_id}" \
                   "$(jq -nc --arg operation "${update_read_op_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
                   >/tmp/directus-flow-entry.json 2>/dev/null || true
-    
+
                 if [ "${flow_status}" = "active" ]; then
-                  echo "✅ Reconciled active cache-refresh flows for site_key='${site_key}', target='${target_key}' (${target_method} ${target_endpoint_effective})"
+                  echo "✅ Reconciled active cache-refresh flows for site_key='${site_key}', target='${target_key}' (${target_method} ${target_endpoint_effective}, attempts=${target_retry_attempts}, retry_delay_ms=${target_retry_delay_ms})"
                 else
                   echo "✅ Reconciled cache-refresh flows for site_key='${site_key}', target='${target_key}' as inactive"
                 fi

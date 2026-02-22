@@ -109,6 +109,9 @@ data:
         role_name: cms-site-external
         cache_refresh:
           enabled: true
+          # Retry transient 429/5xx refresh failures from Cloudflare edge rules.
+          retry_attempts: 12
+          retry_delay_ms: 2000
           targets:
             prod:
               enabled: false
@@ -119,6 +122,8 @@ data:
               enabled: true
               endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh?mode=purge-and-refresh"
               method: POST
+              retry_attempts: 12
+              retry_delay_ms: 2000
               headers: []
           auth:
             enabled: true
