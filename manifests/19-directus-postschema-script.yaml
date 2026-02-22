@@ -141,6 +141,9 @@ data:
            UPDATE directus_relations SET one_collection='cms_block_hero' WHERE one_collection='demo_block_hero'; \
            UPDATE directus_relations SET one_collection='cms_layout_templates' WHERE one_collection='demo_layout_templates'; \
            UPDATE directus_relations SET one_collection='cms_layout_template_slots' WHERE one_collection='demo_layout_template_slots'; \
+           UPDATE directus_relations \
+             SET one_allowed_collections = REPLACE(REPLACE(COALESCE(one_allowed_collections, ''), 'demo_block_rich_text', 'cms_block_rich_text'), 'demo_block_hero', 'cms_block_hero') \
+             WHERE COALESCE(one_allowed_collections, '') <> ''; \
          END IF; \
          IF to_regclass('directus.directus_permissions') IS NOT NULL THEN \
            UPDATE directus_permissions SET collection='cms_pages' WHERE collection='demo_pages'; \
@@ -823,6 +826,36 @@ data:
     else
       echo "  └─ ${LAYOUTS_FILE} not found; skipping"
     fi
+    
+    echo "🧱 Ensuring cms_page_blocks M2A relation allows cms block collections..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       DO \$\$ \
+       DECLARE \
+         _allowed TEXT; \
+       BEGIN \
+         IF to_regclass('directus.directus_relations') IS NULL OR to_regclass('directus.cms_page_blocks') IS NULL THEN \
+           RETURN; \
+         END IF; \
+         SELECT COALESCE(string_agg(src.collection_name, ',' ORDER BY src.collection_name), 'cms_block_hero,cms_block_rich_text') \
+           INTO _allowed \
+         FROM ( \
+           SELECT DISTINCT collection AS collection_name \
+           FROM cms_page_blocks \
+           WHERE COALESCE(NULLIF(BTRIM(collection), ''), '') <> '' \
+             AND collection LIKE 'cms_block_%' \
+           UNION \
+           SELECT 'cms_block_hero' \
+           UNION \
+           SELECT 'cms_block_rich_text' \
+         ) src; \
+         UPDATE directus_relations \
+            SET one_allowed_collections = _allowed \
+          WHERE many_collection = 'cms_page_blocks' \
+            AND many_field = 'item' \
+            AND COALESCE(one_allowed_collections, '') IS DISTINCT FROM _allowed; \
+       END \
+       \$\$;"
     
     echo "🧱 Enforcing cms_page_blocks.slot against selected layout template..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
