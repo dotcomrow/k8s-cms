@@ -773,9 +773,10 @@ data:
 
         const loadChoices = async () => {
           const currentRequest = ++requestId;
-          const fallbackChoices = configuredChoices.value.length > 0
-            ? configuredChoices.value
-            : defaultChoices.value;
+          const fallbackChoices = uniqueChoices([
+            ...configuredChoices.value,
+            ...defaultChoices.value,
+          ]);
           loading.value = true;
           loadError.value = '';
           missingContext.value = '';
@@ -822,7 +823,6 @@ data:
           const next = asString(event?.target?.value);
           emit('input', next || null);
         };
-        const onFocus = () => { void loadChoices(); };
 
         return () => {
           const currentValue = asString(props.value);
@@ -840,10 +840,9 @@ data:
               'select',
               {
                 class: 'cms-content-model-select__input',
-                disabled: props.disabled || loading.value,
+                disabled: props.disabled,
                 value: currentValue,
                 onChange: onInput,
-                onFocus,
               },
               [h('option', { value: '' }, placeholderText), ...opts]
             ),
