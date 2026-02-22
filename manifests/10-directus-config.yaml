@@ -680,6 +680,7 @@ data:
         });
         const persistedValue = ref('');
         const fallbackCommittedValue = ref('');
+        const hasUserInput = ref(false);
         const recordUpdatedAt = computed(() =>
           asString(
             props.values?.date_updated
@@ -1009,6 +1010,7 @@ data:
             // Reset fallback baseline when editor context changes.
             // Slot mode relies on persisted lookup only to avoid false "current" markers.
             fallbackCommittedValue.value = '';
+            hasUserInput.value = false;
             void loadPersistedValue();
           },
           { immediate: true }
@@ -1017,8 +1019,24 @@ data:
         watch(
           () => asString(props.value),
           (nextValue) => {
-            if (fieldKey.value === 'slot') return;
-            if (!nextValue || fallbackCommittedValue.value) return;
+            if (!nextValue || hasUserInput.value) return;
+            if (fieldKey.value === 'slot') {
+              const hasBlockIdentity =
+                Boolean(asString(props.values?.collection)) &&
+                Boolean(parseId(props.values?.item));
+              if (!hasBlockIdentity) return;
+              if (!fallbackCommittedValue.value) {
+                fallbackCommittedValue.value = nextValue;
+                return;
+              }
+              // Replace an early placeholder (commonly "main") with the first
+              // loaded persisted value, as long as the user has not interacted.
+              if (fallbackCommittedValue.value !== nextValue && fallbackCommittedValue.value === 'main') {
+                fallbackCommittedValue.value = nextValue;
+              }
+              return;
+            }
+            if (fallbackCommittedValue.value) return;
             const { recordId } = resolveRecordContext();
             if (recordId) {
               // Capture delayed initial value once for existing records only.
@@ -1047,6 +1065,7 @@ data:
         });
 
         const onInput = (nextValue) => {
+          hasUserInput.value = true;
           const next = asString(nextValue);
           emit('input', next || null);
         };
