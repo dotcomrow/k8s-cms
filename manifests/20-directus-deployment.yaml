@@ -736,11 +736,63 @@ spec:
               await db("directus_roles").withSchema(schema).insert(row);
               return row.id;
             }
+
+            async function ensurePolicy(name, flags, cols) {
+              let query = db("directus_policies")
+                .withSchema(schema)
+                .select("id")
+                .whereRaw("LOWER(name) = LOWER(?)", [name]);
+              if (cols.has("admin_access")) query = query.andWhere("admin_access", !!flags.admin);
+              if (cols.has("app_access")) query = query.andWhere("app_access", !!flags.app);
+
+              const existing = await query.orderBy("id", "desc").first();
+              if (existing?.id) return existing.id;
+
+              const row = {};
+              if (cols.has("id")) row.id = crypto.randomUUID();
+              if (cols.has("name")) row.name = name;
+              if (cols.has("icon")) row.icon = flags.admin ? "policy" : "edit_note";
+              if (cols.has("description")) row.description = flags.admin ? "Admin policy" : "Editor policy";
+              if (cols.has("ip_access")) row.ip_access = null;
+              if (cols.has("enforce_tfa")) row.enforce_tfa = false;
+              if (cols.has("admin_access")) row.admin_access = !!flags.admin;
+              if (cols.has("app_access")) row.app_access = !!flags.app;
+
+              await db("directus_policies").withSchema(schema).insert(row);
+              return row.id;
+            }
+
+            async function ensureRolePolicyAccess(roleId, policyId, cols) {
+              let query = db("directus_access")
+                .withSchema(schema)
+                .select("id")
+                .where({ role: roleId, policy: policyId });
+              if (cols.has("user")) query = query.whereNull("user");
+
+              const existing = await query.first();
+              if (existing?.id) return existing.id;
+
+              const row = {};
+              if (cols.has("id")) row.id = crypto.randomUUID();
+              if (cols.has("role")) row.role = roleId;
+              if (cols.has("policy")) row.policy = policyId;
+              if (cols.has("user")) row.user = null;
+              if (cols.has("sort")) row.sort = null;
+
+              await db("directus_access").withSchema(schema).insert(row);
+              return row.id;
+            }
             
             async function run() {
-              const cols = await tableColumns("directus_roles");
-              const adminRoleId = await ensureRole("Administrator", { admin: true, app: true }, cols);
-              const editorRoleId = await ensureRole("Editor", { admin: false, app: true }, cols);
+              const roleCols = await tableColumns("directus_roles");
+              const policyCols = await tableColumns("directus_policies");
+              const accessCols = await tableColumns("directus_access");
+              const adminRoleId = await ensureRole("Administrator", { admin: true, app: true }, roleCols);
+              const editorRoleId = await ensureRole("Editor", { admin: false, app: true }, roleCols);
+              const adminPolicyId = await ensurePolicy("Policy for Administrator", { admin: true, app: true }, policyCols);
+              const editorPolicyId = await ensurePolicy("Policy for Editor", { admin: false, app: true }, policyCols);
+              await ensureRolePolicyAccess(adminRoleId, adminPolicyId, accessCols);
+              await ensureRolePolicyAccess(editorRoleId, editorPolicyId, accessCols);
             
               process.stdout.write(`ADMIN_ROLE_ID=${adminRoleId}\n`);
               process.stdout.write(`EDITOR_ROLE_ID=${editorRoleId}\n`);
