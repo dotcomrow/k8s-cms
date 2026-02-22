@@ -1409,6 +1409,7 @@ data:
           _directus_api_enabled="1"
           echo "✅ Directus API token acquired from Vault (${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH})"
         else
+          FLOW_ADMIN_TOKEN=""
           if [ -n "${DIRECTUS_ACCESS_TOKEN:-}" ] && [ "${DIRECTUS_ACCESS_TOKEN}" != "null" ]; then
             echo "⚠️ Vault token at ${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH} is invalid for Directus API; rotating token"
           else
@@ -1420,6 +1421,41 @@ data:
               "SELECT id FROM directus.directus_roles WHERE name='Administrator' LIMIT 1;" || true)"
             FLOW_ADMIN_ROLE_ID="$(printf '%s' "$FLOW_ADMIN_ROLE_ID" | tr -d '\r')"
             if [ -n "${FLOW_ADMIN_ROLE_ID:-}" ] && [ "${FLOW_ADMIN_ROLE_ID}" != "null" ]; then
+              # Ensure Administrator role has an attached admin/app policy before token verification.
+              if [ "${POLICY_TABLE_EXISTS:-0}" = "1" ] && [ "${ACCESS_TABLE_EXISTS:-0}" = "1" ]; then
+                FLOW_ADMIN_POLICY_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT id FROM directus.directus_policies WHERE LOWER(name)=LOWER('Policy for Administrator') AND admin_access=true AND app_access=true ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
+                FLOW_ADMIN_POLICY_ID="$(printf '%s' "$FLOW_ADMIN_POLICY_ID" | tr -d '\r')"
+
+                if [ -z "${FLOW_ADMIN_POLICY_ID:-}" ] || [ "${FLOW_ADMIN_POLICY_ID}" = "null" ]; then
+                  FLOW_ADMIN_POLICY_ID="$(cat /proc/sys/kernel/random/uuid)"
+                  FPCOLS="id,name"
+                  FPVALS="'${FLOW_ADMIN_POLICY_ID}','Policy for Administrator'"
+                  if _has_policy_col "description"; then FPCOLS="${FPCOLS},description"; FPVALS="${FPVALS},'Admin policy for flow provisioning'"; fi
+                  if _has_policy_col "icon"; then FPCOLS="${FPCOLS},icon"; FPVALS="${FPVALS},'verified'"; fi
+                  if _has_policy_col "admin_access"; then FPCOLS="${FPCOLS},admin_access"; FPVALS="${FPVALS},true"; fi
+                  if _has_policy_col "app_access"; then FPCOLS="${FPCOLS},app_access"; FPVALS="${FPVALS},true"; fi
+                  if _has_policy_col "enforce_tfa"; then FPCOLS="${FPCOLS},enforce_tfa"; FPVALS="${FPVALS},false"; fi
+                  if _has_policy_col "ip_access"; then FPCOLS="${FPCOLS},ip_access"; FPVALS="${FPVALS},NULL"; fi
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; INSERT INTO directus_policies (${FPCOLS}) VALUES (${FPVALS});"
+                  echo "✅ Created fallback admin policy for flow provisioning"
+                fi
+
+                _FLOW_ACCESS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus.directus_access WHERE role='${FLOW_ADMIN_ROLE_ID}' AND policy='${FLOW_ADMIN_POLICY_ID}' LIMIT 1;" || true)"
+                _FLOW_ACCESS_EXISTS="$(printf '%s' "$_FLOW_ACCESS_EXISTS" | tr -d '\r')"
+                if [ "${_FLOW_ACCESS_EXISTS}" != "1" ]; then
+                  FACOLS="id,policy,role"
+                  FAVALS="'$(cat /proc/sys/kernel/random/uuid)','${FLOW_ADMIN_POLICY_ID}','${FLOW_ADMIN_ROLE_ID}'"
+                  if _has_access_col "user"; then FACOLS="${FACOLS},user"; FAVALS="${FAVALS},NULL"; fi
+                  if _has_access_col "sort"; then FACOLS="${FACOLS},sort"; FAVALS="${FAVALS},NULL"; fi
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; INSERT INTO directus_access (${FACOLS}) VALUES (${FAVALS});"
+                  echo "✅ Linked Administrator role to admin policy for flow provisioning"
+                fi
+              fi
+
               flow_admin_email="svc-flow-admin@svc.local"
               flow_admin_email_sql="$(printf '%s' "$flow_admin_email" | sed "s/'/''/g")"
               FLOW_ADMIN_USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -1476,7 +1512,22 @@ data:
             echo "⚠️ directus_users.token column not found; cannot mint Directus API token for flow reconciliation"
           fi
         fi
-    
+
+        # Retry token verification briefly to absorb startup auth propagation races.
+        if [ "${_directus_api_enabled}" != "1" ] && [ -n "${FLOW_ADMIN_TOKEN:-}" ] && [ "${FLOW_ADMIN_TOKEN}" != "null" ]; then
+          _verify_retry=0
+          while [ "${_verify_retry}" -lt 10 ]; do
+            if _directus_verify_token "${FLOW_ADMIN_TOKEN}"; then
+              DIRECTUS_ACCESS_TOKEN="${FLOW_ADMIN_TOKEN}"
+              _directus_api_enabled="1"
+              echo "✅ Directus API token became valid after retry (${_verify_retry})"
+              break
+            fi
+            _verify_retry=$(( _verify_retry + 1 ))
+            sleep 2
+          done
+        fi
+
         # Fallback for environments that still allow local email/password auth.
         if [ "${_directus_api_enabled}" != "1" ]; then
           ADMIN_CREDS_CODE="$(curl -sS -o /tmp/directus-admin-creds.json -w '%{http_code}' \
