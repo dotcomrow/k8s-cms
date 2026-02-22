@@ -679,6 +679,7 @@ data:
           return v !== false;
         });
         const persistedValue = ref('');
+        const fallbackCommittedValue = ref('');
         const recordUpdatedAt = computed(() =>
           asString(
             props.values?.date_updated
@@ -1004,13 +1005,34 @@ data:
             blockPageSlug: asString(props.values?.[pageSlugField.value]),
             updatedAt: recordUpdatedAt.value,
           }),
-          () => { void loadPersistedValue(); },
+          () => {
+            // Fallback baseline for contexts where persisted lookup is unavailable.
+            // This value is captured only when editor context changes or record updates.
+            fallbackCommittedValue.value = asString(props.value);
+            void loadPersistedValue();
+          },
+          { immediate: true }
+        );
+
+        watch(
+          () => asString(props.value),
+          (nextValue) => {
+            if (!nextValue || fallbackCommittedValue.value) return;
+            const { recordId } = resolveRecordContext();
+            const hasBlockIdentity = fieldKey.value === 'slot'
+              && Boolean(asString(props.values?.collection))
+              && Boolean(parseId(props.values?.item));
+            if (recordId || hasBlockIdentity) {
+              // Capture delayed initial value once for existing records only.
+              fallbackCommittedValue.value = nextValue;
+            }
+          },
           { immediate: true }
         );
 
         const selectItems = computed(() => {
           const currentValue = asString(props.value);
-          const committed = asString(persistedValue.value);
+          const committed = asString(persistedValue.value) || asString(fallbackCommittedValue.value);
           const items = choices.value.map((choice) => ({
             text: committed && asString(choice.value) === committed
               ? `${choice.text} (current)`
