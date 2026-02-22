@@ -591,6 +591,19 @@ data:
       return result;
     };
     
+    const parseOptions = (value) => {
+      if (!value) return {};
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
+        }
+      }
+      return typeof value === 'object' ? value : {};
+    };
+    
     const DEFAULT_TEMPLATE_CHOICES = [
       { text: 'SPA Default', value: 'spa-default' },
       { text: 'SPA Split Hero', value: 'spa-split-hero' },
@@ -619,23 +632,35 @@ data:
         const loadError = ref('');
         const choices = ref([]);
         const missingContext = ref('');
+        
+        const resolvedOptions = computed(() => parseOptions(props.options));
+        const mode = computed(() => {
+          const explicit = asString(resolvedOptions.value?.mode).toLowerCase();
+          if (explicit === 'template' || explicit === 'slot') return explicit;
+          if (resolvedOptions.value?.slots_collection || resolvedOptions.value?.slot_value_field || resolvedOptions.value?.slot_label_field) {
+            return 'slot';
+          }
+          return 'template';
+        });
+        const templatesCollection = computed(() => asString(resolvedOptions.value?.templates_collection) || 'cms_layout_templates');
+        const slotsCollection = computed(() => asString(resolvedOptions.value?.slots_collection) || 'cms_layout_template_slots');
+        const pagesCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
 
-        const mode = computed(() => (props.options?.mode === 'template' ? 'template' : 'slot'));
-        const templatesCollection = computed(() => asString(props.options?.templates_collection) || 'cms_layout_templates');
-        const slotsCollection = computed(() => asString(props.options?.slots_collection) || 'cms_layout_template_slots');
-        const pagesCollection = computed(() => asString(props.options?.pages_collection) || 'cms_pages');
-
-        const pageIdField = computed(() => asString(props.options?.page_id_field) || 'page_id');
-        const pageTemplateField = computed(() => asString(props.options?.page_template_field) || 'layout_template_key');
-        const pageSiteField = computed(() => asString(props.options?.page_site_field) || 'site_key');
-        const slotValueField = computed(() => asString(props.options?.slot_value_field) || 'slot_key');
-        const slotLabelField = computed(() => asString(props.options?.slot_label_field) || 'slot_label');
-        const templateValueField = computed(() => asString(props.options?.template_value_field) || 'template_key');
-        const templateLabelField = computed(() => asString(props.options?.template_label_field) || 'name');
-        const includeGlobal = computed(() => props.options?.include_global !== false);
+        const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'page_id');
+        const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
+        const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const slotValueField = computed(() => asString(resolvedOptions.value?.slot_value_field) || 'slot_key');
+        const slotLabelField = computed(() => asString(resolvedOptions.value?.slot_label_field) || 'slot_label');
+        const templateValueField = computed(() => asString(resolvedOptions.value?.template_value_field) || 'template_key');
+        const templateLabelField = computed(() => asString(resolvedOptions.value?.template_label_field) || 'name');
+        const includeGlobal = computed(() => {
+          const v = resolvedOptions.value?.include_global;
+          if (typeof v === 'string') return v.toLowerCase() !== 'false';
+          return v !== false;
+        });
         const configuredChoices = computed(() => uniqueChoices(
-          Array.isArray(props.options?.choices)
-            ? props.options.choices.map((choice) => ({
+          Array.isArray(resolvedOptions.value?.choices)
+            ? resolvedOptions.value.choices.map((choice) => ({
                 value: choice?.value,
                 text: choice?.text || choice?.label || choice?.value,
               }))
