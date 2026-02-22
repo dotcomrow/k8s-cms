@@ -1328,7 +1328,7 @@ data:
             --argjson position_x "${_pos_x}" \
             --argjson position_y "${_pos_y}" \
             --argjson options "${_options_json}" \
-            '{flow:$flow,key:$key,type:$type,name:$name,position_x:$position_x,position_y:$position_y,options:$options,resolve:null,reject:null}')"
+            '{flow:$flow,key:$key,type:$type,name:$name,position_x:$position_x,position_y:$position_y,options:$options}')"
           _update_payload="$(jq -nc \
             --arg key "${_op_key}" \
             --arg type "${_op_type}" \
@@ -1378,10 +1378,26 @@ data:
           if [ -z "${_op_id:-}" ] || [ "${_op_id}" = "null" ]; then
             return 0
           fi
+          _op_id_sql="$(printf '%s' "${_op_id}" | sed "s/'/''/g")"
+          _resolve_sql="NULL"
+          _reject_sql="NULL"
+          if [ -n "${_resolve:-}" ] && [ "${_resolve}" != "null" ]; then
+            _resolve_sql="'$(printf '%s' "${_resolve}" | sed "s/'/''/g")'"
+          fi
+          if [ -n "${_reject:-}" ] && [ "${_reject}" != "null" ]; then
+            _reject_sql="'$(printf '%s' "${_reject}" | sed "s/'/''/g")'"
+          fi
           _payload="$(jq -nc --arg resolve "${_resolve}" --arg reject "${_reject}" \
-            '{resolve:(if $resolve=="" then null else $resolve end),reject:(if $reject=="" then null else $reject end)}')"
+            '{} | (if $resolve != "" and $resolve != "null" then .resolve=$resolve else . end) | (if $reject != "" and $reject != "null" then .reject=$reject else . end)')"
+          if [ "${_payload}" = "{}" ]; then
+            if _psql_yb_retry \
+              "SET search_path TO directus, public; UPDATE directus_operations SET resolve=${_resolve_sql}, reject=${_reject_sql} WHERE id='${_op_id_sql}';" \
+              "clear operation links ${_op_id}"; then
+              return 0
+            fi
+          fi
           _attempt=1
-          _max_attempts=12
+          _max_attempts=3
           while [ "${_attempt}" -le "${_max_attempts}" ]; do
             _directus_api_write "PATCH" "/operations/${_op_id}" "${_payload}" >/tmp/directus-op-links.json 2>/dev/null || true
             _current="$(_directus_api_get "/operations/${_op_id}" --data-urlencode "fields=resolve,reject" 2>/dev/null || true)"
@@ -1393,6 +1409,11 @@ data:
             sleep 1
             _attempt=$(( _attempt + 1 ))
           done
+          if _psql_yb_retry \
+            "SET search_path TO directus, public; UPDATE directus_operations SET resolve=${_resolve_sql}, reject=${_reject_sql} WHERE id='${_op_id_sql}';" \
+            "set operation links ${_op_id}"; then
+            return 0
+          fi
           echo "⚠️ Failed to persist links for operation '${_op_id}' (resolve='${_resolve}', reject='${_reject}') after retries"
           return 0
         }
@@ -2102,7 +2123,7 @@ data:
               echo "⚠️ No cache refresh targets configured for site_key='${site_key}'"
             fi
     
-            printf '%s' "${refresh_targets_json}" | jq -c '.[]' | while IFS= read -r target; do
+            printf '%s' "${refresh_targets_json}" | jq -c 'sort_by((if (.enabled // false) then 0 else 1 end), .target_key)[]' | while IFS= read -r target; do
               target_key="$(printf '%s' "$target" | jq -r '.target_key // empty' 2>/dev/null || true)"
               target_enabled_raw="$(printf '%s' "$target" | jq -r '.enabled // false' 2>/dev/null || true)"
               target_endpoint_raw="$(printf '%s' "$target" | jq -r '.endpoint // empty' 2>/dev/null || true)"
@@ -2209,6 +2230,11 @@ data:
               if [ -z "${create_flow_id:-}" ] || [ -z "${update_flow_id:-}" ]; then
                 echo "⚠️ Failed to ensure cache-refresh flows for site_key='${site_key}', target='${target_key}'"
               else
+                if [ "${flow_status}" != "active" ]; then
+                  echo "✅ Reconciled cache-refresh flows for site_key='${site_key}', target='${target_key}' as inactive"
+                  continue
+                fi
+
                 create_read_options="$(jq -nc \
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                 create_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
