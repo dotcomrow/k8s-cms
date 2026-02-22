@@ -579,6 +579,22 @@ data:
       return asString(value);
     };
 
+    const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const getPrimaryKeyFromLocation = (collectionName) => {
+      if (typeof window === 'undefined') return '';
+      const targetCollection = asString(collectionName);
+      const path = asString(window.location?.pathname);
+      if (targetCollection && path) {
+        const match = path.match(new RegExp(`/${escapeRegex(targetCollection)}/([^/?#]+)`));
+        if (match?.[1]) return asString(decodeURIComponent(match[1]));
+      }
+
+      const query = new URLSearchParams(window.location?.search || '');
+      const candidates = ['primaryKey', 'pk', 'item', 'id'].map((key) => asString(query.get(key)));
+      return candidates.find((value) => Boolean(value)) || '';
+    };
+
     const uniqueChoices = (items) => {
       const seen = new Set();
       const result = [];
@@ -721,17 +737,26 @@ data:
           let pageId = parseId(props.values?.[pageIdField.value]);
           let pageSlug = asString(props.values?.[pageSlugField.value]);
 
+          if (!pageId) {
+            pageId = getPrimaryKeyFromLocation(pagesCollection.value);
+          }
+
           // In nested M2A editors, parent context can be omitted; pull it from the block row.
           if (!pageId && collectionKey.value === 'cms_page_blocks') {
-            const blockId = parseId(props.values?.[itemIdField.value]);
+            let blockId = parseId(props.values?.[itemIdField.value]);
+            if (!blockId) blockId = getPrimaryKeyFromLocation(collectionKey.value);
             if (blockId) {
-              const blockResp = await apiGet(`/items/${collectionKey.value}/${encodeURIComponent(blockId)}`, {
-                fields: [pageIdField.value, pageSlugField.value, pageSiteField.value].join(','),
-              });
-              const block = blockResp?.data || {};
-              pageId = parseId(block?.[pageIdField.value]);
-              if (!pageSlug) pageSlug = asString(block?.[pageSlugField.value]);
-              if (!siteKey) siteKey = asString(block?.[pageSiteField.value]);
+              try {
+                const blockResp = await apiGet(`/items/${collectionKey.value}/${encodeURIComponent(blockId)}`, {
+                  fields: [pageIdField.value, pageSlugField.value, pageSiteField.value].join(','),
+                });
+                const block = blockResp?.data || {};
+                pageId = parseId(block?.[pageIdField.value]);
+                if (!pageSlug) pageSlug = asString(block?.[pageSlugField.value]);
+                if (!siteKey) siteKey = asString(block?.[pageSiteField.value]);
+              } catch {
+                // Ignore block lookup errors and continue fallback chain.
+              }
             }
           }
 
