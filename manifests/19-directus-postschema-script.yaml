@@ -1459,11 +1459,15 @@ data:
         DIRECTUS_API_BASE="http://127.0.0.1:8055"
         DIRECTUS_ACCESS_TOKEN=""
         _directus_api_enabled="0"
+        DIRECTUS_API_CONNECT_TIMEOUT_SECONDS="${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS:-5}"
+        DIRECTUS_API_MAX_TIME_SECONDS="${DIRECTUS_API_MAX_TIME_SECONDS:-20}"
     
         _directus_api_get() {
           _path="$1"
           shift || true
           curl -sS -f \
+            --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS}" \
+            --max-time "${DIRECTUS_API_MAX_TIME_SECONDS}" \
             -H "Authorization: Bearer ${DIRECTUS_ACCESS_TOKEN}" \
             --get "${DIRECTUS_API_BASE}${_path}" "$@"
         }
@@ -1473,6 +1477,8 @@ data:
           _path="$2"
           _payload="$3"
           curl -sS -f -X "${_method}" \
+            --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS}" \
+            --max-time "${DIRECTUS_API_MAX_TIME_SECONDS}" \
             -H "Authorization: Bearer ${DIRECTUS_ACCESS_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "${_payload}" \
@@ -1656,6 +1662,8 @@ data:
             return 1
           fi
           _verify_code="$(curl -sS -o /tmp/directus-token-verify.json -w '%{http_code}' \
+            --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS}" \
+            --max-time "${DIRECTUS_API_MAX_TIME_SECONDS}" \
             -H "Authorization: Bearer ${_candidate}" \
             "${DIRECTUS_API_BASE}/users/me" || true)"
           [ "${_verify_code}" = "200" ]
