@@ -643,6 +643,8 @@ data:
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'page_id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const pageSlugField = computed(() => asString(resolvedOptions.value?.page_slug_field) || 'page_slug');
+        const itemIdField = computed(() => asString(resolvedOptions.value?.item_id_field) || 'id');
         const slotValueField = computed(() => asString(resolvedOptions.value?.slot_value_field) || 'slot_key');
         const slotLabelField = computed(() => asString(resolvedOptions.value?.slot_label_field) || 'slot_label');
         const templateValueField = computed(() => asString(resolvedOptions.value?.template_value_field) || 'template_key');
@@ -716,7 +718,22 @@ data:
         const loadSlotChoices = async () => {
           let siteKey = asString(props.values?.[pageSiteField.value]);
           let templateKey = asString(props.values?.[pageTemplateField.value]);
-          const pageId = parseId(props.values?.[pageIdField.value]);
+          let pageId = parseId(props.values?.[pageIdField.value]);
+          let pageSlug = asString(props.values?.[pageSlugField.value]);
+
+          // In nested M2A editors, parent context can be omitted; pull it from the block row.
+          if (!pageId && collectionKey.value === 'cms_page_blocks') {
+            const blockId = parseId(props.values?.[itemIdField.value]);
+            if (blockId) {
+              const blockResp = await apiGet(`/items/${collectionKey.value}/${encodeURIComponent(blockId)}`, {
+                fields: [pageIdField.value, pageSlugField.value, pageSiteField.value].join(','),
+              });
+              const block = blockResp?.data || {};
+              pageId = parseId(block?.[pageIdField.value]);
+              if (!pageSlug) pageSlug = asString(block?.[pageSlugField.value]);
+              if (!siteKey) siteKey = asString(block?.[pageSiteField.value]);
+            }
+          }
 
           if (!templateKey && pageId) {
             const pageResp = await apiGet(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
@@ -725,6 +742,30 @@ data:
             const page = pageResp?.data || {};
             templateKey = asString(page?.[pageTemplateField.value]);
             if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
+          }
+
+          // Fallback for cases where only page_slug/site_key are present in form values.
+          if (!templateKey && pageSlug) {
+            const pageFilter = {
+              _and: [
+                { slug: { _eq: pageSlug } },
+                ...(siteKey ? [{
+                  _or: [
+                    { [pageSiteField.value]: { _empty: true } },
+                    { [pageSiteField.value]: { _eq: siteKey } },
+                  ],
+                }] : []),
+              ],
+            };
+            const pageListResp = await apiGet(`/items/${pagesCollection.value}`, {
+              fields: [pageTemplateField.value, pageSiteField.value, 'id'].join(','),
+              limit: 1,
+              filter: JSON.stringify(pageFilter),
+            });
+            const page = normalizeRows(pageListResp)?.[0] || {};
+            templateKey = asString(page?.[pageTemplateField.value]);
+            if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
+            if (!pageId) pageId = parseId(page?.id);
           }
 
           if (!templateKey) {
@@ -764,7 +805,7 @@ data:
               : await loadSlotChoices();
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
-            if (choices.value.length === 0) {
+            if (choices.value.length === 0 && !missingContext.value) {
               loadError.value = mode.value === 'template'
                 ? 'No published templates available for this site scope.'
                 : 'No valid slots available for this page template and site scope.';
@@ -800,7 +841,7 @@ data:
         const selectItems = computed(() => {
           const currentValue = asString(props.value);
           const items = choices.value.map((choice) => ({
-            text: choice.text,
+            text: asString(choice.value) === currentValue ? `${choice.text} (current)` : choice.text,
             value: choice.value,
           }));
           if (currentValue && !items.some((item) => asString(item.value) === currentValue)) {
