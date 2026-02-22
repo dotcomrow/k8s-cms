@@ -701,18 +701,12 @@ data:
           if (siteKey) {
             return {
               _or: [
-                { site_key: { _null: true } },
-                { site_key: { _eq: '' } },
+                { site_key: { _empty: true } },
                 { site_key: { _eq: siteKey } },
               ],
             };
           }
-          return {
-            _or: [
-              { site_key: { _null: true } },
-              { site_key: { _eq: '' } },
-            ],
-          };
+          return { site_key: { _empty: true } };
         };
 
         const loadTemplateChoices = async () => {
