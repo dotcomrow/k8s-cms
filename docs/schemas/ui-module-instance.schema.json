@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://suncoast.systems/schemas/ui-module-instance.schema.json",
+  "title": "UI Module Instance",
+  "description": "Per-page module placement/configuration stored in CMS.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "instance_id",
+    "module_key",
+    "module_version_constraint",
+    "slot",
+    "sort",
+    "enabled",
+    "props",
+    "async",
+    "wiring",
+    "status"
+  ],
+  "properties": {
+    "instance_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{6,128}$"
+    },
+    "module_key": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "module_version_constraint": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "site_key": {
+      "type": ["string", "null"],
+      "maxLength": 64
+    },
+    "page_slug": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "slot": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([_-][a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "sort": {
+      "type": "integer",
+      "minimum": -1000000,
+      "maximum": 1000000
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "props": {
+      "type": "object",
+      "description": "Validated at runtime/build against module definition io.props_schema."
+    },
+    "async": {
+      "$ref": "#/$defs/asyncInstance"
+    },
+    "wiring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands", "event_routes"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/commandRoute" },
+          "default": []
+        },
+        "event_routes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/eventRoute" },
+          "default": []
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "published", "archived"]
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 64 },
+      "uniqueItems": true,
+      "default": []
+    }
+  },
+  "$defs": {
+    "commandName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "commandRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listen_event", "send_command"],
+      "properties": {
+        "listen_event": { "$ref": "#/$defs/commandName" },
+        "send_command": { "$ref": "#/$defs/commandName" },
+        "input_map": {
+          "type": "object",
+          "description": "Simple mapping object consumed by host runtime."
+        }
+      }
+    },
+    "eventRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_name", "target", "action"],
+      "properties": {
+        "event_name": { "$ref": "#/$defs/commandName" },
+        "target": {
+          "type": "string",
+          "enum": ["host", "router", "analytics", "module"]
+        },
+        "target_instance_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9._:-]{6,128}$"
+        },
+        "action": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "payload_map": { "type": "object" }
+      }
+    },
+    "asyncInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mode", "initial_load_policy", "request", "stream", "queue"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": {
+          "type": "string",
+          "enum": ["none", "request-response", "poll", "subscribe", "mixed"]
+        },
+        "initial_load_policy": {
+          "type": "string",
+          "enum": ["blocking", "non-blocking", "wait-for-visible"]
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["timeout_ms", "max_attempts", "retry_backoff_ms"],
+          "properties": {
+            "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000 },
+            "max_attempts": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "retry_backoff_ms": { "type": "integer", "minimum": 0, "maximum": 600000 }
+          }
+        },
+        "stream": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "channel",
+            "transport",
+            "endpoint_ref",
+            "resume_from",
+            "last_event_id_storage_key",
+            "reconnect_ms"
+          ],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "channel": { "type": "string", "maxLength": 256 },
+            "transport": {
+              "type": "string",
+              "enum": ["none", "graphql-ws", "sse", "webhook", "kafka-bridge"]
+            },
+            "endpoint_ref": { "type": "string", "maxLength": 256 },
+            "resume_from": {
+              "type": "string",
+              "enum": ["none", "last_event_id", "timestamp"]
+            },
+            "last_event_id_storage_key": { "type": "string", "maxLength": 256 },
+            "reconnect_ms": { "type": "integer", "minimum": 0, "maximum": 600000 }
+          }
+        },
+        "queue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_inflight", "drop_policy", "ordering_key"],
+          "properties": {
+            "max_inflight": { "type": "integer", "minimum": 1, "maximum": 10000 },
+            "drop_policy": {
+              "type": "string",
+              "enum": ["backpressure", "drop-oldest", "drop-newest"]
+            },
+            "ordering_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      }
+    }
+  }
+}
+

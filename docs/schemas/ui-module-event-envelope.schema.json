@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://suncoast.systems/schemas/ui-module-event-envelope.schema.json",
+  "title": "UI Module Event Envelope",
+  "description": "Canonical host/module event envelope with async metadata.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "ts",
+    "source_module_key",
+    "source_instance_id",
+    "event_name",
+    "async",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{6,128}$"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_module_key": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$"
+    },
+    "source_instance_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{6,128}$"
+    },
+    "event_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "causation_id": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "async": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delivery_mode",
+        "qos",
+        "partition_key",
+        "sequence",
+        "ack_required",
+        "ttl_ms",
+        "retry"
+      ],
+      "properties": {
+        "delivery_mode": {
+          "type": "string",
+          "enum": ["sync", "async-request", "async-stream", "async-queue"]
+        },
+        "qos": {
+          "type": "string",
+          "enum": ["at-most-once", "at-least-once", "exactly-once-emulated"]
+        },
+        "partition_key": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ack_required": {
+          "type": "boolean"
+        },
+        "ttl_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attempt", "max_attempts", "backoff_ms"],
+          "properties": {
+            "attempt": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "max_attempts": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "backoff_ms": { "type": "integer", "minimum": 0, "maximum": 600000 }
+          }
+        }
+      }
+    },
+    "payload": {
+      "type": "object"
+    },
+    "meta": {
+      "type": "object"
+    }
+  }
+}
+

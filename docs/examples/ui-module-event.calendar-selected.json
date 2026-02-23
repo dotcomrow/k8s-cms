@@ -1,0 +1,31 @@
+{
+  "event_id": "evt-cal-20260223-0001",
+  "ts": "2026-02-23T17:10:00Z",
+  "source_module_key": "calendar.standard",
+  "source_instance_id": "cal-home-main-001",
+  "event_name": "calendar.selected",
+  "correlation_id": "req-homepage-12345",
+  "causation_id": "cmd-refresh-777",
+  "async": {
+    "delivery_mode": "async-stream",
+    "qos": "at-least-once",
+    "partition_key": "external:home:cal-home-main-001",
+    "sequence": 541,
+    "ack_required": true,
+    "ttl_ms": 30000,
+    "retry": {
+      "attempt": 0,
+      "max_attempts": 5,
+      "backoff_ms": 0
+    }
+  },
+  "payload": {
+    "date": "2026-02-23",
+    "event_id": "meeting-42"
+  },
+  "meta": {
+    "site_key": "external",
+    "page_slug": "home"
+  }
+}
+

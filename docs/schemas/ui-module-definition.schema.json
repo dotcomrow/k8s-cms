@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://suncoast.systems/schemas/ui-module-definition.schema.json",
+  "title": "UI Module Definition",
+  "description": "Universal module contract for GUI components and MFEs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "module_key",
+    "module_version",
+    "kind",
+    "display_name",
+    "targets",
+    "execution",
+    "io",
+    "async",
+    "capabilities",
+    "lifecycle",
+    "compatibility"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "module_key": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "module_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([.-][a-zA-Z0-9]+)?$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["component", "mfe"]
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 5000
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["web", "native"]
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "preload", "entry"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["inline", "sandboxed"]
+        },
+        "preload": {
+          "type": "string",
+          "enum": ["eager", "lazy"]
+        },
+        "entry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["export_name"],
+          "properties": {
+            "web_package": { "type": "string", "minLength": 1 },
+            "native_package": { "type": "string", "minLength": 1 },
+            "export_name": {
+              "type": "string",
+              "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$"
+            }
+          },
+          "anyOf": [
+            { "required": ["web_package"] },
+            { "required": ["native_package"] }
+          ]
+        }
+      }
+    },
+    "io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slots_in", "props_schema", "events_out", "commands_in"],
+      "properties": {
+        "slots_in": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/slotName" }
+        },
+        "slots_out": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/slotName" },
+          "default": []
+        },
+        "props_schema": {
+          "type": "object",
+          "description": "JSON Schema object describing allowed props.",
+          "minProperties": 1
+        },
+        "events_out": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/eventSpec" },
+          "default": []
+        },
+        "commands_in": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/commandSpec" },
+          "default": []
+        }
+      }
+    },
+    "async": {
+      "$ref": "#/$defs/asyncDefinition"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "storage",
+        "navigation",
+        "sensors",
+        "notifications",
+        "background_tasks"
+      ],
+      "properties": {
+        "network": { "type": "boolean" },
+        "storage": { "type": "boolean" },
+        "navigation": { "type": "boolean" },
+        "sensors": { "type": "boolean" },
+        "notifications": { "type": "boolean" },
+        "background_tasks": { "type": "boolean" }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hooks", "supports_hydration", "supports_suspend"],
+      "properties": {
+        "hooks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["init", "mount", "update", "handleCommand", "suspend", "resume", "unmount"]
+          }
+        },
+        "supports_hydration": { "type": "boolean" },
+        "supports_suspend": { "type": "boolean" }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_host_contract_version"],
+      "properties": {
+        "min_host_contract_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "max_host_contract_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "breaking_change_policy": {
+          "type": "string",
+          "enum": ["semver-major", "new-module-key"]
+        }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module_key", "reason"],
+      "properties": {
+        "module_key": { "$ref": "#/properties/module_key" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    }
+  },
+  "$defs": {
+    "slotName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([_-][a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "eventName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "eventSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "payload_schema", "async_allowed"],
+      "properties": {
+        "name": { "$ref": "#/$defs/eventName" },
+        "payload_schema": { "type": "object" },
+        "async_allowed": { "type": "boolean" }
+      }
+    },
+    "commandSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "input_schema", "timeout_ms"],
+      "properties": {
+        "name": { "$ref": "#/$defs/eventName" },
+        "input_schema": { "type": "object" },
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000 }
+      }
+    },
+    "retryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts", "initial_backoff_ms", "max_backoff_ms", "jitter"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "initial_backoff_ms": { "type": "integer", "minimum": 0, "maximum": 600000 },
+        "max_backoff_ms": { "type": "integer", "minimum": 0, "maximum": 600000 },
+        "jitter": { "type": "boolean" }
+      }
+    },
+    "asyncDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mode", "request", "stream", "queue"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": {
+          "type": "string",
+          "enum": ["none", "request-response", "poll", "subscribe", "mixed"]
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supported", "default_timeout_ms", "retry"],
+          "properties": {
+            "supported": { "type": "boolean" },
+            "default_timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000 },
+            "retry": { "$ref": "#/$defs/retryPolicy" }
+          }
+        },
+        "stream": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supported", "transport", "endpoint_ref", "auth_mode", "reconnect"],
+          "properties": {
+            "supported": { "type": "boolean" },
+            "transport": {
+              "type": "string",
+              "enum": ["none", "graphql-ws", "sse", "webhook", "kafka-bridge"]
+            },
+            "endpoint_ref": {
+              "type": "string",
+              "description": "Environment key or endpoint alias."
+            },
+            "auth_mode": {
+              "type": "string",
+              "enum": ["inherit", "token", "mtls", "none"]
+            },
+            "reconnect": {
+              "$ref": "#/$defs/retryPolicy"
+            }
+          }
+        },
+        "queue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supported", "max_inflight", "drop_policy", "ordering_key"],
+          "properties": {
+            "supported": { "type": "boolean" },
+            "max_inflight": { "type": "integer", "minimum": 1, "maximum": 10000 },
+            "drop_policy": {
+              "type": "string",
+              "enum": ["backpressure", "drop-oldest", "drop-newest"]
+            },
+            "ordering_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      }
+    }
+  }
+}
+

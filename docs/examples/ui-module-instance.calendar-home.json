@@ -1,0 +1,65 @@
+{
+  "instance_id": "cal-home-main-001",
+  "module_key": "calendar.standard",
+  "module_version_constraint": "^1.0.0",
+  "site_key": "external",
+  "page_slug": "home",
+  "slot": "main",
+  "sort": 200,
+  "enabled": true,
+  "props": {
+    "title": "Team Calendar",
+    "default_view": "month",
+    "timezone": "America/New_York"
+  },
+  "async": {
+    "enabled": true,
+    "mode": "mixed",
+    "initial_load_policy": "non-blocking",
+    "request": {
+      "timeout_ms": 10000,
+      "max_attempts": 3,
+      "retry_backoff_ms": 250
+    },
+    "stream": {
+      "enabled": true,
+      "channel": "calendar.events.external.home",
+      "transport": "graphql-ws",
+      "endpoint_ref": "GRAPHQL_STREAM_ENDPOINT",
+      "resume_from": "last_event_id",
+      "last_event_id_storage_key": "cal-home-main-001:last-event",
+      "reconnect_ms": 1000
+    },
+    "queue": {
+      "max_inflight": 64,
+      "drop_policy": "backpressure",
+      "ordering_key": "cal-home-main-001"
+    }
+  },
+  "wiring": {
+    "commands": [
+      {
+        "listen_event": "app.refresh.requested",
+        "send_command": "calendar.reload",
+        "input_map": {
+          "from": "$event.payload.from",
+          "to": "$event.payload.to"
+        }
+      }
+    ],
+    "event_routes": [
+      {
+        "event_name": "calendar.selected",
+        "target": "analytics",
+        "action": "track",
+        "payload_map": {
+          "name": "calendar_date_selected",
+          "date": "$event.payload.date"
+        }
+      }
+    ]
+  },
+  "status": "published",
+  "tags": ["calendar", "home", "interactive"]
+}
+

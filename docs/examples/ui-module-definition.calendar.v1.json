@@ -1,0 +1,111 @@
+{
+  "contract_version": "1.0.0",
+  "module_key": "calendar.standard",
+  "module_version": "1.0.0",
+  "kind": "mfe",
+  "display_name": "Calendar Standard",
+  "description": "Interactive calendar module with selectable day events.",
+  "targets": ["web", "native"],
+  "execution": {
+    "mode": "inline",
+    "preload": "lazy",
+    "entry": {
+      "web_package": "@suncoast/modules-calendar/web",
+      "native_package": "@suncoast/modules-calendar/native",
+      "export_name": "createModule"
+    }
+  },
+  "io": {
+    "slots_in": ["main", "header"],
+    "slots_out": [],
+    "props_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "default_view": {
+          "type": "string",
+          "enum": ["month", "week", "day"]
+        },
+        "timezone": { "type": "string" }
+      }
+    },
+    "events_out": [
+      {
+        "name": "calendar.selected",
+        "payload_schema": {
+          "type": "object",
+          "properties": {
+            "date": { "type": "string" },
+            "event_id": { "type": "string" }
+          },
+          "required": ["date"]
+        },
+        "async_allowed": true
+      }
+    ],
+    "commands_in": [
+      {
+        "name": "calendar.reload",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "from": { "type": "string" },
+            "to": { "type": "string" }
+          }
+        },
+        "timeout_ms": 10000
+      }
+    ]
+  },
+  "async": {
+    "enabled": true,
+    "mode": "mixed",
+    "request": {
+      "supported": true,
+      "default_timeout_ms": 10000,
+      "retry": {
+        "max_attempts": 3,
+        "initial_backoff_ms": 200,
+        "max_backoff_ms": 2000,
+        "jitter": true
+      }
+    },
+    "stream": {
+      "supported": true,
+      "transport": "graphql-ws",
+      "endpoint_ref": "GRAPHQL_STREAM_ENDPOINT",
+      "auth_mode": "inherit",
+      "reconnect": {
+        "max_attempts": 10,
+        "initial_backoff_ms": 500,
+        "max_backoff_ms": 10000,
+        "jitter": true
+      }
+    },
+    "queue": {
+      "supported": true,
+      "max_inflight": 32,
+      "drop_policy": "backpressure",
+      "ordering_key": "instance_id"
+    }
+  },
+  "capabilities": {
+    "network": true,
+    "storage": true,
+    "navigation": true,
+    "sensors": false,
+    "notifications": false,
+    "background_tasks": false
+  },
+  "lifecycle": {
+    "hooks": ["init", "mount", "update", "handleCommand", "suspend", "resume", "unmount"],
+    "supports_hydration": true,
+    "supports_suspend": true
+  },
+  "compatibility": {
+    "min_host_contract_version": "1.0.0",
+    "breaking_change_policy": "semver-major"
+  }
+}
+
