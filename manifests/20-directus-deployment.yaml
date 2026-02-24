@@ -336,6 +336,23 @@ spec:
         args:
           - |
             set -e
+            echo "⏳ Waiting for postschema DB reconcile marker..."
+            _db_ready_wait_attempt=0
+            _db_ready_wait_max=450
+            while [ ! -f /postschema-state/db-ready ]; do
+              if [ -f /postschema-state/failed ]; then
+                echo "❌ postschema reported failure before DB reconcile marker; aborting Directus start."
+                exit 1
+              fi
+              _db_ready_wait_attempt=$((_db_ready_wait_attempt + 1))
+              if [ "${_db_ready_wait_attempt}" -ge "${_db_ready_wait_max}" ]; then
+                echo "❌ Timed out waiting for /postschema-state/db-ready; aborting Directus start."
+                exit 1
+              fi
+              sleep 2
+            done
+            echo "✅ postschema DB reconcile marker detected"
+
             echo "⏳ Waiting for Vault agent to generate all credential files..."
             while [ ! -f /vault-secrets/db-creds.env ] || \
                   [ ! -f /vault-secrets/app-keys.env ] || \
@@ -1051,3 +1068,5 @@ spec:
           mountPath: /vault-secrets
         - name: directus-extensions
           mountPath: /directus/extensions
+        - name: directus-postschema-state
+          mountPath: /postschema-state

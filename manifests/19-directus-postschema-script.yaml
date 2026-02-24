@@ -11,20 +11,13 @@ data:
 
     POSTSCHEMA_STATE_DIR="${DIRECTUS_POSTSCHEMA_STATE_DIR:-/postschema-state}"
     POSTSCHEMA_READY_FILE="${POSTSCHEMA_STATE_DIR}/ready"
+    POSTSCHEMA_DB_READY_FILE="${POSTSCHEMA_STATE_DIR}/db-ready"
     POSTSCHEMA_FAILED_FILE="${POSTSCHEMA_STATE_DIR}/failed"
     mkdir -p "${POSTSCHEMA_STATE_DIR}" || true
-    rm -f "${POSTSCHEMA_READY_FILE}" "${POSTSCHEMA_FAILED_FILE}"
+    rm -f "${POSTSCHEMA_READY_FILE}" "${POSTSCHEMA_DB_READY_FILE}" "${POSTSCHEMA_FAILED_FILE}"
     
     # tools
     apk add --no-cache curl jq yq >/dev/null
-    
-    # --- wait for Directus to be healthy (same pod: localhost) ---
-    echo "⏳ Waiting for Directus /server/health..."
-    until curl -sf http://127.0.0.1:8055/server/health >/dev/null; do
-      echo "  .. not ready yet"
-      sleep 3
-    done
-    echo "✅ Directus is healthy"
     
     # --- fetch DB creds from Vault ---
     VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
@@ -144,6 +137,7 @@ data:
       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
         "SET search_path TO directus, public; UPDATE schema_patch_log SET last_checked_at=now() WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null
       echo "✅ Postschema reconcile already up to date (version=${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}, checksum=${RECON_PATCH_CHECKSUM})."
+      touch "${POSTSCHEMA_DB_READY_FILE}"
       touch "${POSTSCHEMA_READY_FILE}"
       echo "✅ Schema patch applied. Going idle."
       exec tail -f /dev/null
@@ -196,7 +190,7 @@ data:
                 finished_at=now(), \
                 duration_ms=${_duration_ms} \
           WHERE run_id='${RECON_RUN_ID_SQL}';" >/dev/null 2>&1 || true
-      rm -f "${POSTSCHEMA_READY_FILE}" >/dev/null 2>&1 || true
+      rm -f "${POSTSCHEMA_READY_FILE}" "${POSTSCHEMA_DB_READY_FILE}" >/dev/null 2>&1 || true
       touch "${POSTSCHEMA_FAILED_FILE}" >/dev/null 2>&1 || true
       return 0
     }
@@ -739,6 +733,8 @@ data:
       _upsert_hidden_internal_field_meta "cms_page_blocks" "site_key" 61
       _upsert_hidden_internal_field_meta "cms_page_blocks" "page_slug" 62
       _upsert_hidden_internal_field_meta "cms_page_blocks" "refresh_target" 63
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "collection" 64 false
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "item" 65 false
       _upsert_hidden_internal_field_meta "cms_block_rich_text" "id" 69
       _upsert_hidden_internal_field_meta "cms_block_rich_text" "site_key" 70
       _upsert_hidden_internal_field_meta "cms_block_rich_text" "page_slug" 71
@@ -1668,6 +1664,8 @@ data:
     # Give catalog propagation a short window before heavy Directus API flow reconciliation.
     echo "⏳ Waiting for catalog stabilization after DDL..."
     sleep 8
+    touch "${POSTSCHEMA_DB_READY_FILE}"
+    echo "✅ DB reconcile phase complete; Directus startup may proceed."
 
     # 5c) Provision site-specific roles/policies/users/tokens/permissions (GitOps-driven).
     # - Keycloak `azp` (client id) -> Vault token -> Directus service user token.
@@ -2039,6 +2037,22 @@ data:
             "${DIRECTUS_API_BASE}/users/me" || true)"
           [ "${_verify_code}" = "200" ]
         }
+
+        echo "⏳ Waiting for Directus /server/health before API flow reconciliation..."
+        _directus_wait_attempt=0
+        _directus_wait_max=200
+        until curl -sf --connect-timeout 3 --max-time 5 http://127.0.0.1:8055/server/health >/dev/null; do
+          _directus_wait_attempt=$((_directus_wait_attempt + 1))
+          if [ "${_directus_wait_attempt}" -ge "${_directus_wait_max}" ]; then
+            echo "⚠️ Timed out waiting for Directus health endpoint; continuing with best-effort API flow reconciliation."
+            break
+          fi
+          echo "  .. Directus not ready yet"
+          sleep 3
+        done
+        if [ "${_directus_wait_attempt}" -lt "${_directus_wait_max}" ]; then
+          echo "✅ Directus is healthy for API flow reconciliation"
+        fi
     
         echo "🔐 Preparing Directus API token for flow provisioning..."
         DIRECTUS_FLOW_API_TOKEN_VAULT_PATH="${DIRECTUS_FLOW_API_TOKEN_VAULT_PATH:-secret/data/directus/gravitee/flows/admin}"
@@ -3118,6 +3132,7 @@ data:
       "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_settings' ORDER BY column_name;" || true)"
     if [ -z "${SETTINGS_COLS:-}" ]; then
       echo "⚠️ Could not read directus_settings columns; skipping settings."
+      touch "${POSTSCHEMA_DB_READY_FILE}"
       touch "${POSTSCHEMA_READY_FILE}"
       echo "✅ Schema patch applied. Going idle."
       exec tail -f /dev/null
@@ -3322,6 +3337,7 @@ data:
     RECON_DONE="1"
     trap - EXIT
     rm -f "${POSTSCHEMA_FAILED_FILE}" >/dev/null 2>&1 || true
+    touch "${POSTSCHEMA_DB_READY_FILE}"
     touch "${POSTSCHEMA_READY_FILE}"
 
     echo "✅ Schema patch applied. Going idle."
