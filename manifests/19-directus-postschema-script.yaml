@@ -520,21 +520,21 @@ data:
         IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN
           ALTER TABLE cms_page_blocks ALTER COLUMN slot SET DEFAULT 'main';
           ALTER TABLE cms_page_blocks ALTER COLUMN slot SET NOT NULL;
-          ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target DROP DEFAULT;
+          ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_refresh_target_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_block_rich_text') IS NOT NULL THEN
-          ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target DROP DEFAULT;
+          ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_refresh_target_check' AND conrelid = 'directus.cms_block_rich_text'::regclass) THEN
             ALTER TABLE cms_block_rich_text ADD CONSTRAINT cms_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_block_hero') IS NOT NULL THEN
-          ALTER TABLE cms_block_hero ALTER COLUMN refresh_target DROP DEFAULT;
+          ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_refresh_target_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
             ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
@@ -1330,16 +1330,33 @@ data:
        DECLARE \
          _template_key TEXT; \
          _site_key TEXT; \
+         _page_slug TEXT; \
+         _page_refresh_target TEXT; \
          _slot_key TEXT; \
          _slot_exists BOOLEAN; \
        BEGIN \
          _slot_key := COALESCE(NULLIF(LOWER(BTRIM(NEW.slot)), ''), 'main'); \
          NEW.slot := _slot_key; \
-         SELECT COALESCE(NULLIF(BTRIM(p.layout_template_key), ''), ''), COALESCE(NULLIF(BTRIM(p.site_key), ''), '') \
-           INTO _template_key, _site_key \
+         IF NEW.page_id IS NULL THEN \
+           RAISE EXCEPTION 'cms_page_blocks.page_id is required'; \
+         END IF; \
+         SELECT COALESCE(NULLIF(BTRIM(p.layout_template_key), ''), ''), \
+                COALESCE(NULLIF(BTRIM(p.site_key), ''), ''), \
+                COALESCE(NULLIF(BTRIM(p.slug), ''), ''), \
+                CASE \
+                  WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
+                  ELSE 'both' \
+                END \
+           INTO _template_key, _site_key, _page_slug, _page_refresh_target \
          FROM directus.cms_pages p \
          WHERE p.id = NEW.page_id \
          LIMIT 1; \
+         IF NOT FOUND THEN \
+           RAISE EXCEPTION 'cms_page_blocks.page_id % does not reference an existing cms_pages row', NEW.page_id; \
+         END IF; \
+         NEW.site_key := NULLIF(_site_key, ''); \
+         NEW.page_slug := NULLIF(_page_slug, ''); \
+         NEW.refresh_target := COALESCE(NULLIF(_page_refresh_target, ''), 'both'); \
          IF COALESCE(_template_key, '') = '' THEN \
            RETURN NEW; \
          END IF; \
@@ -1356,6 +1373,94 @@ data:
          RETURN NEW; \
        END; \
        \$\$; \
+       CREATE OR REPLACE FUNCTION directus.sync_cms_block_metadata_from_page_block() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         _refresh_target TEXT; \
+       BEGIN \
+         IF TG_OP = 'DELETE' THEN \
+           RETURN OLD; \
+         END IF; \
+         IF COALESCE(NULLIF(BTRIM(NEW.collection), ''), '') = '' OR COALESCE(NULLIF(BTRIM(NEW.item), ''), '') = '' THEN \
+           RETURN NEW; \
+         END IF; \
+         _refresh_target := CASE \
+           WHEN LOWER(COALESCE(NEW.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(NEW.refresh_target) \
+           ELSE 'both' \
+         END; \
+         IF NEW.collection = 'cms_block_rich_text' THEN \
+           UPDATE directus.cms_block_rich_text rt \
+              SET site_key = NEW.site_key, \
+                  page_slug = NEW.page_slug, \
+                  refresh_target = _refresh_target \
+            WHERE rt.id::text = NEW.item \
+              AND (rt.site_key IS DISTINCT FROM NEW.site_key \
+                OR rt.page_slug IS DISTINCT FROM NEW.page_slug \
+                OR rt.refresh_target IS DISTINCT FROM _refresh_target); \
+         ELSIF NEW.collection = 'cms_block_hero' THEN \
+           UPDATE directus.cms_block_hero h \
+              SET site_key = NEW.site_key, \
+                  page_slug = NEW.page_slug, \
+                  refresh_target = _refresh_target \
+            WHERE h.id::text = NEW.item \
+              AND (h.site_key IS DISTINCT FROM NEW.site_key \
+                OR h.page_slug IS DISTINCT FROM NEW.page_slug \
+                OR h.refresh_target IS DISTINCT FROM _refresh_target); \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.sync_cms_block_metadata_from_page() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         _refresh_target TEXT; \
+       BEGIN \
+         IF TG_OP = 'DELETE' THEN \
+           RETURN OLD; \
+         END IF; \
+         _refresh_target := CASE \
+           WHEN LOWER(COALESCE(NEW.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(NEW.refresh_target) \
+           ELSE 'both' \
+         END; \
+         UPDATE directus.cms_page_blocks pb \
+            SET site_key = NEW.site_key, \
+                page_slug = NEW.slug, \
+                refresh_target = _refresh_target, \
+                slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main') \
+          WHERE pb.page_id = NEW.id \
+            AND (pb.site_key IS DISTINCT FROM NEW.site_key \
+              OR pb.page_slug IS DISTINCT FROM NEW.slug \
+              OR pb.refresh_target IS DISTINCT FROM _refresh_target \
+              OR pb.slot IS DISTINCT FROM COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main')); \
+         UPDATE directus.cms_block_rich_text rt \
+            SET site_key = pb.site_key, \
+                page_slug = pb.page_slug, \
+                refresh_target = pb.refresh_target \
+           FROM directus.cms_page_blocks pb \
+          WHERE pb.page_id = NEW.id \
+            AND pb.collection = 'cms_block_rich_text' \
+            AND pb.item = rt.id::text \
+            AND (rt.site_key IS DISTINCT FROM pb.site_key \
+              OR rt.page_slug IS DISTINCT FROM pb.page_slug \
+              OR rt.refresh_target IS DISTINCT FROM pb.refresh_target); \
+         UPDATE directus.cms_block_hero h \
+            SET site_key = pb.site_key, \
+                page_slug = pb.page_slug, \
+                refresh_target = pb.refresh_target \
+           FROM directus.cms_page_blocks pb \
+          WHERE pb.page_id = NEW.id \
+            AND pb.collection = 'cms_block_hero' \
+            AND pb.item = h.id::text \
+            AND (h.site_key IS DISTINCT FROM pb.site_key \
+              OR h.page_slug IS DISTINCT FROM pb.page_slug \
+              OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
+         RETURN NEW; \
+       END; \
+       \$\$; \
        DO \$\$ \
        BEGIN \
          IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
@@ -1363,10 +1468,27 @@ data:
             AND to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN \
            DROP TRIGGER IF EXISTS cms_page_blocks_slot_guard ON cms_page_blocks; \
            CREATE TRIGGER cms_page_blocks_slot_guard \
-           BEFORE INSERT OR UPDATE OF page_id, slot \
+           BEFORE INSERT OR UPDATE \
            ON cms_page_blocks \
            FOR EACH ROW \
            EXECUTE FUNCTION directus.enforce_cms_page_block_slot(); \
+           DROP TRIGGER IF EXISTS cms_page_blocks_sync_block_metadata ON cms_page_blocks; \
+           CREATE TRIGGER cms_page_blocks_sync_block_metadata \
+           AFTER INSERT OR UPDATE \
+           ON cms_page_blocks \
+           FOR EACH ROW \
+           EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page_block(); \
+         END IF; \
+         IF to_regclass('directus.cms_pages') IS NOT NULL \
+            AND to_regclass('directus.cms_page_blocks') IS NOT NULL \
+            AND to_regclass('directus.cms_block_rich_text') IS NOT NULL \
+            AND to_regclass('directus.cms_block_hero') IS NOT NULL THEN \
+           DROP TRIGGER IF EXISTS cms_pages_sync_block_metadata ON cms_pages; \
+           CREATE TRIGGER cms_pages_sync_block_metadata \
+           AFTER INSERT OR UPDATE OF site_key, slug, refresh_target \
+           ON cms_pages \
+           FOR EACH ROW \
+           EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page(); \
          END IF; \
        END \
        \$\$;"
