@@ -662,10 +662,78 @@ data:
       }
     
       _upsert_refresh_target_field_meta "cms_pages"
-      _upsert_refresh_target_field_meta "cms_page_blocks"
-      _upsert_refresh_target_field_meta "cms_block_rich_text"
-      _upsert_refresh_target_field_meta "cms_block_hero"
       _upsert_refresh_target_field_meta "cms_theme_packages"
+
+      internal_metadata_note="Managed automatically from the parent page/block context."
+      internal_metadata_note_sql="$(printf '%s' "${internal_metadata_note}" | sed "s/'/''/g")"
+
+      _upsert_hidden_internal_field_meta() {
+        _collection="$1"
+        _field="$2"
+        _sort="${3:-99}"
+        _create_if_missing="${4:-true}"
+        if [ -z "${_collection:-}" ] || [ "${_collection}" = "null" ] || [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=true"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=true"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${internal_metadata_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated hidden metadata field UX on ${_collection}.${_field}"
+          fi
+          return 0
+        fi
+
+        if [ "${_create_if_missing}" != "true" ]; then
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},true"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},true"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${internal_metadata_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created hidden metadata field UX on ${_collection}.${_field}"
+      }
+
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "page_id" 59
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "page" 60 false
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "site_key" 61
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "page_slug" 62
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "refresh_target" 63
+      _upsert_hidden_internal_field_meta "cms_block_rich_text" "site_key" 70
+      _upsert_hidden_internal_field_meta "cms_block_rich_text" "page_slug" 71
+      _upsert_hidden_internal_field_meta "cms_block_rich_text" "refresh_target" 72
+      _upsert_hidden_internal_field_meta "cms_block_hero" "site_key" 80
+      _upsert_hidden_internal_field_meta "cms_block_hero" "page_slug" 81
+      _upsert_hidden_internal_field_meta "cms_block_hero" "refresh_target" 82
     
       _upsert_page_block_slot_field_meta() {
         _collection="cms_page_blocks"
