@@ -75,6 +75,8 @@ spec:
             items:
               - key: directus-postschema.sh
                 path: directus-postschema.sh
+        - name: directus-postschema-state
+          emptyDir: {}
         - name: directus-extensions-seed
           configMap:
             name: directus-extensions-seed
@@ -270,6 +272,16 @@ spec:
         image: postgres:16-alpine
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "/scripts/directus-postschema.sh"]
+        readinessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - test -f /postschema-state/ready
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 1
+          failureThreshold: 3
         env:
           - name: DB_HOST
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_HOST } }
@@ -277,6 +289,8 @@ spec:
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
           - name: DB_DATABASE
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+          - name: DIRECTUS_POSTSCHEMA_STATE_DIR
+            value: "/postschema-state"
           - name: DIRECTUS_FLOW_API_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/flows/admin"
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
@@ -304,6 +318,8 @@ spec:
           - name: directus-postschema-script
             mountPath: /scripts
             readOnly: true
+          - name: directus-postschema-state
+            mountPath: /postschema-state
       - name: vault-agent
         image: hashicorp/vault:1.15.4
         command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
