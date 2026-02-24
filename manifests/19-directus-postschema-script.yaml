@@ -3089,7 +3089,8 @@ data:
           'to_entries[] | select(.key|test("openai.*key$"; "i")) | .value | if type=="string" then . else empty end' \
           | head -n1 || true)"
         if [ -n "${OPENAI_KEY_FROM_SETTINGS:-}" ] && [ "${OPENAI_KEY_FROM_SETTINGS}" != "null" ]; then
-          if printf '%s' "$OPENAI_KEY_FROM_SETTINGS" | grep -q '<path:'; then
+          if printf '%s' "$OPENAI_KEY_FROM_SETTINGS" | grep -q '<' && \
+             printf '%s' "$OPENAI_KEY_FROM_SETTINGS" | grep -q 'path:'; then
             echo "⚠️ OpenAI key placeholder detected in settings.yaml (AVP not rendered); will try Vault."
           else
             OPENAI_KEY="$OPENAI_KEY_FROM_SETTINGS"
