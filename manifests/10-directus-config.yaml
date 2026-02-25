@@ -1063,23 +1063,31 @@ data:
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
             if (choices.value.length === 0 && !missingContext.value) {
-              loadError.value = mode.value === 'template'
-                ? 'No published templates available for this site scope.'
-                : mode.value === 'theme'
-                  ? 'No published themes available for this site scope.'
-                  : mode.value === 'module'
-                    ? 'No published modules available for this site scope.'
-                    : mode.value === 'parent'
-                      ? 'No eligible template parent blocks are available for this page.'
+              if (mode.value === 'parent') {
+                loadError.value = '';
+                missingContext.value = 'Optional: leave empty for top-level blocks, or create a published Template Ref block on this page first.';
+              } else {
+                loadError.value = mode.value === 'template'
+                  ? 'No published templates available for this site scope.'
+                  : mode.value === 'theme'
+                    ? 'No published themes available for this site scope.'
+                    : mode.value === 'module'
+                      ? 'No published modules available for this site scope.'
                       : 'No valid slots available for this page template and site scope.';
+              }
             }
           } catch (error) {
             if (currentRequest !== requestId) return;
             choices.value = [];
             missingContext.value = '';
-            loadError.value = error?.response?.data?.errors?.[0]?.message
-              || error?.message
-              || 'Failed to load options';
+            if (mode.value === 'parent') {
+              loadError.value = '';
+              missingContext.value = 'Optional: parent block unavailable in this context. Save the page and create a Template Ref block first.';
+            } else {
+              loadError.value = error?.response?.data?.errors?.[0]?.message
+                || error?.message
+                || 'Failed to load options';
+            }
           } finally {
             if (currentRequest === requestId) loading.value = false;
           }
@@ -1258,7 +1266,7 @@ data:
           const hasDirectusSelect = typeof resolvedSelect !== 'string';
           const placeholderText = loading.value
             ? 'Loading options...'
-            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : mode.value === 'parent' ? 'Select a parent block' : 'Select a slot'));
+            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : mode.value === 'parent' ? 'Optional: select a parent block' : 'Select a slot'));
 
           const errorNotice = loadError.value
             ? (typeof resolvedNotice !== 'string'
@@ -1491,6 +1499,9 @@ data:
         const moduleDefinition = ref(null);
         const localProps = ref({});
         const jsonEditorValue = ref('{}');
+        const pendingModuleSwitchKey = ref('');
+        const pendingModuleDefaults = ref({});
+        const applyPendingDefaultsForModuleKey = ref('');
 
         const resolvedOptions = computed(() => parseOptions(props.options));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
@@ -1523,6 +1534,22 @@ data:
             schemaError.value = '';
           },
           { immediate: true }
+        );
+
+        watch(
+          () => moduleKey.value,
+          (nextValue, previousValue) => {
+            const nextKey = asString(nextValue);
+            const previousKey = asString(previousValue);
+            if (nextKey && previousKey && nextKey !== previousKey) {
+              pendingModuleSwitchKey.value = nextKey;
+            }
+            if (!nextKey) {
+              pendingModuleSwitchKey.value = '';
+              pendingModuleDefaults.value = {};
+              applyPendingDefaultsForModuleKey.value = '';
+            }
+          }
         );
 
         const apiGet = async (path, params = {}) => {
@@ -1611,6 +1638,13 @@ data:
 
           moduleDefinition.value = preferred;
           loadError.value = '';
+
+          const resolvedModuleKey = asString(preferred?.[moduleKeyField.value]) || key;
+          if (pendingModuleSwitchKey.value && pendingModuleSwitchKey.value === resolvedModuleKey) {
+            pendingModuleDefaults.value = normalizeObject(parseJsonLike(preferred?.[defaultPropsField.value], {}));
+            applyPendingDefaultsForModuleKey.value = resolvedModuleKey;
+            pendingModuleSwitchKey.value = '';
+          }
         };
 
         watch(
@@ -1652,6 +1686,17 @@ data:
           jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
           emit('input', localProps.value);
         };
+
+        watch(
+          () => applyPendingDefaultsForModuleKey.value,
+          (nextModuleKey) => {
+            if (!nextModuleKey) return;
+            emitProps(pendingModuleDefaults.value);
+            pendingModuleDefaults.value = {};
+            applyPendingDefaultsForModuleKey.value = '';
+            schemaError.value = '';
+          }
+        );
 
         const setPropertyValue = (key, value) => {
           const next = { ...mergedProps.value };
