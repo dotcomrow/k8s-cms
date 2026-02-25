@@ -1919,14 +1919,21 @@ data:
 
       template_note="Required: choose which registered layout template this page uses."
       theme_note="Required: choose which published theme package this page uses."
-      slot_note="Choose a slot for this block. Validation enforces slot compatibility with the page layout template."
+      slot_note="Choose a slot for this block. Slots come from the page layout template; multiple blocks can share a slot and render in sort order."
       module_note="Required: choose which published module this block should render."
       module_props_note="Optional JSON props for this module instance (falls back to module defaults when empty)."
+      internal_metadata_note="Managed automatically from page/block context."
+      status_note="Publishing control for this record."
+      status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
+      status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
       slot_note_sql="$(printf '%s' "${slot_note}" | sed "s/'/''/g")"
       module_note_sql="$(printf '%s' "${module_note}" | sed "s/'/''/g")"
       module_props_note_sql="$(printf '%s' "${module_props_note}" | sed "s/'/''/g")"
+      internal_metadata_note_sql="$(printf '%s' "${internal_metadata_note}" | sed "s/'/''/g")"
+      status_note_sql="$(printf '%s' "${status_note}" | sed "s/'/''/g")"
     
       _upsert_page_layout_template_field_meta() {
         _collection="cms_pages"
@@ -2208,12 +2215,146 @@ data:
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created props_json field UX on ${_collection}"
       }
+
+      _upsert_hidden_internal_field_meta_dynamic() {
+        _collection="$1"
+        _field="$2"
+        _sort="${3:-99}"
+        if [ -z "${_collection:-}" ] || [ "${_collection}" = "null" ] || [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=true"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=true"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${internal_metadata_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated hidden metadata field UX on ${_collection}.${_field}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},true"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},true"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${internal_metadata_note_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created hidden metadata field UX on ${_collection}.${_field}"
+      }
+
+      _upsert_status_dropdown_field_meta() {
+        _collection="$1"
+        _sort="${2:-1}"
+        if [ -z "${_collection:-}" ] || [ "${_collection}" = "null" ]; then
+          return 0
+        fi
+        _field="status"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${status_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${status_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${status_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated status field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${status_note_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created status field UX on ${_collection}"
+      }
     
       _upsert_page_layout_template_field_meta
       _upsert_page_theme_package_field_meta
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_block_module_key_field_meta
       _upsert_block_module_props_field_meta
+      _upsert_status_dropdown_field_meta "cms_block_module" 1
+      _upsert_status_dropdown_field_meta "cms_modules" 1
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "id" 81
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "site_key" 82
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "page_slug" 83
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "refresh_target" 84
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_created" 85
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_updated" 86
+      _upsert_hidden_internal_field_meta_dynamic "cms_modules" "id" 91
+      _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_created" 92
+      _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 93
     else
       echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot/module UX config"
     fi
