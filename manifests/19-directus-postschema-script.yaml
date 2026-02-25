@@ -3,6 +3,8 @@ kind: ConfigMap
 metadata:
   name: directus-postschema-script
   namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
   labels:
     app: directus
 data:
