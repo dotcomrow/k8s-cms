@@ -3898,8 +3898,10 @@ data:
     
               create_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Create"
               update_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Update"
+              manual_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Manual"
               create_flow_desc="Refreshes '${target_key}' app cache endpoint for site '${site_key}' after create events."
               update_flow_desc="Refreshes '${target_key}' app cache endpoint for site '${site_key}' after update events."
+              manual_flow_desc="Manual GUI-triggered refresh for '${target_key}' app cache endpoint (site '${site_key}')."
     
               create_flow_payload="$(jq -nc \
                 --arg name "${create_flow_name}" \
@@ -3913,6 +3915,11 @@ data:
                 --arg desc "${update_flow_desc}" \
                 --argjson collections "${refresh_collections_json}" \
                 '{name:$name,trigger:"event",status:$status,accountability:"all",icon:"sync",color:"#2E7D32",description:$desc,options:{type:"action",scope:["items.update"],collections:$collections}}')"
+              manual_flow_payload="$(jq -nc \
+                --arg name "${manual_flow_name}" \
+                --arg status "${flow_status}" \
+                --arg desc "${manual_flow_desc}" \
+                '{name:$name,trigger:"manual",status:$status,accountability:"all",icon:"bolt",color:"#1565C0",description:$desc,options:{}}')"
     
               create_flow_id="$(_directus_find_flow_id_by_name "${create_flow_name}")"
               if [ -n "${create_flow_id:-}" ] && [ "${create_flow_id}" != "null" ]; then
@@ -3930,11 +3937,19 @@ data:
                 update_flow_id="$(printf '%s' "${updated_flow}" | jq -r '.data.id // empty' 2>/dev/null || true)"
               fi
     
-              if [ -z "${create_flow_id:-}" ] || [ -z "${update_flow_id:-}" ]; then
+              manual_flow_id="$(_directus_find_flow_id_by_name "${manual_flow_name}")"
+              if [ -n "${manual_flow_id:-}" ] && [ "${manual_flow_id}" != "null" ]; then
+                _directus_api_write "PATCH" "/flows/${manual_flow_id}" "${manual_flow_payload}" >/tmp/directus-flow-upsert.json 2>/dev/null || true
+              else
+                manual_flow_created="$(_directus_api_write "POST" "/flows" "${manual_flow_payload}" 2>/dev/null || true)"
+                manual_flow_id="$(printf '%s' "${manual_flow_created}" | jq -r '.data.id // empty' 2>/dev/null || true)"
+              fi
+    
+              if [ -z "${create_flow_id:-}" ] || [ -z "${update_flow_id:-}" ] || [ -z "${manual_flow_id:-}" ]; then
                 echo "⚠️ Failed to ensure cache-refresh flows for site_key='${site_key}', target='${target_key}'"
               else
                 if [ "${flow_status}" != "active" ]; then
-                  echo "✅ Reconciled cache-refresh flows for site_key='${site_key}', target='${target_key}' as inactive"
+                  echo "✅ Reconciled cache-refresh flows (create/update/manual) for site_key='${site_key}', target='${target_key}' as inactive"
                   continue
                 fi
 
@@ -4068,10 +4083,65 @@ data:
                   "$(jq -nc --arg operation "${update_read_op_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
                   >/tmp/directus-flow-entry.json 2>/dev/null || true
 
+                manual_request_options="$(jq -nc \
+                  --arg method "${target_method}" \
+                  --arg url "${target_endpoint_effective}" \
+                  --arg site "${site_key}" \
+                  --arg target "${target_key}" \
+                  --argjson headers "${target_headers_effective_json}" \
+                  '{method:$method,url:$url,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"manual.run",reason:"directus-manual-flow"}}')"
+                manual_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
+                manual_token_options="$(jq -nc \
+                  --arg url "${refresh_auth_token_url}" \
+                  --arg body "${refresh_auth_token_body}" \
+                  '{method:"POST",url:$url,headers:[{header:"Content-Type",value:"application/x-www-form-urlencoded"},{header:"Accept",value:"application/json"}],body:$body}')"
+
+                manual_first_request_op_id=""
+                manual_prev_sleep_op_id=""
+                manual_attempt=1
+                while [ "${manual_attempt}" -le "${target_retry_attempts}" ]; do
+                  manual_request_key="refresh_cache_attempt_${manual_attempt}"
+                  manual_request_name="Refresh Cache Endpoint (Attempt ${manual_attempt}/${target_retry_attempts})"
+                  manual_request_pos_x=$((73 + (manual_attempt - 1) * 56))
+                  manual_request_op_id="$(_directus_upsert_operation "${manual_flow_id}" "${manual_request_key}" "request" "${manual_request_name}" "${manual_request_pos_x}" 121 "${manual_request_options}")"
+
+                  if [ -z "${manual_first_request_op_id:-}" ]; then
+                    manual_first_request_op_id="${manual_request_op_id}"
+                  fi
+
+                  if [ -n "${manual_prev_sleep_op_id:-}" ] && [ "${manual_prev_sleep_op_id}" != "null" ]; then
+                    _directus_set_operation_links "${manual_prev_sleep_op_id}" "${manual_request_op_id}" ""
+                    manual_prev_sleep_op_id=""
+                  fi
+
+                  if [ "${manual_attempt}" -lt "${target_retry_attempts}" ]; then
+                    manual_sleep_key="refresh_backoff_${manual_attempt}"
+                    manual_sleep_name="Retry Delay (${manual_attempt}/${target_retry_attempts})"
+                    manual_sleep_pos_x=$((manual_request_pos_x + 28))
+                    manual_sleep_op_id="$(_directus_upsert_operation "${manual_flow_id}" "${manual_sleep_key}" "sleep" "${manual_sleep_name}" "${manual_sleep_pos_x}" 139 "${manual_sleep_options}")"
+                    _directus_set_operation_links "${manual_request_op_id}" "" "${manual_sleep_op_id}"
+                    manual_prev_sleep_op_id="${manual_sleep_op_id}"
+                  else
+                    _directus_set_operation_links "${manual_request_op_id}" "" ""
+                  fi
+
+                  manual_attempt=$((manual_attempt + 1))
+                done
+
+                manual_entry_operation_id="${manual_first_request_op_id}"
+                if [ "${refresh_auth_enabled}" = "true" ] && [ "${refresh_auth_ready}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
+                  manual_token_op_id="$(_directus_upsert_operation "${manual_flow_id}" "mint_refresh_token_attempt_1" "request" "Mint Refresh Token" 55 121 "${manual_token_options}")"
+                  _directus_set_operation_links "${manual_token_op_id}" "${manual_first_request_op_id}" ""
+                  manual_entry_operation_id="${manual_token_op_id}"
+                fi
+                _directus_api_write "PATCH" "/flows/${manual_flow_id}" \
+                  "$(jq -nc --arg operation "${manual_entry_operation_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
+                  >/tmp/directus-flow-entry.json 2>/dev/null || true
+
                 if [ "${flow_status}" = "active" ]; then
-                  echo "✅ Reconciled active cache-refresh flows for site_key='${site_key}', target='${target_key}' (${target_method} ${target_endpoint_effective}, attempts=${target_retry_attempts}, retry_delay_ms=${target_retry_delay_ms})"
+                  echo "✅ Reconciled active cache-refresh flows (create/update/manual) for site_key='${site_key}', target='${target_key}' (${target_method} ${target_endpoint_effective}, attempts=${target_retry_attempts}, retry_delay_ms=${target_retry_delay_ms})"
                 else
-                  echo "✅ Reconciled cache-refresh flows for site_key='${site_key}', target='${target_key}' as inactive"
+                  echo "✅ Reconciled cache-refresh flows (create/update/manual) for site_key='${site_key}', target='${target_key}' as inactive"
                 fi
               fi
             done
@@ -4079,6 +4149,7 @@ data:
             # Keep legacy pre-target flow names inactive to avoid duplicate refresh calls.
             legacy_create_flow_name="CMS Cache Refresh (${site_key}) - Create"
             legacy_update_flow_name="CMS Cache Refresh (${site_key}) - Update"
+            legacy_manual_flow_name="CMS Cache Refresh (${site_key}) - Manual"
             legacy_create_flow_id="$(_directus_find_flow_id_by_name "${legacy_create_flow_name}")"
             if [ -n "${legacy_create_flow_id:-}" ] && [ "${legacy_create_flow_id}" != "null" ]; then
               _directus_api_write "PATCH" "/flows/${legacy_create_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-legacy.json 2>/dev/null || true
@@ -4086,6 +4157,10 @@ data:
             legacy_update_flow_id="$(_directus_find_flow_id_by_name "${legacy_update_flow_name}")"
             if [ -n "${legacy_update_flow_id:-}" ] && [ "${legacy_update_flow_id}" != "null" ]; then
               _directus_api_write "PATCH" "/flows/${legacy_update_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-legacy.json 2>/dev/null || true
+            fi
+            legacy_manual_flow_id="$(_directus_find_flow_id_by_name "${legacy_manual_flow_name}")"
+            if [ -n "${legacy_manual_flow_id:-}" ] && [ "${legacy_manual_flow_id}" != "null" ]; then
+              _directus_api_write "PATCH" "/flows/${legacy_manual_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-legacy.json 2>/dev/null || true
             fi
           else
             echo "⚠️ Skipping cache-refresh flow provisioning for site_key='${site_key}' (Directus API token unavailable)"
