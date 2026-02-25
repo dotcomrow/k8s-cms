@@ -1443,6 +1443,11 @@ data:
       return String(value).trim();
     };
 
+    const asInputString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value);
+    };
+
     const parseJsonLike = (value, fallback) => {
       if (value === null || value === undefined) return fallback;
       if (typeof value === 'string') {
@@ -1829,8 +1834,8 @@ data:
               {
                 id: inputId,
                 disabled: props.disabled || loading.value,
-                value: asString(value),
-                onChange: (event) => setPropertyValue(propKey, asString(event?.target?.value)),
+                value: asInputString(value),
+                onChange: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
               },
               [
                 h('option', { value: '' }, `Select ${title}`),
@@ -1887,8 +1892,8 @@ data:
               id: inputId,
               type: 'text',
               disabled: props.disabled || loading.value,
-              value: asString(value),
-              onInput: (event) => setPropertyValue(propKey, asString(event?.target?.value)),
+              value: asInputString(value),
+              onInput: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
             });
           }
 
@@ -1952,7 +1957,7 @@ data:
                 class: 'cms-module-props-editor__json-code',
                 style: { minHeight: '340px' },
                 'onUpdate:modelValue': (nextValue) => {
-                  jsonEditorValue.value = asString(nextValue);
+                  jsonEditorValue.value = asInputString(nextValue);
                   schemaError.value = '';
                 },
                 onBlur: applyJsonEditorValue,
@@ -1967,7 +1972,7 @@ data:
                 class: 'cms-module-props-editor__json-code',
                 style: { minHeight: '340px' },
                 'onUpdate:modelValue': (nextValue) => {
-                  jsonEditorValue.value = asString(nextValue);
+                  jsonEditorValue.value = asInputString(nextValue);
                   schemaError.value = '';
                 },
                 onBlur: applyJsonEditorValue,
@@ -1991,7 +1996,7 @@ data:
                   padding: '12px',
                 },
                 onInput: (event) => {
-                  jsonEditorValue.value = asString(event?.target?.value);
+                  jsonEditorValue.value = asInputString(event?.target?.value);
                   schemaError.value = '';
                 },
                 onBlur: applyJsonEditorValue,
