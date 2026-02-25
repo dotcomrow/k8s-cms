@@ -90,17 +90,19 @@ data:
     SITES_FILE="/directus-sites/sites.yaml"
     LAYOUTS_FILE="/directus-layout-templates/templates.yaml"
     THEMES_FILE="/directus-theme-packages/themes.yaml"
+    MODULES_FILE="/directus-modules/modules.yaml"
     EXTRA_SETTINGS_FILE="/directus-settings/settings.yaml"
     RECON_SCRIPT_FILE="/scripts/directus-postschema.sh"
     RECON_SITES_SHA="$(_file_sha256 "${SITES_FILE}")"
     RECON_LAYOUTS_SHA="$(_file_sha256 "${LAYOUTS_FILE}")"
     RECON_THEMES_SHA="$(_file_sha256 "${THEMES_FILE}")"
+    RECON_MODULES_SHA="$(_file_sha256 "${MODULES_FILE}")"
     RECON_SETTINGS_SHA="$(_file_sha256 "${EXTRA_SETTINGS_FILE}")"
     RECON_SCRIPT_SHA="$(_file_sha256 "${RECON_SCRIPT_FILE}")"
     RECON_PATCH_KEY="postschema_reconcile_v1"
     RECON_PATCH_GROUP="directus-postschema"
-    RECON_PATCH_CHECKSUM="$(printf '%s|%s|%s|%s|%s|%s' \
-      "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" "${RECON_SITES_SHA}" "${RECON_LAYOUTS_SHA}" "${RECON_THEMES_SHA}" "${RECON_SETTINGS_SHA}" "${RECON_SCRIPT_SHA}" \
+    RECON_PATCH_CHECKSUM="$(printf '%s|%s|%s|%s|%s|%s|%s' \
+      "${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}" "${RECON_SITES_SHA}" "${RECON_LAYOUTS_SHA}" "${RECON_THEMES_SHA}" "${RECON_MODULES_SHA}" "${RECON_SETTINGS_SHA}" "${RECON_SCRIPT_SHA}" \
       | sha256sum | awk '{print $1}')"
 
     RECON_PATCH_KEY_SQL="$(printf '%s' "${RECON_PATCH_KEY}" | sed "s/'/''/g")"
@@ -113,9 +115,10 @@ data:
       --arg sites_sha "${RECON_SITES_SHA}" \
       --arg layouts_sha "${RECON_LAYOUTS_SHA}" \
       --arg themes_sha "${RECON_THEMES_SHA}" \
+      --arg modules_sha "${RECON_MODULES_SHA}" \
       --arg settings_sha "${RECON_SETTINGS_SHA}" \
       --arg script_sha "${RECON_SCRIPT_SHA}" \
-      '{version:$version,inputs:{sites_yaml_sha256:$sites_sha,layout_templates_yaml_sha256:$layouts_sha,theme_packages_yaml_sha256:$themes_sha,directus_settings_yaml_sha256:$settings_sha,postschema_script_sha256:$script_sha}}')"
+      '{version:$version,inputs:{sites_yaml_sha256:$sites_sha,layout_templates_yaml_sha256:$layouts_sha,theme_packages_yaml_sha256:$themes_sha,modules_yaml_sha256:$modules_sha,directus_settings_yaml_sha256:$settings_sha,postschema_script_sha256:$script_sha}}')"
     RECON_PATCH_DETAILS_SQL="$(printf '%s' "${RECON_PATCH_DETAILS_JSON}" | sed "s/'/''/g")"
 
     RECON_ALREADY_CURRENT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -334,7 +337,10 @@ data:
        ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS page_slug TEXT; \
-       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
     
     # Allow each site to have its own homepage slug (e.g. both can use "home").
     echo "🧱 Ensuring per-site slug uniqueness..."
@@ -492,6 +498,28 @@ data:
           OR h.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_hero"; then
       sync_site_metadata_failed="1"
     fi
+    if ! _psql_yb_retry "UPDATE cms_block_module m
+      SET refresh_target = CASE
+        WHEN LOWER(COALESCE(m.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(m.refresh_target)
+        ELSE 'both'
+      END
+      WHERE m.refresh_target IS NULL
+         OR LOWER(COALESCE(m.refresh_target, '')) NOT IN ('preview','prod','both')
+         OR m.refresh_target <> LOWER(m.refresh_target);" "normalize cms_block_module.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_block_module m
+      SET site_key = pb.site_key,
+          page_slug = pb.page_slug,
+          refresh_target = pb.refresh_target
+      FROM cms_page_blocks pb
+      WHERE pb.collection = 'cms_block_module'
+        AND pb.item = m.id::text
+        AND (m.site_key IS DISTINCT FROM pb.site_key
+          OR m.page_slug IS DISTINCT FROM pb.page_slug
+          OR m.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_module"; then
+      sync_site_metadata_failed="1"
+    fi
     if ! _psql_yb_retry "DO \$\$
       BEGIN
         IF to_regclass('directus.cms_theme_packages') IS NOT NULL THEN
@@ -538,6 +566,13 @@ data:
           ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_refresh_target_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
             ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+        END IF;
+        IF to_regclass('directus.cms_block_module') IS NOT NULL THEN
+          ALTER TABLE cms_block_module ALTER COLUMN refresh_target SET DEFAULT 'both';
+          ALTER TABLE cms_block_module ALTER COLUMN refresh_target SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_refresh_target_check' AND conrelid = 'directus.cms_block_module'::regclass) THEN
+            ALTER TABLE cms_block_module ADD CONSTRAINT cms_block_module_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_theme_packages') IS NOT NULL THEN
@@ -743,6 +778,10 @@ data:
       _upsert_hidden_internal_field_meta "cms_block_hero" "site_key" 80
       _upsert_hidden_internal_field_meta "cms_block_hero" "page_slug" 81
       _upsert_hidden_internal_field_meta "cms_block_hero" "refresh_target" 82
+      _upsert_hidden_internal_field_meta "cms_block_module" "id" 83
+      _upsert_hidden_internal_field_meta "cms_block_module" "site_key" 84
+      _upsert_hidden_internal_field_meta "cms_block_module" "page_slug" 85
+      _upsert_hidden_internal_field_meta "cms_block_module" "refresh_target" 86
       _upsert_hidden_internal_field_meta "cms_layout_templates" "id" 89
       _upsert_hidden_internal_field_meta "cms_layout_template_slots" "id" 89
       _upsert_hidden_internal_field_meta "cms_theme_packages" "id" 89
@@ -1289,6 +1328,185 @@ data:
     if command -v _upsert_refresh_target_field_meta >/dev/null 2>&1; then
       _upsert_refresh_target_field_meta "cms_theme_packages"
     fi
+
+    # 5b.2) Ensure module registry + module content block collections exist and seed modules from GitOps config.
+    echo "🧱 Ensuring cms_modules exists..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE TABLE IF NOT EXISTS cms_modules ( \
+         id UUID PRIMARY KEY, \
+         module_key TEXT NOT NULL, \
+         name TEXT NOT NULL, \
+         description TEXT NULL, \
+         provider TEXT NOT NULL DEFAULT 'radix', \
+         component_type TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         site_key TEXT NULL, \
+         props_schema JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         default_props JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS module_key TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS description TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS provider TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS component_type TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS props_schema JSONB; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS default_props JSONB; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_modules ALTER COLUMN provider SET DEFAULT 'radix'; \
+       ALTER TABLE IF EXISTS cms_modules ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_modules ALTER COLUMN props_schema SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS cms_modules ALTER COLUMN default_props SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS cms_modules ALTER COLUMN date_created SET DEFAULT now(); \
+       DO \$\$ \
+       BEGIN \
+         IF EXISTS ( \
+           SELECT 1 \
+           FROM pg_indexes \
+           WHERE schemaname = 'directus' \
+             AND indexname = 'cms_modules_scope_module_unique' \
+         ) THEN \
+           RETURN; \
+         END IF; \
+         IF NOT EXISTS ( \
+           SELECT 1 \
+           FROM ( \
+             SELECT COALESCE(site_key, '') AS site_scope, module_key, COUNT(*) AS c \
+             FROM cms_modules \
+             GROUP BY COALESCE(site_key, ''), module_key \
+             HAVING COUNT(*) > 1 \
+           ) dups \
+         ) THEN \
+           CREATE UNIQUE INDEX cms_modules_scope_module_unique \
+           ON cms_modules (COALESCE(site_key, ''), module_key); \
+         ELSE \
+           RAISE NOTICE 'Skipping cms_modules_scope_module_unique due to duplicate (site_key,module_key) rows'; \
+         END IF; \
+       END \
+       \$\$;"
+
+    echo "🧱 Ensuring cms_block_module exists..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE TABLE IF NOT EXISTS cms_block_module ( \
+         id UUID PRIMARY KEY, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         sort INTEGER NULL, \
+         module_key TEXT NOT NULL, \
+         props_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         site_key TEXT NULL, \
+         page_slug TEXT NULL, \
+         refresh_target TEXT NOT NULL DEFAULT 'both', \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS module_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS props_json JSONB; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN props_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN refresh_target SET DEFAULT 'both'; \
+       ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN date_created SET DEFAULT now();"
+
+    if [ -f "${MODULES_FILE}" ]; then
+      MODULES_JSON="$(yq -o=json '.' "${MODULES_FILE}" 2>/dev/null || true)"
+      if printf '%s' "${MODULES_JSON}" | jq -e '.modules | type=="array" and length>0' >/dev/null 2>&1; then
+        printf '%s' "${MODULES_JSON}" | jq -c '.modules[]' | while IFS= read -r module; do
+          module_key="$(printf '%s' "$module" | jq -r '.module_key // empty')"
+          module_name="$(printf '%s' "$module" | jq -r '.name // empty')"
+          module_status_raw="$(printf '%s' "$module" | jq -r '.status // "published"')"
+          module_provider_raw="$(printf '%s' "$module" | jq -r '.provider // "radix"')"
+          module_desc="$(printf '%s' "$module" | jq -r '.description // empty')"
+          module_component_type="$(printf '%s' "$module" | jq -r '.component_type // empty')"
+          module_site="$(printf '%s' "$module" | jq -r 'if .site_key == null then "" else (.site_key | tostring) end')"
+          module_props_schema_json="$(printf '%s' "$module" | jq -c '.props_schema // {}')"
+          module_default_props_json="$(printf '%s' "$module" | jq -c '.default_props // {}')"
+
+          if [ -z "${module_key:-}" ] || [ -z "${module_name:-}" ]; then
+            echo "⚠️  skipping invalid module entry (module_key/name required)"
+            continue
+          fi
+
+          module_status="$(printf '%s' "${module_status_raw:-published}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${module_status}" != "published" ] && [ "${module_status}" != "draft" ] && [ "${module_status}" != "archived" ]; then
+            module_status="published"
+          fi
+          module_provider="$(printf '%s' "${module_provider_raw:-radix}" | tr '[:upper:]' '[:lower:]')"
+          if [ -z "${module_provider}" ]; then
+            module_provider="radix"
+          fi
+
+          module_key_sql="$(printf '%s' "$module_key" | sed "s/'/''/g")"
+          module_name_sql="$(printf '%s' "$module_name" | sed "s/'/''/g")"
+          module_status_sql="$(printf '%s' "$module_status" | sed "s/'/''/g")"
+          module_provider_sql="$(printf '%s' "$module_provider" | sed "s/'/''/g")"
+          module_props_schema_sql="$(printf '%s' "$module_props_schema_json" | sed "s/'/''/g")"
+          module_default_props_sql="$(printf '%s' "$module_default_props_json" | sed "s/'/''/g")"
+
+          module_desc_sql="NULL"
+          if [ -n "${module_desc:-}" ]; then
+            module_desc_esc="$(printf '%s' "$module_desc" | sed "s/'/''/g")"
+            module_desc_sql="'${module_desc_esc}'"
+          fi
+          module_component_type_sql="NULL"
+          if [ -n "${module_component_type:-}" ]; then
+            module_component_type_esc="$(printf '%s' "$module_component_type" | sed "s/'/''/g")"
+            module_component_type_sql="'${module_component_type_esc}'"
+          fi
+          module_site_sql="NULL"
+          module_scope_condition="(site_key IS NULL OR site_key='')"
+          if [ -n "${module_site:-}" ]; then
+            module_site_esc="$(printf '%s' "$module_site" | sed "s/'/''/g")"
+            module_site_sql="'${module_site_esc}'"
+            module_scope_condition="site_key='${module_site_esc}'"
+          fi
+
+          existing_module_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id FROM directus.cms_modules WHERE module_key='${module_key_sql}' AND ${module_scope_condition} LIMIT 1;" || true)"
+          existing_module_id="$(printf '%s' "$existing_module_id" | tr -d '\r')"
+          if [ -n "${existing_module_id:-}" ] && [ "${existing_module_id}" != "null" ]; then
+            existing_module_id_sql="$(printf '%s' "$existing_module_id" | sed "s/'/''/g")"
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               UPDATE cms_modules \
+               SET name='${module_name_sql}', \
+                   description=${module_desc_sql}, \
+                   provider='${module_provider_sql}', \
+                   component_type=${module_component_type_sql}, \
+                   status='${module_status_sql}', \
+                   site_key=${module_site_sql}, \
+                   props_schema='${module_props_schema_sql}'::jsonb, \
+                   default_props='${module_default_props_sql}'::jsonb, \
+                   date_updated=now() \
+               WHERE id='${existing_module_id_sql}';"
+            echo "✅ Reconciled module '${module_key}'"
+          else
+            new_module_id="$(cat /proc/sys/kernel/random/uuid)"
+            new_module_id_sql="$(printf '%s' "$new_module_id" | sed "s/'/''/g")"
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; \
+               INSERT INTO cms_modules (id, module_key, name, description, provider, component_type, status, site_key, props_schema, default_props, date_created, date_updated) \
+               VALUES ('${new_module_id_sql}', '${module_key_sql}', '${module_name_sql}', ${module_desc_sql}, '${module_provider_sql}', ${module_component_type_sql}, '${module_status_sql}', ${module_site_sql}, '${module_props_schema_sql}'::jsonb, '${module_default_props_sql}'::jsonb, now(), now());"
+            echo "✅ Seeded module '${module_key}'"
+          fi
+        done
+      else
+        echo "  └─ no modules configured in ${MODULES_FILE}; skipping"
+      fi
+    else
+      echo "  └─ ${MODULES_FILE} not found; skipping"
+    fi
     
     echo "🧱 Ensuring cms_page_blocks M2A relation allows cms block collections..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -1300,7 +1518,7 @@ data:
          IF to_regclass('directus.directus_relations') IS NULL OR to_regclass('directus.cms_page_blocks') IS NULL THEN \
            RETURN; \
          END IF; \
-         SELECT COALESCE(string_agg(src.collection_name, ',' ORDER BY src.collection_name), 'cms_block_hero,cms_block_rich_text') \
+         SELECT COALESCE(string_agg(src.collection_name, ',' ORDER BY src.collection_name), 'cms_block_hero,cms_block_module,cms_block_rich_text') \
            INTO _allowed \
          FROM ( \
            SELECT DISTINCT collection AS collection_name \
@@ -1309,6 +1527,8 @@ data:
              AND collection LIKE 'cms_block_%' \
            UNION \
            SELECT 'cms_block_hero' \
+           UNION \
+           SELECT 'cms_block_module' \
            UNION \
            SELECT 'cms_block_rich_text' \
          ) src; \
@@ -1408,6 +1628,15 @@ data:
               AND (h.site_key IS DISTINCT FROM NEW.site_key \
                 OR h.page_slug IS DISTINCT FROM NEW.page_slug \
                 OR h.refresh_target IS DISTINCT FROM _refresh_target); \
+         ELSIF NEW.collection = 'cms_block_module' THEN \
+           UPDATE directus.cms_block_module m \
+              SET site_key = NEW.site_key, \
+                  page_slug = NEW.page_slug, \
+                  refresh_target = _refresh_target \
+            WHERE m.id::text = NEW.item \
+              AND (m.site_key IS DISTINCT FROM NEW.site_key \
+                OR m.page_slug IS DISTINCT FROM NEW.page_slug \
+                OR m.refresh_target IS DISTINCT FROM _refresh_target); \
          END IF; \
          RETURN NEW; \
        END; \
@@ -1458,6 +1687,62 @@ data:
             AND (h.site_key IS DISTINCT FROM pb.site_key \
               OR h.page_slug IS DISTINCT FROM pb.page_slug \
               OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
+         UPDATE directus.cms_block_module m \
+            SET site_key = pb.site_key, \
+                page_slug = pb.page_slug, \
+                refresh_target = pb.refresh_target \
+           FROM directus.cms_page_blocks pb \
+          WHERE pb.page_id = NEW.id \
+            AND pb.collection = 'cms_block_module' \
+            AND pb.item = m.id::text \
+         AND (m.site_key IS DISTINCT FROM pb.site_key \
+              OR m.page_slug IS DISTINCT FROM pb.page_slug \
+              OR m.refresh_target IS DISTINCT FROM pb.refresh_target); \
+         RETURN NEW; \
+       END; \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.apply_cms_block_module_defaults() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         _site_key TEXT; \
+         _module_key TEXT; \
+         _normalized_refresh_target TEXT; \
+         _default_props JSONB; \
+       BEGIN \
+         _site_key := COALESCE(NULLIF(BTRIM(COALESCE(NEW.site_key, '')), ''), ''); \
+         _module_key := COALESCE(NULLIF(BTRIM(COALESCE(NEW.module_key, '')), ''), ''); \
+         _normalized_refresh_target := CASE \
+           WHEN LOWER(COALESCE(NEW.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(NEW.refresh_target) \
+           ELSE 'both' \
+         END; \
+         NEW.refresh_target := _normalized_refresh_target; \
+         NEW.props_json := COALESCE(NEW.props_json, '{}'::jsonb); \
+         IF jsonb_typeof(NEW.props_json) IS DISTINCT FROM 'object' THEN \
+           NEW.props_json := '{}'::jsonb; \
+         END IF; \
+         IF _module_key = '' THEN \
+           RETURN NEW; \
+         END IF; \
+         SELECT COALESCE(m.default_props, '{}'::jsonb) \
+           INTO _default_props \
+         FROM directus.cms_modules m \
+         WHERE m.module_key = _module_key \
+           AND LOWER(COALESCE(m.status, 'published')) = 'published' \
+           AND (COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = '' OR COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = _site_key) \
+         ORDER BY CASE WHEN COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = _site_key THEN 0 ELSE 1 END, \
+                  COALESCE(m.date_updated, m.date_created, now()) DESC \
+         LIMIT 1; \
+         _default_props := COALESCE(_default_props, '{}'::jsonb); \
+         IF jsonb_typeof(_default_props) IS DISTINCT FROM 'object' THEN \
+           _default_props := '{}'::jsonb; \
+         END IF; \
+         IF NEW.props_json = '{}'::jsonb THEN \
+           NEW.props_json := _default_props; \
+         ELSE \
+           NEW.props_json := _default_props || NEW.props_json; \
+         END IF; \
          RETURN NEW; \
        END; \
        \$\$; \
@@ -1482,7 +1767,8 @@ data:
          IF to_regclass('directus.cms_pages') IS NOT NULL \
             AND to_regclass('directus.cms_page_blocks') IS NOT NULL \
             AND to_regclass('directus.cms_block_rich_text') IS NOT NULL \
-            AND to_regclass('directus.cms_block_hero') IS NOT NULL THEN \
+            AND to_regclass('directus.cms_block_hero') IS NOT NULL \
+            AND to_regclass('directus.cms_block_module') IS NOT NULL THEN \
            DROP TRIGGER IF EXISTS cms_pages_sync_block_metadata ON cms_pages; \
            CREATE TRIGGER cms_pages_sync_block_metadata \
            AFTER INSERT OR UPDATE OF site_key, slug, refresh_target \
@@ -1490,10 +1776,19 @@ data:
            FOR EACH ROW \
            EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page(); \
          END IF; \
+         IF to_regclass('directus.cms_block_module') IS NOT NULL \
+            AND to_regclass('directus.cms_modules') IS NOT NULL THEN \
+           DROP TRIGGER IF EXISTS cms_block_module_apply_defaults ON cms_block_module; \
+           CREATE TRIGGER cms_block_module_apply_defaults \
+           BEFORE INSERT OR UPDATE OF module_key, props_json, site_key, refresh_target \
+           ON cms_block_module \
+           FOR EACH ROW \
+           EXECUTE FUNCTION directus.apply_cms_block_module_defaults(); \
+         END IF; \
        END \
        \$\$;"
     
-    echo "🧭 Configuring layout/theme/slot dropdown UX from registered templates..."
+    echo "🧭 Configuring layout/theme/slot/module dropdown UX from registered models..."
     DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
       "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_fields' LIMIT 1;" || true)"
     if [ "${DIRECTUS_FIELDS_EXISTS:-0}" = "1" ]; then
@@ -1584,6 +1879,27 @@ data:
         theme_choices_json='[]'
       fi
 
+      module_choices_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT COALESCE( \
+           json_agg(json_build_object('text', display_name, 'value', module_key) ORDER BY module_key)::text, \
+           '[]' \
+         ) \
+         FROM ( \
+           SELECT DISTINCT ON (module_key) \
+             module_key, \
+             COALESCE(NULLIF(BTRIM(name), ''), module_key) AS display_name, \
+             CASE WHEN COALESCE(NULLIF(BTRIM(site_key), ''), '') = '' THEN 1 ELSE 0 END AS scope_rank, \
+             COALESCE(date_updated, date_created, now()) AS ord_ts \
+           FROM directus.cms_modules \
+           WHERE COALESCE(NULLIF(BTRIM(module_key), ''), '') <> '' \
+             AND LOWER(COALESCE(status, 'published')) = 'published' \
+           ORDER BY module_key, scope_rank, ord_ts DESC \
+         ) modules;" || true)"
+      module_choices_json="$(printf '%s' "${module_choices_json}" | tr -d '\r\n')"
+      if [ -z "${module_choices_json:-}" ] || [ "${module_choices_json}" = "null" ] || [ "${module_choices_json}" = "[]" ]; then
+        module_choices_json='[]'
+      fi
+
       template_options_json="$(jq -nc --argjson choices "${template_choices_json}" '{choices:$choices,allowNone:false}')"
       template_interface_options_json="$(jq -nc --argjson choices "${template_choices_json}" \
         '{mode:"template",templates_collection:"cms_layout_templates",pages_collection:"cms_pages",template_value_field:"template_key",template_label_field:"name",page_site_field:"site_key",include_global:true,choices:$choices}')"
@@ -1596,13 +1912,21 @@ data:
       slot_interface_options_json="$(jq -nc --argjson choices "${slot_choices_json}" \
         '{mode:"slot",templates_collection:"cms_layout_templates",slots_collection:"cms_layout_template_slots",pages_collection:"cms_pages",page_id_field:"page_id",page_template_field:"layout_template_key",page_site_field:"site_key",slot_value_field:"slot_key",slot_label_field:"slot_label",include_global:true,choices:$choices}')"
       slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices}')"
+      module_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices,allowNone:false}')"
+      module_interface_options_json="$(jq -nc --argjson choices "${module_choices_json}" \
+        '{mode:"module",modules_collection:"cms_modules",pages_collection:"cms_pages",module_value_field:"module_key",module_label_field:"name",page_site_field:"site_key",include_global:true,choices:$choices}')"
+      module_display_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices}')"
 
       template_note="Required: choose which registered layout template this page uses."
       theme_note="Required: choose which published theme package this page uses."
       slot_note="Choose a slot for this block. Validation enforces slot compatibility with the page layout template."
+      module_note="Required: choose which published module this block should render."
+      module_props_note="Optional JSON props for this module instance (falls back to module defaults when empty)."
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
       slot_note_sql="$(printf '%s' "${slot_note}" | sed "s/'/''/g")"
+      module_note_sql="$(printf '%s' "${module_note}" | sed "s/'/''/g")"
+      module_props_note_sql="$(printf '%s' "${module_props_note}" | sed "s/'/''/g")"
     
       _upsert_page_layout_template_field_meta() {
         _collection="cms_pages"
@@ -1774,12 +2098,124 @@ data:
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created slot field UX on ${_collection}"
       }
+
+      _upsert_block_module_key_field_meta() {
+        _collection="cms_block_module"
+        _field="module_key"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${module_interface_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${module_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='cms-content-model-select'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=2"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${module_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated module_key field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-content-model-select'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},2"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${module_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created module_key field UX on ${_collection}"
+      }
+
+      _upsert_block_module_props_field_meta() {
+        _collection="cms_block_module"
+        _field="props_json"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        module_props_options_json='{"language":"json","lineNumber":true}'
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${module_props_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='input-code'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=3"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${module_props_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated props_json field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'input-code'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},3"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${module_props_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created props_json field UX on ${_collection}"
+      }
     
       _upsert_page_layout_template_field_meta
       _upsert_page_theme_package_field_meta
       _upsert_page_block_slot_field_meta_dynamic
+      _upsert_block_module_key_field_meta
+      _upsert_block_module_props_field_meta
     else
-      echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot UX config"
+      echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot/module UX config"
     fi
     
     # Yugabyte can briefly surface catalog-version mismatches right after DDL.
@@ -2446,6 +2882,10 @@ data:
                             copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                               "WITH ins AS (INSERT INTO directus.cms_block_hero (id, status, sort, headline, subheadline, background_image, cta_label, cta_url, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, headline, subheadline, background_image, cta_label, cta_url, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_hero WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                             ;;
+                          cms_block_module)
+                            copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                              "WITH ins AS (INSERT INTO directus.cms_block_module (id, status, sort, module_key, props_json, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, module_key, COALESCE(props_json, '{}'::jsonb), '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_module WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                            ;;
                           *)
                             echo "⚠️  skipping unsupported block collection '${blk_collection}' for site_key='${site_key}'"
                             continue
@@ -2517,7 +2957,15 @@ data:
                  AND pb.item = h.id::text \
                  AND pb.site_key='${site_key_sql}' \
                  AND pb.page_slug='${homepage_slug_sql}' \
-                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug OR h.refresh_target IS DISTINCT FROM pb.refresh_target);"
+                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
+               UPDATE cms_block_module m \
+               SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
+               FROM cms_page_blocks pb \
+               WHERE pb.collection = 'cms_block_module' \
+                 AND pb.item = m.id::text \
+                 AND pb.site_key='${site_key_sql}' \
+                 AND pb.page_slug='${homepage_slug_sql}' \
+                 AND (m.site_key IS DISTINCT FROM pb.site_key OR m.page_slug IS DISTINCT FROM pb.page_slug OR m.refresh_target IS DISTINCT FROM pb.refresh_target);"
     
             # Set homepage layout assignment from sites.yaml if configured.
             if [ -n "${homepage_layout_template_key_sql:-}" ]; then
@@ -2865,7 +3313,7 @@ data:
               refresh_targets_json="[]"
             fi
     
-            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_theme_packages"]'
+            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_modules","cms_theme_packages"]'
             targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
             if [ "${targets_count:-0}" = "0" ]; then
               echo "⚠️ No cache refresh targets configured for site_key='${site_key}'"

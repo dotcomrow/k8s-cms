@@ -642,24 +642,30 @@ data:
         const collectionKey = computed(() => asString(props.collection).toLowerCase());
         const mode = computed(() => {
           const explicit = asString(resolvedOptions.value?.mode).toLowerCase();
-          if (explicit === 'template' || explicit === 'slot' || explicit === 'theme') return explicit;
+          if (explicit === 'template' || explicit === 'slot' || explicit === 'theme' || explicit === 'module') return explicit;
           if (fieldKey.value === 'slot') return 'slot';
           if (fieldKey.value === 'layout_template_key') return 'template';
           if (fieldKey.value === 'theme_package_key') return 'theme';
+          if (fieldKey.value === 'module_key') return 'module';
           if (collectionKey.value === 'cms_page_blocks' && fieldKey.value.includes('slot')) return 'slot';
           if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('layout_template')) return 'template';
           if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('theme_package')) return 'theme';
+          if (collectionKey.value === 'cms_block_module' && fieldKey.value.includes('module_key')) return 'module';
           if (resolvedOptions.value?.slots_collection || resolvedOptions.value?.slot_value_field || resolvedOptions.value?.slot_label_field) {
             return 'slot';
           }
           if (resolvedOptions.value?.themes_collection || resolvedOptions.value?.theme_value_field || resolvedOptions.value?.theme_label_field) {
             return 'theme';
           }
+          if (resolvedOptions.value?.modules_collection || resolvedOptions.value?.module_value_field || resolvedOptions.value?.module_label_field) {
+            return 'module';
+          }
           return 'template';
         });
         const templatesCollection = computed(() => asString(resolvedOptions.value?.templates_collection) || 'cms_layout_templates');
         const slotsCollection = computed(() => asString(resolvedOptions.value?.slots_collection) || 'cms_layout_template_slots');
         const themesCollection = computed(() => asString(resolvedOptions.value?.themes_collection) || 'cms_theme_packages');
+        const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
         const pagesCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
 
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'page_id');
@@ -673,6 +679,8 @@ data:
         const templateLabelField = computed(() => asString(resolvedOptions.value?.template_label_field) || 'name');
         const themeValueField = computed(() => asString(resolvedOptions.value?.theme_value_field) || 'theme_key');
         const themeLabelField = computed(() => asString(resolvedOptions.value?.theme_label_field) || 'name');
+        const moduleValueField = computed(() => asString(resolvedOptions.value?.module_value_field) || 'module_key');
+        const moduleLabelField = computed(() => asString(resolvedOptions.value?.module_label_field) || 'name');
         const includeGlobal = computed(() => {
           const v = resolvedOptions.value?.include_global;
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
@@ -786,6 +794,28 @@ data:
           );
         };
 
+        const loadModuleChoices = async () => {
+          const siteKey = asString(props.values?.[pageSiteField.value]);
+          const filter = {
+            _and: [
+              { status: { _eq: 'published' } },
+              buildScopedFilter(siteKey),
+            ],
+          };
+          const response = await apiGet(`/items/${modulesCollection.value}`, {
+            fields: [moduleValueField.value, moduleLabelField.value, 'site_key', 'status'].join(','),
+            limit: -1,
+            sort: moduleValueField.value,
+            filter: JSON.stringify(filter),
+          });
+          return uniqueChoices(
+            normalizeRows(response).map((row) => ({
+              value: row?.[moduleValueField.value],
+              text: row?.[moduleLabelField.value] || row?.[moduleValueField.value],
+            }))
+          );
+        };
+
         const loadSlotChoices = async () => {
           let siteKey = asString(props.values?.[pageSiteField.value]);
           let templateKey = asString(props.values?.[pageTemplateField.value]);
@@ -884,7 +914,9 @@ data:
               ? await loadTemplateChoices()
               : mode.value === 'theme'
                 ? await loadThemeChoices()
-                : await loadSlotChoices();
+                : mode.value === 'module'
+                  ? await loadModuleChoices()
+                  : await loadSlotChoices();
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
             if (choices.value.length === 0 && !missingContext.value) {
@@ -892,7 +924,9 @@ data:
                 ? 'No published templates available for this site scope.'
                 : mode.value === 'theme'
                   ? 'No published themes available for this site scope.'
-                : 'No valid slots available for this page template and site scope.';
+                  : mode.value === 'module'
+                    ? 'No published modules available for this site scope.'
+                  : 'No valid slots available for this page template and site scope.';
             }
           } catch (error) {
             if (currentRequest !== requestId) return;
@@ -982,6 +1016,7 @@ data:
             templatesCollection: templatesCollection.value,
             slotsCollection: slotsCollection.value,
             themesCollection: themesCollection.value,
+            modulesCollection: modulesCollection.value,
             pagesCollection: pagesCollection.value,
             siteKey: asString(props.values?.[pageSiteField.value]),
             pageId: parseId(props.values?.[pageIdField.value]),
@@ -1076,7 +1111,7 @@ data:
           const hasDirectusSelect = typeof resolvedSelect !== 'string';
           const placeholderText = loading.value
             ? 'Loading options...'
-            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : 'Select a slot'));
+            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : 'Select a slot'));
 
           const errorNotice = loadError.value
             ? (typeof resolvedNotice !== 'string'
@@ -1126,7 +1161,7 @@ data:
       id: 'cms-content-model-select',
       name: 'CMS Content Model Select',
       icon: 'view_quilt',
-      description: 'Context-aware selector for CMS templates, themes, and slots.',
+      description: 'Context-aware selector for CMS templates, themes, modules, and slots.',
       component: InterfaceComponent,
       types: ['string'],
       group: 'selection',
@@ -1143,6 +1178,7 @@ data:
               choices: [
                 { text: 'Template Selector', value: 'template' },
                 { text: 'Theme Selector', value: 'theme' },
+                { text: 'Module Selector', value: 'module' },
                 { text: 'Slot Selector', value: 'slot' },
               ],
             },
@@ -1169,6 +1205,13 @@ data:
           type: 'string',
           meta: { width: 'half', interface: 'input' },
           schema: { default_value: 'cms_theme_packages' },
+        },
+        {
+          field: 'modules_collection',
+          name: 'Modules Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_modules' },
         },
         {
           field: 'pages_collection',

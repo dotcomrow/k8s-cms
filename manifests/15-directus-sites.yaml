@@ -91,6 +91,7 @@ data:
                     _in:
                       - cms_block_rich_text
                       - cms_block_hero
+                      - cms_block_module
           - collection: cms_block_rich_text
             fields:
               - "*"
@@ -102,6 +103,29 @@ data:
                     _eq: home
                 - status:
                     _eq: published
+          - collection: cms_block_module
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: internal
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_modules
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: internal
           - collection: cms_block_hero
             fields:
               - "*"
@@ -199,6 +223,7 @@ data:
                     _in:
                       - cms_block_rich_text
                       - cms_block_hero
+                      - cms_block_module
           - collection: cms_block_rich_text
             fields:
               - "*"
@@ -210,6 +235,29 @@ data:
                     _eq: home
                 - status:
                     _eq: published
+          - collection: cms_block_module
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: external
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_modules
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: external
           - collection: cms_block_hero
             fields:
               - "*"

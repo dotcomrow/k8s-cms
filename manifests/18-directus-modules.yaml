@@ -1,0 +1,68 @@
+# Directus module registry (GitOps source of truth).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-modules
+  namespace: directus
+  labels:
+    app: directus
+data:
+  modules.yaml: |
+    modules:
+      - module_key: radix-select
+        name: Radix Select
+        description: "Accessible single-select dropdown rendered by the app shell module runtime."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.select
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            placeholder:
+              type: string
+              title: Placeholder
+            defaultValue:
+              type: string
+              title: Default Value
+            size:
+              type: string
+              title: Size
+              enum:
+                - sm
+                - md
+                - lg
+            options:
+              type: array
+              title: Options
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - value
+                properties:
+                  label:
+                    type: string
+                  value:
+                    type: string
+                  description:
+                    type: string
+          required:
+            - options
+        default_props:
+          label: "Choose an option"
+          placeholder: "Select an option"
+          size: md
+          options:
+            - label: "First option"
+              value: "first-option"
+              description: "Example option one"
+            - label: "Second option"
+              value: "second-option"
+              description: "Example option two"
