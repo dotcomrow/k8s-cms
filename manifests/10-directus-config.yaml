@@ -1256,6 +1256,20 @@ data:
           if (next !== current) {
             hasUserInput.value = true;
           }
+          if (typeof window !== 'undefined') {
+            const context = resolveRecordContext();
+            window.dispatchEvent(
+              new CustomEvent('cms-content-model-select-change', {
+                detail: {
+                  mode: mode.value,
+                  field: asString(props.field),
+                  collection: context.recordCollection || collectionKey.value,
+                  recordId: context.recordId || '',
+                  value: next || '',
+                },
+              }),
+            );
+          }
           emit('input', next || null);
         };
 
@@ -1422,7 +1436,7 @@ data:
 
   cms-module-props-editor.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
-    import { defineComponent, h, ref, computed, watch } from 'vue';
+    import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 
     const asString = (value) => {
       if (value === null || value === undefined) return '';
@@ -1451,6 +1465,14 @@ data:
       if (Array.isArray(payload?.data)) return payload.data;
       if (Array.isArray(payload)) return payload;
       return [];
+    };
+
+    const parseId = (value) => {
+      if (value && typeof value === 'object') {
+        if ('id' in value) return asString(value.id);
+        if ('primaryKey' in value) return asString(value.primaryKey);
+      }
+      return asString(value);
     };
 
     const parseOptions = (value) => {
@@ -1502,6 +1524,7 @@ data:
         const pendingModuleSwitchKey = ref('');
         const pendingModuleDefaults = ref({});
         const applyPendingDefaultsForModuleKey = ref('');
+        const moduleKeyOverride = ref('');
 
         const resolvedOptions = computed(() => parseOptions(props.options));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
@@ -1521,8 +1544,16 @@ data:
         });
         const pageCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
 
-        const moduleKey = computed(() => asString(props.values?.[moduleKeyField.value] ?? props.values?.module_key));
+        const moduleKeyFromValues = computed(() => asString(props.values?.[moduleKeyField.value] ?? props.values?.module_key));
+        const moduleKey = computed(() => asString(moduleKeyOverride.value) || moduleKeyFromValues.value);
         const siteKey = computed(() => asString(props.values?.[pageSiteField.value] ?? props.values?.site_key));
+        const recordCollectionKey = computed(() => asString(props.collection).toLowerCase());
+        const resolveRecordId = () => {
+          const fromValues = parseId(props.values?.id);
+          if (fromValues) return fromValues;
+          const fromLocation = getPrimaryKeyFromLocation(asString(props.collection));
+          return asString(fromLocation);
+        };
 
         const incomingProps = computed(() => normalizeObject(parseJsonLike(props.value, {})));
 
@@ -1550,6 +1581,16 @@ data:
               applyPendingDefaultsForModuleKey.value = '';
             }
           }
+        );
+
+        watch(
+          () => moduleKeyFromValues.value,
+          (nextValue) => {
+            const nextKey = asString(nextValue);
+            if (moduleKeyOverride.value && nextKey && nextKey === moduleKeyOverride.value) {
+              moduleKeyOverride.value = '';
+            }
+          },
         );
 
         const apiGet = async (path, params = {}) => {
@@ -1697,6 +1738,38 @@ data:
             schemaError.value = '';
           }
         );
+
+        const onModuleSelectorEvent = (event) => {
+          const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+          const eventMode = asString(detail.mode).toLowerCase();
+          const eventField = asString(detail.field).toLowerCase();
+          if (eventMode !== 'module') return;
+          if (eventField && eventField !== moduleKeyField.value.toLowerCase()) return;
+
+          const eventCollection = asString(detail.collection).toLowerCase();
+          if (eventCollection && recordCollectionKey.value && eventCollection !== recordCollectionKey.value) return;
+
+          const eventRecordId = asString(detail.recordId);
+          const currentRecordId = resolveRecordId();
+          if (eventRecordId && currentRecordId && eventRecordId !== currentRecordId) return;
+
+          const nextKey = asString(detail.value);
+          if (!nextKey) return;
+          if (nextKey !== moduleKey.value) {
+            pendingModuleSwitchKey.value = nextKey;
+            moduleKeyOverride.value = nextKey;
+          }
+        };
+
+        onMounted(() => {
+          if (typeof window === 'undefined') return;
+          window.addEventListener('cms-content-model-select-change', onModuleSelectorEvent);
+        });
+
+        onBeforeUnmount(() => {
+          if (typeof window === 'undefined') return;
+          window.removeEventListener('cms-content-model-select-change', onModuleSelectorEvent);
+        });
 
         const setPropertyValue = (key, value) => {
           const next = { ...mergedProps.value };
