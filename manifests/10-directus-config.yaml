@@ -1436,7 +1436,7 @@ data:
 
   cms-module-props-editor.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
-    import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+    import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
 
     const asString = (value) => {
       if (value === null || value === undefined) return '';
@@ -1728,6 +1728,36 @@ data:
           emit('input', localProps.value);
         };
 
+        const applyJsonEditorValue = () => {
+          if (!jsonEditorValue.value) {
+            emitProps({});
+            return;
+          }
+          try {
+            emitProps(normalizeObject(JSON.parse(jsonEditorValue.value)));
+            schemaError.value = '';
+          } catch {
+            schemaError.value = 'Invalid JSON in advanced editor.';
+          }
+        };
+
+        const formatJsonEditorValue = () => {
+          if (!jsonEditorValue.value) {
+            jsonEditorValue.value = '{}';
+            emitProps({});
+            schemaError.value = '';
+            return;
+          }
+          try {
+            const parsed = normalizeObject(JSON.parse(jsonEditorValue.value));
+            jsonEditorValue.value = JSON.stringify(parsed, null, 2);
+            emitProps(parsed);
+            schemaError.value = '';
+          } catch {
+            schemaError.value = 'Invalid JSON in advanced editor.';
+          }
+        };
+
         watch(
           () => applyPendingDefaultsForModuleKey.value,
           (nextModuleKey) => {
@@ -1906,29 +1936,89 @@ data:
           }
 
           if (showJsonFallback.value) {
+            const resolvedCodeEditor = resolveComponent('v-input-code');
+            const resolvedTextarea = resolveComponent('v-textarea');
+            const hasCodeEditor = typeof resolvedCodeEditor !== 'string';
+            const hasTextarea = typeof resolvedTextarea !== 'string';
+            const jsonPlaceholder = '{\n  "key": "value"\n}';
+
+            let jsonControl = null;
+            if (hasCodeEditor) {
+              jsonControl = h(resolvedCodeEditor, {
+                modelValue: jsonEditorValue.value,
+                language: 'json',
+                lineNumbers: true,
+                disabled: props.disabled || loading.value,
+                class: 'cms-module-props-editor__json-code',
+                style: { minHeight: '340px' },
+                'onUpdate:modelValue': (nextValue) => {
+                  jsonEditorValue.value = asString(nextValue);
+                  schemaError.value = '';
+                },
+                onBlur: applyJsonEditorValue,
+              });
+            } else if (hasTextarea) {
+              jsonControl = h(resolvedTextarea, {
+                modelValue: jsonEditorValue.value,
+                rows: 14,
+                placeholder: jsonPlaceholder,
+                disabled: props.disabled || loading.value,
+                monospace: true,
+                class: 'cms-module-props-editor__json-code',
+                style: { minHeight: '340px' },
+                'onUpdate:modelValue': (nextValue) => {
+                  jsonEditorValue.value = asString(nextValue);
+                  schemaError.value = '';
+                },
+                onBlur: applyJsonEditorValue,
+              });
+            } else {
+              jsonControl = h('textarea', {
+                rows: 14,
+                disabled: props.disabled || loading.value,
+                value: jsonEditorValue.value,
+                placeholder: jsonPlaceholder,
+                class: 'cms-module-props-editor__json-code',
+                style: {
+                  width: '100%',
+                  minHeight: '340px',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  fontSize: '12px',
+                  lineHeight: '1.45',
+                  background: 'var(--theme--background-subdued)',
+                  border: '1px solid var(--theme--border-normal)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                },
+                onInput: (event) => {
+                  jsonEditorValue.value = asString(event?.target?.value);
+                  schemaError.value = '';
+                },
+                onBlur: applyJsonEditorValue,
+              });
+            }
+
             children.push(
-              h('details', { class: 'cms-module-props-editor__json' }, [
-                h('summary', 'Advanced JSON editor'),
-                h('textarea', {
-                  rows: 8,
-                  disabled: props.disabled || loading.value,
-                  value: jsonEditorValue.value,
-                  onInput: (event) => {
-                    jsonEditorValue.value = asString(event?.target?.value);
-                  },
-                  onBlur: () => {
-                    if (!jsonEditorValue.value) {
-                      emitProps({});
-                      return;
-                    }
-                    try {
-                      emitProps(normalizeObject(JSON.parse(jsonEditorValue.value)));
-                      schemaError.value = '';
-                    } catch {
-                      schemaError.value = 'Invalid JSON in advanced editor.';
-                    }
-                  },
-                }),
+              h('section', { class: 'cms-module-props-editor__json' }, [
+                h('div', { class: 'cms-module-props-editor__json-header', style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } }, [
+                  h('strong', 'Advanced JSON editor'),
+                  h('button', {
+                    type: 'button',
+                    disabled: props.disabled || loading.value,
+                    onClick: formatJsonEditorValue,
+                    style: {
+                      border: '1px solid var(--theme--border-normal)',
+                      background: 'var(--theme--background-page)',
+                      color: 'var(--theme--foreground-normal)',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      padding: '4px 8px',
+                      cursor: props.disabled || loading.value ? 'not-allowed' : 'pointer',
+                    },
+                  }, 'Format JSON'),
+                ]),
+                jsonControl,
+                h('p', { class: 'cms-module-props-editor__hint' }, 'Editor is always visible. Changes are validated and saved on blur.'),
               ])
             );
           }
