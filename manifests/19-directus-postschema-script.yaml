@@ -2352,6 +2352,7 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "refresh_target" 84
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_created" 85
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_updated" 86
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "sort" 87
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "id" 91
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_created" 92
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 93
