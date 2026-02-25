@@ -1419,6 +1419,62 @@ data:
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN date_created SET DEFAULT now();"
 
+    echo "🧱 Ensuring UUID defaults for CMS collection IDs..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE OR REPLACE FUNCTION directus.cms_generate_uuid() \
+       RETURNS uuid \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         _value uuid; \
+       BEGIN \
+         BEGIN \
+           EXECUTE 'SELECT gen_random_uuid()' INTO _value; \
+           RETURN _value; \
+         EXCEPTION WHEN undefined_function THEN \
+           BEGIN \
+             EXECUTE 'SELECT uuid_generate_v4()' INTO _value; \
+             RETURN _value; \
+           EXCEPTION WHEN undefined_function THEN \
+             EXECUTE 'SELECT md5(random()::text || clock_timestamp()::text)::uuid' INTO _value; \
+             RETURN _value; \
+           END; \
+         END; \
+       END; \
+       \$\$; \
+       DO \$\$ \
+       BEGIN \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_pages' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_pages ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_page_blocks' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_page_blocks ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_block_rich_text' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_block_rich_text ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_block_hero' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_block_hero ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_block_module' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_block_module ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_layout_templates' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_layout_templates ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_layout_template_slots' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_layout_template_slots ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_theme_packages' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_theme_packages ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_modules' AND column_name='id' AND udt_name='uuid') THEN \
+           ALTER TABLE cms_modules ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid(); \
+         END IF; \
+       END \
+       \$\$;"
+
     if [ -f "${MODULES_FILE}" ]; then
       MODULES_JSON="$(yq -o=json '.' "${MODULES_FILE}" 2>/dev/null || true)"
       if printf '%s' "${MODULES_JSON}" | jq -e '.modules | type=="array" and length>0' >/dev/null 2>&1; then
