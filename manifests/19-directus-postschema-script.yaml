@@ -2417,9 +2417,32 @@ data:
     fi
     
     # Yugabyte can briefly surface catalog-version mismatches right after DDL.
-    # Give catalog propagation a short window before heavy Directus API flow reconciliation.
+    # Probe catalog stability (with retries) before allowing Directus startup.
     echo "⏳ Waiting for catalog stabilization after DDL..."
-    sleep 8
+    POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE_RAW="${DIRECTUS_POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE:-3}"
+    POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS_RAW="${DIRECTUS_POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS:-3}"
+    POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE="$(printf '%s' "${POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE_RAW}" | tr -dc '0-9')"
+    POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS="$(printf '%s' "${POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS_RAW}" | tr -dc '0-9')"
+    if [ -z "${POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE:-}" ] || [ "${POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE}" -lt 1 ]; then
+      POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE=3
+    fi
+    if [ -z "${POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS:-}" ] || [ "${POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS}" -lt 1 ]; then
+      POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS=3
+    fi
+    _catalog_stable_passes=0
+    while [ "${_catalog_stable_passes}" -lt "${POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE}" ]; do
+      if _psql_yb_retry "SELECT relname FROM pg_index, pg_class, pg_attribute, pg_namespace WHERE indrelid = pg_class.oid AND nspname IN ('directus','public') AND pg_class.relnamespace = pg_namespace.oid AND pg_attribute.attrelid = pg_class.oid AND pg_attribute.attnum = ANY (pg_index.indkey) AND indisprimary AND indnatts = 1 AND relkind != 'S' LIMIT 1;" "catalog stability probe" 6 >/dev/null; then
+        _catalog_stable_passes=$(( _catalog_stable_passes + 1 ))
+        echo "  .. catalog probe ${_catalog_stable_passes}/${POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE} passed"
+      else
+        _catalog_stable_passes=0
+        echo "  .. catalog probe failed; retrying stability checks"
+      fi
+      if [ "${_catalog_stable_passes}" -lt "${POSTSCHEMA_CATALOG_STABLE_CONSECUTIVE}" ]; then
+        sleep "${POSTSCHEMA_CATALOG_STABLE_SLEEP_SECONDS}"
+      fi
+    done
+    echo "✅ Catalog stabilization checks passed"
     touch "${POSTSCHEMA_DB_READY_FILE}"
     echo "✅ DB reconcile phase complete; Directus startup may proceed."
 
