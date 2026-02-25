@@ -92,6 +92,7 @@ data:
                       - cms_block_rich_text
                       - cms_block_hero
                       - cms_block_module
+                      - cms_block_template_ref
           - collection: cms_block_rich_text
             fields:
               - "*"
@@ -104,6 +105,17 @@ data:
                 - status:
                     _eq: published
           - collection: cms_block_module
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: internal
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_block_template_ref
             fields:
               - "*"
             permissions:
@@ -224,6 +236,7 @@ data:
                       - cms_block_rich_text
                       - cms_block_hero
                       - cms_block_module
+                      - cms_block_template_ref
           - collection: cms_block_rich_text
             fields:
               - "*"
@@ -236,6 +249,17 @@ data:
                 - status:
                     _eq: published
           - collection: cms_block_module
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: external
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_block_template_ref
             fields:
               - "*"
             permissions:

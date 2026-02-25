@@ -24,7 +24,7 @@ spec:
         app: directus
       annotations:
         reloader.stakater.com/auto: "true"
-        directus.suncoast.systems/extensions-seed-revision: "2026-02-22.6"
+        directus.suncoast.systems/extensions-seed-revision: "2026-02-25.1"
     spec:
       serviceAccountName: directus
       volumes:
@@ -99,6 +99,10 @@ spec:
                 path: cms-content-model-select/package.json
               - key: cms-content-model-select.index.js
                 path: cms-content-model-select/index.js
+              - key: cms-module-props-editor.package.json
+                path: cms-module-props-editor/package.json
+              - key: cms-module-props-editor.index.js
+                path: cms-module-props-editor/index.js
         - name: directus-extensions
           persistentVolumeClaim:
             claimName: directus-extensions
@@ -115,7 +119,7 @@ spec:
               mkdir -p /directus/extensions
 
               # Keep our GitOps-managed extensions deterministic on every start.
-              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select
+              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-module-props-editor
               # ConfigMap volumes use symlinks; dereference so we copy real files into the PVC.
               cp -RL /extensions-seed/* /directus/extensions/
 

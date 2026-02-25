@@ -642,15 +642,20 @@ data:
         const collectionKey = computed(() => asString(props.collection).toLowerCase());
         const mode = computed(() => {
           const explicit = asString(resolvedOptions.value?.mode).toLowerCase();
-          if (explicit === 'template' || explicit === 'slot' || explicit === 'theme' || explicit === 'module') return explicit;
+          if (explicit === 'template' || explicit === 'slot' || explicit === 'theme' || explicit === 'module' || explicit === 'parent') return explicit;
           if (fieldKey.value === 'slot') return 'slot';
+          if (fieldKey.value === 'parent_block_id') return 'parent';
           if (fieldKey.value === 'layout_template_key') return 'template';
           if (fieldKey.value === 'theme_package_key') return 'theme';
           if (fieldKey.value === 'module_key') return 'module';
           if (collectionKey.value === 'cms_page_blocks' && fieldKey.value.includes('slot')) return 'slot';
+          if (collectionKey.value === 'cms_page_blocks' && fieldKey.value.includes('parent_block')) return 'parent';
           if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('layout_template')) return 'template';
           if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('theme_package')) return 'theme';
           if (collectionKey.value === 'cms_block_module' && fieldKey.value.includes('module_key')) return 'module';
+          if (resolvedOptions.value?.page_blocks_collection || resolvedOptions.value?.template_refs_collection || resolvedOptions.value?.parent_id_field) {
+            return 'parent';
+          }
           if (resolvedOptions.value?.slots_collection || resolvedOptions.value?.slot_value_field || resolvedOptions.value?.slot_label_field) {
             return 'slot';
           }
@@ -667,11 +672,15 @@ data:
         const themesCollection = computed(() => asString(resolvedOptions.value?.themes_collection) || 'cms_theme_packages');
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
         const pagesCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
+        const pageBlocksCollection = computed(() => asString(resolvedOptions.value?.page_blocks_collection) || 'cms_page_blocks');
+        const pageBlocksCollectionKey = computed(() => pageBlocksCollection.value.toLowerCase());
+        const templateRefsCollection = computed(() => asString(resolvedOptions.value?.template_refs_collection) || 'cms_block_template_ref');
 
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'page_id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
         const pageSlugField = computed(() => asString(resolvedOptions.value?.page_slug_field) || 'page_slug');
+        const parentIdField = computed(() => asString(resolvedOptions.value?.parent_id_field) || 'parent_block_id');
         const itemIdField = computed(() => asString(resolvedOptions.value?.item_id_field) || 'id');
         const slotValueField = computed(() => asString(resolvedOptions.value?.slot_value_field) || 'slot_key');
         const slotLabelField = computed(() => asString(resolvedOptions.value?.slot_label_field) || 'slot_label');
@@ -816,33 +825,89 @@ data:
           );
         };
 
+        const resolvePageContext = async () => {
+          let pageId = parseId(props.values?.[pageIdField.value]);
+          let pageSlug = asString(props.values?.[pageSlugField.value]);
+          let siteKey = asString(props.values?.[pageSiteField.value]);
+          let currentBlockId =
+            parseId(props.values?.[itemIdField.value]) ||
+            parseId(props.values?.id);
+
+          if (!currentBlockId && collectionKey.value === pageBlocksCollectionKey.value) {
+            currentBlockId = getPrimaryKeyFromLocation(collectionKey.value);
+          }
+
+          if (!pageId && currentBlockId && collectionKey.value === pageBlocksCollectionKey.value) {
+            try {
+              const blockResp = await apiGet(`/items/${pageBlocksCollection.value}/${encodeURIComponent(currentBlockId)}`, {
+                fields: [pageIdField.value, pageSlugField.value, pageSiteField.value].join(','),
+              });
+              const block = blockResp?.data || {};
+              pageId = parseId(block?.[pageIdField.value]);
+              if (!pageSlug) pageSlug = asString(block?.[pageSlugField.value]);
+              if (!siteKey) siteKey = asString(block?.[pageSiteField.value]);
+            } catch {
+              // Ignore context lookup errors and continue fallback chain.
+            }
+          }
+
+          if (!pageId) {
+            const pageIdFromUrl = getPrimaryKeyFromLocation(pagesCollection.value);
+            if (pageIdFromUrl) {
+              pageId = pageIdFromUrl;
+            }
+          }
+
+          if (pageId && (!siteKey || !pageSlug)) {
+            try {
+              const pageResp = await apiGet(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
+                fields: [pageSiteField.value, pageSlugField.value].join(','),
+              });
+              const page = pageResp?.data || {};
+              if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
+              if (!pageSlug) pageSlug = asString(page?.[pageSlugField.value]);
+            } catch {
+              // Ignore page lookup errors and continue with best-effort context.
+            }
+          }
+
+          if (!pageId && pageSlug) {
+            const pageFilter = {
+              _and: [
+                { slug: { _eq: pageSlug } },
+                ...(siteKey ? [{
+                  _or: [
+                    { [pageSiteField.value]: { _empty: true } },
+                    { [pageSiteField.value]: { _eq: siteKey } },
+                  ],
+                }] : []),
+              ],
+            };
+            try {
+              const pageListResp = await apiGet(`/items/${pagesCollection.value}`, {
+                fields: ['id', pageSiteField.value, pageSlugField.value].join(','),
+                limit: 1,
+                filter: JSON.stringify(pageFilter),
+              });
+              const page = normalizeRows(pageListResp)?.[0] || {};
+              if (!pageId) pageId = parseId(page?.id);
+              if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
+              if (!pageSlug) pageSlug = asString(page?.[pageSlugField.value]);
+            } catch {
+              // Ignore page lookup errors and continue with best-effort context.
+            }
+          }
+
+          return { pageId, pageSlug, siteKey, currentBlockId };
+        };
+
         const loadSlotChoices = async () => {
           let siteKey = asString(props.values?.[pageSiteField.value]);
           let templateKey = asString(props.values?.[pageTemplateField.value]);
-          let pageId = parseId(props.values?.[pageIdField.value]);
-          let pageSlug = asString(props.values?.[pageSlugField.value]);
+          let { pageId, pageSlug } = await resolvePageContext();
 
-          if (!pageId) {
-            pageId = getPrimaryKeyFromLocation(pagesCollection.value);
-          }
-
-          // In nested M2A editors, parent context can be omitted; pull it from the block row.
-          if (!pageId && collectionKey.value === 'cms_page_blocks') {
-            let blockId = parseId(props.values?.[itemIdField.value]);
-            if (!blockId) blockId = getPrimaryKeyFromLocation(collectionKey.value);
-            if (blockId) {
-              try {
-                const blockResp = await apiGet(`/items/${collectionKey.value}/${encodeURIComponent(blockId)}`, {
-                  fields: [pageIdField.value, pageSlugField.value, pageSiteField.value].join(','),
-                });
-                const block = blockResp?.data || {};
-                pageId = parseId(block?.[pageIdField.value]);
-                if (!pageSlug) pageSlug = asString(block?.[pageSlugField.value]);
-                if (!siteKey) siteKey = asString(block?.[pageSiteField.value]);
-              } catch {
-                // Ignore block lookup errors and continue fallback chain.
-              }
-            }
+          if (!siteKey) {
+            siteKey = asString(props.values?.[pageSiteField.value]);
           }
 
           if (!templateKey && pageId) {
@@ -904,6 +969,82 @@ data:
           );
         };
 
+        const loadParentChoices = async () => {
+          const context = await resolvePageContext();
+          const pageId = context.pageId;
+          if (!pageId) {
+            missingContext.value = 'Save this block first so Directus can resolve its page context.';
+            return [];
+          }
+
+          const clauses = [
+            { collection: { _eq: 'cms_block_template_ref' } },
+            { [pageIdField.value]: { _eq: pageId } },
+          ];
+          if (context.siteKey) {
+            clauses.push({ [pageSiteField.value]: { _eq: context.siteKey } });
+          }
+          if (context.pageSlug) {
+            clauses.push({ [pageSlugField.value]: { _eq: context.pageSlug } });
+          }
+          if (context.currentBlockId) {
+            clauses.push({ [itemIdField.value]: { _neq: context.currentBlockId } });
+          }
+
+          const blockLinksResp = await apiGet(`/items/${pageBlocksCollection.value}`, {
+            fields: [itemIdField.value, 'collection', 'item', 'slot', 'sort', pageIdField.value, pageSiteField.value, pageSlugField.value].join(','),
+            limit: -1,
+            filter: JSON.stringify({ _and: clauses }),
+          });
+          const blockLinks = normalizeRows(blockLinksResp).filter((row) => asString(row?.collection) === 'cms_block_template_ref');
+          if (blockLinks.length === 0) {
+            return [];
+          }
+
+          const templateRefIds = uniqueChoices(
+            blockLinks.map((row) => ({ value: asString(row?.item), text: asString(row?.item) }))
+          ).map((choice) => choice.value);
+          if (templateRefIds.length === 0) {
+            return [];
+          }
+
+          const templateRefsResp = await apiGet(`/items/${templateRefsCollection.value}`, {
+            fields: ['id', 'name', 'template_key', 'status'].join(','),
+            limit: -1,
+            filter: JSON.stringify({
+              _and: [
+                { id: { _in: templateRefIds } },
+                { status: { _eq: 'published' } },
+              ],
+            }),
+          });
+          const templateRefMap = new Map(
+            normalizeRows(templateRefsResp).map((row) => [asString(row?.id), row]),
+          );
+
+          const sortedBlockLinks = [...blockLinks].sort((left, right) => {
+            const leftSort = Number(left?.sort ?? Number.MAX_SAFE_INTEGER);
+            const rightSort = Number(right?.sort ?? Number.MAX_SAFE_INTEGER);
+            if (leftSort !== rightSort) return leftSort - rightSort;
+            return asString(left?.[itemIdField.value]).localeCompare(asString(right?.[itemIdField.value]));
+          });
+
+          return uniqueChoices(
+            sortedBlockLinks.map((row) => {
+              const linkId = asString(row?.[itemIdField.value]);
+              const templateRef = templateRefMap.get(asString(row?.item));
+              const baseLabel =
+                asString(templateRef?.name) ||
+                asString(templateRef?.template_key) ||
+                asString(row?.item) ||
+                'Template Block';
+              const slotLabel = asString(row?.slot);
+              const text = slotLabel ? `${baseLabel} [slot:${slotLabel}]` : baseLabel;
+              return { value: linkId, text };
+            })
+          );
+        };
+
         const loadChoices = async () => {
           const currentRequest = ++requestId;
           loading.value = true;
@@ -916,7 +1057,9 @@ data:
                 ? await loadThemeChoices()
                 : mode.value === 'module'
                   ? await loadModuleChoices()
-                  : await loadSlotChoices();
+                  : mode.value === 'parent'
+                    ? await loadParentChoices()
+                    : await loadSlotChoices();
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
             if (choices.value.length === 0 && !missingContext.value) {
@@ -926,7 +1069,9 @@ data:
                   ? 'No published themes available for this site scope.'
                   : mode.value === 'module'
                     ? 'No published modules available for this site scope.'
-                  : 'No valid slots available for this page template and site scope.';
+                    : mode.value === 'parent'
+                      ? 'No eligible template parent blocks are available for this page.'
+                      : 'No valid slots available for this page template and site scope.';
             }
           } catch (error) {
             if (currentRequest !== requestId) return;
@@ -964,7 +1109,7 @@ data:
 
           // Block drawers don't always expose the page_blocks row id in values.
           // When selecting slot, resolve persisted value from cms_page_blocks by (collection,item).
-          if (!nextPersisted && fieldKey.value === 'slot') {
+          if (!nextPersisted && (fieldKey.value === 'slot' || fieldKey.value === 'parent_block_id')) {
             const blockCollection = asString(props.values?.collection);
             const blockItem = parseId(props.values?.item);
             const blockPageId = parseId(props.values?.[pageIdField.value]);
@@ -987,7 +1132,7 @@ data:
               }
 
               try {
-                const response = await apiGet('/items/cms_page_blocks', {
+                const response = await apiGet(`/items/${pageBlocksCollection.value}`, {
                   fields: ['id', fieldName, pageIdField.value, pageSiteField.value, pageSlugField.value].join(','),
                   limit: -1,
                   sort: '-date_updated',
@@ -1017,6 +1162,8 @@ data:
             slotsCollection: slotsCollection.value,
             themesCollection: themesCollection.value,
             modulesCollection: modulesCollection.value,
+            pageBlocksCollection: pageBlocksCollection.value,
+            templateRefsCollection: templateRefsCollection.value,
             pagesCollection: pagesCollection.value,
             siteKey: asString(props.values?.[pageSiteField.value]),
             pageId: parseId(props.values?.[pageIdField.value]),
@@ -1111,7 +1258,7 @@ data:
           const hasDirectusSelect = typeof resolvedSelect !== 'string';
           const placeholderText = loading.value
             ? 'Loading options...'
-            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : 'Select a slot'));
+            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : mode.value === 'parent' ? 'Select a parent block' : 'Select a slot'));
 
           const errorNotice = loadError.value
             ? (typeof resolvedNotice !== 'string'
@@ -1161,7 +1308,7 @@ data:
       id: 'cms-content-model-select',
       name: 'CMS Content Model Select',
       icon: 'view_quilt',
-      description: 'Context-aware selector for CMS templates, themes, modules, and slots.',
+      description: 'Context-aware selector for CMS templates, themes, modules, slots, and parent template blocks.',
       component: InterfaceComponent,
       types: ['string'],
       group: 'selection',
@@ -1180,6 +1327,7 @@ data:
                 { text: 'Theme Selector', value: 'theme' },
                 { text: 'Module Selector', value: 'module' },
                 { text: 'Slot Selector', value: 'slot' },
+                { text: 'Parent Block Selector', value: 'parent' },
               ],
             },
           },
@@ -1214,6 +1362,27 @@ data:
           schema: { default_value: 'cms_modules' },
         },
         {
+          field: 'page_blocks_collection',
+          name: 'Page Blocks Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_page_blocks' },
+        },
+        {
+          field: 'template_refs_collection',
+          name: 'Template Ref Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_block_template_ref' },
+        },
+        {
+          field: 'parent_id_field',
+          name: 'Parent ID Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'parent_block_id' },
+        },
+        {
           field: 'pages_collection',
           name: 'Pages Collection',
           type: 'string',
@@ -1223,6 +1392,495 @@ data:
         {
           field: 'include_global',
           name: 'Include Global (site_key null)',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: true },
+        },
+      ],
+    });
+
+  cms-module-props-editor.package.json: |
+    {
+      "name": "directus-extension-cms-module-props-editor",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "interface",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+
+  cms-module-props-editor.index.js: |
+    import { defineInterface } from '@directus/extensions-sdk';
+    import { defineComponent, h, ref, computed, watch } from 'vue';
+
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const parseJsonLike = (value, fallback) => {
+      if (value === null || value === undefined) return fallback;
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return fallback;
+        }
+      }
+      return value;
+    };
+
+    const normalizeObject = (value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+      return value;
+    };
+
+    const normalizeRows = (response) => {
+      const payload = response?.data;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    };
+
+    const parseOptions = (value) => {
+      if (!value) return {};
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
+        }
+      }
+      return typeof value === 'object' ? value : {};
+    };
+
+    const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const getPrimaryKeyFromLocation = (collectionName) => {
+      if (typeof window === 'undefined') return '';
+      const targetCollection = asString(collectionName);
+      const path = asString(window.location?.pathname);
+      if (targetCollection && path) {
+        const match = path.match(new RegExp(`/${escapeRegex(targetCollection)}/([^/?#]+)`));
+        if (match?.[1]) return asString(decodeURIComponent(match[1]));
+      }
+      const query = new URLSearchParams(window.location?.search || '');
+      const candidates = ['primaryKey', 'pk', 'item', 'id'].map((key) => asString(query.get(key)));
+      return candidates.find((value) => Boolean(value)) || '';
+    };
+
+    const InterfaceComponent = defineComponent({
+      name: 'CmsModulePropsEditor',
+      props: {
+        value: { type: [Object, String, null], default: null },
+        disabled: { type: Boolean, default: false },
+        options: { type: Object, default: () => ({}) },
+        values: { type: Object, default: () => ({}) },
+        field: { type: String, default: '' },
+        collection: { type: String, default: '' },
+      },
+      emits: ['input'],
+      setup(props, { emit }) {
+        const loading = ref(false);
+        const loadError = ref('');
+        const schemaError = ref('');
+        const moduleDefinition = ref(null);
+        const localProps = ref({});
+        const jsonEditorValue = ref('{}');
+
+        const resolvedOptions = computed(() => parseOptions(props.options));
+        const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
+        const moduleKeyField = computed(() => asString(resolvedOptions.value?.module_key_field) || 'module_key');
+        const propsSchemaField = computed(() => asString(resolvedOptions.value?.props_schema_field) || 'props_schema');
+        const defaultPropsField = computed(() => asString(resolvedOptions.value?.default_props_field) || 'default_props');
+        const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const includeGlobal = computed(() => {
+          const v = resolvedOptions.value?.include_global;
+          if (typeof v === 'string') return v.toLowerCase() !== 'false';
+          return v !== false;
+        });
+        const showJsonFallback = computed(() => {
+          const v = resolvedOptions.value?.show_json_fallback;
+          if (typeof v === 'string') return v.toLowerCase() !== 'false';
+          return v !== false;
+        });
+        const pageCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
+
+        const moduleKey = computed(() => asString(props.values?.[moduleKeyField.value] ?? props.values?.module_key));
+        const siteKey = computed(() => asString(props.values?.[pageSiteField.value] ?? props.values?.site_key));
+
+        const incomingProps = computed(() => normalizeObject(parseJsonLike(props.value, {})));
+
+        watch(
+          () => JSON.stringify(incomingProps.value),
+          () => {
+            localProps.value = { ...incomingProps.value };
+            jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
+            schemaError.value = '';
+          },
+          { immediate: true }
+        );
+
+        const apiGet = async (path, params = {}) => {
+          const url = new URL(path, window.location.origin);
+          Object.entries(params).forEach(([key, value]) => {
+            if (value === null || value === undefined) return;
+            url.searchParams.set(key, String(value));
+          });
+
+          const response = await fetch(url.toString(), {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' },
+          });
+
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const message = payload?.errors?.[0]?.message || `Request failed (${response.status})`;
+            throw new Error(message);
+          }
+          return payload;
+        };
+
+        const buildScopedFilter = (site) => {
+          if (!includeGlobal.value && site) {
+            return { site_key: { _eq: site } };
+          }
+          if (site) {
+            return {
+              _or: [
+                { site_key: { _empty: true } },
+                { site_key: { _eq: site } },
+              ],
+            };
+          }
+          return { site_key: { _empty: true } };
+        };
+
+        const fetchModuleDefinition = async () => {
+          const key = moduleKey.value;
+          if (!key) {
+            moduleDefinition.value = null;
+            loadError.value = 'Select a module before configuring props.';
+            return;
+          }
+
+          let effectiveSiteKey = siteKey.value;
+          if (!effectiveSiteKey) {
+            const pageId = getPrimaryKeyFromLocation(pageCollection.value);
+            if (pageId) {
+              try {
+                const pageResp = await apiGet(`/items/${pageCollection.value}/${encodeURIComponent(pageId)}`, {
+                  fields: pageSiteField.value,
+                });
+                effectiveSiteKey = asString(pageResp?.data?.[pageSiteField.value]);
+              } catch {
+                // keep empty; we'll still resolve global module definitions.
+              }
+            }
+          }
+
+          const filter = {
+            _and: [
+              { [moduleKeyField.value]: { _eq: key } },
+              { status: { _eq: 'published' } },
+              buildScopedFilter(effectiveSiteKey),
+            ],
+          };
+          const response = await apiGet(`/items/${modulesCollection.value}`, {
+            fields: ['id', moduleKeyField.value, 'name', 'description', 'site_key', propsSchemaField.value, defaultPropsField.value].join(','),
+            limit: -1,
+            sort: 'site_key',
+            filter: JSON.stringify(filter),
+          });
+
+          const rows = normalizeRows(response);
+          if (rows.length === 0) {
+            moduleDefinition.value = null;
+            loadError.value = `No published module definition found for "${key}".`;
+            return;
+          }
+
+          const preferred =
+            rows.find((row) => asString(row?.site_key) && asString(row?.site_key) === effectiveSiteKey)
+            || rows[0];
+
+          moduleDefinition.value = preferred;
+          loadError.value = '';
+        };
+
+        watch(
+          () => JSON.stringify({
+            moduleKey: moduleKey.value,
+            siteKey: siteKey.value,
+            modulesCollection: modulesCollection.value,
+            moduleKeyField: moduleKeyField.value,
+            propsSchemaField: propsSchemaField.value,
+            defaultPropsField: defaultPropsField.value,
+          }),
+          async () => {
+            loading.value = true;
+            try {
+              await fetchModuleDefinition();
+            } catch (error) {
+              moduleDefinition.value = null;
+              loadError.value = error?.message || 'Failed to load module definition.';
+            } finally {
+              loading.value = false;
+            }
+          },
+          { immediate: true }
+        );
+
+        const resolvedSchema = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[propsSchemaField.value], {})));
+        const schemaProperties = computed(() => normalizeObject(resolvedSchema.value?.properties));
+        const schemaRequiredSet = computed(() => {
+          const required = Array.isArray(resolvedSchema.value?.required) ? resolvedSchema.value.required : [];
+          return new Set(required.map((value) => asString(value)));
+        });
+        const defaultProps = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[defaultPropsField.value], {})));
+
+        const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
+
+        const emitProps = (nextProps) => {
+          const normalized = normalizeObject(nextProps);
+          localProps.value = { ...normalized };
+          jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
+          emit('input', localProps.value);
+        };
+
+        const setPropertyValue = (key, value) => {
+          const next = { ...mergedProps.value };
+          if (value === undefined || value === null || value === '') {
+            delete next[key];
+          } else {
+            next[key] = value;
+          }
+          emitProps(next);
+        };
+
+        const renderPropertyEditor = (propKey, propSchema) => {
+          const schema = normalizeObject(propSchema);
+          const title = asString(schema.title) || propKey;
+          const description = asString(schema.description);
+          const value = mergedProps.value[propKey];
+          const type = asString(schema.type).toLowerCase();
+          const isRequired = schemaRequiredSet.value.has(propKey);
+          const enumValues = Array.isArray(schema.enum) ? schema.enum.map((entry) => asString(entry)).filter(Boolean) : [];
+          const inputId = `cms-module-prop-${propKey}`;
+
+          let control = null;
+
+          if (enumValues.length > 0) {
+            control = h(
+              'select',
+              {
+                id: inputId,
+                disabled: props.disabled || loading.value,
+                value: asString(value),
+                onChange: (event) => setPropertyValue(propKey, asString(event?.target?.value)),
+              },
+              [
+                h('option', { value: '' }, `Select ${title}`),
+                ...enumValues.map((entry) => h('option', { value: entry }, entry)),
+              ],
+            );
+          } else if (type === 'boolean') {
+            control = h('input', {
+              id: inputId,
+              type: 'checkbox',
+              disabled: props.disabled || loading.value,
+              checked: Boolean(value),
+              onChange: (event) => setPropertyValue(propKey, Boolean(event?.target?.checked)),
+            });
+          } else if (type === 'number' || type === 'integer') {
+            control = h('input', {
+              id: inputId,
+              type: 'number',
+              disabled: props.disabled || loading.value,
+              value: asString(value),
+              onInput: (event) => {
+                const raw = asString(event?.target?.value);
+                if (!raw) {
+                  setPropertyValue(propKey, undefined);
+                  return;
+                }
+                const parsed = type === 'integer' ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+                setPropertyValue(propKey, Number.isFinite(parsed) ? parsed : undefined);
+              },
+            });
+          } else if (type === 'array' || type === 'object') {
+            control = h('textarea', {
+              id: inputId,
+              disabled: props.disabled || loading.value,
+              rows: 4,
+              value: value === undefined ? '' : JSON.stringify(value, null, 2),
+              onBlur: (event) => {
+                const raw = asString(event?.target?.value);
+                if (!raw) {
+                  setPropertyValue(propKey, undefined);
+                  return;
+                }
+                try {
+                  const parsed = JSON.parse(raw);
+                  setPropertyValue(propKey, parsed);
+                  schemaError.value = '';
+                } catch {
+                  schemaError.value = `Invalid JSON for ${title}.`;
+                }
+              },
+            });
+          } else {
+            control = h('input', {
+              id: inputId,
+              type: 'text',
+              disabled: props.disabled || loading.value,
+              value: asString(value),
+              onInput: (event) => setPropertyValue(propKey, asString(event?.target?.value)),
+            });
+          }
+
+          return h('div', { class: 'cms-module-props-editor__field', key: propKey }, [
+            h('label', { for: inputId, class: 'cms-module-props-editor__label' }, [
+              title,
+              isRequired ? h('span', { class: 'cms-module-props-editor__required' }, ' *') : null,
+            ]),
+            description ? h('p', { class: 'cms-module-props-editor__hint' }, description) : null,
+            control,
+          ]);
+        };
+
+        return () => {
+          const definition = moduleDefinition.value;
+          const hasSchemaProperties = Object.keys(schemaProperties.value).length > 0;
+          const definitionTitle = asString(definition?.name) || moduleKey.value || 'Module';
+          const definitionDescription = asString(definition?.description);
+
+          const children = [
+            h('div', { class: 'cms-module-props-editor__header' }, [
+              h('strong', `Module: ${definitionTitle}`),
+              moduleKey.value ? h('code', moduleKey.value) : null,
+            ]),
+            definitionDescription
+              ? h('p', { class: 'cms-module-props-editor__hint' }, definitionDescription)
+              : null,
+            loading.value ? h('p', { class: 'cms-module-props-editor__hint' }, 'Loading module schema...') : null,
+            loadError.value ? h('p', { class: 'cms-module-props-editor__error' }, loadError.value) : null,
+            schemaError.value ? h('p', { class: 'cms-module-props-editor__error' }, schemaError.value) : null,
+          ];
+
+          if (hasSchemaProperties) {
+            children.push(
+              h(
+                'div',
+                { class: 'cms-module-props-editor__fields' },
+                Object.entries(schemaProperties.value).map(([propKey, propSchema]) => renderPropertyEditor(propKey, propSchema))
+              )
+            );
+          } else if (!loading.value && !loadError.value) {
+            children.push(
+              h('p', { class: 'cms-module-props-editor__hint' }, 'No property schema defined for this module. Use JSON fallback.')
+            );
+          }
+
+          if (showJsonFallback.value) {
+            children.push(
+              h('details', { class: 'cms-module-props-editor__json' }, [
+                h('summary', 'Advanced JSON editor'),
+                h('textarea', {
+                  rows: 8,
+                  disabled: props.disabled || loading.value,
+                  value: jsonEditorValue.value,
+                  onInput: (event) => {
+                    jsonEditorValue.value = asString(event?.target?.value);
+                  },
+                  onBlur: () => {
+                    if (!jsonEditorValue.value) {
+                      emitProps({});
+                      return;
+                    }
+                    try {
+                      emitProps(normalizeObject(JSON.parse(jsonEditorValue.value)));
+                      schemaError.value = '';
+                    } catch {
+                      schemaError.value = 'Invalid JSON in advanced editor.';
+                    }
+                  },
+                }),
+              ])
+            );
+          }
+
+          return h('div', { class: 'cms-module-props-editor' }, children);
+        };
+      },
+    });
+
+    export default defineInterface({
+      id: 'cms-module-props-editor',
+      name: 'CMS Module Props Editor',
+      icon: 'tune',
+      description: 'Schema-driven editor for cms_block_module.props_json values.',
+      component: InterfaceComponent,
+      types: ['json', 'string'],
+      group: 'standard',
+      options: [
+        {
+          field: 'modules_collection',
+          name: 'Modules Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_modules' },
+        },
+        {
+          field: 'module_key_field',
+          name: 'Module Key Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'module_key' },
+        },
+        {
+          field: 'props_schema_field',
+          name: 'Props Schema Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'props_schema' },
+        },
+        {
+          field: 'default_props_field',
+          name: 'Default Props Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'default_props' },
+        },
+        {
+          field: 'pages_collection',
+          name: 'Pages Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_pages' },
+        },
+        {
+          field: 'page_site_field',
+          name: 'Page Site Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'site_key' },
+        },
+        {
+          field: 'include_global',
+          name: 'Include Global (site_key null)',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: true },
+        },
+        {
+          field: 'show_json_fallback',
+          name: 'Show JSON Fallback',
           type: 'boolean',
           meta: { width: 'half', interface: 'boolean' },
           schema: { default_value: true },

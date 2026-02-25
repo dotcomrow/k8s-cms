@@ -66,3 +66,164 @@ data:
             - label: "Second option"
               value: "second-option"
               description: "Example option two"
+      - module_key: radix-switch
+        name: Radix Switch
+        description: "Accessible on/off switch with optional helper text."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.switch
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            helperText:
+              type: string
+              title: Helper Text
+            defaultChecked:
+              type: boolean
+              title: Default Checked
+            size:
+              type: string
+              title: Size
+              enum:
+                - sm
+                - md
+                - lg
+        default_props:
+          label: "Enable notifications"
+          helperText: "Toggle to enable this setting."
+          defaultChecked: false
+          size: md
+      - module_key: radix-checkbox
+        name: Radix Checkbox
+        description: "Accessible checkbox control for consent or option toggles."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.checkbox
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            description:
+              type: string
+              title: Description
+            defaultChecked:
+              type: boolean
+              title: Default Checked
+        default_props:
+          label: "I agree to the terms"
+          description: "You can customize this copy in Directus."
+          defaultChecked: false
+      - module_key: radix-tabs
+        name: Radix Tabs
+        description: "Tab navigation with editable labels and content panes."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: navigation.tabs
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Group Label
+            defaultValue:
+              type: string
+              title: Default Tab Value
+            items:
+              type: array
+              title: Tabs
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - value
+                  - label
+                properties:
+                  value:
+                    type: string
+                    title: Value
+                  label:
+                    type: string
+                    title: Label
+                  content:
+                    type: string
+                    title: Content
+          required:
+            - items
+        default_props:
+          label: "Profile Tabs"
+          defaultValue: "overview"
+          items:
+            - value: "overview"
+              label: "Overview"
+              content: "Overview tab content."
+            - value: "details"
+              label: "Details"
+              content: "Details tab content."
+      - module_key: radix-accordion
+        name: Radix Accordion
+        description: "Collapsible sections for FAQ and content groups."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: layout.accordion
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Group Label
+            type:
+              type: string
+              title: Mode
+              enum:
+                - single
+                - multiple
+            collapsible:
+              type: boolean
+              title: Collapsible (single mode)
+            items:
+              type: array
+              title: Sections
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - value
+                  - title
+                properties:
+                  value:
+                    type: string
+                    title: Value
+                  title:
+                    type: string
+                    title: Title
+                  content:
+                    type: string
+                    title: Content
+          required:
+            - items
+        default_props:
+          label: "Frequently Asked Questions"
+          type: single
+          collapsible: true
+          items:
+            - value: "q1"
+              title: "What is this app?"
+              content: "This is a CMS-driven SPA shell."
+            - value: "q2"
+              title: "Where is content managed?"
+              content: "Content is authored in Directus and cached in Cloudflare."
