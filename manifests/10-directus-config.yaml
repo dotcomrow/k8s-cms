@@ -1332,7 +1332,7 @@ data:
       icon: 'view_quilt',
       description: 'Context-aware selector for CMS templates, themes, modules, slots, and parent template blocks.',
       component: InterfaceComponent,
-      types: ['string'],
+      types: ['string', 'text', 'uuid'],
       group: 'selection',
       options: [
         {
