@@ -1718,6 +1718,16 @@ data:
 
         const resolvedSchema = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[propsSchemaField.value], {})));
         const schemaProperties = computed(() => normalizeObject(resolvedSchema.value?.properties));
+        const isComplexPropertySchema = (schemaValue) => {
+          const schema = normalizeObject(schemaValue);
+          const type = asString(schema?.type).toLowerCase();
+          if (type === 'array' || type === 'object') return true;
+          if (Array.isArray(schema?.items)) return true;
+          if (schema?.items && typeof schema.items === 'object') return true;
+          if (schema?.properties && typeof schema.properties === 'object') return true;
+          if (schema?.additionalProperties && typeof schema.additionalProperties === 'object') return true;
+          return false;
+        };
         const schemaRequiredSet = computed(() => {
           const required = Array.isArray(resolvedSchema.value?.required) ? resolvedSchema.value.required : [];
           return new Set(required.map((value) => asString(value)));
@@ -1910,6 +1920,14 @@ data:
         return () => {
           const definition = moduleDefinition.value;
           const hasSchemaProperties = Object.keys(schemaProperties.value).length > 0;
+          const inlinePropertyEntries = Object.entries(schemaProperties.value).filter(([, propSchema]) => {
+            if (!showJsonFallback.value) return true;
+            return !isComplexPropertySchema(propSchema);
+          });
+          const hasInlineProperties = inlinePropertyEntries.length > 0;
+          const hasComplexProperties = Object.values(schemaProperties.value).some((propSchema) =>
+            isComplexPropertySchema(propSchema)
+          );
           const definitionTitle = asString(definition?.name) || moduleKey.value || 'Module';
           const definitionDescription = asString(definition?.description);
 
@@ -1926,17 +1944,27 @@ data:
             schemaError.value ? h('p', { class: 'cms-module-props-editor__error' }, schemaError.value) : null,
           ];
 
-          if (hasSchemaProperties) {
+          if (hasInlineProperties) {
             children.push(
               h(
                 'div',
                 { class: 'cms-module-props-editor__fields' },
-                Object.entries(schemaProperties.value).map(([propKey, propSchema]) => renderPropertyEditor(propKey, propSchema))
+                inlinePropertyEntries.map(([propKey, propSchema]) => renderPropertyEditor(propKey, propSchema))
               )
             );
-          } else if (!loading.value && !loadError.value) {
+          } else if (!loading.value && !loadError.value && !hasComplexProperties) {
             children.push(
               h('p', { class: 'cms-module-props-editor__hint' }, 'No property schema defined for this module. Use JSON fallback.')
+            );
+          }
+
+          if (showJsonFallback.value && hasComplexProperties) {
+            children.push(
+              h(
+                'p',
+                { class: 'cms-module-props-editor__hint' },
+                'Complex properties (arrays/objects) are edited in Advanced JSON editor below.'
+              )
             );
           }
 
