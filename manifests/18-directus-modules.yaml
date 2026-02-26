@@ -227,3 +227,730 @@ data:
             - value: "q2"
               title: "Where is content managed?"
               content: "Content is authored in Directus and cached in Cloudflare."
+      - module_key: radix-alert-dialog
+        name: Radix Alert Dialog
+        description: "Modal confirmation dialog for destructive or irreversible actions."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: overlay.alert-dialog
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            title:
+              type: string
+              title: Title
+            description:
+              type: string
+              title: Description
+            cancelLabel:
+              type: string
+              title: Cancel Label
+            actionLabel:
+              type: string
+              title: Action Label
+        default_props:
+          triggerLabel: "Delete Item"
+          title: "Confirm action"
+          description: "This action cannot be undone. Please confirm you want to continue."
+          cancelLabel: "Cancel"
+          actionLabel: "Confirm"
+      - module_key: radix-aspect-ratio
+        name: Radix Aspect Ratio
+        description: "Responsive media wrapper that preserves image/video aspect ratio."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: media.aspect-ratio
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            ratio:
+              type: number
+              title: Ratio
+            imageUrl:
+              type: string
+              title: Image URL
+            alt:
+              type: string
+              title: Alt Text
+            caption:
+              type: string
+              title: Caption
+        default_props:
+          ratio: 1.7778
+          imageUrl: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=1200"
+          alt: "Decorative scene"
+          caption: "Responsive aspect ratio media"
+      - module_key: radix-avatar
+        name: Radix Avatar
+        description: "User avatar with image fallback initials."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: identity.avatar
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              title: Name
+            imageUrl:
+              type: string
+              title: Image URL
+            fallback:
+              type: string
+              title: Fallback Text
+            size:
+              type: number
+              title: Size
+        default_props:
+          name: "Suncoast User"
+          imageUrl: ""
+          fallback: "SU"
+          size: 56
+      - module_key: radix-collapsible
+        name: Radix Collapsible
+        description: "Expandable/collapsible content region."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: layout.collapsible
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Trigger Label
+            content:
+              type: string
+              title: Content
+            defaultOpen:
+              type: boolean
+              title: Default Open
+        default_props:
+          label: "Collapsible section"
+          content: "This content can be collapsed and expanded without changing page structure."
+          defaultOpen: false
+      - module_key: radix-context-menu
+        name: Radix Context Menu
+        description: "Right-click context actions menu."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: navigation.context-menu
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            items:
+              type: array
+              title: Items
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - value
+                properties:
+                  label:
+                    type: string
+                    title: Label
+                  value:
+                    type: string
+                    title: Value
+                  description:
+                    type: string
+                    title: Description
+          required:
+            - items
+        default_props:
+          triggerLabel: "Right-click this card"
+          items:
+            - label: "Open"
+              value: "open"
+            - label: "Rename"
+              value: "rename"
+            - label: "Archive"
+              value: "archive"
+      - module_key: radix-dialog
+        name: Radix Dialog
+        description: "General-purpose modal dialog."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: overlay.dialog
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            title:
+              type: string
+              title: Title
+            description:
+              type: string
+              title: Description
+            closeLabel:
+              type: string
+              title: Close Label
+        default_props:
+          triggerLabel: "Open dialog"
+          title: "Dialog Title"
+          description: "Use this for editor dialogs, forms, and quick actions."
+          closeLabel: "Close"
+      - module_key: radix-dropdown-menu
+        name: Radix Dropdown Menu
+        description: "Button-triggered dropdown action menu."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: navigation.dropdown-menu
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            items:
+              type: array
+              title: Items
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - value
+                properties:
+                  label:
+                    type: string
+                    title: Label
+                  value:
+                    type: string
+                    title: Value
+                  description:
+                    type: string
+                    title: Description
+          required:
+            - items
+        default_props:
+          triggerLabel: "Open menu"
+          items:
+            - label: "New Page"
+              value: "new-page"
+            - label: "Duplicate"
+              value: "duplicate"
+            - label: "Delete"
+              value: "delete"
+      - module_key: radix-hover-card
+        name: Radix Hover Card
+        description: "Hover-triggered contextual card content."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: overlay.hover-card
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            title:
+              type: string
+              title: Title
+            content:
+              type: string
+              title: Content
+        default_props:
+          triggerLabel: "Hover for details"
+          title: "Hover Card"
+          content: "Short contextual information in a hover card."
+      - module_key: radix-label
+        name: Radix Label
+        description: "Label + input pairing for simple forms."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.label
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            placeholder:
+              type: string
+              title: Placeholder
+            value:
+              type: string
+              title: Default Value
+        default_props:
+          label: "Email Address"
+          placeholder: "name@example.com"
+          value: ""
+      - module_key: radix-menubar
+        name: Radix Menubar
+        description: "Desktop-style menubar with nested menu sections."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: navigation.menubar
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            sections:
+              type: array
+              title: Sections
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - items
+                properties:
+                  label:
+                    type: string
+                    title: Section Label
+                  items:
+                    type: array
+                    title: Items
+                    minItems: 1
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - label
+                        - value
+                      properties:
+                        label:
+                          type: string
+                          title: Label
+                        value:
+                          type: string
+                          title: Value
+                        description:
+                          type: string
+                          title: Description
+          required:
+            - sections
+        default_props:
+          sections:
+            - label: "File"
+              items:
+                - label: "New"
+                  value: "new"
+                - label: "Open"
+                  value: "open"
+                - label: "Export"
+                  value: "export"
+            - label: "Edit"
+              items:
+                - label: "Undo"
+                  value: "undo"
+                - label: "Redo"
+                  value: "redo"
+      - module_key: radix-navigation-menu
+        name: Radix Navigation Menu
+        description: "Top-level navigation menu list."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: navigation.navigation-menu
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            items:
+              type: array
+              title: Navigation Items
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - value
+                properties:
+                  label:
+                    type: string
+                    title: Label
+                  value:
+                    type: string
+                    title: URL
+                  description:
+                    type: string
+                    title: Description
+          required:
+            - items
+        default_props:
+          items:
+            - label: "Overview"
+              value: "/overview"
+              description: "Project overview"
+            - label: "Integrations"
+              value: "/integrations"
+              description: "Connected systems"
+            - label: "Settings"
+              value: "/settings"
+              description: "Configuration options"
+      - module_key: radix-popover
+        name: Radix Popover
+        description: "Small contextual panel anchored to a trigger."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: overlay.popover
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            title:
+              type: string
+              title: Title
+            content:
+              type: string
+              title: Content
+        default_props:
+          triggerLabel: "Open popover"
+          title: "Popover Title"
+          content: "Use popovers for lightweight contextual controls."
+      - module_key: radix-progress
+        name: Radix Progress
+        description: "Progress bar for long-running operations."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: feedback.progress
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            value:
+              type: number
+              title: Value
+            max:
+              type: number
+              title: Max
+        default_props:
+          label: "Upload progress"
+          value: 45
+          max: 100
+      - module_key: radix-radio-group
+        name: Radix Radio Group
+        description: "Single-choice radio selection group."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.radio-group
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            defaultValue:
+              type: string
+              title: Default Value
+            options:
+              type: array
+              title: Options
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - value
+                properties:
+                  label:
+                    type: string
+                    title: Label
+                  value:
+                    type: string
+                    title: Value
+                  description:
+                    type: string
+                    title: Description
+          required:
+            - options
+        default_props:
+          label: "Choose a plan"
+          defaultValue: "starter"
+          options:
+            - label: "Starter"
+              value: "starter"
+            - label: "Professional"
+              value: "pro"
+            - label: "Enterprise"
+              value: "enterprise"
+      - module_key: radix-scroll-area
+        name: Radix Scroll Area
+        description: "Scrollable content viewport with styled scrollbar."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: layout.scroll-area
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            height:
+              type: number
+              title: Height (px)
+            items:
+              type: array
+              title: Items
+              minItems: 1
+              items:
+                type: string
+          required:
+            - items
+        default_props:
+          label: "Recent activity"
+          height: 220
+          items:
+            - "Content model updated"
+            - "Theme package synced"
+            - "Cache refresh completed"
+            - "Homepage published"
+      - module_key: radix-separator
+        name: Radix Separator
+        description: "Visual divider between content groups."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: layout.separator
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+        default_props:
+          label: "Section Separator"
+      - module_key: radix-slider
+        name: Radix Slider
+        description: "Single-value slider control."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.slider
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            min:
+              type: number
+              title: Min
+            max:
+              type: number
+              title: Max
+            step:
+              type: number
+              title: Step
+            defaultValue:
+              type: number
+              title: Default Value
+        default_props:
+          label: "Volume"
+          min: 0
+          max: 100
+          step: 1
+          defaultValue: 40
+      - module_key: radix-toast
+        name: Radix Toast
+        description: "Transient notification toast message."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: feedback.toast
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            title:
+              type: string
+              title: Title
+            description:
+              type: string
+              title: Description
+        default_props:
+          triggerLabel: "Show toast"
+          title: "Saved"
+          description: "Your content has been updated."
+      - module_key: radix-toggle
+        name: Radix Toggle
+        description: "Single pressed/unpressed toggle button."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.toggle
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            label:
+              type: string
+              title: Label
+            defaultPressed:
+              type: boolean
+              title: Default Pressed
+        default_props:
+          label: "Bold"
+          defaultPressed: false
+      - module_key: radix-toggle-group
+        name: Radix Toggle Group
+        description: "Grouped toggle controls in single or multiple select mode."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: form.toggle-group
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            type:
+              type: string
+              title: Mode
+              enum:
+                - single
+                - multiple
+            defaultValue:
+              type: string
+              title: Default Value (single)
+            defaultValues:
+              type: array
+              title: Default Values (multiple)
+              items:
+                type: string
+            items:
+              type: array
+              title: Items
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - value
+                properties:
+                  label:
+                    type: string
+                    title: Label
+                  value:
+                    type: string
+                    title: Value
+                  description:
+                    type: string
+                    title: Description
+          required:
+            - items
+        default_props:
+          type: single
+          defaultValue: "left"
+          defaultValues:
+            - "left"
+          items:
+            - label: "Left"
+              value: "left"
+            - label: "Center"
+              value: "center"
+            - label: "Right"
+              value: "right"
+      - module_key: radix-toolbar
+        name: Radix Toolbar
+        description: "Horizontal action toolbar buttons."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: navigation.toolbar
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            actions:
+              type: array
+              title: Actions
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - label
+                  - value
+                properties:
+                  label:
+                    type: string
+                    title: Label
+                  value:
+                    type: string
+                    title: Value
+                  description:
+                    type: string
+                    title: Description
+          required:
+            - actions
+        default_props:
+          actions:
+            - label: "Bold"
+              value: "bold"
+            - label: "Italic"
+              value: "italic"
+            - label: "Underline"
+              value: "underline"
+      - module_key: radix-tooltip
+        name: Radix Tooltip
+        description: "Hover/focus tooltip for concise helper text."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: overlay.tooltip
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            triggerLabel:
+              type: string
+              title: Trigger Label
+            content:
+              type: string
+              title: Content
+        default_props:
+          triggerLabel: "Hover me"
+          content: "Helpful tooltip content."
