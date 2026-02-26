@@ -952,8 +952,37 @@ spec:
             # Clear any lingering schema cache issues before starting
             export CACHE_SCHEMA=false
             export CACHE_PERMISSIONS=false
-            
-            exec node cli.js start
+
+            DIRECTUS_START_MAX_RETRIES_RAW="${DIRECTUS_START_MAX_RETRIES:-12}"
+            DIRECTUS_START_RETRY_DELAY_SECONDS_RAW="${DIRECTUS_START_RETRY_DELAY_SECONDS:-8}"
+            DIRECTUS_START_MAX_RETRIES="$(printf '%s' "${DIRECTUS_START_MAX_RETRIES_RAW}" | tr -dc '0-9')"
+            DIRECTUS_START_RETRY_DELAY_SECONDS="$(printf '%s' "${DIRECTUS_START_RETRY_DELAY_SECONDS_RAW}" | tr -dc '0-9')"
+            if [ -z "${DIRECTUS_START_MAX_RETRIES:-}" ] || [ "${DIRECTUS_START_MAX_RETRIES}" -lt 1 ]; then
+              DIRECTUS_START_MAX_RETRIES=12
+            fi
+            if [ -z "${DIRECTUS_START_RETRY_DELAY_SECONDS:-}" ] || [ "${DIRECTUS_START_RETRY_DELAY_SECONDS}" -lt 1 ]; then
+              DIRECTUS_START_RETRY_DELAY_SECONDS=8
+            fi
+
+            _directus_start_attempt=1
+            while true; do
+              echo "▶️ Directus start attempt ${_directus_start_attempt}/${DIRECTUS_START_MAX_RETRIES}"
+              if node cli.js start; then
+                exit 0
+              fi
+              _directus_start_rc="$?"
+              if [ "${_directus_start_attempt}" -ge "${DIRECTUS_START_MAX_RETRIES}" ]; then
+                echo "❌ Directus exited with code ${_directus_start_rc} after ${_directus_start_attempt} attempts."
+                exit "${_directus_start_rc}"
+              fi
+              if [ -f /postschema-state/ready ]; then
+                echo "⚠️ Directus exited with code ${_directus_start_rc}; retrying in ${DIRECTUS_START_RETRY_DELAY_SECONDS}s."
+              else
+                echo "⚠️ Directus exited with code ${_directus_start_rc} while postschema is still reconciling; retrying in ${DIRECTUS_START_RETRY_DELAY_SECONDS}s."
+              fi
+              _directus_start_attempt=$((_directus_start_attempt + 1))
+              sleep "${DIRECTUS_START_RETRY_DELAY_SECONDS}"
+            done
         ports:
         - containerPort: 8055
         env:
