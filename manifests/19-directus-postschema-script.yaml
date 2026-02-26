@@ -330,7 +330,11 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_package_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_mode TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS widget_dock_position TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS widget_dock_direction TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_selector_dock_position TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_position TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_dock_direction TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
@@ -445,13 +449,42 @@ data:
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_pages p
-      SET theme_switcher_position = CASE
+      SET widget_dock_position = CASE
+        WHEN LOWER(COALESCE(p.widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(p.widget_dock_position)
         WHEN LOWER(COALESCE(p.theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(p.theme_switcher_position)
         ELSE 'top-right'
       END
-      WHERE p.theme_switcher_position IS NULL
-         OR LOWER(COALESCE(p.theme_switcher_position, '')) NOT IN ('top-right','top-left','bottom-right','bottom-left')
-         OR p.theme_switcher_position <> LOWER(p.theme_switcher_position);" "normalize cms_pages.theme_switcher_position"; then
+      WHERE p.widget_dock_position IS NULL
+         OR LOWER(COALESCE(p.widget_dock_position, '')) NOT IN ('top-right','top-left','bottom-right','bottom-left')
+         OR p.widget_dock_position <> LOWER(p.widget_dock_position);" "normalize cms_pages.widget_dock_position"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET widget_dock_direction = CASE
+        WHEN LOWER(COALESCE(p.widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(p.widget_dock_direction)
+        WHEN LOWER(COALESCE(p.theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(p.theme_switcher_dock_direction)
+        ELSE 'vertical'
+      END
+      WHERE p.widget_dock_direction IS NULL
+         OR LOWER(COALESCE(p.widget_dock_direction, '')) NOT IN ('vertical','horizontal')
+         OR p.widget_dock_direction <> LOWER(p.widget_dock_direction);" "normalize cms_pages.widget_dock_direction"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET theme_selector_dock_position = CASE
+        WHEN LOWER(COALESCE(p.theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(p.theme_selector_dock_position)
+        ELSE 'start'
+      END
+      WHERE p.theme_selector_dock_position IS NULL
+         OR LOWER(COALESCE(p.theme_selector_dock_position, '')) NOT IN ('start','end')
+         OR p.theme_selector_dock_position <> LOWER(p.theme_selector_dock_position);" "normalize cms_pages.theme_selector_dock_position"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET theme_switcher_position = p.widget_dock_position,
+          theme_switcher_dock_direction = p.widget_dock_direction
+      WHERE p.theme_switcher_position IS DISTINCT FROM p.widget_dock_position
+         OR p.theme_switcher_dock_direction IS DISTINCT FROM p.widget_dock_direction;" "sync cms_pages legacy theme_switcher fields"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_pages p
@@ -604,10 +637,30 @@ data:
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_mode_check CHECK (theme_mode IN ('auto','light','dark'));
           END IF;
+          ALTER TABLE cms_pages ALTER COLUMN widget_dock_position SET DEFAULT 'top-right';
+          ALTER TABLE cms_pages ALTER COLUMN widget_dock_position SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_widget_dock_position_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+            ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_widget_dock_position_check CHECK (widget_dock_position IN ('top-right','top-left','bottom-right','bottom-left'));
+          END IF;
+          ALTER TABLE cms_pages ALTER COLUMN widget_dock_direction SET DEFAULT 'vertical';
+          ALTER TABLE cms_pages ALTER COLUMN widget_dock_direction SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_widget_dock_direction_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+            ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_widget_dock_direction_check CHECK (widget_dock_direction IN ('vertical','horizontal'));
+          END IF;
+          ALTER TABLE cms_pages ALTER COLUMN theme_selector_dock_position SET DEFAULT 'start';
+          ALTER TABLE cms_pages ALTER COLUMN theme_selector_dock_position SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_selector_dock_position_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+            ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_selector_dock_position_check CHECK (theme_selector_dock_position IN ('start','end'));
+          END IF;
           ALTER TABLE cms_pages ALTER COLUMN theme_switcher_position SET DEFAULT 'top-right';
           ALTER TABLE cms_pages ALTER COLUMN theme_switcher_position SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_switcher_position_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_switcher_position_check CHECK (theme_switcher_position IN ('top-right','top-left','bottom-right','bottom-left'));
+          END IF;
+          ALTER TABLE cms_pages ALTER COLUMN theme_switcher_dock_direction SET DEFAULT 'vertical';
+          ALTER TABLE cms_pages ALTER COLUMN theme_switcher_dock_direction SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_switcher_dock_direction_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+            ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_switcher_dock_direction_check CHECK (theme_switcher_dock_direction IN ('vertical','horizontal'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN
@@ -944,7 +997,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","theme_package_key","theme_mode","theme_switcher_position","refresh_target","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","theme_package_key","theme_mode","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -2010,17 +2063,46 @@ data:
          END IF; \
          IF NEW.props_json = '{}'::jsonb THEN \
            NEW.props_json := _default_props; \
-         ELSE \
-           NEW.props_json := _default_props || NEW.props_json; \
-         END IF; \
-         RETURN NEW; \
-       END; \
-       \$\$; \
-       DO \$\$ \
-       BEGIN \
-         IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
-            AND to_regclass('directus.cms_pages') IS NOT NULL \
-            AND to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN \
+       ELSE \
+         NEW.props_json := _default_props || NEW.props_json; \
+       END IF; \
+       RETURN NEW; \
+      END; \
+      \$\$; \
+      CREATE OR REPLACE FUNCTION directus.sync_cms_page_theme_dock_fields() \
+      RETURNS trigger \
+      LANGUAGE plpgsql \
+      AS \$\$ \
+      DECLARE \
+        _dock_position TEXT; \
+        _dock_direction TEXT; \
+      BEGIN \
+        _dock_position := CASE \
+          WHEN LOWER(COALESCE(NEW.widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(NEW.widget_dock_position) \
+          WHEN LOWER(COALESCE(NEW.theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(NEW.theme_switcher_position) \
+          ELSE 'top-right' \
+        END; \
+        _dock_direction := CASE \
+          WHEN LOWER(COALESCE(NEW.widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(NEW.widget_dock_direction) \
+          WHEN LOWER(COALESCE(NEW.theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(NEW.theme_switcher_dock_direction) \
+          ELSE 'vertical' \
+        END; \
+        NEW.widget_dock_position := _dock_position; \
+        NEW.widget_dock_direction := _dock_direction; \
+        NEW.theme_switcher_position := _dock_position; \
+        NEW.theme_switcher_dock_direction := _dock_direction; \
+        NEW.theme_selector_dock_position := CASE \
+          WHEN LOWER(COALESCE(NEW.theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(NEW.theme_selector_dock_position) \
+          ELSE 'start' \
+        END; \
+        RETURN NEW; \
+      END; \
+      \$\$; \
+      DO \$\$ \
+      BEGIN \
+        IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
+           AND to_regclass('directus.cms_pages') IS NOT NULL \
+           AND to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN \
            DROP TRIGGER IF EXISTS cms_page_blocks_slot_guard ON cms_page_blocks; \
            CREATE TRIGGER cms_page_blocks_slot_guard \
            BEFORE INSERT OR UPDATE \
@@ -2033,10 +2115,18 @@ data:
            ON cms_page_blocks \
            FOR EACH ROW \
            EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page_block(); \
-         END IF; \
-         IF to_regclass('directus.cms_pages') IS NOT NULL \
-            AND to_regclass('directus.cms_page_blocks') IS NOT NULL \
-            AND to_regclass('directus.cms_block_rich_text') IS NOT NULL \
+        END IF; \
+        IF to_regclass('directus.cms_pages') IS NOT NULL THEN \
+          DROP TRIGGER IF EXISTS cms_pages_theme_dock_sync ON cms_pages; \
+          CREATE TRIGGER cms_pages_theme_dock_sync \
+          BEFORE INSERT OR UPDATE OF widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction \
+          ON cms_pages \
+          FOR EACH ROW \
+          EXECUTE FUNCTION directus.sync_cms_page_theme_dock_fields(); \
+        END IF; \
+        IF to_regclass('directus.cms_pages') IS NOT NULL \
+           AND to_regclass('directus.cms_page_blocks') IS NOT NULL \
+           AND to_regclass('directus.cms_block_rich_text') IS NOT NULL \
             AND to_regclass('directus.cms_block_hero') IS NOT NULL \
             AND to_regclass('directus.cms_block_module') IS NOT NULL \
             AND to_regclass('directus.cms_block_template_ref') IS NOT NULL THEN \
@@ -2195,7 +2285,9 @@ data:
       template_note="Required: choose which registered layout template this page uses."
       theme_note="Required: choose which published theme family this page uses."
       theme_mode_note="Required: choose how this page resolves theme variants (Auto uses system light/dark preference)."
-      theme_switcher_position_note="Required: choose where the theme selector icon is anchored on this page."
+      widget_dock_position_note="Required: choose where the widget dock is anchored on this page."
+      widget_dock_direction_note="Required: choose widget dock direction (vertical stack or horizontal row)."
+      theme_selector_dock_position_note="Required: choose where the theme selector sits inside the widget dock."
       slot_note="Choose a slot for this block. Slots come from the page layout template; multiple blocks can share a slot and render in sort order."
       module_note="Required: choose which published module this block should render."
       module_props_note="Optional JSON props for this module instance (falls back to module defaults when empty)."
@@ -2205,17 +2297,25 @@ data:
       status_note="Publishing control for this record."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
       theme_mode_choices_json="$(jq -nc '[ {"text":"Auto (System)","value":"auto","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Light","value":"light","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Dark","value":"dark","foreground":"#92400E","background":"#FEF3C7"} ]')"
-      theme_switcher_position_choices_json="$(jq -nc '[ {"text":"Top Right","value":"top-right","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Top Left","value":"top-left","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Bottom Right","value":"bottom-right","foreground":"#92400E","background":"#FEF3C7"}, {"text":"Bottom Left","value":"bottom-left","foreground":"#6D28D9","background":"#EDE9FE"} ]')"
+      widget_dock_position_choices_json="$(jq -nc '[ {"text":"Top Right","value":"top-right","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Top Left","value":"top-left","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Bottom Right","value":"bottom-right","foreground":"#92400E","background":"#FEF3C7"}, {"text":"Bottom Left","value":"bottom-left","foreground":"#6D28D9","background":"#EDE9FE"} ]')"
+      widget_dock_direction_choices_json="$(jq -nc '[ {"text":"Vertical","value":"vertical","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Horizontal","value":"horizontal","foreground":"#065F46","background":"#D1FAE5"} ]')"
+      theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
       theme_mode_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       theme_mode_display_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices}')"
-      theme_switcher_position_options_json="$(jq -nc --argjson choices "${theme_switcher_position_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
-      theme_switcher_position_display_options_json="$(jq -nc --argjson choices "${theme_switcher_position_choices_json}" '{choices:$choices}')"
+      widget_dock_position_options_json="$(jq -nc --argjson choices "${widget_dock_position_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      widget_dock_position_display_options_json="$(jq -nc --argjson choices "${widget_dock_position_choices_json}" '{choices:$choices}')"
+      widget_dock_direction_options_json="$(jq -nc --argjson choices "${widget_dock_direction_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      widget_dock_direction_display_options_json="$(jq -nc --argjson choices "${widget_dock_direction_choices_json}" '{choices:$choices}')"
+      theme_selector_dock_position_options_json="$(jq -nc --argjson choices "${theme_selector_dock_position_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      theme_selector_dock_position_display_options_json="$(jq -nc --argjson choices "${theme_selector_dock_position_choices_json}" '{choices:$choices}')"
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
       theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
-      theme_switcher_position_note_sql="$(printf '%s' "${theme_switcher_position_note}" | sed "s/'/''/g")"
+      widget_dock_position_note_sql="$(printf '%s' "${widget_dock_position_note}" | sed "s/'/''/g")"
+      widget_dock_direction_note_sql="$(printf '%s' "${widget_dock_direction_note}" | sed "s/'/''/g")"
+      theme_selector_dock_position_note_sql="$(printf '%s' "${theme_selector_dock_position_note}" | sed "s/'/''/g")"
       slot_note_sql="$(printf '%s' "${slot_note}" | sed "s/'/''/g")"
       module_note_sql="$(printf '%s' "${module_note}" | sed "s/'/''/g")"
       module_props_note_sql="$(printf '%s' "${module_props_note}" | sed "s/'/''/g")"
@@ -2395,9 +2495,9 @@ data:
         echo "✅ Created theme_mode field UX on ${_collection}"
       }
 
-      _upsert_page_theme_switcher_position_field_meta() {
+      _upsert_page_widget_dock_position_field_meta() {
         _collection="cms_pages"
-        _field="theme_switcher_position"
+        _field="widget_dock_position"
         _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
         _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
@@ -2411,8 +2511,8 @@ data:
           "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
         _exists="$(printf '%s' "$_exists" | tr -d '\r')"
 
-        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${theme_switcher_position_options_json}")"
-        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${theme_switcher_position_display_options_json}")"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${widget_dock_position_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${widget_dock_position_display_options_json}")"
 
         if [ "${_exists}" = "1" ]; then
           SETS=""
@@ -2425,11 +2525,11 @@ data:
           if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
           if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
           if _df_has_col "sort"; then SETS="${SETS},sort=5"; fi
-          if _df_has_col "note"; then SETS="${SETS},note='${theme_switcher_position_note_sql}'"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${widget_dock_position_note_sql}'"; fi
           if [ -n "${SETS:-}" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
-            echo "✅ Updated theme_switcher_position field UX on ${_collection}"
+            echo "✅ Updated widget_dock_position field UX on ${_collection}"
           fi
           return 0
         fi
@@ -2445,11 +2545,125 @@ data:
         if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
         if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
         if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},5"; fi
-        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${theme_switcher_position_note_sql}'"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${widget_dock_position_note_sql}'"; fi
 
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
-        echo "✅ Created theme_switcher_position field UX on ${_collection}"
+        echo "✅ Created widget_dock_position field UX on ${_collection}"
+      }
+
+      _upsert_page_widget_dock_direction_field_meta() {
+        _collection="cms_pages"
+        _field="widget_dock_direction"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${widget_dock_direction_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${widget_dock_direction_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=6"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${widget_dock_direction_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated widget_dock_direction field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},6"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${widget_dock_direction_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created widget_dock_direction field UX on ${_collection}"
+      }
+
+      _upsert_page_theme_selector_dock_position_field_meta() {
+        _collection="cms_pages"
+        _field="theme_selector_dock_position"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${theme_selector_dock_position_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${theme_selector_dock_position_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=7"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${theme_selector_dock_position_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated theme_selector_dock_position field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},7"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${theme_selector_dock_position_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created theme_selector_dock_position field UX on ${_collection}"
       }
 
       _upsert_page_block_slot_field_meta_dynamic() {
@@ -2859,7 +3073,9 @@ data:
       _upsert_page_layout_template_field_meta
       _upsert_page_theme_package_field_meta
       _upsert_page_theme_mode_field_meta
-      _upsert_page_theme_switcher_position_field_meta
+      _upsert_page_widget_dock_position_field_meta
+      _upsert_page_widget_dock_direction_field_meta
+      _upsert_page_theme_selector_dock_position_field_meta
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_page_block_parent_field_meta_dynamic
       _upsert_template_ref_template_key_field_meta
@@ -2885,6 +3101,8 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "id" 101
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_created" 102
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 103
+      _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_position" 104
+      _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_dock_direction" 105
     else
       echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot/module UX config"
     fi
@@ -3603,7 +3821,7 @@ data:
                 if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
                   seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, theme_package_key, theme_mode, theme_switcher_position, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, CASE WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, theme_package_key, theme_mode, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(theme_selector_dock_position) ELSE 'start' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
     
                   # Clone supported homepage blocks so the new site homepage has immediate content.
                   pb_map_file="$(mktemp)"
@@ -3688,7 +3906,7 @@ data:
                 else
                   title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, theme_package_key, theme_mode, theme_switcher_position, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto','top-right','both');"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, theme_package_key, theme_mode, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto','top-right','vertical','start','top-right','vertical','both');"
                   echo "✅ Created default homepage for site_key='${site_key}'"
                 fi
                 HOME_PAGE_ID="$NEW_HOME_ID"
@@ -3707,13 +3925,33 @@ data:
                      WHEN LOWER(COALESCE(p.theme_mode, '')) IN ('auto','light','dark') THEN LOWER(p.theme_mode) \
                      ELSE 'auto' \
                    END, \
-                   theme_switcher_position = CASE \
+                   widget_dock_position = CASE \
+                     WHEN LOWER(COALESCE(p.widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(p.widget_dock_position) \
                      WHEN LOWER(COALESCE(p.theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(p.theme_switcher_position) \
                      ELSE 'top-right' \
+                   END, \
+                   widget_dock_direction = CASE \
+                     WHEN LOWER(COALESCE(p.widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(p.widget_dock_direction) \
+                     WHEN LOWER(COALESCE(p.theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(p.theme_switcher_dock_direction) \
+                     ELSE 'vertical' \
+                   END, \
+                   theme_selector_dock_position = CASE \
+                     WHEN LOWER(COALESCE(p.theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(p.theme_selector_dock_position) \
+                     ELSE 'start' \
+                   END, \
+                   theme_switcher_position = CASE \
+                     WHEN LOWER(COALESCE(p.widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(p.widget_dock_position) \
+                     WHEN LOWER(COALESCE(p.theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(p.theme_switcher_position) \
+                     ELSE 'top-right' \
+                   END, \
+                   theme_switcher_dock_direction = CASE \
+                     WHEN LOWER(COALESCE(p.widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(p.widget_dock_direction) \
+                     WHEN LOWER(COALESCE(p.theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(p.theme_switcher_dock_direction) \
+                     ELSE 'vertical' \
                    END \
                WHERE p.site_key='${site_key_sql}' \
                  AND p.slug='${homepage_slug_sql}' \
-                 AND (p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target) OR p.theme_mode IS NULL OR LOWER(COALESCE(p.theme_mode, '')) NOT IN ('auto','light','dark') OR p.theme_mode <> LOWER(p.theme_mode) OR p.theme_switcher_position IS NULL OR LOWER(COALESCE(p.theme_switcher_position, '')) NOT IN ('top-right','top-left','bottom-right','bottom-left') OR p.theme_switcher_position <> LOWER(p.theme_switcher_position)); \
+                 AND (p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target) OR p.theme_mode IS NULL OR LOWER(COALESCE(p.theme_mode, '')) NOT IN ('auto','light','dark') OR p.theme_mode <> LOWER(p.theme_mode) OR p.widget_dock_position IS NULL OR LOWER(COALESCE(p.widget_dock_position, '')) NOT IN ('top-right','top-left','bottom-right','bottom-left') OR p.widget_dock_position <> LOWER(p.widget_dock_position) OR p.widget_dock_direction IS NULL OR LOWER(COALESCE(p.widget_dock_direction, '')) NOT IN ('vertical','horizontal') OR p.widget_dock_direction <> LOWER(p.widget_dock_direction) OR p.theme_selector_dock_position IS NULL OR LOWER(COALESCE(p.theme_selector_dock_position, '')) NOT IN ('start','end') OR p.theme_selector_dock_position <> LOWER(p.theme_selector_dock_position) OR p.theme_switcher_position IS DISTINCT FROM p.widget_dock_position OR p.theme_switcher_dock_direction IS DISTINCT FROM p.widget_dock_direction); \
                UPDATE cms_page_blocks pb \
                SET site_key = p.site_key, page_slug = p.slug, refresh_target = p.refresh_target, slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main') \
                FROM cms_pages p \
