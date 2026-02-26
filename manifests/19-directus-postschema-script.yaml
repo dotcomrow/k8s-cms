@@ -1240,25 +1240,27 @@ data:
     
           if [ -n "${existing_tpl_id:-}" ] && [ "${existing_tpl_id}" != "null" ]; then
             existing_tpl_id_sql="$(printf '%s' "$existing_tpl_id" | sed "s/'/''/g")"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
-               UPDATE cms_layout_templates \
-               SET name='${tpl_name_sql}', \
-                   description=${tpl_desc_sql}, \
-                   status='${tpl_status_sql}', \
-                   site_key=${tpl_site_sql}, \
-                   html='${tpl_html_sql}', \
-                   css=${tpl_css_sql}, \
-                   date_updated=now() \
-               WHERE id='${existing_tpl_id_sql}';"
+            if ! _psql_yb_retry "UPDATE cms_layout_templates
+              SET name='${tpl_name_sql}',
+                  description=${tpl_desc_sql},
+                  status='${tpl_status_sql}',
+                  site_key=${tpl_site_sql},
+                  html='${tpl_html_sql}',
+                  css=${tpl_css_sql},
+                  date_updated=now()
+              WHERE id='${existing_tpl_id_sql}';" "reconcile layout template '${tpl_key}'"; then
+              echo "⚠️  skipped layout template '${tpl_key}' due to transient DB errors; will retry next reconcile"
+              continue
+            fi
             echo "✅ Reconciled layout template '${tpl_key}'"
           else
             new_tpl_id="$(cat /proc/sys/kernel/random/uuid)"
             new_tpl_id_sql="$(printf '%s' "$new_tpl_id" | sed "s/'/''/g")"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
-               INSERT INTO cms_layout_templates (id, template_key, name, description, status, site_key, html, css, date_created, date_updated) \
-               VALUES ('${new_tpl_id_sql}','${tpl_key_sql}','${tpl_name_sql}',${tpl_desc_sql},'${tpl_status_sql}',${tpl_site_sql},'${tpl_html_sql}',${tpl_css_sql},now(),now());"
+            if ! _psql_yb_retry "INSERT INTO cms_layout_templates (id, template_key, name, description, status, site_key, html, css, date_created, date_updated)
+              VALUES ('${new_tpl_id_sql}','${tpl_key_sql}','${tpl_name_sql}',${tpl_desc_sql},'${tpl_status_sql}',${tpl_site_sql},'${tpl_html_sql}',${tpl_css_sql},now(),now());" "seed layout template '${tpl_key}'"; then
+              echo "⚠️  skipped layout template '${tpl_key}' due to transient DB errors; will retry next reconcile"
+              continue
+            fi
             echo "✅ Seeded layout template '${tpl_key}'"
           fi
     
@@ -1272,9 +1274,11 @@ data:
             parsed_slot_keys="main"
           fi
     
-          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-            "SET search_path TO directus, public; DELETE FROM cms_layout_template_slots WHERE template_key='${tpl_key_sql}' AND ${tpl_scope_condition};"
-    
+          if ! _psql_yb_retry "DELETE FROM cms_layout_template_slots WHERE template_key='${tpl_key_sql}' AND ${tpl_scope_condition};" "reset slots for layout template '${tpl_key}'"; then
+            echo "⚠️  failed resetting slots for layout template '${tpl_key}'; will retry next reconcile"
+            continue
+          fi
+
           printf '%s\n' "${parsed_slot_keys}" | while IFS= read -r slot_key; do
             [ -z "${slot_key:-}" ] && continue
             slot_key_sql="$(printf '%s' "$slot_key" | sed "s/'/''/g")"
@@ -1282,10 +1286,10 @@ data:
             slot_label_sql="$(printf '%s' "$slot_label" | sed "s/'/''/g")"
             slot_id="$(cat /proc/sys/kernel/random/uuid)"
             slot_id_sql="$(printf '%s' "$slot_id" | sed "s/'/''/g")"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
-               INSERT INTO cms_layout_template_slots (id, template_key, site_key, slot_key, slot_label, date_created, date_updated) \
-               VALUES ('${slot_id_sql}', '${tpl_key_sql}', ${tpl_site_sql}, '${slot_key_sql}', '${slot_label_sql}', now(), now());"
+            if ! _psql_yb_retry "INSERT INTO cms_layout_template_slots (id, template_key, site_key, slot_key, slot_label, date_created, date_updated)
+              VALUES ('${slot_id_sql}', '${tpl_key_sql}', ${tpl_site_sql}, '${slot_key_sql}', '${slot_label_sql}', now(), now());" "register slot '${slot_key}' for layout template '${tpl_key}'"; then
+              echo "⚠️  failed to register slot '${slot_key}' for layout template '${tpl_key}'; continuing"
+            fi
           done
     
           parsed_slot_list="$(printf '%s' "${parsed_slot_keys}" | tr '\n' ',' | sed 's/,$//')"
@@ -1478,27 +1482,29 @@ data:
 
           if [ -n "${existing_theme_id:-}" ] && [ "${existing_theme_id}" != "null" ]; then
             existing_theme_id_sql="$(printf '%s' "$existing_theme_id" | sed "s/'/''/g")"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
-               UPDATE cms_theme_packages \
-               SET name='${theme_name_sql}', \
-                   description=${theme_desc_sql}, \
-                   status='${theme_status_sql}', \
-                   site_key=${theme_site_sql}, \
-                   refresh_target='${theme_refresh_target_sql}', \
-                   css_light='${theme_css_light_sql}', \
-                   css_dark='${theme_css_dark_sql}', \
-                   css='${theme_css_sql}', \
-                   date_updated=now() \
-               WHERE id='${existing_theme_id_sql}';"
+            if ! _psql_yb_retry "UPDATE cms_theme_packages
+              SET name='${theme_name_sql}',
+                  description=${theme_desc_sql},
+                  status='${theme_status_sql}',
+                  site_key=${theme_site_sql},
+                  refresh_target='${theme_refresh_target_sql}',
+                  css_light='${theme_css_light_sql}',
+                  css_dark='${theme_css_dark_sql}',
+                  css='${theme_css_sql}',
+                  date_updated=now()
+              WHERE id='${existing_theme_id_sql}';" "reconcile theme package '${theme_key}'"; then
+              echo "⚠️  skipped theme package '${theme_key}' due to transient DB errors; will retry next reconcile"
+              continue
+            fi
             echo "✅ Reconciled theme package '${theme_key}'"
           else
             new_theme_id="$(cat /proc/sys/kernel/random/uuid)"
             new_theme_id_sql="$(printf '%s' "$new_theme_id" | sed "s/'/''/g")"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
-               INSERT INTO cms_theme_packages (id, theme_key, name, description, status, site_key, refresh_target, css_light, css_dark, css, date_created, date_updated) \
-               VALUES ('${new_theme_id_sql}','${theme_key_sql}','${theme_name_sql}',${theme_desc_sql},'${theme_status_sql}',${theme_site_sql},'${theme_refresh_target_sql}','${theme_css_light_sql}','${theme_css_dark_sql}','${theme_css_sql}',now(),now());"
+            if ! _psql_yb_retry "INSERT INTO cms_theme_packages (id, theme_key, name, description, status, site_key, refresh_target, css_light, css_dark, css, date_created, date_updated)
+              VALUES ('${new_theme_id_sql}','${theme_key_sql}','${theme_name_sql}',${theme_desc_sql},'${theme_status_sql}',${theme_site_sql},'${theme_refresh_target_sql}','${theme_css_light_sql}','${theme_css_dark_sql}','${theme_css_sql}',now(),now());" "seed theme package '${theme_key}'"; then
+              echo "⚠️  skipped theme package '${theme_key}' due to transient DB errors; will retry next reconcile"
+              continue
+            fi
             echo "✅ Seeded theme package '${theme_key}'"
           fi
         done
@@ -1748,27 +1754,29 @@ data:
           existing_module_id="$(printf '%s' "$existing_module_id" | tr -d '\r')"
           if [ -n "${existing_module_id:-}" ] && [ "${existing_module_id}" != "null" ]; then
             existing_module_id_sql="$(printf '%s' "$existing_module_id" | sed "s/'/''/g")"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
-               UPDATE cms_modules \
-               SET name='${module_name_sql}', \
-                   description=${module_desc_sql}, \
-                   provider='${module_provider_sql}', \
-                   component_type=${module_component_type_sql}, \
-                   status='${module_status_sql}', \
-                   site_key=${module_site_sql}, \
-                   props_schema='${module_props_schema_sql}'::jsonb, \
-                   default_props='${module_default_props_sql}'::jsonb, \
-                   date_updated=now() \
-               WHERE id='${existing_module_id_sql}';"
+            if ! _psql_yb_retry "UPDATE cms_modules
+              SET name='${module_name_sql}',
+                  description=${module_desc_sql},
+                  provider='${module_provider_sql}',
+                  component_type=${module_component_type_sql},
+                  status='${module_status_sql}',
+                  site_key=${module_site_sql},
+                  props_schema='${module_props_schema_sql}'::jsonb,
+                  default_props='${module_default_props_sql}'::jsonb,
+                  date_updated=now()
+              WHERE id='${existing_module_id_sql}';" "reconcile module '${module_key}'"; then
+              echo "⚠️  skipped module '${module_key}' due to transient DB errors; will retry next reconcile"
+              continue
+            fi
             echo "✅ Reconciled module '${module_key}'"
           else
             new_module_id="$(cat /proc/sys/kernel/random/uuid)"
             new_module_id_sql="$(printf '%s' "$new_module_id" | sed "s/'/''/g")"
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; \
-               INSERT INTO cms_modules (id, module_key, name, description, provider, component_type, status, site_key, props_schema, default_props, date_created, date_updated) \
-               VALUES ('${new_module_id_sql}', '${module_key_sql}', '${module_name_sql}', ${module_desc_sql}, '${module_provider_sql}', ${module_component_type_sql}, '${module_status_sql}', ${module_site_sql}, '${module_props_schema_sql}'::jsonb, '${module_default_props_sql}'::jsonb, now(), now());"
+            if ! _psql_yb_retry "INSERT INTO cms_modules (id, module_key, name, description, provider, component_type, status, site_key, props_schema, default_props, date_created, date_updated)
+              VALUES ('${new_module_id_sql}', '${module_key_sql}', '${module_name_sql}', ${module_desc_sql}, '${module_provider_sql}', ${module_component_type_sql}, '${module_status_sql}', ${module_site_sql}, '${module_props_schema_sql}'::jsonb, '${module_default_props_sql}'::jsonb, now(), now());" "seed module '${module_key}'"; then
+              echo "⚠️  skipped module '${module_key}' due to transient DB errors; will retry next reconcile"
+              continue
+            fi
             echo "✅ Seeded module '${module_key}'"
           fi
         done
