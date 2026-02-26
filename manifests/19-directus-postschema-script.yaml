@@ -329,6 +329,7 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_package_key TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_mode TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
@@ -430,6 +431,21 @@ data:
       WHERE p.refresh_target IS NULL
          OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both')
          OR p.refresh_target <> LOWER(p.refresh_target);" "normalize cms_pages.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET theme_mode = CASE
+        WHEN LOWER(COALESCE(p.theme_mode, '')) IN ('auto','light','dark') THEN LOWER(p.theme_mode)
+        ELSE 'auto'
+      END
+      WHERE p.theme_mode IS NULL
+         OR LOWER(COALESCE(p.theme_mode, '')) NOT IN ('auto','light','dark')
+         OR p.theme_mode <> LOWER(p.theme_mode);" "normalize cms_pages.theme_mode"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET theme_package_key = 'theme-clear'
+      WHERE LOWER(COALESCE(BTRIM(p.theme_package_key), '')) = 'theme-clear-light';" "migrate cms_pages.theme_package_key legacy family key"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_page_blocks pb
@@ -571,6 +587,11 @@ data:
           ALTER TABLE cms_pages ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_refresh_target_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+          ALTER TABLE cms_pages ALTER COLUMN theme_mode SET DEFAULT 'auto';
+          ALTER TABLE cms_pages ALTER COLUMN theme_mode SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+            ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_mode_check CHECK (theme_mode IN ('auto','light','dark'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN
@@ -907,7 +928,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","theme_package_key","refresh_target","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","theme_package_key","theme_mode","refresh_target","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -1220,6 +1241,8 @@ data:
          status TEXT NOT NULL DEFAULT 'draft', \
          site_key TEXT NULL, \
          refresh_target TEXT NOT NULL DEFAULT 'both', \
+         css_light TEXT NULL, \
+         css_dark TEXT NULL, \
          css TEXT NOT NULL, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
          date_updated TIMESTAMPTZ NULL \
@@ -1230,12 +1253,18 @@ data:
        ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS status TEXT; \
        ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS css_light TEXT; \
+       ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS css_dark TEXT; \
        ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS css TEXT; \
        ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_theme_packages ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_theme_packages \
+          SET css_light = COALESCE(NULLIF(css_light, ''), css), \
+              css_dark = COALESCE(NULLIF(css_dark, ''), COALESCE(NULLIF(css_light, ''), css)) \
+        WHERE css_light IS NULL OR css_light = '' OR css_dark IS NULL OR css_dark = ''; \
        DO \$\$ \
        BEGIN \
          IF EXISTS ( \
@@ -1274,10 +1303,51 @@ data:
           theme_desc="$(printf '%s' "$theme" | jq -r '.description // empty')"
           theme_site="$(printf '%s' "$theme" | jq -r 'if .site_key == null then "" else (.site_key | tostring) end')"
           theme_refresh_target_raw="$(printf '%s' "$theme" | jq -r '.refresh_target // "both"')"
+          theme_css_light="$(printf '%s' "$theme" | jq -r '.css_light // empty')"
+          theme_css_dark="$(printf '%s' "$theme" | jq -r '.css_dark // empty')"
           theme_css="$(printf '%s' "$theme" | jq -r '.css // empty')"
+          theme_css_light_file="$(printf '%s' "$theme" | jq -r '.css_light_file // empty')"
+          theme_css_dark_file="$(printf '%s' "$theme" | jq -r '.css_dark_file // empty')"
           theme_css_file="$(printf '%s' "$theme" | jq -r '.css_file // empty')"
 
-          if [ -z "${theme_css:-}" ] && [ -n "${theme_css_file:-}" ]; then
+          if [ -z "${theme_css_light:-}" ] && [ -n "${theme_css_light_file:-}" ]; then
+            case "$theme_css_light_file" in
+              /*|*..*)
+                echo "⚠️  theme '${theme_key}' has invalid css_light_file path '${theme_css_light_file}'; skipping"
+                continue
+                ;;
+              *)
+                theme_css_path="/directus-theme-packages/${theme_css_light_file}"
+                if [ -f "$theme_css_path" ]; then
+                  theme_css_light="$(cat "$theme_css_path")"
+                else
+                  echo "⚠️  theme '${theme_key}' css_light_file not found at ${theme_css_path}; skipping"
+                  continue
+                fi
+                ;;
+            esac
+          fi
+          if [ -z "${theme_css_dark:-}" ] && [ -n "${theme_css_dark_file:-}" ]; then
+            case "$theme_css_dark_file" in
+              /*|*..*)
+                echo "⚠️  theme '${theme_key}' has invalid css_dark_file path '${theme_css_dark_file}'; skipping"
+                continue
+                ;;
+              *)
+                theme_css_dark_path="/directus-theme-packages/${theme_css_dark_file}"
+                if [ -f "$theme_css_dark_path" ]; then
+                  theme_css_dark="$(cat "$theme_css_dark_path")"
+                else
+                  echo "⚠️  theme '${theme_key}' css_dark_file not found at ${theme_css_dark_path}; skipping"
+                  continue
+                fi
+                ;;
+            esac
+          fi
+          if [ -z "${theme_css_light:-}" ] && [ -n "${theme_css:-}" ]; then
+            theme_css_light="${theme_css}"
+          fi
+          if [ -z "${theme_css_light:-}" ] && [ -n "${theme_css_file:-}" ]; then
             case "$theme_css_file" in
               /*|*..*)
                 echo "⚠️  theme '${theme_key}' has invalid css_file path '${theme_css_file}'; skipping"
@@ -1286,17 +1356,23 @@ data:
               *)
                 theme_css_path="/directus-theme-packages/${theme_css_file}"
                 if [ -f "$theme_css_path" ]; then
-                  theme_css="$(cat "$theme_css_path")"
+                  theme_css_light="$(cat "$theme_css_path")"
                 else
-                  echo "⚠️  theme '${theme_key}' css file not found at ${theme_css_path}; skipping"
+                  echo "⚠️  theme '${theme_key}' css_file not found at ${theme_css_path}; skipping"
                   continue
                 fi
                 ;;
             esac
           fi
+          if [ -z "${theme_css_dark:-}" ]; then
+            theme_css_dark="${theme_css_light}"
+          fi
+          if [ -z "${theme_css:-}" ]; then
+            theme_css="${theme_css_light}"
+          fi
 
-          if [ -z "${theme_key:-}" ] || [ -z "${theme_name:-}" ] || [ -z "${theme_css:-}" ]; then
-            echo "⚠️  skipping invalid theme package entry (theme_key/name/css required)"
+          if [ -z "${theme_key:-}" ] || [ -z "${theme_name:-}" ] || [ -z "${theme_css_light:-}" ]; then
+            echo "⚠️  skipping invalid theme package entry (theme_key/name/css_light required)"
             continue
           fi
 
@@ -1309,6 +1385,8 @@ data:
           theme_name_sql="$(printf '%s' "$theme_name" | sed "s/'/''/g")"
           theme_status_sql="$(printf '%s' "$theme_status" | sed "s/'/''/g")"
           theme_refresh_target_sql="$(printf '%s' "$theme_refresh_target" | sed "s/'/''/g")"
+          theme_css_light_sql="$(printf '%s' "$theme_css_light" | sed "s/'/''/g")"
+          theme_css_dark_sql="$(printf '%s' "$theme_css_dark" | sed "s/'/''/g")"
           theme_css_sql="$(printf '%s' "$theme_css" | sed "s/'/''/g")"
 
           theme_desc_sql="NULL"
@@ -1339,6 +1417,8 @@ data:
                    status='${theme_status_sql}', \
                    site_key=${theme_site_sql}, \
                    refresh_target='${theme_refresh_target_sql}', \
+                   css_light='${theme_css_light_sql}', \
+                   css_dark='${theme_css_dark_sql}', \
                    css='${theme_css_sql}', \
                    date_updated=now() \
                WHERE id='${existing_theme_id_sql}';"
@@ -1348,8 +1428,8 @@ data:
             new_theme_id_sql="$(printf '%s' "$new_theme_id" | sed "s/'/''/g")"
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; \
-               INSERT INTO cms_theme_packages (id, theme_key, name, description, status, site_key, refresh_target, css, date_created, date_updated) \
-               VALUES ('${new_theme_id_sql}','${theme_key_sql}','${theme_name_sql}',${theme_desc_sql},'${theme_status_sql}',${theme_site_sql},'${theme_refresh_target_sql}','${theme_css_sql}',now(),now());"
+               INSERT INTO cms_theme_packages (id, theme_key, name, description, status, site_key, refresh_target, css_light, css_dark, css, date_created, date_updated) \
+               VALUES ('${new_theme_id_sql}','${theme_key_sql}','${theme_name_sql}',${theme_desc_sql},'${theme_status_sql}',${theme_site_sql},'${theme_refresh_target_sql}','${theme_css_light_sql}','${theme_css_dark_sql}','${theme_css_sql}',now(),now());"
             echo "✅ Seeded theme package '${theme_key}'"
           fi
         done
@@ -2097,7 +2177,8 @@ data:
         '{mode:"parent",page_blocks_collection:"cms_page_blocks",template_refs_collection:"cms_block_template_ref",pages_collection:"cms_pages",page_id_field:"page_id",page_site_field:"site_key",page_slug_field:"page_slug",item_id_field:"id",parent_id_field:"parent_block_id"}')"
 
       template_note="Required: choose which registered layout template this page uses."
-      theme_note="Required: choose which published theme package this page uses."
+      theme_note="Required: choose which published theme family this page uses."
+      theme_mode_note="Required: choose how this page resolves theme variants (Auto uses system light/dark preference)."
       slot_note="Choose a slot for this block. Slots come from the page layout template; multiple blocks can share a slot and render in sort order."
       module_note="Required: choose which published module this block should render."
       module_props_note="Optional JSON props for this module instance (falls back to module defaults when empty)."
@@ -2106,10 +2187,14 @@ data:
       internal_metadata_note="Managed automatically from page/block context."
       status_note="Publishing control for this record."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
+      theme_mode_choices_json="$(jq -nc '[ {"text":"Auto (System)","value":"auto","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Light","value":"light","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Dark","value":"dark","foreground":"#92400E","background":"#FEF3C7"} ]')"
+      theme_mode_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      theme_mode_display_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices}')"
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
+      theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
       slot_note_sql="$(printf '%s' "${slot_note}" | sed "s/'/''/g")"
       module_note_sql="$(printf '%s' "${module_note}" | sed "s/'/''/g")"
       module_props_note_sql="$(printf '%s' "${module_props_note}" | sed "s/'/''/g")"
@@ -2230,6 +2315,63 @@ data:
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created theme_package_key field UX on ${_collection}"
+      }
+
+      _upsert_page_theme_mode_field_meta() {
+        _collection="cms_pages"
+        _field="theme_mode"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${theme_mode_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${theme_mode_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=4"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${theme_mode_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated theme_mode field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},4"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${theme_mode_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created theme_mode field UX on ${_collection}"
       }
 
       _upsert_page_block_slot_field_meta_dynamic() {
@@ -2638,6 +2780,7 @@ data:
     
       _upsert_page_layout_template_field_meta
       _upsert_page_theme_package_field_meta
+      _upsert_page_theme_mode_field_meta
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_page_block_parent_field_meta_dynamic
       _upsert_template_ref_template_key_field_meta
@@ -3478,12 +3621,16 @@ data:
               "SET search_path TO directus, public; \
                UPDATE cms_pages p \
                SET refresh_target = CASE \
-                 WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
-                 ELSE 'both' \
-               END \
+                     WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
+                     ELSE 'both' \
+                   END, \
+                   theme_mode = CASE \
+                     WHEN LOWER(COALESCE(p.theme_mode, '')) IN ('auto','light','dark') THEN LOWER(p.theme_mode) \
+                     ELSE 'auto' \
+                   END \
                WHERE p.site_key='${site_key_sql}' \
                  AND p.slug='${homepage_slug_sql}' \
-                 AND (p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target)); \
+                 AND (p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target) OR p.theme_mode IS NULL OR LOWER(COALESCE(p.theme_mode, '')) NOT IN ('auto','light','dark') OR p.theme_mode <> LOWER(p.theme_mode)); \
                UPDATE cms_page_blocks pb \
                SET site_key = p.site_key, page_slug = p.slug, refresh_target = p.refresh_target, slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main') \
                FROM cms_pages p \

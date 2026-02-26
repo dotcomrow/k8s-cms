@@ -13,7 +13,7 @@ data:
       - site_key: internal
         homepage_slug: home
         homepage_layout_template_key: spa-default
-        homepage_theme_package_key: theme-clear-light
+        homepage_theme_package_key: theme-clear
         client_key: cms-site-internal
         role_name: cms-site-internal
         # Flow endpoints can be edited in Directus UI (Settings -> Flows),
@@ -154,7 +154,7 @@ data:
       - site_key: external
         homepage_slug: home
         homepage_layout_template_key: spa-default
-        homepage_theme_package_key: theme-clear-light
+        homepage_theme_package_key: theme-clear
         client_key: cms-site-external
         role_name: cms-site-external
         cache_refresh:

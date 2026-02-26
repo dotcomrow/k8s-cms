@@ -1,0 +1,37 @@
+:root {
+  --cms-bg: #0f172a;
+  --cms-surface: #132033;
+  --cms-elevated: #1f2d45;
+  --cms-border: #334155;
+  --cms-text: #e2e8f0;
+  --cms-muted: #93a5bf;
+  --cms-accent: #94a3b8;
+}
+
+.layout,
+.cms-page {
+  background: linear-gradient(180deg, #111827 0%, var(--cms-bg) 100%);
+  color: var(--cms-text);
+  font-family: "Manrope", "Segoe UI", sans-serif;
+}
+
+.layout [class*="layout__"],
+.cms-section,
+.cms-hero {
+  background: var(--cms-surface);
+  border-color: var(--cms-border);
+  box-shadow: 0 10px 30px rgba(2, 6, 23, 0.35);
+}
+
+.cms-section-subtitle,
+.cms-hero-subtitle {
+  color: var(--cms-muted);
+}
+
+.cms-section-cta a {
+  color: #0f172a;
+  background: var(--cms-accent);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.8rem;
+  text-decoration: none;
+}

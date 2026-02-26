@@ -21,7 +21,7 @@ while IFS= read -r asset; do
   [ -z "${asset}" ] && continue
   asset_files+=("${asset}")
 done < <(
-  yq -r '.themes[] | .css_file | select(. != null and . != "")' "${THEMES_FILE}" \
+  yq -r '.themes[] | [.css_file, .css_light_file, .css_dark_file][] | select(. != null and . != "")' "${THEMES_FILE}" \
     | awk '!seen[$0]++'
 )
 

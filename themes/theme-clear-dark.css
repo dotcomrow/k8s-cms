@@ -1,0 +1,36 @@
+:root {
+  --cms-bg: #0f172a;
+  --cms-surface: #111827;
+  --cms-elevated: #1f2937;
+  --cms-border: #334155;
+  --cms-text: #e5e7eb;
+  --cms-muted: #94a3b8;
+  --cms-accent: #60a5fa;
+}
+
+.layout,
+.cms-page {
+  background: linear-gradient(180deg, #0b1220 0%, var(--cms-bg) 100%);
+  color: var(--cms-text);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+.layout [class*="layout__"],
+.cms-section,
+.cms-hero {
+  background: var(--cms-surface);
+  border-color: var(--cms-border);
+}
+
+.cms-section-subtitle,
+.cms-hero-subtitle {
+  color: var(--cms-muted);
+}
+
+.cms-section-cta a {
+  color: #0b1220;
+  background: var(--cms-accent);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.8rem;
+  text-decoration: none;
+}

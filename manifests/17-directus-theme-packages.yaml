@@ -10,52 +10,64 @@ metadata:
 data:
   themes.yaml: |
     themes:
-      - theme_key: theme-clear-light
-        name: Clear Light
-        description: "Clean neutral theme suitable for default business and app layouts."
+      - theme_key: theme-clear
+        name: Clear
+        description: "Clean neutral family suitable for default business and app layouts."
         status: published
         site_key: null
         refresh_target: both
+        css_light_file: theme-clear-light.css
+        css_dark_file: theme-clear-dark.css
         css_file: theme-clear-light.css
     
       - theme_key: theme-modern-slate
         name: Modern Slate
-        description: "Muted slate palette with polished enterprise UI styling."
+        description: "Muted slate family with polished enterprise UI styling."
         status: published
         site_key: null
         refresh_target: both
+        css_light_file: theme-modern-slate.css
+        css_dark_file: theme-modern-slate-dark.css
         css_file: theme-modern-slate.css
     
       - theme_key: theme-ocean-blue
         name: Ocean Blue
-        description: "Blue-forward product theme with crisp accents and high readability."
+        description: "Blue-forward family with crisp accents and high readability."
         status: published
         site_key: null
         refresh_target: both
+        css_light_file: theme-ocean-blue.css
+        css_dark_file: theme-ocean-blue-dark.css
         css_file: theme-ocean-blue.css
     
       - theme_key: theme-forest-green
         name: Forest Green
-        description: "Natural green theme for sustainability and operations-focused apps."
+        description: "Natural green family for sustainability and operations-focused apps."
         status: published
         site_key: null
         refresh_target: both
+        css_light_file: theme-forest-green.css
+        css_dark_file: theme-forest-green-dark.css
         css_file: theme-forest-green.css
     
       - theme_key: theme-sandstone
         name: Sandstone Warm
-        description: "Warm neutral theme with approachable marketing-friendly tones."
+        description: "Warm neutral family with approachable marketing-friendly tones."
         status: published
         site_key: null
         refresh_target: both
+        css_light_file: theme-sandstone.css
+        css_dark_file: theme-sandstone-dark.css
         css_file: theme-sandstone.css
     
       - theme_key: theme-midnight-contrast
         name: Midnight Contrast
-        description: "Dark, high-contrast theme for dashboard-heavy interfaces."
+        description: "High-contrast family for dashboard-heavy interfaces."
         status: published
         site_key: null
         refresh_target: both
+        css_light_file: theme-midnight-contrast-light.css
+        css_dark_file: theme-midnight-contrast.css
         css_file: theme-midnight-contrast.css
   theme-clear-light.css: |
     :root {
@@ -89,6 +101,43 @@ data:
     
     .cms-section-cta a {
       color: #ffffff;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
+  theme-clear-dark.css: |
+    :root {
+      --cms-bg: #0f172a;
+      --cms-surface: #111827;
+      --cms-elevated: #1f2937;
+      --cms-border: #334155;
+      --cms-text: #e5e7eb;
+      --cms-muted: #94a3b8;
+      --cms-accent: #60a5fa;
+    }
+    
+    .layout,
+    .cms-page {
+      background: linear-gradient(180deg, #0b1220 0%, var(--cms-bg) 100%);
+      color: var(--cms-text);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #0b1220;
       background: var(--cms-accent);
       border-radius: 0.5rem;
       padding: 0.45rem 0.8rem;
@@ -132,6 +181,44 @@ data:
       padding: 0.45rem 0.8rem;
       text-decoration: none;
     }
+  theme-modern-slate-dark.css: |
+    :root {
+      --cms-bg: #0f172a;
+      --cms-surface: #132033;
+      --cms-elevated: #1f2d45;
+      --cms-border: #334155;
+      --cms-text: #e2e8f0;
+      --cms-muted: #93a5bf;
+      --cms-accent: #94a3b8;
+    }
+    
+    .layout,
+    .cms-page {
+      background: linear-gradient(180deg, #111827 0%, var(--cms-bg) 100%);
+      color: var(--cms-text);
+      font-family: "Manrope", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+      box-shadow: 0 10px 30px rgba(2, 6, 23, 0.35);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #0f172a;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
   theme-ocean-blue.css: |
     :root {
       --cms-bg: #eff6ff;
@@ -164,6 +251,43 @@ data:
     
     .cms-section-cta a {
       color: #ffffff;
+      background: var(--cms-accent);
+      border-radius: 999px;
+      padding: 0.45rem 0.9rem;
+      text-decoration: none;
+    }
+  theme-ocean-blue-dark.css: |
+    :root {
+      --cms-bg: #0a162a;
+      --cms-surface: #10203a;
+      --cms-elevated: #1d3358;
+      --cms-border: #2f4f7f;
+      --cms-text: #dbeafe;
+      --cms-muted: #93c5fd;
+      --cms-accent: #60a5fa;
+    }
+    
+    .layout,
+    .cms-page {
+      background: radial-gradient(circle at top, #13284a 0%, var(--cms-bg) 58%, #070f1f 100%);
+      color: var(--cms-text);
+      font-family: "Public Sans", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #0b1d3a;
       background: var(--cms-accent);
       border-radius: 999px;
       padding: 0.45rem 0.9rem;
@@ -206,6 +330,43 @@ data:
       padding: 0.45rem 0.8rem;
       text-decoration: none;
     }
+  theme-forest-green-dark.css: |
+    :root {
+      --cms-bg: #07221a;
+      --cms-surface: #0d2f25;
+      --cms-elevated: #145040;
+      --cms-border: #1f6a56;
+      --cms-text: #d1fae5;
+      --cms-muted: #86efac;
+      --cms-accent: #34d399;
+    }
+    
+    .layout,
+    .cms-page {
+      background: linear-gradient(180deg, #0b2c21 0%, var(--cms-bg) 100%);
+      color: var(--cms-text);
+      font-family: "Lato", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #053127;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
   theme-sandstone.css: |
     :root {
       --cms-bg: #fdf6ec;
@@ -243,6 +404,43 @@ data:
       padding: 0.45rem 0.8rem;
       text-decoration: none;
     }
+  theme-sandstone-dark.css: |
+    :root {
+      --cms-bg: #2b1f15;
+      --cms-surface: #34261b;
+      --cms-elevated: #4a3423;
+      --cms-border: #6b4b2f;
+      --cms-text: #fef3c7;
+      --cms-muted: #fcd9a3;
+      --cms-accent: #f59e0b;
+    }
+    
+    .layout,
+    .cms-page {
+      background: linear-gradient(180deg, #2f2217 0%, var(--cms-bg) 100%);
+      color: var(--cms-text);
+      font-family: "Source Sans 3", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #3f2d1d;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
   theme-midnight-contrast.css: |
     :root {
       --cms-bg: #0b1220;
@@ -275,6 +473,43 @@ data:
     
     .cms-section-cta a {
       color: #0b1220;
+      background: var(--cms-accent);
+      border-radius: 0.5rem;
+      padding: 0.45rem 0.8rem;
+      text-decoration: none;
+    }
+  theme-midnight-contrast-light.css: |
+    :root {
+      --cms-bg: #f4f7fb;
+      --cms-surface: #ffffff;
+      --cms-elevated: #e7edf6;
+      --cms-border: #cad5e8;
+      --cms-text: #1b2940;
+      --cms-muted: #4f6180;
+      --cms-accent: #2563eb;
+    }
+    
+    .layout,
+    .cms-page {
+      background: radial-gradient(circle at top, #e8eef8 0%, var(--cms-bg) 58%, #ffffff 100%);
+      color: var(--cms-text);
+      font-family: "DM Sans", "Segoe UI", sans-serif;
+    }
+    
+    .layout [class*="layout__"],
+    .cms-section,
+    .cms-hero {
+      background: var(--cms-surface);
+      border-color: var(--cms-border);
+    }
+    
+    .cms-section-subtitle,
+    .cms-hero-subtitle {
+      color: var(--cms-muted);
+    }
+    
+    .cms-section-cta a {
+      color: #ffffff;
       background: var(--cms-accent);
       border-radius: 0.5rem;
       padding: 0.45rem 0.8rem;
