@@ -1838,6 +1838,7 @@ data:
          _parent_item TEXT; \
          _slot_key TEXT; \
          _slot_exists BOOLEAN; \
+         _fallback_slot TEXT; \
        BEGIN \
          _slot_key := COALESCE(NULLIF(LOWER(BTRIM(NEW.slot)), ''), 'main'); \
          NEW.slot := _slot_key; \
@@ -1899,7 +1900,18 @@ data:
              AND (COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = '' OR COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = _site_key) \
          ) INTO _slot_exists; \
          IF NOT COALESCE(_slot_exists, false) THEN \
-           RAISE EXCEPTION 'Invalid slot % for layout template %', _slot_key, _template_key; \
+           SELECT s.slot_key \
+             INTO _fallback_slot \
+           FROM directus.cms_layout_template_slots s \
+           WHERE s.template_key = _template_key \
+             AND (COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = '' OR COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = _site_key) \
+           ORDER BY CASE WHEN s.slot_key = 'main' THEN 0 ELSE 1 END, s.slot_key \
+           LIMIT 1; \
+           IF COALESCE(_fallback_slot, '') = '' THEN \
+             RAISE EXCEPTION 'Invalid slot % for layout template %', _slot_key, _template_key; \
+           END IF; \
+           _slot_key := COALESCE(NULLIF(LOWER(BTRIM(_fallback_slot)), ''), 'main'); \
+           NEW.slot := _slot_key; \
          END IF; \
          RETURN NEW; \
        END; \

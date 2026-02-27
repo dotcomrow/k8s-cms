@@ -1296,16 +1296,17 @@ data:
         const selectItems = computed(() => {
           const currentValue = asString(props.value);
           const committed = asString(persistedValue.value) || asString(fallbackCommittedValue.value);
+          const isSlotMode = mode.value === 'slot';
           const items = choices.value.map((choice) => ({
             text: committed && asString(choice.value) === committed
               ? `${choice.text} (current)`
               : choice.text,
             value: choice.value,
           }));
-          if (committed && !items.some((item) => asString(item.value) === committed)) {
+          if (!isSlotMode && committed && !items.some((item) => asString(item.value) === committed)) {
             items.unshift({ text: `${committed} (current)`, value: committed });
           }
-          if (currentValue && currentValue !== committed && !items.some((item) => asString(item.value) === currentValue)) {
+          if (!isSlotMode && currentValue && currentValue !== committed && !items.some((item) => asString(item.value) === currentValue)) {
             items.unshift({ text: currentValue, value: currentValue });
           }
           return items;
