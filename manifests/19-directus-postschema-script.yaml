@@ -835,6 +835,9 @@ data:
     DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
       "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_fields' LIMIT 1;" || true)"
     if [ "${DIRECTUS_FIELDS_EXISTS:-0}" = "1" ]; then
+      # UI field metadata writes are non-critical. During Yugabyte DDL churn they can
+      # hit transient catalog mismatches; keep startup moving and reconcile next run.
+      set +e
       DF_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
         "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' ORDER BY column_name;" || true)"
       _df_has_col() { printf '%s\n' "$DF_COLS" | grep -qx "$1"; }
@@ -1081,8 +1084,9 @@ data:
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created slot field UX on ${_collection}"
       }
-    
+
       _upsert_page_block_slot_field_meta
+      set -e
     else
       echo "  └─ directus_fields metadata table not found; skipping refresh_target UX config"
     fi
@@ -2549,6 +2553,9 @@ data:
     DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
       "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_fields' LIMIT 1;" || true)"
     if [ "${DIRECTUS_FIELDS_EXISTS:-0}" = "1" ]; then
+      # UI field metadata writes are non-critical. During Yugabyte DDL churn they can
+      # hit transient catalog mismatches; keep startup moving and reconcile next run.
+      set +e
       DF_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
         "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' ORDER BY column_name;" || true)"
       _df_has_col() { printf '%s\n' "$DF_COLS" | grep -qx "$1"; }
@@ -3668,6 +3675,7 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 103
       _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_position" 104
       _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_dock_direction" 105
+      set -e
     else
       echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot/module UX config"
     fi
