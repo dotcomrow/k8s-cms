@@ -2396,6 +2396,7 @@ data:
     };
     
     const toLower = (value) => asString(value).toLowerCase();
+    const isDirectChildRow = (row) => !asString(row?.parent_block_id);
     
     const InterfaceComponent = defineComponent({
       name: 'CmsPageBlocksManager',
@@ -2429,6 +2430,7 @@ data:
         const filterSlot = ref('__all');
         const filterScope = ref('__all');
         const filterGroupTag = ref('__all');
+        const filterHierarchy = ref('direct_children');
         const groupBy = ref('template');
     
         const resolvedOptions = computed(() => parseOptions(props.options));
@@ -2452,6 +2454,11 @@ data:
           }
           return ['template_scope', 'template_group_key', 'group_tag', 'tree_path', 'sort'];
         });
+        const defaultHierarchy = computed(() => {
+          const candidate = toLower(resolvedOptions.value?.default_hierarchy || 'direct_children');
+          if (candidate === 'all' || candidate === 'nested_only' || candidate === 'direct_children') return candidate;
+          return 'direct_children';
+        });
     
         const pageIdFromValues = computed(() => parseId(props.values?.[pageIdField.value] ?? props.values?.id));
         const pageId = computed(() => {
@@ -2466,6 +2473,7 @@ data:
           filterSlot.value = '__all';
           filterScope.value = '__all';
           filterGroupTag.value = '__all';
+          filterHierarchy.value = defaultHierarchy.value;
           groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
         };
     
@@ -2503,9 +2511,11 @@ data:
           const treePath = asString(row?.tree_path);
           const collection = asString(row?.collection);
           const item = parseId(row?.item);
-          const status = asString(row?.status) || 'draft';
+          const status = asString(row?.status);
           const treeDepth = asInteger(row?.tree_depth) ?? 0;
           const pageSlug = asString(row?.page_slug);
+          const parentBlockId = parseId(row?.parent_block_id);
+          const hierarchyToken = parentBlockId ? 'nested-child' : 'page-child';
           const searchTokens = [
             parseId(row?.id),
             collection,
@@ -2515,8 +2525,10 @@ data:
             templateScope,
             templateGroupKey,
             treePath,
+            parentBlockId,
+            hierarchyToken,
             pageSlug,
-            status,
+            ...(status ? [status] : []),
           ]
             .map((entry) => toLower(entry))
             .filter(Boolean);
@@ -2533,9 +2545,8 @@ data:
             tree_depth: treeDepth,
             sort: sortValue,
             status,
-            parent_block_id: parseId(row?.parent_block_id),
+            parent_block_id: parentBlockId,
             page_slug: pageSlug,
-            date_updated: asString(row?.date_updated),
             _search_text: searchTokens.join(' '),
           };
         };
@@ -2622,10 +2633,8 @@ data:
               'tree_path',
               'tree_depth',
               'sort',
-              'status',
               'parent_block_id',
               'page_slug',
-              'date_updated',
             ].join(','),
             limit: defaultLimit.value,
             sort: defaultSort.value.join(','),
@@ -2787,6 +2796,8 @@ data:
           const needle = toLower(searchText.value);
           return blocks.value.filter((row) => {
             if (needle && !row._search_text.includes(needle)) return false;
+            if (filterHierarchy.value === 'direct_children' && !isDirectChildRow(row)) return false;
+            if (filterHierarchy.value === 'nested_only' && isDirectChildRow(row)) return false;
             if (filterCollection.value !== '__all' && row.collection !== filterCollection.value) return false;
             if (filterSlot.value !== '__all' && row.slot !== filterSlot.value) return false;
             if (filterScope.value !== '__all' && row.template_scope !== filterScope.value) return false;
@@ -3103,10 +3114,20 @@ data:
             { text: 'Group: Collection', value: 'collection' },
             { text: 'Group: None', value: 'none' },
           ];
+          const hierarchyItems = [
+            { text: 'Hierarchy: Page Children', value: 'direct_children' },
+            { text: 'Hierarchy: Nested Only', value: 'nested_only' },
+            { text: 'Hierarchy: All Blocks', value: 'all' },
+          ];
           const collectionItems = [{ text: 'All Collections', value: '__all' }, ...toChoiceItems(collectionChoices.value)];
           const slotItems = [{ text: 'All Slots', value: '__all' }, ...toChoiceItems(slotChoices.value)];
           const scopeItems = [{ text: 'All Scopes', value: '__all' }, ...toChoiceItems(scopeChoices.value)];
           const groupTagItems = [{ text: 'All Tags', value: '__all' }, ...toChoiceItems(groupTagChoices.value)];
+          const hierarchyLabel = filterHierarchy.value === 'direct_children'
+            ? 'Page children'
+            : filterHierarchy.value === 'nested_only'
+              ? 'Nested only'
+              : 'All blocks';
     
           const children = [
             renderCard({
@@ -3128,6 +3149,14 @@ data:
                         items: groupItems,
                         disabled: props.disabled || loading.value,
                         onUpdate: (next) => { groupBy.value = asString(next) || 'template'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterHierarchy.value,
+                        items: hierarchyItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterHierarchy.value = asString(next) || defaultHierarchy.value; },
                       }),
                     ]),
                     renderButtonControl({
@@ -3193,7 +3222,7 @@ data:
     
           if (pageId.value) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${filteredBlocks.value.length}/${blocks.value.length}`)
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | View ${hierarchyLabel} | Blocks ${filteredBlocks.value.length}/${blocks.value.length}`)
             );
           } else {
             children.push(
@@ -3245,7 +3274,7 @@ data:
                         renderMetaChip(`scope=${row.template_scope}`),
                         renderMetaChip(`template=${row.template_group_key}`),
                         renderMetaChip(`depth=${row.tree_depth}`),
-                        renderMetaChip(`status=${row.status}`),
+                        ...(row.status ? [renderMetaChip(`status=${row.status}`)] : []),
                       ]),
                       h('div', { class: 'cms-page-blocks-manager__row-edit', style: styles.rowEdit }, [
                         h('label', { class: 'cms-page-blocks-manager__field', style: styles.field }, [
@@ -3389,6 +3418,23 @@ data:
             }
           },
           schema: { default_value: 'template' },
+        },
+        {
+          field: 'default_hierarchy',
+          name: 'Default Hierarchy Filter',
+          type: 'string',
+          meta: {
+            width: 'half',
+            interface: 'select-dropdown',
+            options: {
+              choices: [
+                { text: 'Page Children', value: 'direct_children' },
+                { text: 'Nested Only', value: 'nested_only' },
+                { text: 'All Blocks', value: 'all' }
+              ]
+            }
+          },
+          schema: { default_value: 'direct_children' },
         },
         {
           field: 'default_limit',

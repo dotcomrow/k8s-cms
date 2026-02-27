@@ -2678,7 +2678,7 @@ data:
       parent_block_interface_options_json="$(jq -nc \
         '{mode:"parent",page_blocks_collection:"cms_page_blocks",template_refs_collection:"cms_block_template_ref",pages_collection:"cms_pages",page_id_field:"page_id",page_site_field:"site_key",page_slug_field:"page_slug",item_id_field:"id",parent_id_field:"parent_block_id"}')"
       page_blocks_manager_interface_options_json="$(jq -nc \
-        '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",default_group_by:"template",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
+        '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",default_group_by:"template",default_hierarchy:"direct_children",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
 
       template_note="Required: choose which registered layout template this page uses."
       theme_note="Required: choose which published theme family this page uses."
