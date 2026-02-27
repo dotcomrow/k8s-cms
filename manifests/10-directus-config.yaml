@@ -696,6 +696,7 @@ data:
           return v !== false;
         });
         const parentSelectionOverride = ref('');
+        const lastParentPersistedBroadcast = ref('');
         const persistedValue = ref('');
         const fallbackCommittedValue = ref('');
         const hasUserInput = ref(false);
@@ -1280,6 +1281,29 @@ data:
 
           if (currentRequest !== persistedRequestId) return;
           persistedValue.value = nextPersisted;
+
+          if (mode.value === 'parent') {
+            const parentValue = asString(nextPersisted);
+            if (
+              typeof window !== 'undefined' &&
+              parentValue &&
+              parentValue !== lastParentPersistedBroadcast.value
+            ) {
+              lastParentPersistedBroadcast.value = parentValue;
+              const context = resolveRecordContext();
+              window.dispatchEvent(
+                new CustomEvent('cms-content-model-select-change', {
+                  detail: {
+                    mode: 'parent',
+                    field: parentIdField.value,
+                    collection: context.recordCollection || collectionKey.value,
+                    recordId: context.recordId || '',
+                    value: parentValue,
+                  },
+                }),
+              );
+            }
+          }
         };
 
         watch(
@@ -1408,10 +1432,6 @@ data:
           if (eventField && eventField !== parentIdField.value.toLowerCase()) return;
 
           const context = resolveRecordContext();
-          const eventRecordId = asString(detail.recordId);
-          const currentRecordId = asString(context.recordId);
-          if (eventRecordId && currentRecordId && eventRecordId !== currentRecordId) return;
-
           parentSelectionOverride.value = asString(detail.value);
           if (mode.value === 'slot') {
             void loadChoices();
