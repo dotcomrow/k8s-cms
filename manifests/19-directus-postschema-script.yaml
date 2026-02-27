@@ -352,7 +352,10 @@ data:
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS page_slug TEXT; \
-       ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
+       ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
     
     # Allow each site to have its own homepage slug (e.g. both can use "home").
     echo "🧱 Ensuring per-site slug uniqueness..."
@@ -608,6 +611,44 @@ data:
           OR tr.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_template_ref"; then
       sync_site_metadata_failed="1"
     fi
+    if ! _psql_yb_retry "UPDATE cms_layout_templates lt
+      SET refresh_target = CASE
+        WHEN LOWER(COALESCE(lt.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(lt.refresh_target)
+        ELSE 'both'
+      END
+      WHERE lt.refresh_target IS NULL
+         OR LOWER(COALESCE(lt.refresh_target, '')) NOT IN ('preview','prod','both')
+         OR lt.refresh_target <> LOWER(lt.refresh_target);" "normalize cms_layout_templates.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_layout_template_slots ls
+      SET refresh_target = CASE
+        WHEN LOWER(COALESCE(ls.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(ls.refresh_target)
+        ELSE 'both'
+      END
+      WHERE ls.refresh_target IS NULL
+         OR LOWER(COALESCE(ls.refresh_target, '')) NOT IN ('preview','prod','both')
+         OR ls.refresh_target <> LOWER(ls.refresh_target);" "normalize cms_layout_template_slots.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_layout_template_slots ls
+      SET refresh_target = lt.refresh_target
+      FROM cms_layout_templates lt
+      WHERE ls.template_key = lt.template_key
+        AND COALESCE(ls.site_key, '') = COALESCE(lt.site_key, '')
+        AND ls.refresh_target IS DISTINCT FROM lt.refresh_target;" "propagate refresh_target to cms_layout_template_slots"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_modules m
+      SET refresh_target = CASE
+        WHEN LOWER(COALESCE(m.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(m.refresh_target)
+        ELSE 'both'
+      END
+      WHERE m.refresh_target IS NULL
+         OR LOWER(COALESCE(m.refresh_target, '')) NOT IN ('preview','prod','both')
+         OR m.refresh_target <> LOWER(m.refresh_target);" "normalize cms_modules.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
     if ! _psql_yb_retry "DO \$\$
       BEGIN
         IF to_regclass('directus.cms_theme_packages') IS NOT NULL THEN
@@ -698,6 +739,27 @@ data:
           ALTER TABLE cms_block_template_ref ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_template_ref_refresh_target_check' AND conrelid = 'directus.cms_block_template_ref'::regclass) THEN
             ALTER TABLE cms_block_template_ref ADD CONSTRAINT cms_block_template_ref_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+        END IF;
+        IF to_regclass('directus.cms_layout_templates') IS NOT NULL THEN
+          ALTER TABLE cms_layout_templates ALTER COLUMN refresh_target SET DEFAULT 'both';
+          ALTER TABLE cms_layout_templates ALTER COLUMN refresh_target SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_layout_templates_refresh_target_check' AND conrelid = 'directus.cms_layout_templates'::regclass) THEN
+            ALTER TABLE cms_layout_templates ADD CONSTRAINT cms_layout_templates_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+        END IF;
+        IF to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN
+          ALTER TABLE cms_layout_template_slots ALTER COLUMN refresh_target SET DEFAULT 'both';
+          ALTER TABLE cms_layout_template_slots ALTER COLUMN refresh_target SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_layout_template_slots_refresh_target_check' AND conrelid = 'directus.cms_layout_template_slots'::regclass) THEN
+            ALTER TABLE cms_layout_template_slots ADD CONSTRAINT cms_layout_template_slots_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+        END IF;
+        IF to_regclass('directus.cms_modules') IS NOT NULL THEN
+          ALTER TABLE cms_modules ALTER COLUMN refresh_target SET DEFAULT 'both';
+          ALTER TABLE cms_modules ALTER COLUMN refresh_target SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_modules_refresh_target_check' AND conrelid = 'directus.cms_modules'::regclass) THEN
+            ALTER TABLE cms_modules ADD CONSTRAINT cms_modules_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_theme_packages') IS NOT NULL THEN
@@ -1040,6 +1102,7 @@ data:
          description TEXT NULL, \
          status TEXT NOT NULL DEFAULT 'draft', \
          site_key TEXT NULL, \
+         refresh_target TEXT NOT NULL DEFAULT 'both', \
          html TEXT NOT NULL, \
          css TEXT NULL, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
@@ -1050,11 +1113,13 @@ data:
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS description TEXT; \
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS status TEXT; \
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS html TEXT; \
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS css TEXT; \
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN date_created SET DEFAULT now(); \
        DO \$\$ \
        BEGIN \
@@ -1110,6 +1175,7 @@ data:
          id UUID PRIMARY KEY, \
          template_key TEXT NOT NULL, \
          site_key TEXT NULL, \
+         refresh_target TEXT NOT NULL DEFAULT 'both', \
          slot_key TEXT NOT NULL, \
          slot_label TEXT NULL, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
@@ -1117,10 +1183,12 @@ data:
        ); \
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS template_key TEXT; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS slot_key TEXT; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS slot_label TEXT; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_layout_template_slots ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ALTER COLUMN date_created SET DEFAULT now(); \
        DO \$\$ \
        BEGIN \
@@ -1532,6 +1600,7 @@ data:
          component_type TEXT NULL, \
          status TEXT NOT NULL DEFAULT 'draft', \
          site_key TEXT NULL, \
+         refresh_target TEXT NOT NULL DEFAULT 'both', \
          props_schema JSONB NOT NULL DEFAULT '{}'::jsonb, \
          default_props JSONB NOT NULL DEFAULT '{}'::jsonb, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
@@ -1544,12 +1613,14 @@ data:
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS component_type TEXT; \
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS status TEXT; \
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS props_schema JSONB; \
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS default_props JSONB; \
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_modules ALTER COLUMN provider SET DEFAULT 'radix'; \
        ALTER TABLE IF EXISTS cms_modules ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_modules ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_modules ALTER COLUMN props_schema SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS cms_modules ALTER COLUMN default_props SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS cms_modules ALTER COLUMN date_created SET DEFAULT now(); \
@@ -4358,7 +4429,7 @@ data:
               refresh_targets_json="[]"
             fi
     
-            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_modules","cms_theme_packages"]'
+            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_modules","cms_layout_templates","cms_theme_packages"]'
             targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
             if [ "${targets_count:-0}" = "0" ]; then
               echo "⚠️ No cache refresh targets configured for site_key='${site_key}'"
