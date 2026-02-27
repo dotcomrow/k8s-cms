@@ -965,7 +965,11 @@ data:
 
         const loadSlotChoices = async () => {
           const context = await resolvePersistedPageBlockContext();
-          const selectedParentBlockId = resolveSelectedParentBlockId() || parseId(context.row?.[parentIdField.value]);
+          const persistedParentBlockId = parseId(context.row?.[parentIdField.value]);
+          if (!resolveSelectedParentBlockId() && persistedParentBlockId) {
+            parentSelectionOverride.value = persistedParentBlockId;
+          }
+          const selectedParentBlockId = resolveSelectedParentBlockId() || persistedParentBlockId;
           let siteKey = context.siteKey || asString(props.values?.[pageSiteField.value]);
           let templateKey = '';
           let pageId = context.pageId;
@@ -1294,6 +1298,9 @@ data:
             pageTemplate: asString(props.values?.[pageTemplateField.value]),
             parentBlockId: parseId(props.values?.[parentIdField.value]),
             parentSelectionOverride: asString(parentSelectionOverride.value),
+            recordId: resolveRecordContext().recordId,
+            blockCollection: asString(props.values?.collection),
+            blockItem: parseId(props.values?.item),
             field: fieldKey.value,
             collection: collectionKey.value,
           }),
