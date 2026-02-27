@@ -340,6 +340,15 @@ data:
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS slot TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS parent_block_id UUID; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS group_tag TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS tree_depth INTEGER; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS tree_path TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS template_scope TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS template_group_key TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS template_ancestor_block_ids TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS template_ancestor_template_keys TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS template_root_block_id UUID; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS template_nearest_block_id UUID; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS page_slug TEXT; \
@@ -403,6 +412,14 @@ data:
          END IF; \
        END \
        \$\$;"
+
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE INDEX IF NOT EXISTS cms_page_blocks_page_parent_idx ON cms_page_blocks (page_id, parent_block_id); \
+       CREATE INDEX IF NOT EXISTS cms_page_blocks_scope_idx ON cms_page_blocks (page_id, template_scope, template_group_key); \
+       CREATE INDEX IF NOT EXISTS cms_page_blocks_template_root_idx ON cms_page_blocks (page_id, template_root_block_id); \
+       CREATE INDEX IF NOT EXISTS cms_page_blocks_template_nearest_idx ON cms_page_blocks (page_id, template_nearest_block_id); \
+       CREATE INDEX IF NOT EXISTS cms_page_blocks_group_tag_idx ON cms_page_blocks (page_id, group_tag);"
     
     # Keep derived site metadata on junction/content rows aligned to the page they belong to.
     echo "🔄 Syncing site/page metadata onto blocks..."
@@ -510,6 +527,28 @@ data:
       WHERE pb.slot IS NULL
          OR BTRIM(COALESCE(pb.slot, '')) = ''
          OR pb.slot <> COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main');" "normalize cms_page_blocks.slot"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_page_blocks pb
+      SET group_tag = NULLIF(BTRIM(pb.group_tag), '')
+      WHERE pb.group_tag IS DISTINCT FROM NULLIF(BTRIM(pb.group_tag), '');" "normalize cms_page_blocks.group_tag"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_page_blocks pb
+      SET tree_depth = COALESCE(pb.tree_depth, 0),
+          tree_path = COALESCE(pb.tree_path, ''),
+          template_scope = CASE WHEN LOWER(COALESCE(pb.template_scope, '')) = 'template' THEN 'template' ELSE 'page' END,
+          template_group_key = COALESCE(NULLIF(BTRIM(pb.template_group_key), ''), 'page-root'),
+          template_ancestor_block_ids = COALESCE(pb.template_ancestor_block_ids, ''),
+          template_ancestor_template_keys = COALESCE(pb.template_ancestor_template_keys, '')
+      WHERE pb.tree_depth IS NULL
+         OR pb.tree_path IS NULL
+         OR pb.template_scope IS NULL
+         OR LOWER(COALESCE(pb.template_scope, '')) NOT IN ('page','template')
+         OR pb.template_group_key IS NULL
+         OR BTRIM(COALESCE(pb.template_group_key, '')) = ''
+         OR pb.template_ancestor_block_ids IS NULL
+         OR pb.template_ancestor_template_keys IS NULL;" "normalize cms_page_blocks organization defaults"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_page_blocks pb
@@ -709,8 +748,23 @@ data:
           ALTER TABLE cms_page_blocks ALTER COLUMN slot SET NOT NULL;
           ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target SET NOT NULL;
+          ALTER TABLE cms_page_blocks ALTER COLUMN tree_depth SET DEFAULT 0;
+          ALTER TABLE cms_page_blocks ALTER COLUMN tree_depth SET NOT NULL;
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_scope SET DEFAULT 'page';
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_scope SET NOT NULL;
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_group_key SET DEFAULT 'page-root';
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_group_key SET NOT NULL;
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_ancestor_block_ids SET DEFAULT '';
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_ancestor_block_ids SET NOT NULL;
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_ancestor_template_keys SET DEFAULT '';
+          ALTER TABLE cms_page_blocks ALTER COLUMN template_ancestor_template_keys SET NOT NULL;
+          ALTER TABLE cms_page_blocks ALTER COLUMN tree_path SET DEFAULT '';
+          ALTER TABLE cms_page_blocks ALTER COLUMN tree_path SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_refresh_target_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_template_scope_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
+            ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_template_scope_check CHECK (template_scope IN ('page','template'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_block_rich_text') IS NOT NULL THEN
@@ -1089,6 +1143,64 @@ data:
       fi
     else
       echo "  └─ directus_presets table not found; skipping cms_pages list preset"
+    fi
+
+    echo "🧭 Ensuring cms_page_blocks list view supports template/group organization..."
+    PRESETS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_presets' LIMIT 1;" || true)"
+    PRESETS_TABLE_EXISTS="$(printf '%s' "$PRESETS_TABLE_EXISTS" | tr -d '\r')"
+    if [ "${PRESETS_TABLE_EXISTS}" = "1" ]; then
+      DP_LAYOUT_QUERY_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_presets' AND column_name='layout_query' LIMIT 1;" || true)"
+      DP_LAYOUT_OPTIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_presets' AND column_name='layout_options' LIMIT 1;" || true)"
+
+      _dp_json_sql() {
+        _t="$1"
+        _json="$2"
+        if [ -z "${_json:-}" ] || [ "${_json}" = "null" ]; then
+          printf "NULL"
+          return
+        fi
+        _json_sql="$(printf '%s' "$_json" | sed "s/'/''/g")"
+        case "$_t" in
+          jsonb) printf "'%s'::jsonb" "$_json_sql" ;;
+          json) printf "'%s'::json" "$_json_sql" ;;
+          text|character\ varying) printf "'%s'" "$_json_sql" ;;
+          *) printf "NULL" ;;
+        esac
+      }
+
+      cms_page_blocks_tabular_fields_json='["site_key","page_slug","collection","slot","group_tag","template_scope","template_group_key","template_root_block_id","template_nearest_block_id","template_ancestor_template_keys","parent_block_id","sort","date_updated"]'
+      cms_page_blocks_layout_query_json="$(jq -nc --argjson fields "${cms_page_blocks_tabular_fields_json}" \
+        '{tabular:{fields:$fields,sort:["site_key","page_slug","template_scope","template_group_key","group_tag","tree_path","sort"]}}')"
+      cms_page_blocks_layout_options_json="$(jq -nc '{}')"
+      cms_page_blocks_layout_query_sql="$(_dp_json_sql "${DP_LAYOUT_QUERY_TYPE:-}" "${cms_page_blocks_layout_query_json}")"
+      cms_page_blocks_layout_options_sql="$(_dp_json_sql "${DP_LAYOUT_OPTIONS_TYPE:-}" "${cms_page_blocks_layout_options_json}")"
+
+      cms_page_blocks_preset_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT id FROM directus.directus_presets WHERE collection='cms_page_blocks' AND COALESCE(bookmark,'')='all' AND role IS NULL AND \"user\" IS NULL ORDER BY id DESC LIMIT 1;" || true)"
+      cms_page_blocks_preset_id="$(printf '%s' "${cms_page_blocks_preset_id}" | tr -d '\r')"
+
+      if [ -n "${cms_page_blocks_preset_id:-}" ] && [ "${cms_page_blocks_preset_id}" != "null" ]; then
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; \
+           UPDATE directus_presets \
+              SET layout='tabular', \
+                  layout_query=${cms_page_blocks_layout_query_sql}, \
+                  layout_options=${cms_page_blocks_layout_options_sql}, \
+                  icon='account_tree' \
+            WHERE id=${cms_page_blocks_preset_id};"
+        echo "✅ Updated cms_page_blocks global tabular preset for template/group organization"
+      else
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; \
+           INSERT INTO directus_presets (bookmark, collection, layout, layout_query, layout_options, icon) \
+           VALUES ('all', 'cms_page_blocks', 'tabular', ${cms_page_blocks_layout_query_sql}, ${cms_page_blocks_layout_options_sql}, 'account_tree');"
+        echo "✅ Created cms_page_blocks global tabular preset for template/group organization"
+      fi
+    else
+      echo "  └─ directus_presets table not found; skipping cms_page_blocks list preset"
     fi
     
     # 5b) Ensure layout template collection exists and seed templates from GitOps config.
@@ -2115,6 +2227,156 @@ data:
          RETURN NEW; \
        END; \
        \$\$; \
+       CREATE OR REPLACE FUNCTION directus.recompute_cms_page_block_organization(_page_id UUID) \
+       RETURNS void \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       BEGIN \
+         IF _page_id IS NULL THEN \
+           RETURN; \
+         END IF; \
+         WITH RECURSIVE block_tree AS ( \
+           SELECT pb.id, \
+                  pb.page_id, \
+                  pb.parent_block_id, \
+                  pb.collection, \
+                  pb.item, \
+                  ARRAY[pb.id]::UUID[] AS block_path_ids, \
+                  ARRAY[pb.id::text]::TEXT[] AS block_path_text, \
+                  CASE WHEN pb.collection = 'cms_block_template_ref' THEN ARRAY[pb.id]::UUID[] ELSE ARRAY[]::UUID[] END AS template_path_ids, \
+                  CASE WHEN pb.collection = 'cms_block_template_ref' THEN ARRAY[pb.id::text]::TEXT[] ELSE ARRAY[]::TEXT[] END AS template_path_text, \
+                  CASE WHEN pb.collection = 'cms_block_template_ref' THEN ARRAY[COALESCE(NULLIF(BTRIM(tr.template_key), ''), 'template')]::TEXT[] ELSE ARRAY[]::TEXT[] END AS template_key_path, \
+                  0::INTEGER AS depth \
+           FROM directus.cms_page_blocks pb \
+           LEFT JOIN directus.cms_block_template_ref tr \
+             ON pb.collection = 'cms_block_template_ref' \
+            AND pb.item = tr.id::text \
+           WHERE pb.page_id = _page_id \
+             AND (pb.parent_block_id IS NULL OR NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM directus.cms_page_blocks parent \
+                    WHERE parent.id = pb.parent_block_id \
+                      AND parent.page_id = pb.page_id \
+                 )) \
+           UNION ALL \
+           SELECT child.id, \
+                  child.page_id, \
+                  child.parent_block_id, \
+                  child.collection, \
+                  child.item, \
+                  bt.block_path_ids || child.id, \
+                  bt.block_path_text || child.id::text, \
+                  CASE WHEN child.collection = 'cms_block_template_ref' THEN bt.template_path_ids || child.id ELSE bt.template_path_ids END, \
+                  CASE WHEN child.collection = 'cms_block_template_ref' THEN bt.template_path_text || child.id::text ELSE bt.template_path_text END, \
+                  CASE WHEN child.collection = 'cms_block_template_ref' THEN bt.template_key_path || COALESCE(NULLIF(BTRIM(child_tr.template_key), ''), 'template') ELSE bt.template_key_path END, \
+                  bt.depth + 1 \
+           FROM directus.cms_page_blocks child \
+           JOIN block_tree bt \
+             ON child.parent_block_id = bt.id \
+            AND child.page_id = bt.page_id \
+           LEFT JOIN directus.cms_block_template_ref child_tr \
+             ON child.collection = 'cms_block_template_ref' \
+            AND child.item = child_tr.id::text \
+           WHERE NOT child.id = ANY(bt.block_path_ids) \
+         ), \
+         best_paths AS ( \
+           SELECT DISTINCT ON (id) \
+             id, \
+             depth, \
+             block_path_text, \
+             template_path_ids, \
+             template_path_text, \
+             template_key_path \
+           FROM block_tree \
+           ORDER BY id, COALESCE(array_length(block_path_text, 1), 0) DESC, depth DESC \
+         ), \
+         fallback_paths AS ( \
+           SELECT pb.id, \
+                  0::INTEGER AS depth, \
+                  ARRAY[pb.id::text]::TEXT[] AS block_path_text, \
+                  CASE WHEN pb.collection = 'cms_block_template_ref' THEN ARRAY[pb.id]::UUID[] ELSE ARRAY[]::UUID[] END AS template_path_ids, \
+                  CASE WHEN pb.collection = 'cms_block_template_ref' THEN ARRAY[pb.id::text]::TEXT[] ELSE ARRAY[]::TEXT[] END AS template_path_text, \
+                  CASE WHEN pb.collection = 'cms_block_template_ref' THEN ARRAY[COALESCE(NULLIF(BTRIM(tr.template_key), ''), 'template')]::TEXT[] ELSE ARRAY[]::TEXT[] END AS template_key_path \
+           FROM directus.cms_page_blocks pb \
+           LEFT JOIN directus.cms_block_template_ref tr \
+             ON pb.collection = 'cms_block_template_ref' \
+            AND pb.item = tr.id::text \
+           WHERE pb.page_id = _page_id \
+             AND NOT EXISTS (SELECT 1 FROM best_paths bp WHERE bp.id = pb.id) \
+         ), \
+         final_paths AS ( \
+           SELECT * FROM best_paths \
+           UNION ALL \
+           SELECT * FROM fallback_paths \
+         ) \
+         UPDATE directus.cms_page_blocks pb \
+            SET tree_depth = fp.depth, \
+                tree_path = '/' || array_to_string(fp.block_path_text, '/') || '/', \
+                template_scope = CASE WHEN COALESCE(array_length(fp.template_path_ids, 1), 0) > 0 THEN 'template' ELSE 'page' END, \
+                template_group_key = CASE WHEN COALESCE(array_length(fp.template_key_path, 1), 0) > 0 THEN fp.template_key_path[1] ELSE 'page-root' END, \
+                template_ancestor_block_ids = CASE WHEN COALESCE(array_length(fp.template_path_text, 1), 0) > 0 THEN '/' || array_to_string(fp.template_path_text, '/') || '/' ELSE '' END, \
+                template_ancestor_template_keys = CASE WHEN COALESCE(array_length(fp.template_key_path, 1), 0) > 0 THEN array_to_string(fp.template_key_path, ' > ') ELSE '' END, \
+                template_root_block_id = CASE WHEN COALESCE(array_length(fp.template_path_ids, 1), 0) > 0 THEN fp.template_path_ids[1] ELSE NULL END, \
+                template_nearest_block_id = CASE WHEN COALESCE(array_length(fp.template_path_ids, 1), 0) > 0 THEN fp.template_path_ids[array_length(fp.template_path_ids, 1)] ELSE NULL END \
+           FROM final_paths fp \
+          WHERE pb.id = fp.id \
+            AND pb.page_id = _page_id \
+            AND (pb.tree_depth IS DISTINCT FROM fp.depth \
+              OR pb.tree_path IS DISTINCT FROM '/' || array_to_string(fp.block_path_text, '/') || '/' \
+              OR pb.template_scope IS DISTINCT FROM CASE WHEN COALESCE(array_length(fp.template_path_ids, 1), 0) > 0 THEN 'template' ELSE 'page' END \
+              OR pb.template_group_key IS DISTINCT FROM CASE WHEN COALESCE(array_length(fp.template_key_path, 1), 0) > 0 THEN fp.template_key_path[1] ELSE 'page-root' END \
+              OR pb.template_ancestor_block_ids IS DISTINCT FROM CASE WHEN COALESCE(array_length(fp.template_path_text, 1), 0) > 0 THEN '/' || array_to_string(fp.template_path_text, '/') || '/' ELSE '' END \
+              OR pb.template_ancestor_template_keys IS DISTINCT FROM CASE WHEN COALESCE(array_length(fp.template_key_path, 1), 0) > 0 THEN array_to_string(fp.template_key_path, ' > ') ELSE '' END \
+              OR pb.template_root_block_id IS DISTINCT FROM CASE WHEN COALESCE(array_length(fp.template_path_ids, 1), 0) > 0 THEN fp.template_path_ids[1] ELSE NULL END \
+              OR pb.template_nearest_block_id IS DISTINCT FROM CASE WHEN COALESCE(array_length(fp.template_path_ids, 1), 0) > 0 THEN fp.template_path_ids[array_length(fp.template_path_ids, 1)] ELSE NULL END); \
+       END; \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.sync_cms_page_block_organization() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       BEGIN \
+         IF pg_trigger_depth() > 1 THEN \
+           RETURN COALESCE(NEW, OLD); \
+         END IF; \
+         IF TG_OP = 'DELETE' THEN \
+           PERFORM directus.recompute_cms_page_block_organization(OLD.page_id); \
+           RETURN OLD; \
+         END IF; \
+         PERFORM directus.recompute_cms_page_block_organization(NEW.page_id); \
+         IF TG_OP = 'UPDATE' AND OLD.page_id IS DISTINCT FROM NEW.page_id THEN \
+           PERFORM directus.recompute_cms_page_block_organization(OLD.page_id); \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.sync_cms_page_block_organization_from_template_ref() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         _block_item TEXT; \
+         _page_id UUID; \
+       BEGIN \
+         IF TG_OP = 'DELETE' THEN \
+           _block_item := OLD.id::text; \
+         ELSE \
+           _block_item := NEW.id::text; \
+         END IF; \
+         IF _block_item IS NULL OR _block_item = '' THEN \
+           RETURN COALESCE(NEW, OLD); \
+         END IF; \
+         FOR _page_id IN \
+           SELECT DISTINCT pb.page_id \
+           FROM directus.cms_page_blocks pb \
+           WHERE pb.collection = 'cms_block_template_ref' \
+             AND pb.item = _block_item \
+         LOOP \
+           PERFORM directus.recompute_cms_page_block_organization(_page_id); \
+         END LOOP; \
+         RETURN COALESCE(NEW, OLD); \
+       END; \
+       \$\$; \
        CREATE OR REPLACE FUNCTION directus.apply_cms_block_module_defaults() \
        RETURNS trigger \
        LANGUAGE plpgsql \
@@ -2206,6 +2468,12 @@ data:
            ON cms_page_blocks \
            FOR EACH ROW \
            EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page_block(); \
+           DROP TRIGGER IF EXISTS cms_page_blocks_sync_organization ON cms_page_blocks; \
+           CREATE TRIGGER cms_page_blocks_sync_organization \
+           AFTER INSERT OR DELETE OR UPDATE OF page_id, parent_block_id, collection, item \
+           ON cms_page_blocks \
+           FOR EACH ROW \
+           EXECUTE FUNCTION directus.sync_cms_page_block_organization(); \
         END IF; \
         IF to_regclass('directus.cms_pages') IS NOT NULL THEN \
           DROP TRIGGER IF EXISTS cms_pages_theme_dock_sync ON cms_pages; \
@@ -2236,6 +2504,19 @@ data:
            ON cms_block_module \
            FOR EACH ROW \
            EXECUTE FUNCTION directus.apply_cms_block_module_defaults(); \
+         END IF; \
+         IF to_regclass('directus.cms_block_template_ref') IS NOT NULL \
+            AND to_regclass('directus.cms_page_blocks') IS NOT NULL THEN \
+           DROP TRIGGER IF EXISTS cms_block_template_ref_sync_organization ON cms_block_template_ref; \
+           CREATE TRIGGER cms_block_template_ref_sync_organization \
+           AFTER INSERT OR DELETE OR UPDATE OF template_key \
+           ON cms_block_template_ref \
+           FOR EACH ROW \
+           EXECUTE FUNCTION directus.sync_cms_page_block_organization_from_template_ref(); \
+         END IF; \
+         IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN \
+           PERFORM directus.recompute_cms_page_block_organization(p.id) \
+           FROM (SELECT DISTINCT page_id AS id FROM directus.cms_page_blocks WHERE page_id IS NOT NULL) p; \
          END IF; \
        END \
        \$\$;"
@@ -2384,6 +2665,7 @@ data:
       module_props_note="Optional JSON props for this module instance (falls back to module defaults when empty)."
       template_ref_note="Required: choose which layout template this container block should render."
       parent_block_note="Optional: nest this block under a template-ref block on the same page."
+      group_tag_note="Optional editor grouping tag (for example: hero, onboarding, checkout-step-1). Blocks with the same tag can be filtered together."
       internal_metadata_note="Managed automatically from page/block context."
       status_note="Publishing control for this record."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
@@ -2412,6 +2694,7 @@ data:
       module_props_note_sql="$(printf '%s' "${module_props_note}" | sed "s/'/''/g")"
       template_ref_note_sql="$(printf '%s' "${template_ref_note}" | sed "s/'/''/g")"
       parent_block_note_sql="$(printf '%s' "${parent_block_note}" | sed "s/'/''/g")"
+      group_tag_note_sql="$(printf '%s' "${group_tag_note}" | sed "s/'/''/g")"
       internal_metadata_note_sql="$(printf '%s' "${internal_metadata_note}" | sed "s/'/''/g")"
       status_note_sql="$(printf '%s' "${status_note}" | sed "s/'/''/g")"
     
@@ -2872,6 +3155,60 @@ data:
         echo "✅ Created parent_block_id field UX on ${_collection}"
       }
 
+      _upsert_page_block_group_tag_field_meta_dynamic() {
+        _collection="cms_page_blocks"
+        _field="group_tag"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='input'"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=4"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${group_tag_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated group_tag field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'input'"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},4"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${group_tag_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created group_tag field UX on ${_collection}"
+      }
+
       _upsert_template_ref_template_key_field_meta() {
         _collection="cms_block_template_ref"
         _field="template_key"
@@ -3095,6 +3432,63 @@ data:
         echo "✅ Created hidden metadata field UX on ${_collection}.${_field}"
       }
 
+      _upsert_readonly_internal_field_meta_dynamic() {
+        _collection="$1"
+        _field="$2"
+        _sort="${3:-99}"
+        if [ -z "${_collection:-}" ] || [ "${_collection}" = "null" ] || [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=true"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${internal_metadata_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated readonly metadata field UX on ${_collection}.${_field}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},true"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${internal_metadata_note_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created readonly metadata field UX on ${_collection}.${_field}"
+      }
+
       _upsert_status_dropdown_field_meta() {
         _collection="$1"
         _sort="${2:-1}"
@@ -3169,12 +3563,21 @@ data:
       _upsert_page_theme_selector_dock_position_field_meta
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_page_block_parent_field_meta_dynamic
+      _upsert_page_block_group_tag_field_meta_dynamic
       _upsert_template_ref_template_key_field_meta
       _upsert_block_module_key_field_meta
       _upsert_block_module_props_field_meta
       _upsert_status_dropdown_field_meta "cms_block_module" 1
       _upsert_status_dropdown_field_meta "cms_block_template_ref" 1
       _upsert_status_dropdown_field_meta "cms_modules" 1
+      _upsert_readonly_internal_field_meta_dynamic "cms_page_blocks" "tree_depth" 72
+      _upsert_readonly_internal_field_meta_dynamic "cms_page_blocks" "template_scope" 73
+      _upsert_readonly_internal_field_meta_dynamic "cms_page_blocks" "template_group_key" 74
+      _upsert_readonly_internal_field_meta_dynamic "cms_page_blocks" "template_ancestor_template_keys" 75
+      _upsert_readonly_internal_field_meta_dynamic "cms_page_blocks" "template_root_block_id" 76
+      _upsert_readonly_internal_field_meta_dynamic "cms_page_blocks" "template_nearest_block_id" 77
+      _upsert_readonly_internal_field_meta_dynamic "cms_page_blocks" "template_ancestor_block_ids" 78
+      _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "tree_path" 79
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "id" 81
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "site_key" 82
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "page_slug" 83
@@ -4429,7 +4832,7 @@ data:
               refresh_targets_json="[]"
             fi
     
-            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_modules","cms_layout_templates","cms_theme_packages"]'
+            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_modules","cms_layout_templates","cms_layout_template_slots","cms_theme_packages"]'
             targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
             if [ "${targets_count:-0}" = "0" ]; then
               echo "⚠️ No cache refresh targets configured for site_key='${site_key}'"
