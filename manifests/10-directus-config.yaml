@@ -3072,10 +3072,49 @@ data:
           const hasDivider = typeof resolvedDivider !== 'string';
           const hasCard = typeof resolvedCard !== 'string';
     
-          const rows = groupedBlocks.value;
-          const changedCount = contextBlocks.value.filter((row) => hasChanges(row)).length;
-          const canSaveAll = changedCount > 0 && !props.disabled;
-    
+          const sortBlockRows = (left, right) => {
+            const leftSort = asInteger(left?.sort);
+            const rightSort = asInteger(right?.sort);
+            if (leftSort !== null && rightSort !== null && leftSort !== rightSort) return leftSort - rightSort;
+            if (leftSort !== null && rightSort === null) return -1;
+            if (leftSort === null && rightSort !== null) return 1;
+            const leftDepth = asInteger(left?.tree_depth) ?? 0;
+            const rightDepth = asInteger(right?.tree_depth) ?? 0;
+            if (leftDepth !== rightDepth) return leftDepth - rightDepth;
+            const leftPath = asString(left?.tree_path);
+            const rightPath = asString(right?.tree_path);
+            if (leftPath !== rightPath) return leftPath.localeCompare(rightPath);
+            const leftCollection = asString(left?.collection);
+            const rightCollection = asString(right?.collection);
+            if (leftCollection !== rightCollection) return leftCollection.localeCompare(rightCollection);
+            return asString(left?.id).localeCompare(asString(right?.id));
+          };
+
+          const blockById = new Map();
+          for (const row of blocks.value) {
+            if (!row?.id) continue;
+            blockById.set(asString(row.id), row);
+          }
+          const childrenByParent = new Map();
+          const pushChild = (parentKey, row) => {
+            if (!childrenByParent.has(parentKey)) childrenByParent.set(parentKey, []);
+            childrenByParent.get(parentKey).push(row);
+          };
+          for (const row of blocks.value) {
+            const rowId = asString(row?.id);
+            if (!rowId) continue;
+            const parentId = parseId(row?.parent_block_id);
+            if (parentId && blockById.has(parentId)) {
+              pushChild(parentId, row);
+            } else {
+              pushChild('__root', row);
+            }
+          }
+          for (const entry of childrenByParent.values()) {
+            entry.sort(sortBlockRows);
+          }
+          const rootRows = childrenByParent.get('__root') || [];
+
           const styles = {
             root: {
               display: 'flex',
@@ -3084,85 +3123,73 @@ data:
             },
             toolbar: {
               display: 'flex',
-              flexDirection: 'column',
-              gap: '10px',
+              flexWrap: 'wrap',
+              gap: '8px',
+              alignItems: 'center',
               padding: '12px',
               borderRadius: 'var(--theme--border-radius)',
               background: 'var(--theme--background-subdued)',
-            },
-            toolbarRow: {
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '10px',
-              alignItems: 'center',
-            },
-            controlWide: {
-              minWidth: '360px',
-              flex: '1 1 420px',
-            },
-            controlMedium: {
-              minWidth: '190px',
-              flex: '1 1 220px',
             },
             meta: {
               margin: '0',
               fontSize: '12px',
               color: 'var(--theme--foreground-subdued)',
             },
-            group: {
+            treeRoot: {
               display: 'flex',
               flexDirection: 'column',
-              gap: '0',
-              overflow: 'hidden',
+              gap: '10px',
             },
-            groupHeader: {
+            treeNodeCard: {
               display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
+              flexDirection: 'column',
               gap: '10px',
               padding: '10px 12px',
-              background: 'var(--theme--background-subdued)',
+              border: '1px solid var(--theme--border-subdued)',
+              borderRadius: 'var(--theme--border-radius)',
+              background: 'var(--theme--background-page)',
             },
-            groupLabel: {
+            treeNodeHeader: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '8px',
+            },
+            treeNodeTitle: {
               fontSize: '13px',
+              fontWeight: '600',
               color: 'var(--theme--foreground-normal)',
             },
-            row: {
-              padding: '12px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '10px',
-            },
-            rowMeta: {
+            treeNodeMeta: {
               display: 'flex',
               flexWrap: 'wrap',
-              gap: '8px',
-              alignItems: 'center',
-            },
-            rowEdit: {
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
-              gap: '10px',
-              alignItems: 'end',
-            },
-            actions: {
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '8px',
-              alignItems: 'center',
-            },
-            field: {
-              display: 'flex',
-              flexDirection: 'column',
               gap: '6px',
+              alignItems: 'center',
             },
-            fieldLabel: {
-              fontSize: '12px',
-              color: 'var(--theme--foreground-subdued)',
-              margin: '0 2px',
+            treeNodeActions: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '6px',
+              alignItems: 'center',
             },
-            fieldWide: {
-              gridColumn: 'span 2',
+            treeList: {
+              listStyle: 'none',
+              margin: '0',
+              padding: '0',
+            },
+            treeChildList: {
+              listStyle: 'none',
+              margin: '8px 0 0 0',
+              padding: '0 0 0 18px',
+              borderLeft: '1px solid var(--theme--border-subdued)',
+            },
+            treePageHeader: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '8px',
             },
           };
     
@@ -3295,132 +3322,80 @@ data:
             }, children);
           };
     
-          const groupItems = [
-            { text: 'Group: Template', value: 'template' },
-            { text: 'Group: Tag', value: 'group_tag' },
-            { text: 'Group: Slot', value: 'slot' },
-            { text: 'Group: Collection', value: 'collection' },
-            { text: 'Group: None', value: 'none' },
-          ];
-          const hierarchyItems = [
-            { text: 'Hierarchy: Page Children', value: 'direct_children' },
-            { text: 'Hierarchy: Nested Only', value: 'nested_only' },
-            { text: 'Hierarchy: All Blocks', value: 'all' },
-          ];
-          const contextItems = contextChoices.value.map((choice) => ({ text: choice.text, value: choice.value }));
-          const collectionItems = [{ text: 'All Collections', value: '__all' }, ...toChoiceItems(collectionChoices.value)];
-          const slotItems = [{ text: 'All Slots', value: '__all' }, ...toChoiceItems(slotChoices.value)];
-          const scopeItems = [{ text: 'All Scopes', value: '__all' }, ...toChoiceItems(scopeChoices.value)];
-          const groupTagItems = [{ text: 'All Tags', value: '__all' }, ...toChoiceItems(groupTagChoices.value)];
-          const contextScopeLabel = activeContext.value?.value === PAGE_CONTEXT_ID ? 'page' : 'template';
-          const hierarchyLabel = filterHierarchy.value === 'direct_children'
-            ? (contextScopeLabel === 'template' ? 'Template direct children' : 'Page children')
-            : filterHierarchy.value === 'nested_only'
-              ? 'Nested only'
-              : 'All blocks';
-    
+          const renderTreeNode = (row, ancestorPath = []) => {
+            const rowId = asString(row?.id);
+            const hasCycle = rowId && ancestorPath.includes(rowId);
+            if (hasCycle) {
+              return h('li', { key: `${rowId}-cycle` }, [
+                h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
+                  h('strong', { style: styles.treeNodeTitle }, `Cycle detected at block ${rowId}`),
+                ]),
+              ]);
+            }
+            const childRows = childrenByParent.get(rowId) || [];
+            const hasChildren = childRows.length > 0;
+            const isTemplateNode = hasChildren
+              || toLower(row?.template_scope) === 'template'
+              || toLower(row?.collection).includes('template');
+            const title = `${asString(row?.collection) || '(collection?)'}:${asString(row?.item) || '(item?)'}`;
+            return h('li', { key: rowId }, [
+              h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
+                h('header', { class: 'cms-page-blocks-manager__tree-node-header', style: styles.treeNodeHeader }, [
+                  h('strong', { style: styles.treeNodeTitle }, title),
+                  h('div', { style: styles.treeNodeActions }, [
+                    renderButtonControl({
+                      label: 'Edit Block',
+                      disabled: !rowId,
+                      onClick: () => openBlockRow(row),
+                    }),
+                    renderButtonControl({
+                      label: 'Edit Content',
+                      disabled: !row.collection || !row.item,
+                      onClick: () => openContentItem(row),
+                    }),
+                  ]),
+                ]),
+                h('div', { style: styles.treeNodeMeta }, [
+                  renderMetaChip(`id=${rowId || '?'}`),
+                  renderMetaChip(`slot=${asString(row?.slot) || 'main'}`),
+                  renderMetaChip(`sort=${asString(row?.sort) || '-'}`),
+                  renderMetaChip(`scope=${asString(row?.template_scope) || 'page'}`),
+                  renderMetaChip(`template=${asString(row?.template_group_key) || 'page-root'}`),
+                  ...(asString(row?.group_tag) ? [renderMetaChip(`group=${asString(row.group_tag)}`)] : []),
+                  ...(isTemplateNode ? [renderMetaChip(`children=${childRows.length}`)] : []),
+                ]),
+              ]),
+              ...(hasChildren
+                ? [
+                    h('ul', { class: 'cms-page-blocks-manager__tree-child-list', style: styles.treeChildList }, childRows.map((childRow) => renderTreeNode(childRow, [...ancestorPath, rowId]))),
+                  ]
+                : []),
+            ]);
+          };
+
           const children = [
             renderCard({
               className: 'cms-page-blocks-manager__toolbar-card',
               children: [
                 h('div', { class: 'cms-page-blocks-manager__toolbar', style: styles.toolbar }, [
-                  h('div', { class: 'cms-page-blocks-manager__toolbar-row', style: styles.toolbarRow }, [
-                    h('div', { style: styles.controlWide }, [
-                      renderInputControl({
-                        value: searchText.value,
-                        placeholder: `Search ${contextScopeLabel} context by group, slot, template, collection, id...`,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { searchText.value = asString(next); },
-                      }),
-                    ]),
-                    h('div', { style: styles.controlMedium }, [
-                      renderSelectControl({
-                        value: activeContext.value?.value || PAGE_CONTEXT_ID,
-                        items: contextItems,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { selectedContext.value = asString(next) || PAGE_CONTEXT_ID; },
-                      }),
-                    ]),
-                    h('div', { style: styles.controlMedium }, [
-                      renderSelectControl({
-                        value: groupBy.value,
-                        items: groupItems,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { groupBy.value = asString(next) || 'template'; },
-                      }),
-                    ]),
-                    h('div', { style: styles.controlMedium }, [
-                      renderSelectControl({
-                        value: filterHierarchy.value,
-                        items: hierarchyItems,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { filterHierarchy.value = asString(next) || defaultHierarchy.value; },
-                      }),
-                    ]),
-                    renderButtonControl({
-                      label: loading.value ? 'Loading...' : 'Reload',
-                      disabled: loading.value,
-                      onClick: refreshAll,
-                    }),
-                    renderButtonControl({
-                      label: `Save Changed (${changedCount})`,
-                      disabled: !canSaveAll,
-                      onClick: saveAll,
-                      primary: true,
-                    }),
-                    renderButtonControl({
-                      label: 'Open Collection View',
-                      disabled: !pageId.value,
-                      onClick: openBlocksCollection,
-                    }),
-                  ]),
-                  h('div', { class: 'cms-page-blocks-manager__toolbar-row', style: styles.toolbarRow }, [
-                    h('div', { style: styles.controlMedium }, [
-                      renderSelectControl({
-                        value: filterCollection.value,
-                        items: collectionItems,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { filterCollection.value = asString(next) || '__all'; },
-                      }),
-                    ]),
-                    h('div', { style: styles.controlMedium }, [
-                      renderSelectControl({
-                        value: filterSlot.value,
-                        items: slotItems,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { filterSlot.value = asString(next) || '__all'; },
-                      }),
-                    ]),
-                    h('div', { style: styles.controlMedium }, [
-                      renderSelectControl({
-                        value: filterScope.value,
-                        items: scopeItems,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { filterScope.value = asString(next) || '__all'; },
-                      }),
-                    ]),
-                    h('div', { style: styles.controlMedium }, [
-                      renderSelectControl({
-                        value: filterGroupTag.value,
-                        items: groupTagItems,
-                        disabled: props.disabled || loading.value,
-                        onUpdate: (next) => { filterGroupTag.value = asString(next) || '__all'; },
-                      }),
-                    ]),
-                    renderButtonControl({
-                      label: 'Reset Filters',
-                      disabled: props.disabled || loading.value,
-                      onClick: resetFilters,
-                    }),
-                  ]),
+                  renderButtonControl({
+                    label: loading.value ? 'Loading...' : 'Reload',
+                    disabled: loading.value,
+                    onClick: refreshAll,
+                  }),
+                  renderButtonControl({
+                    label: 'Open Collection View',
+                    disabled: !pageId.value,
+                    onClick: openBlocksCollection,
+                  }),
                 ]),
               ],
             }),
           ];
-    
+
           if (pageId.value) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Context ${activeContext.value?.text || 'Page'} | View ${hierarchyLabel} | Blocks ${filteredBlocks.value.length}/${contextBlocks.value.length}`)
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${blocks.value.length}`)
             );
           } else {
             children.push(
@@ -3442,100 +3417,28 @@ data:
                 : h('p', { class: 'cms-page-blocks-manager__hint' }, info.value)
             );
           }
-    
-          if (!loading.value && rows.length === 0) {
+
+          if (!loading.value && rootRows.length === 0) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__hint', style: styles.meta }, pageId.value ? 'No blocks match the current filters.' : 'No page context available.')
+              h('p', { class: 'cms-page-blocks-manager__hint', style: styles.meta }, pageId.value ? 'No blocks found for this page.' : 'No page context available.')
             );
           }
-    
-          for (const group of rows) {
+
+          if (pageId.value && rootRows.length > 0) {
             children.push(
-              renderCard({
-                className: 'cms-page-blocks-manager__group',
-                style: styles.group,
-                children: [
-                  h('header', { class: 'cms-page-blocks-manager__group-header', style: styles.groupHeader }, [
-                    h('strong', { style: styles.groupLabel }, group.label),
-                    renderMetaChip(`${group.rows.length}`),
+              h('section', { class: 'cms-page-blocks-manager__tree-root', style: styles.treeRoot }, [
+                h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
+                  h('header', { style: styles.treePageHeader }, [
+                    h('strong', { style: styles.treeNodeTitle }, `Page Root: ${pageContext.value.slug || pageId.value}`),
+                    renderMetaChip(`children=${rootRows.length}`),
                   ]),
-                  ...(hasDivider ? [h(resolvedDivider)] : []),
-                  ...group.rows.map((row) => {
-                    const draft = getDraft(row);
-                    const rowTemplateKey = contextTemplateKey.value
-                      || (asString(row.template_group_key) !== 'page-root' ? asString(row.template_group_key) : '');
-                    const slotChoicesForRow = toChoiceItems(uniqueNonEmpty([
-                      ...templateSlotsFor(rowTemplateKey),
-                      asString(row.slot) || 'main',
-                    ]));
-                    const changed = hasChanges(row);
-                    const rowSaving = isSaving(row.id);
-                    return h('article', { class: 'cms-page-blocks-manager__row', key: row.id, style: styles.row }, [
-                      h('div', { class: 'cms-page-blocks-manager__row-meta', style: styles.rowMeta }, [
-                        renderMetaChip(row.id),
-                        renderMetaChip(`${row.collection}:${row.item}`),
-                        renderMetaChip(`scope=${row.template_scope}`),
-                        renderMetaChip(`template=${row.template_group_key}`),
-                        renderMetaChip(`depth=${row.tree_depth}`),
-                        ...(row.status ? [renderMetaChip(`status=${row.status}`)] : []),
-                      ]),
-                      h('div', { class: 'cms-page-blocks-manager__row-edit', style: styles.rowEdit }, [
-                        h('label', { class: 'cms-page-blocks-manager__field', style: styles.field }, [
-                          h('span', { style: styles.fieldLabel }, 'Slot'),
-                          renderSelectControl({
-                            value: asString(draft.slot) || 'main',
-                            items: slotChoicesForRow,
-                            disabled: props.disabled || rowSaving,
-                            onUpdate: (next) => setDraft(row.id, { slot: asString(next) || 'main' }),
-                          }),
-                        ]),
-                        h('label', { class: 'cms-page-blocks-manager__field', style: styles.field }, [
-                          h('span', { style: styles.fieldLabel }, 'Sort'),
-                          renderInputControl({
-                            value: draft.sort ?? '',
-                            type: 'number',
-                            disabled: props.disabled || rowSaving,
-                            onUpdate: (next) => setDraft(row.id, { sort: asString(next) }),
-                          }),
-                        ]),
-                        h('label', { class: 'cms-page-blocks-manager__field cms-page-blocks-manager__field--wide', style: { ...styles.field, ...styles.fieldWide } }, [
-                          h('span', { style: styles.fieldLabel }, 'Group Tag'),
-                          renderInputControl({
-                            value: asString(draft.group_tag),
-                            placeholder: 'Optional grouping tag',
-                            disabled: props.disabled || rowSaving,
-                            onUpdate: (next) => setDraft(row.id, { group_tag: asString(next) }),
-                          }),
-                        ]),
-                      ]),
-                      h('div', { class: 'cms-page-blocks-manager__actions', style: styles.actions }, [
-                        renderButtonControl({
-                          label: rowSaving ? 'Saving...' : 'Save',
-                          primary: true,
-                          disabled: props.disabled || rowSaving || !changed,
-                          onClick: () => saveRow(row),
-                        }),
-                        renderButtonControl({
-                          label: 'Reset',
-                          disabled: props.disabled || rowSaving || !changed,
-                          onClick: () => resetRow(row),
-                        }),
-                        renderButtonControl({
-                          label: 'Open Block Row',
-                          disabled: rowSaving,
-                          onClick: () => openBlockRow(row),
-                        }),
-                        renderButtonControl({
-                          label: 'Open Content',
-                          disabled: rowSaving || !row.collection || !row.item,
-                          onClick: () => openContentItem(row),
-                        }),
-                      ]),
-                      ...(hasDivider ? [h(resolvedDivider)] : []),
-                    ]);
-                  }),
-                ],
-              })
+                  h('div', { style: styles.treeNodeMeta }, [
+                    renderMetaChip(`site=${pageContext.value.site_key || '(global)'}`),
+                    renderMetaChip(`layout=${pageContext.value.layout_template_key || '(none)'}`),
+                  ]),
+                ]),
+                h('ul', { class: 'cms-page-blocks-manager__tree-list', style: styles.treeList }, rootRows.map((row) => renderTreeNode(row))),
+              ])
             );
           }
     
@@ -3548,7 +3451,7 @@ data:
       id: 'cms-page-blocks-manager',
       name: 'CMS Page Blocks Manager',
       icon: 'view_list',
-      description: 'Grouped and searchable manager for page blocks with quick slot/sort/group edits.',
+      description: 'Tree manager for page blocks with nested template/content navigation and quick edit links.',
       component: InterfaceComponent,
       types: ['alias'],
       localTypes: ['m2a', 'o2m'],
