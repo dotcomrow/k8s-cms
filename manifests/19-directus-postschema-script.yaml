@@ -3258,10 +3258,26 @@ data:
           return 0
         fi
 
-        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${page_blocks_relation_options_json}")"
+        _special_value="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT COALESCE(special::text, '') FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _special_value="$(printf '%s' "$_special_value" | tr -d '\r')"
+        _interface_value="list-o2m"
+        _options_sql="NULL"
+        case "$(printf '%s' "${_special_value}" | tr '[:upper:]' '[:lower:]')" in
+          *m2a*)
+            _interface_value="list-m2a"
+            ;;
+          *o2m*)
+            _interface_value="list-o2m"
+            _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${page_blocks_relation_options_json}")"
+            ;;
+          *)
+            _interface_value="list-m2a"
+            ;;
+        esac
 
         SETS=""
-        if _df_has_col "interface"; then SETS="${SETS},interface='list-o2m'"; fi
+        if _df_has_col "interface"; then SETS="${SETS},interface='${_interface_value}'"; fi
         if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
         if _df_has_col "required"; then SETS="${SETS},required=false"; fi
         if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
@@ -3272,7 +3288,7 @@ data:
         if [ -n "${SETS:-}" ]; then
           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
             "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
-          echo "✅ Updated cms_pages.blocks relation UX for grouped/filterable block lists"
+          echo "✅ Updated cms_pages.blocks relation UX (interface=${_interface_value})"
         fi
       }
 
