@@ -1400,11 +1400,7 @@ data:
           const eventField = asString(detail.field).toLowerCase();
           if (eventField && eventField !== parentIdField.value.toLowerCase()) return;
 
-          const eventCollection = asString(detail.collection).toLowerCase();
           const context = resolveRecordContext();
-          const currentCollection = asString(context.recordCollection || collectionKey.value).toLowerCase();
-          if (eventCollection && currentCollection && eventCollection !== currentCollection) return;
-
           const eventRecordId = asString(detail.recordId);
           const currentRecordId = asString(context.recordId);
           if (eventRecordId && currentRecordId && eventRecordId !== currentRecordId) return;
@@ -1427,13 +1423,37 @@ data:
 
         return () => {
           const currentValue = asString(props.value);
+          const resolvedSelect = resolveComponent('v-select');
+          const resolvedNotice = resolveComponent('v-notice');
+          const hasDirectusSelect = typeof resolvedSelect !== 'string';
           const placeholderText = loading.value
             ? 'Loading options...'
             : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : mode.value === 'parent' ? 'Optional: select a parent block' : 'Select a slot'));
 
           const errorNotice = loadError.value
-            ? h('p', { class: 'cms-content-model-select__error' }, loadError.value)
+            ? (typeof resolvedNotice !== 'string'
+                ? h(
+                    resolvedNotice,
+                    { type: 'danger', icon: 'warning' },
+                    { default: () => loadError.value }
+                  )
+                : h('p', { class: 'cms-content-model-select__error' }, loadError.value))
             : null;
+
+          if (hasDirectusSelect) {
+            return h('div', { class: 'cms-content-model-select' }, [
+              h(resolvedSelect, {
+                modelValue: currentValue || null,
+                items: selectItems.value,
+                placeholder: placeholderText,
+                disabled: props.disabled || loading.value,
+                nonEditable: props.disabled || loading.value,
+                showDeselect: false,
+                'onUpdate:modelValue': onInput,
+              }),
+              errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
+            ]);
+          }
 
           const opts = selectItems.value.map((choice) => h('option', { value: choice.value }, choice.text));
 
