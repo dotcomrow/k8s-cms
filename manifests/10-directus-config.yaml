@@ -908,11 +908,68 @@ data:
           return { pageId, pageSlug, siteKey, currentBlockId };
         };
 
+        const resolvePersistedPageBlockContext = async () => {
+          const context = await resolvePageContext();
+          let row = null;
+          let pageId = context.pageId;
+          let pageSlug = context.pageSlug;
+          let siteKey = context.siteKey;
+
+          if (context.currentBlockId && collectionKey.value === pageBlocksCollectionKey.value) {
+            try {
+              const response = await apiGet(`/items/${pageBlocksCollection.value}/${encodeURIComponent(context.currentBlockId)}`, {
+                fields: [itemIdField.value, parentIdField.value, pageIdField.value, pageSlugField.value, pageSiteField.value, 'collection', 'item'].join(','),
+              });
+              row = response?.data || null;
+              if (!pageId) pageId = parseId(row?.[pageIdField.value]);
+              if (!pageSlug) pageSlug = asString(row?.[pageSlugField.value]);
+              if (!siteKey) siteKey = asString(row?.[pageSiteField.value]);
+            } catch {
+              // Continue to collection/item fallback.
+            }
+          }
+
+          if (!row) {
+            const blockCollection = asString(props.values?.collection) || (collectionKey.value === pageBlocksCollectionKey.value ? '' : collectionKey.value);
+            const blockItem = parseId(props.values?.item) || (collectionKey.value === pageBlocksCollectionKey.value ? '' : parseId(props.values?.id));
+
+            if (blockCollection && blockItem) {
+              const clauses = [
+                { collection: { _eq: blockCollection } },
+                { item: { _eq: blockItem } },
+              ];
+              if (pageId) clauses.push({ [pageIdField.value]: { _eq: pageId } });
+              if (siteKey) clauses.push({ [pageSiteField.value]: { _eq: siteKey } });
+              if (pageSlug) clauses.push({ [pageSlugField.value]: { _eq: pageSlug } });
+
+              try {
+                const response = await apiGet(`/items/${pageBlocksCollection.value}`, {
+                  fields: [itemIdField.value, parentIdField.value, pageIdField.value, pageSlugField.value, pageSiteField.value, 'collection', 'item'].join(','),
+                  limit: -1,
+                  sort: '-date_updated',
+                  filter: JSON.stringify({ _and: clauses }),
+                });
+                const rows = normalizeRows(response);
+                row = rows[0] || null;
+                if (!pageId) pageId = parseId(row?.[pageIdField.value]);
+                if (!pageSlug) pageSlug = asString(row?.[pageSlugField.value]);
+                if (!siteKey) siteKey = asString(row?.[pageSiteField.value]);
+              } catch {
+                // Best effort only.
+              }
+            }
+          }
+
+          return { row, pageId, pageSlug, siteKey, currentBlockId: context.currentBlockId };
+        };
+
         const loadSlotChoices = async () => {
-          const selectedParentBlockId = resolveSelectedParentBlockId();
-          let siteKey = asString(props.values?.[pageSiteField.value]);
+          const context = await resolvePersistedPageBlockContext();
+          const selectedParentBlockId = resolveSelectedParentBlockId() || parseId(context.row?.[parentIdField.value]);
+          let siteKey = context.siteKey || asString(props.values?.[pageSiteField.value]);
           let templateKey = '';
-          let { pageId, pageSlug } = await resolvePageContext();
+          let pageId = context.pageId;
+          let pageSlug = context.pageSlug;
 
           if (!siteKey) {
             siteKey = asString(props.values?.[pageSiteField.value]);
