@@ -557,7 +557,7 @@ data:
 
   cms-content-model-select.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
-    import { defineComponent, h, ref, computed, watch, resolveComponent } from 'vue';
+    import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
 
     const asString = (value) => {
       if (value === null || value === undefined) return '';
@@ -695,6 +695,7 @@ data:
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
           return v !== false;
         });
+        const parentSelectionOverride = ref('');
         const persistedValue = ref('');
         const fallbackCommittedValue = ref('');
         const hasUserInput = ref(false);
@@ -720,6 +721,12 @@ data:
           }
 
           return { recordCollection, recordId };
+        };
+
+        const resolveSelectedParentBlockId = () => {
+          const overrideValue = asString(parentSelectionOverride.value);
+          if (overrideValue) return overrideValue;
+          return parseId(props.values?.[parentIdField.value]);
         };
         
         const apiGet = async (path, params = {}) => {
@@ -902,12 +909,49 @@ data:
         };
 
         const loadSlotChoices = async () => {
+          const selectedParentBlockId = resolveSelectedParentBlockId();
           let siteKey = asString(props.values?.[pageSiteField.value]);
-          let templateKey = asString(props.values?.[pageTemplateField.value]);
+          let templateKey = '';
           let { pageId, pageSlug } = await resolvePageContext();
 
           if (!siteKey) {
             siteKey = asString(props.values?.[pageSiteField.value]);
+          }
+
+          if (selectedParentBlockId) {
+            try {
+              const parentBlockResp = await apiGet(`/items/${pageBlocksCollection.value}/${encodeURIComponent(selectedParentBlockId)}`, {
+                fields: ['collection', 'item', pageIdField.value, pageSlugField.value, pageSiteField.value].join(','),
+              });
+              const parentBlock = parentBlockResp?.data || {};
+              const parentCollection = asString(parentBlock?.collection);
+              if (parentCollection !== 'cms_block_template_ref') {
+                missingContext.value = 'Selected parent must be a Template Ref block.';
+                return [];
+              }
+
+              const parentTemplateRefId = parseId(parentBlock?.item);
+              if (!parentTemplateRefId) {
+                missingContext.value = 'Parent template block is missing its template reference.';
+                return [];
+              }
+
+              if (!pageId) pageId = parseId(parentBlock?.[pageIdField.value]);
+              if (!pageSlug) pageSlug = asString(parentBlock?.[pageSlugField.value]);
+              if (!siteKey) siteKey = asString(parentBlock?.[pageSiteField.value]);
+
+              const parentTemplateRefResp = await apiGet(`/items/${templateRefsCollection.value}/${encodeURIComponent(parentTemplateRefId)}`, {
+                fields: ['template_key', 'status', 'site_key'].join(','),
+              });
+              const parentTemplateRef = parentTemplateRefResp?.data || {};
+              templateKey = asString(parentTemplateRef?.template_key);
+              if (!siteKey) siteKey = asString(parentTemplateRef?.site_key);
+            } catch {
+              missingContext.value = 'Select a valid parent template block before assigning nested slots.';
+              return [];
+            }
+          } else {
+            templateKey = asString(props.values?.[pageTemplateField.value]);
           }
 
           if (!templateKey && pageId) {
@@ -944,7 +988,9 @@ data:
           }
 
           if (!templateKey) {
-            missingContext.value = 'Select a page template before assigning a slot.';
+            missingContext.value = selectedParentBlockId
+              ? 'Select a parent template block before assigning nested slots.'
+              : 'Select a page template before assigning a slot.';
             return [];
           }
 
@@ -1062,6 +1108,18 @@ data:
                     : await loadSlotChoices();
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
+
+            if (mode.value === 'slot' && choices.value.length > 0) {
+              const currentValue = asString(props.value);
+              const hasCurrent = currentValue && choices.value.some((choice) => asString(choice.value) === currentValue);
+              if (!hasCurrent) {
+                const nextValue = asString(choices.value[0]?.value);
+                if (nextValue) {
+                  emit('input', nextValue);
+                }
+              }
+            }
+
             if (choices.value.length === 0 && !missingContext.value) {
               if (mode.value === 'parent') {
                 loadError.value = '';
@@ -1175,7 +1233,10 @@ data:
             pagesCollection: pagesCollection.value,
             siteKey: asString(props.values?.[pageSiteField.value]),
             pageId: parseId(props.values?.[pageIdField.value]),
+            pageSlug: asString(props.values?.[pageSlugField.value]),
             pageTemplate: asString(props.values?.[pageTemplateField.value]),
+            parentBlockId: parseId(props.values?.[parentIdField.value]),
+            parentSelectionOverride: asString(parentSelectionOverride.value),
             field: fieldKey.value,
             collection: collectionKey.value,
           }),
@@ -1272,6 +1333,39 @@ data:
           }
           emit('input', next || null);
         };
+
+        const onSelectorEvent = (event) => {
+          const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+          const eventMode = asString(detail.mode).toLowerCase();
+          if (eventMode !== 'parent') return;
+
+          const eventField = asString(detail.field).toLowerCase();
+          if (eventField && eventField !== parentIdField.value.toLowerCase()) return;
+
+          const eventCollection = asString(detail.collection).toLowerCase();
+          const context = resolveRecordContext();
+          const currentCollection = asString(context.recordCollection || collectionKey.value).toLowerCase();
+          if (eventCollection && currentCollection && eventCollection !== currentCollection) return;
+
+          const eventRecordId = asString(detail.recordId);
+          const currentRecordId = asString(context.recordId);
+          if (eventRecordId && currentRecordId && eventRecordId !== currentRecordId) return;
+
+          parentSelectionOverride.value = asString(detail.value);
+          if (mode.value === 'slot') {
+            void loadChoices();
+          }
+        };
+
+        onMounted(() => {
+          if (typeof window === 'undefined') return;
+          window.addEventListener('cms-content-model-select-change', onSelectorEvent);
+        });
+
+        onBeforeUnmount(() => {
+          if (typeof window === 'undefined') return;
+          window.removeEventListener('cms-content-model-select-change', onSelectorEvent);
+        });
 
         return () => {
           const currentValue = asString(props.value);
