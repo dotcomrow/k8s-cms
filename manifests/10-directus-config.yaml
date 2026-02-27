@@ -2328,7 +2328,7 @@ data:
     }
   cms-page-blocks-manager.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
-    import { defineComponent, h, ref, computed, watch, onMounted, resolveComponent } from 'vue';
+    import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
     
     const asString = (value) => {
       if (value === null || value === undefined) return '';
@@ -2397,6 +2397,17 @@ data:
     
     const toLower = (value) => asString(value).toLowerCase();
     const isDirectChildRow = (row) => !asString(row?.parent_block_id);
+    const BLOCKS_MANAGER_REGISTRY_KEY = '__cmsPageBlocksManagerActiveByField';
+    const BLOCKS_MANAGER_REGISTRY_EVENT = 'cms-page-blocks-manager-registry-updated';
+    
+    const getBlocksManagerRegistry = () => {
+      if (typeof window === 'undefined') return null;
+      const current = window[BLOCKS_MANAGER_REGISTRY_KEY];
+      if (!current || typeof current !== 'object') {
+        window[BLOCKS_MANAGER_REGISTRY_KEY] = {};
+      }
+      return window[BLOCKS_MANAGER_REGISTRY_KEY];
+    };
     
     const InterfaceComponent = defineComponent({
       name: 'CmsPageBlocksManager',
@@ -2421,9 +2432,10 @@ data:
           site_key: '',
           layout_template_key: '',
         });
-        const slots = ref([]);
+        const slotsByTemplateKey = ref({});
         const blocks = ref([]);
         const drafts = ref({});
+        const selectedContext = ref('__page');
     
         const searchText = ref('');
         const filterCollection = ref('__all');
@@ -2432,6 +2444,38 @@ data:
         const filterGroupTag = ref('__all');
         const filterHierarchy = ref('direct_children');
         const groupBy = ref('template');
+        const isPrimaryInstance = ref(true);
+    
+        const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+        const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
+    
+        const claimPrimaryInstance = () => {
+          const registry = getBlocksManagerRegistry();
+          if (!registry) {
+            isPrimaryInstance.value = true;
+            return;
+          }
+          const signature = instanceSignature.value;
+          const currentOwner = asString(registry[signature]);
+          if (!currentOwner) {
+            registry[signature] = instanceToken;
+            isPrimaryInstance.value = true;
+            return;
+          }
+          isPrimaryInstance.value = currentOwner === instanceToken;
+        };
+    
+        const releasePrimaryInstance = () => {
+          const registry = getBlocksManagerRegistry();
+          if (!registry) return;
+          const signature = instanceSignature.value;
+          if (asString(registry[signature]) === instanceToken) {
+            delete registry[signature];
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent(BLOCKS_MANAGER_REGISTRY_EVENT, { detail: { signature } }));
+            }
+          }
+        };
     
         const resolvedOptions = computed(() => parseOptions(props.options));
         const pagesCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
@@ -2459,6 +2503,17 @@ data:
           if (candidate === 'all' || candidate === 'nested_only' || candidate === 'direct_children') return candidate;
           return 'direct_children';
         });
+        const PAGE_CONTEXT_ID = '__page';
+        const buildTemplateContextId = (blockId) => {
+          const normalized = parseId(blockId);
+          if (!normalized) return '';
+          return `template:${normalized}`;
+        };
+        const parseTemplateContextId = (contextId) => {
+          const normalized = asString(contextId);
+          if (!normalized.startsWith('template:')) return '';
+          return normalized.slice('template:'.length);
+        };
     
         const pageIdFromValues = computed(() => parseId(props.values?.[pageIdField.value] ?? props.values?.id));
         const pageId = computed(() => {
@@ -2475,6 +2530,7 @@ data:
           filterGroupTag.value = '__all';
           filterHierarchy.value = defaultHierarchy.value;
           groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
+          selectedContext.value = PAGE_CONTEXT_ID;
         };
     
         const apiRequest = async (method, path, query = {}, body = null) => {
@@ -2515,6 +2571,9 @@ data:
           const treeDepth = asInteger(row?.tree_depth) ?? 0;
           const pageSlug = asString(row?.page_slug);
           const parentBlockId = parseId(row?.parent_block_id);
+          const templateRootBlockId = parseId(row?.template_root_block_id);
+          const templateNearestBlockId = parseId(row?.template_nearest_block_id);
+          const contextToken = templateNearestBlockId ? buildTemplateContextId(templateNearestBlockId) : PAGE_CONTEXT_ID;
           const hierarchyToken = parentBlockId ? 'nested-child' : 'page-child';
           const searchTokens = [
             parseId(row?.id),
@@ -2526,6 +2585,9 @@ data:
             templateGroupKey,
             treePath,
             parentBlockId,
+            templateRootBlockId,
+            templateNearestBlockId,
+            contextToken,
             hierarchyToken,
             pageSlug,
             ...(status ? [status] : []),
@@ -2546,7 +2608,10 @@ data:
             sort: sortValue,
             status,
             parent_block_id: parentBlockId,
+            template_root_block_id: templateRootBlockId,
+            template_nearest_block_id: templateNearestBlockId,
             page_slug: pageSlug,
+            _context_id: contextToken,
             _search_text: searchTokens.join(' '),
           };
         };
@@ -2580,17 +2645,25 @@ data:
           };
         };
     
-        const loadSlots = async () => {
-          const templateKey = asString(pageContext.value.layout_template_key);
-          if (!templateKey) {
-            slots.value = ['main'];
-            return;
+        const templateSlotsFor = (templateKey) => {
+          const normalizedTemplateKey = asString(templateKey);
+          if (!normalizedTemplateKey) return ['main'];
+          const fromCache = slotsByTemplateKey.value[normalizedTemplateKey];
+          if (!Array.isArray(fromCache) || fromCache.length === 0) return ['main'];
+          return fromCache;
+        };
+
+        const loadSlotsForTemplate = async (templateKey) => {
+          const normalizedTemplateKey = asString(templateKey);
+          if (!normalizedTemplateKey) return ['main'];
+          if (Array.isArray(slotsByTemplateKey.value[normalizedTemplateKey]) && slotsByTemplateKey.value[normalizedTemplateKey].length > 0) {
+            return slotsByTemplateKey.value[normalizedTemplateKey];
           }
-    
+
           const siteKey = asString(pageContext.value.site_key);
           const filter = {
             _and: [
-              { template_key: { _eq: templateKey } },
+              { template_key: { _eq: normalizedTemplateKey } },
               siteKey
                 ? {
                     _or: [
@@ -2601,16 +2674,35 @@ data:
                 : { site_key: { _empty: true } },
             ],
           };
-    
+
           const response = await apiRequest('GET', `/items/${layoutSlotsCollection.value}`, {
             fields: 'slot_key',
             limit: -1,
             sort: 'slot_key',
             filter: JSON.stringify(filter),
           });
-    
+
           const values = uniqueNonEmpty(normalizeRows(response).map((row) => row?.slot_key));
-          slots.value = values.length > 0 ? values : ['main'];
+          const resolvedValues = values.length > 0 ? values : ['main'];
+          slotsByTemplateKey.value = {
+            ...slotsByTemplateKey.value,
+            [normalizedTemplateKey]: resolvedValues,
+          };
+          return resolvedValues;
+        };
+
+        const preloadSlotsForKnownTemplates = async () => {
+          const candidates = uniqueNonEmpty([
+            asString(pageContext.value.layout_template_key),
+            ...blocks.value.map((row) => asString(row.template_group_key)).filter((value) => value && value !== 'page-root'),
+          ]);
+          const nextCache = {};
+          slotsByTemplateKey.value = nextCache;
+          for (const templateKey of candidates) {
+            const values = await loadSlotsForTemplate(templateKey);
+            nextCache[templateKey] = values;
+          }
+          slotsByTemplateKey.value = nextCache;
         };
     
         const loadBlocks = async () => {
@@ -2634,6 +2726,8 @@ data:
               'tree_depth',
               'sort',
               'parent_block_id',
+              'template_root_block_id',
+              'template_nearest_block_id',
               'page_slug',
             ].join(','),
             limit: defaultLimit.value,
@@ -2651,8 +2745,8 @@ data:
           info.value = '';
           try {
             await loadPageContext();
-            await loadSlots();
             await loadBlocks();
+            await preloadSlotsForKnownTemplates();
           } catch (requestError) {
             error.value = requestError?.message || 'Failed to load blocks manager data.';
           } finally {
@@ -2746,7 +2840,7 @@ data:
     
         const saveAll = async () => {
           if (props.disabled) return;
-          const changedRows = blocks.value.filter((row) => hasChanges(row));
+          const changedRows = contextBlocks.value.filter((row) => hasChanges(row));
           if (changedRows.length === 0) return;
           info.value = '';
           error.value = '';
@@ -2766,10 +2860,9 @@ data:
           });
         };
     
-        const openAdminPath = (relativePath, newTab = true) => {
+        const openAdminPath = (relativePath) => {
           const href = `${window.location.origin}${relativePath}`;
-          if (newTab) window.open(href, '_blank', 'noopener,noreferrer');
-          else window.location.assign(href);
+          window.location.assign(href);
         };
     
         const openBlockRow = (row) => {
@@ -2786,18 +2879,81 @@ data:
           const filter = encodeURIComponent(JSON.stringify({ page_id: { _eq: pageId.value } }));
           openAdminPath(`${adminBasePath.value}/${pageBlocksCollection.value}?filter=${filter}`);
         };
-    
-        const collectionChoices = computed(() => uniqueNonEmpty(blocks.value.map((row) => row.collection)));
-        const slotChoices = computed(() => uniqueNonEmpty([...slots.value, ...blocks.value.map((row) => row.slot)]));
-        const scopeChoices = computed(() => uniqueNonEmpty(blocks.value.map((row) => row.template_scope)));
-        const groupTagChoices = computed(() => uniqueNonEmpty(blocks.value.map((row) => row.group_tag)));
-    
+
+        const contextChoices = computed(() => {
+          const choices = [{
+            value: PAGE_CONTEXT_ID,
+            text: `Page (${asString(pageContext.value.layout_template_key) || 'no layout'})`,
+            template_key: asString(pageContext.value.layout_template_key),
+            block_id: '',
+            scope: 'page',
+          }];
+          const seen = new Set([PAGE_CONTEXT_ID]);
+
+          for (const row of blocks.value) {
+            const templateKey = asString(row.template_group_key);
+            if (!templateKey || templateKey === 'page-root') continue;
+            const contextBlockId = parseId(row.template_nearest_block_id) || parseId(row.id);
+            const contextId = buildTemplateContextId(contextBlockId);
+            if (!contextId || seen.has(contextId)) continue;
+            seen.add(contextId);
+            choices.push({
+              value: contextId,
+              text: `Template ${templateKey} (${contextBlockId.slice(0, 8)})`,
+              template_key: templateKey,
+              block_id: contextBlockId,
+              scope: asString(row.template_scope) || 'template',
+            });
+          }
+
+          return choices;
+        });
+
+        const activeContext = computed(() => {
+          const match = contextChoices.value.find((item) => item.value === selectedContext.value);
+          if (match) return match;
+          return contextChoices.value[0] || {
+            value: PAGE_CONTEXT_ID,
+            text: 'Page',
+            template_key: '',
+            block_id: '',
+            scope: 'page',
+          };
+        });
+
+        const rowInSelectedContext = (row) => {
+          const contextId = asString(activeContext.value?.value) || PAGE_CONTEXT_ID;
+          if (contextId === PAGE_CONTEXT_ID) {
+            return asString(row._context_id) === PAGE_CONTEXT_ID;
+          }
+          const templateBlockId = parseTemplateContextId(contextId);
+          if (!templateBlockId) return false;
+          return asString(row._context_id) === contextId;
+        };
+
+        const isDirectChildForContext = (row) => {
+          const contextId = asString(activeContext.value?.value) || PAGE_CONTEXT_ID;
+          if (contextId === PAGE_CONTEXT_ID) return isDirectChildRow(row);
+          const templateBlockId = parseTemplateContextId(contextId);
+          if (!templateBlockId) return false;
+          return parseId(row.parent_block_id) === templateBlockId;
+        };
+
+        const contextBlocks = computed(() => blocks.value.filter((row) => rowInSelectedContext(row)));
+        const contextTemplateKey = computed(() => asString(activeContext.value?.template_key));
+        const contextTemplateSlots = computed(() => templateSlotsFor(contextTemplateKey.value));
+
+        const collectionChoices = computed(() => uniqueNonEmpty(contextBlocks.value.map((row) => row.collection)));
+        const slotChoices = computed(() => uniqueNonEmpty([...contextTemplateSlots.value, ...contextBlocks.value.map((row) => row.slot)]));
+        const scopeChoices = computed(() => uniqueNonEmpty(contextBlocks.value.map((row) => row.template_scope)));
+        const groupTagChoices = computed(() => uniqueNonEmpty(contextBlocks.value.map((row) => row.group_tag)));
+
         const filteredBlocks = computed(() => {
           const needle = toLower(searchText.value);
-          return blocks.value.filter((row) => {
+          return contextBlocks.value.filter((row) => {
             if (needle && !row._search_text.includes(needle)) return false;
-            if (filterHierarchy.value === 'direct_children' && !isDirectChildRow(row)) return false;
-            if (filterHierarchy.value === 'nested_only' && isDirectChildRow(row)) return false;
+            if (filterHierarchy.value === 'direct_children' && !isDirectChildForContext(row)) return false;
+            if (filterHierarchy.value === 'nested_only' && isDirectChildForContext(row)) return false;
             if (filterCollection.value !== '__all' && row.collection !== filterCollection.value) return false;
             if (filterSlot.value !== '__all' && row.slot !== filterSlot.value) return false;
             if (filterScope.value !== '__all' && row.template_scope !== filterScope.value) return false;
@@ -2861,13 +3017,45 @@ data:
           { immediate: true }
         );
     
+        watch(instanceSignature, () => {
+          claimPrimaryInstance();
+        });
+
+        watch(
+          () => contextChoices.value.map((item) => item.value).join('|'),
+          () => {
+            const active = contextChoices.value.find((item) => item.value === selectedContext.value);
+            if (!active) {
+              selectedContext.value = contextChoices.value[0]?.value || PAGE_CONTEXT_ID;
+            }
+          },
+          { immediate: true }
+        );
+    
         onMounted(() => {
+          claimPrimaryInstance();
+          if (typeof window !== 'undefined') {
+            window.addEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
+          }
           if (!groupBy.value) {
             groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
           }
         });
     
+        onBeforeUnmount(() => {
+          if (typeof window !== 'undefined') {
+            window.removeEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
+          }
+          releasePrimaryInstance();
+        });
+    
         return () => {
+          if (!isPrimaryInstance.value) {
+            return h('div', {
+              class: 'cms-page-blocks-manager cms-page-blocks-manager--duplicate-hidden',
+              style: { display: 'none' },
+            });
+          }
           const resolvedNotice = resolveComponent('v-notice');
           const resolvedInput = resolveComponent('v-input');
           const resolvedSelect = resolveComponent('v-select');
@@ -2885,7 +3073,7 @@ data:
           const hasCard = typeof resolvedCard !== 'string';
     
           const rows = groupedBlocks.value;
-          const changedCount = blocks.value.filter((row) => hasChanges(row)).length;
+          const changedCount = contextBlocks.value.filter((row) => hasChanges(row)).length;
           const canSaveAll = changedCount > 0 && !props.disabled;
     
           const styles = {
@@ -3119,12 +3307,14 @@ data:
             { text: 'Hierarchy: Nested Only', value: 'nested_only' },
             { text: 'Hierarchy: All Blocks', value: 'all' },
           ];
+          const contextItems = contextChoices.value.map((choice) => ({ text: choice.text, value: choice.value }));
           const collectionItems = [{ text: 'All Collections', value: '__all' }, ...toChoiceItems(collectionChoices.value)];
           const slotItems = [{ text: 'All Slots', value: '__all' }, ...toChoiceItems(slotChoices.value)];
           const scopeItems = [{ text: 'All Scopes', value: '__all' }, ...toChoiceItems(scopeChoices.value)];
           const groupTagItems = [{ text: 'All Tags', value: '__all' }, ...toChoiceItems(groupTagChoices.value)];
+          const contextScopeLabel = activeContext.value?.value === PAGE_CONTEXT_ID ? 'page' : 'template';
           const hierarchyLabel = filterHierarchy.value === 'direct_children'
-            ? 'Page children'
+            ? (contextScopeLabel === 'template' ? 'Template direct children' : 'Page children')
             : filterHierarchy.value === 'nested_only'
               ? 'Nested only'
               : 'All blocks';
@@ -3138,9 +3328,17 @@ data:
                     h('div', { style: styles.controlWide }, [
                       renderInputControl({
                         value: searchText.value,
-                        placeholder: 'Search by group, slot, template, collection, id...',
+                        placeholder: `Search ${contextScopeLabel} context by group, slot, template, collection, id...`,
                         disabled: props.disabled || loading.value,
                         onUpdate: (next) => { searchText.value = asString(next); },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: activeContext.value?.value || PAGE_CONTEXT_ID,
+                        items: contextItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { selectedContext.value = asString(next) || PAGE_CONTEXT_ID; },
                       }),
                     ]),
                     h('div', { style: styles.controlMedium }, [
@@ -3222,7 +3420,7 @@ data:
     
           if (pageId.value) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | View ${hierarchyLabel} | Blocks ${filteredBlocks.value.length}/${blocks.value.length}`)
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Context ${activeContext.value?.text || 'Page'} | View ${hierarchyLabel} | Blocks ${filteredBlocks.value.length}/${contextBlocks.value.length}`)
             );
           } else {
             children.push(
@@ -3264,7 +3462,12 @@ data:
                   ...(hasDivider ? [h(resolvedDivider)] : []),
                   ...group.rows.map((row) => {
                     const draft = getDraft(row);
-                    const slotChoicesForRow = toChoiceItems(uniqueNonEmpty([...(slots.value || []), asString(row.slot) || 'main']));
+                    const rowTemplateKey = contextTemplateKey.value
+                      || (asString(row.template_group_key) !== 'page-root' ? asString(row.template_group_key) : '');
+                    const slotChoicesForRow = toChoiceItems(uniqueNonEmpty([
+                      ...templateSlotsFor(rowTemplateKey),
+                      asString(row.slot) || 'main',
+                    ]));
                     const changed = hasChanges(row);
                     const rowSaving = isSaving(row.id);
                     return h('article', { class: 'cms-page-blocks-manager__row', key: row.id, style: styles.row }, [
