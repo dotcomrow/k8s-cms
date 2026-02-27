@@ -1358,6 +1358,30 @@ data:
         watch(
           () => asString(props.value),
           (nextValue) => {
+            if (mode.value === 'parent') {
+              const parentValue = asString(nextValue);
+              if (
+                typeof window !== 'undefined' &&
+                parentValue &&
+                parentValue !== lastParentPersistedBroadcast.value
+              ) {
+                lastParentPersistedBroadcast.value = parentValue;
+                const context = resolveRecordContext();
+                window.dispatchEvent(
+                  new CustomEvent('cms-content-model-select-change', {
+                    detail: {
+                      mode: 'parent',
+                      field: parentIdField.value,
+                      collection: context.recordCollection || collectionKey.value,
+                      recordId: context.recordId || '',
+                      value: parentValue,
+                    },
+                  }),
+                );
+              }
+              return;
+            }
+
             if (!nextValue || hasUserInput.value) return;
             if (fieldKey.value === 'slot') {
               if (!fallbackCommittedValue.value) {
