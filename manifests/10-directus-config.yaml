@@ -19,41 +19,33 @@ data:
   DB_SCHEMA: "directus"
   DB_POOL__MIN: "0"
   DB_POOL__MAX: "20"
-
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
   REDIS_ENABLED: "true"
   REDIS_HOST: "redis-0.redis-headless.redis.svc.cluster.local"
   REDIS_PORT: "6379"
-
   RATE_LIMITER_ENABLED: "true"
   RATE_LIMITER_STORE: "redis"
-
   STORAGE_LOCATIONS: "local"
   STORAGE_LOCAL_DRIVER: "local"
   STORAGE_LOCAL_ROOT: "./uploads"
-
   LOG_LEVEL: "info"
   LOG_STYLE: "pretty"
   PUBLIC_URL: "https://cms.teleport.app.suncoast.systems/"
-
   CORS_ENABLED: "true"
   CORS_ORIGIN: "true"
   ASSETS_CACHE_TTL: "30d"
-
   # --- GitHub OAuth (Directus reads these envs) ---
   AUTH_GITHUB_DRIVER: "oauth2"
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
   AUTH_GITHUB_ACCESS_URL: "https://github.com/login/oauth/access_token"
   # Provide the FULL profile proxy URL (including ?key=...) via Vault/AVP:
   AUTH_GITHUB_PROFILE_URL: "<path:secret/data/directus-github-profile-api-url#value><path:secret/data/directus-github-profile-api-key#value>"
-
   # Keep CLIENT_ID/SECRET here only if AVP resolves them; otherwise they are injected by Vault Agent below.
   AUTH_GITHUB_CLIENT_ID: "<path:secret/data/directus-oauth-client-id#value>"
   AUTH_GITHUB_CLIENT_SECRET: "<path:secret/data/directus-oauth-client-secret#value>"
   # Increase OAuth2 userinfo timeout for cold-starting profile proxy
   AUTH_GITHUB_CLIENT_HTTP__TIMEOUT: "15000"
-
   AUTH_GITHUB_IDENTIFIER_KEY: "id"
   AUTH_GITHUB_EMAIL_KEY: "email"
   AUTH_GITHUB_SCOPE: "read:user user:email read:org"
@@ -457,7 +449,6 @@ data:
         return applyGithubProfile(payload, meta, context, { importAvatar: true });
       });
     };
-
   ai-provider-access.package.json: |
     {
       "name": "directus-extension-ai-provider-access",
@@ -470,7 +461,6 @@ data:
         "host": "^11.0.0"
       }
     }
-
   ai-provider-access.index.js: |
     const EXTERNAL_PROVIDER_KEYS = [
       'ai_openai_allowed_models',
@@ -541,7 +531,6 @@ data:
         });
       });
     };
-
   cms-content-model-select.package.json: |
     {
       "name": "directus-extension-cms-content-model-select",
@@ -554,23 +543,22 @@ data:
         "host": "^11.0.0"
       }
     }
-
   cms-content-model-select.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
     import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
-
+    
     const asString = (value) => {
       if (value === null || value === undefined) return '';
       return String(value).trim();
     };
-
+    
     const normalizeRows = (response) => {
       const payload = response?.data;
       if (Array.isArray(payload?.data)) return payload.data;
       if (Array.isArray(payload)) return payload;
       return [];
     };
-
+    
     const parseId = (value) => {
       if (value && typeof value === 'object') {
         if ('id' in value) return asString(value.id);
@@ -578,9 +566,9 @@ data:
       }
       return asString(value);
     };
-
+    
     const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
+    
     const getPrimaryKeyFromLocation = (collectionName) => {
       if (typeof window === 'undefined') return '';
       const targetCollection = asString(collectionName);
@@ -589,12 +577,12 @@ data:
         const match = path.match(new RegExp(`/${escapeRegex(targetCollection)}/([^/?#]+)`));
         if (match?.[1]) return asString(decodeURIComponent(match[1]));
       }
-
+    
       const query = new URLSearchParams(window.location?.search || '');
       const candidates = ['primaryKey', 'pk', 'item', 'id'].map((key) => asString(query.get(key)));
       return candidates.find((value) => Boolean(value)) || '';
     };
-
+    
     const uniqueChoices = (items) => {
       const seen = new Set();
       const result = [];
@@ -675,7 +663,7 @@ data:
         const pageBlocksCollection = computed(() => asString(resolvedOptions.value?.page_blocks_collection) || 'cms_page_blocks');
         const pageBlocksCollectionKey = computed(() => pageBlocksCollection.value.toLowerCase());
         const templateRefsCollection = computed(() => asString(resolvedOptions.value?.template_refs_collection) || 'cms_block_template_ref');
-
+    
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'page_id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
@@ -709,21 +697,21 @@ data:
         );
         let requestId = 0;
         let persistedRequestId = 0;
-
+    
         const resolveRecordContext = () => {
           const recordCollection = collectionKey.value || pagesCollection.value;
           let recordId =
             parseId(props.values?.[itemIdField.value]) ||
             parseId(props.values?.id);
-
+    
           // For top-level editors, recover record id from URL.
           if (!recordId && recordCollection === pagesCollection.value) {
             recordId = getPrimaryKeyFromLocation(recordCollection);
           }
-
+    
           return { recordCollection, recordId };
         };
-
+    
         const resolveSelectedParentBlockId = () => {
           const overrideValue = asString(parentSelectionOverride.value);
           if (overrideValue) return overrideValue;
@@ -751,7 +739,7 @@ data:
         
           return payload;
         };
-
+    
         const buildScopedFilter = (siteKey) => {
           if (!includeGlobal.value && siteKey) {
             return { site_key: { _eq: siteKey } };
@@ -766,7 +754,7 @@ data:
           }
           return { site_key: { _empty: true } };
         };
-
+    
         const loadTemplateChoices = async () => {
           const siteKey = asString(props.values?.[pageSiteField.value]);
           const filter = {
@@ -788,7 +776,7 @@ data:
             }))
           );
         };
-
+    
         const loadThemeChoices = async () => {
           const siteKey = asString(props.values?.[pageSiteField.value]);
           const filter = {
@@ -810,7 +798,7 @@ data:
             }))
           );
         };
-
+    
         const loadModuleChoices = async () => {
           const siteKey = asString(props.values?.[pageSiteField.value]);
           const filter = {
@@ -832,7 +820,7 @@ data:
             }))
           );
         };
-
+    
         const resolvePageContext = async () => {
           let pageId = parseId(props.values?.[pageIdField.value]);
           let pageSlug = asString(props.values?.[pageSlugField.value]);
@@ -840,11 +828,11 @@ data:
           let currentBlockId =
             parseId(props.values?.[itemIdField.value]) ||
             parseId(props.values?.id);
-
+    
           if (!currentBlockId && collectionKey.value === pageBlocksCollectionKey.value) {
             currentBlockId = getPrimaryKeyFromLocation(collectionKey.value);
           }
-
+    
           if (!pageId && currentBlockId && collectionKey.value === pageBlocksCollectionKey.value) {
             try {
               const blockResp = await apiGet(`/items/${pageBlocksCollection.value}/${encodeURIComponent(currentBlockId)}`, {
@@ -858,14 +846,14 @@ data:
               // Ignore context lookup errors and continue fallback chain.
             }
           }
-
+    
           if (!pageId) {
             const pageIdFromUrl = getPrimaryKeyFromLocation(pagesCollection.value);
             if (pageIdFromUrl) {
               pageId = pageIdFromUrl;
             }
           }
-
+    
           if (pageId && (!siteKey || !pageSlug)) {
             try {
               const pageResp = await apiGet(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
@@ -878,7 +866,7 @@ data:
               // Ignore page lookup errors and continue with best-effort context.
             }
           }
-
+    
           if (!pageId && pageSlug) {
             const pageFilter = {
               _and: [
@@ -905,17 +893,17 @@ data:
               // Ignore page lookup errors and continue with best-effort context.
             }
           }
-
+    
           return { pageId, pageSlug, siteKey, currentBlockId };
         };
-
+    
         const resolvePersistedPageBlockContext = async () => {
           const context = await resolvePageContext();
           let row = null;
           let pageId = context.pageId;
           let pageSlug = context.pageSlug;
           let siteKey = context.siteKey;
-
+    
           if (context.currentBlockId && collectionKey.value === pageBlocksCollectionKey.value) {
             try {
               const response = await apiGet(`/items/${pageBlocksCollection.value}/${encodeURIComponent(context.currentBlockId)}`, {
@@ -929,11 +917,11 @@ data:
               // Continue to collection/item fallback.
             }
           }
-
+    
           if (!row) {
             const blockCollection = asString(props.values?.collection) || (collectionKey.value === pageBlocksCollectionKey.value ? '' : collectionKey.value);
             const blockItem = parseId(props.values?.item) || (collectionKey.value === pageBlocksCollectionKey.value ? '' : parseId(props.values?.id));
-
+    
             if (blockCollection && blockItem) {
               const clauses = [
                 { collection: { _eq: blockCollection } },
@@ -942,7 +930,7 @@ data:
               if (pageId) clauses.push({ [pageIdField.value]: { _eq: pageId } });
               if (siteKey) clauses.push({ [pageSiteField.value]: { _eq: siteKey } });
               if (pageSlug) clauses.push({ [pageSlugField.value]: { _eq: pageSlug } });
-
+    
               try {
                 const response = await apiGet(`/items/${pageBlocksCollection.value}`, {
                   fields: [itemIdField.value, parentIdField.value, pageIdField.value, pageSlugField.value, pageSiteField.value, 'collection', 'item'].join(','),
@@ -960,10 +948,10 @@ data:
               }
             }
           }
-
+    
           return { row, pageId, pageSlug, siteKey, currentBlockId: context.currentBlockId };
         };
-
+    
         const loadSlotChoices = async () => {
           const context = await resolvePersistedPageBlockContext();
           const persistedParentBlockId = parseId(context.row?.[parentIdField.value]);
@@ -975,11 +963,11 @@ data:
           let templateKey = '';
           let pageId = context.pageId;
           let pageSlug = context.pageSlug;
-
+    
           if (!siteKey) {
             siteKey = asString(props.values?.[pageSiteField.value]);
           }
-
+    
           if (selectedParentBlockId) {
             try {
               const parentBlockResp = await apiGet(`/items/${pageBlocksCollection.value}/${encodeURIComponent(selectedParentBlockId)}`, {
@@ -991,17 +979,17 @@ data:
                 missingContext.value = 'Selected parent must be a Template Ref block.';
                 return [];
               }
-
+    
               const parentTemplateRefId = parseId(parentBlock?.item);
               if (!parentTemplateRefId) {
                 missingContext.value = 'Parent template block is missing its template reference.';
                 return [];
               }
-
+    
               if (!pageId) pageId = parseId(parentBlock?.[pageIdField.value]);
               if (!pageSlug) pageSlug = asString(parentBlock?.[pageSlugField.value]);
               if (!siteKey) siteKey = asString(parentBlock?.[pageSiteField.value]);
-
+    
               const parentTemplateRefResp = await apiGet(`/items/${templateRefsCollection.value}/${encodeURIComponent(parentTemplateRefId)}`, {
                 fields: ['template_key', 'status', 'site_key'].join(','),
               });
@@ -1015,7 +1003,7 @@ data:
           } else {
             templateKey = asString(props.values?.[pageTemplateField.value]);
           }
-
+    
           if (!templateKey && pageId) {
             const pageResp = await apiGet(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
               fields: [pageTemplateField.value, pageSiteField.value].join(','),
@@ -1024,7 +1012,7 @@ data:
             templateKey = asString(page?.[pageTemplateField.value]);
             if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
           }
-
+    
           // Fallback for cases where only page_slug/site_key are present in form values.
           if (!templateKey && pageSlug) {
             const pageFilter = {
@@ -1048,14 +1036,14 @@ data:
             if (!siteKey) siteKey = asString(page?.[pageSiteField.value]);
             if (!pageId) pageId = parseId(page?.id);
           }
-
+    
           if (!templateKey) {
             missingContext.value = selectedParentBlockId
               ? 'Select a parent template block before assigning nested slots.'
               : 'Select a page template before assigning a slot.';
             return [];
           }
-
+    
           const filter = {
             _and: [
               { template_key: { _eq: templateKey } },
@@ -1068,7 +1056,7 @@ data:
             sort: slotValueField.value,
             filter: JSON.stringify(filter),
           });
-
+    
           return uniqueChoices(
             normalizeRows(response).map((row) => ({
               value: row?.[slotValueField.value],
@@ -1076,7 +1064,7 @@ data:
             }))
           );
         };
-
+    
         const loadParentChoices = async () => {
           const context = await resolvePageContext();
           const pageId = context.pageId;
@@ -1084,7 +1072,7 @@ data:
             missingContext.value = 'Save this block first so Directus can resolve its page context.';
             return [];
           }
-
+    
           const clauses = [
             { collection: { _eq: 'cms_block_template_ref' } },
             { [pageIdField.value]: { _eq: pageId } },
@@ -1098,7 +1086,7 @@ data:
           if (context.currentBlockId) {
             clauses.push({ [itemIdField.value]: { _neq: context.currentBlockId } });
           }
-
+    
           const blockLinksResp = await apiGet(`/items/${pageBlocksCollection.value}`, {
             fields: [itemIdField.value, 'collection', 'item', 'slot', 'sort', pageIdField.value, pageSiteField.value, pageSlugField.value].join(','),
             limit: -1,
@@ -1108,14 +1096,14 @@ data:
           if (blockLinks.length === 0) {
             return [];
           }
-
+    
           const templateRefIds = uniqueChoices(
             blockLinks.map((row) => ({ value: asString(row?.item), text: asString(row?.item) }))
           ).map((choice) => choice.value);
           if (templateRefIds.length === 0) {
             return [];
           }
-
+    
           const templateRefsResp = await apiGet(`/items/${templateRefsCollection.value}`, {
             fields: ['id', 'name', 'template_key', 'status'].join(','),
             limit: -1,
@@ -1129,14 +1117,14 @@ data:
           const templateRefMap = new Map(
             normalizeRows(templateRefsResp).map((row) => [asString(row?.id), row]),
           );
-
+    
           const sortedBlockLinks = [...blockLinks].sort((left, right) => {
             const leftSort = Number(left?.sort ?? Number.MAX_SAFE_INTEGER);
             const rightSort = Number(right?.sort ?? Number.MAX_SAFE_INTEGER);
             if (leftSort !== rightSort) return leftSort - rightSort;
             return asString(left?.[itemIdField.value]).localeCompare(asString(right?.[itemIdField.value]));
           });
-
+    
           return uniqueChoices(
             sortedBlockLinks.map((row) => {
               const linkId = asString(row?.[itemIdField.value]);
@@ -1152,7 +1140,7 @@ data:
             })
           );
         };
-
+    
         const loadChoices = async () => {
           const currentRequest = ++requestId;
           loading.value = true;
@@ -1170,7 +1158,7 @@ data:
                     : await loadSlotChoices();
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
-
+    
             if (mode.value === 'slot' && choices.value.length > 0) {
               const currentValue = asString(props.value);
               const hasCurrent = currentValue && choices.value.some((choice) => asString(choice.value) === currentValue);
@@ -1181,7 +1169,7 @@ data:
                 }
               }
             }
-
+    
             if (choices.value.length === 0 && !missingContext.value) {
               if (mode.value === 'parent') {
                 loadError.value = '';
@@ -1212,17 +1200,17 @@ data:
             if (currentRequest === requestId) loading.value = false;
           }
         };
-
+    
         const loadPersistedValue = async () => {
           const currentRequest = ++persistedRequestId;
           persistedValue.value = '';
-
+    
           const { recordCollection, recordId } = resolveRecordContext();
           const fieldName = asString(props.field);
           if (!recordCollection || !fieldName) return;
-
+    
           let nextPersisted = '';
-
+    
           if (recordId) {
             try {
               const response = await apiGet(
@@ -1234,7 +1222,7 @@ data:
               nextPersisted = '';
             }
           }
-
+    
           // Block drawers don't always expose the page_blocks row id in values.
           // When selecting slot, resolve persisted value from cms_page_blocks by (collection,item).
           if (!nextPersisted && (fieldKey.value === 'slot' || fieldKey.value === 'parent_block_id')) {
@@ -1243,7 +1231,7 @@ data:
             const blockPageId = parseId(props.values?.[pageIdField.value]);
             const blockSiteKey = asString(props.values?.[pageSiteField.value]);
             const blockPageSlug = asString(props.values?.[pageSlugField.value]);
-
+    
             if (blockCollection && blockItem) {
               const clauses = [
                 { collection: { _eq: blockCollection } },
@@ -1258,7 +1246,7 @@ data:
               if (blockPageSlug) {
                 clauses.push({ [pageSlugField.value]: { _eq: blockPageSlug } });
               }
-
+    
               try {
                 const response = await apiGet(`/items/${pageBlocksCollection.value}`, {
                   fields: ['id', fieldName, pageIdField.value, pageSiteField.value, pageSlugField.value].join(','),
@@ -1278,10 +1266,10 @@ data:
               }
             }
           }
-
+    
           if (currentRequest !== persistedRequestId) return;
           persistedValue.value = nextPersisted;
-
+    
           if (mode.value === 'parent') {
             const parentValue = asString(nextPersisted);
             if (
@@ -1305,7 +1293,7 @@ data:
             }
           }
         };
-
+    
         watch(
           () => JSON.stringify({
             mode: mode.value,
@@ -1331,7 +1319,7 @@ data:
           () => { void loadChoices(); },
           { immediate: true }
         );
-
+    
         watch(
           () => JSON.stringify({
             field: asString(props.field),
@@ -1354,7 +1342,7 @@ data:
           },
           { immediate: true }
         );
-
+    
         watch(
           () => asString(props.value),
           (nextValue) => {
@@ -1381,7 +1369,7 @@ data:
               }
               return;
             }
-
+    
             if (!nextValue || hasUserInput.value) return;
             if (fieldKey.value === 'slot') {
               if (!fallbackCommittedValue.value) {
@@ -1404,7 +1392,7 @@ data:
           },
           { immediate: true }
         );
-
+    
         const selectItems = computed(() => {
           const currentValue = asString(props.value);
           const committed = asString(persistedValue.value) || asString(fallbackCommittedValue.value);
@@ -1423,7 +1411,7 @@ data:
           }
           return items;
         });
-
+    
         const onInput = (nextValue) => {
           const next = asString(nextValue);
           const current = asString(props.value);
@@ -1446,32 +1434,32 @@ data:
           }
           emit('input', next || null);
         };
-
+    
         const onSelectorEvent = (event) => {
           const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
           const eventMode = asString(detail.mode).toLowerCase();
           if (eventMode !== 'parent') return;
-
+    
           const eventField = asString(detail.field).toLowerCase();
           if (eventField && eventField !== parentIdField.value.toLowerCase()) return;
-
+    
           const context = resolveRecordContext();
           parentSelectionOverride.value = asString(detail.value);
           if (mode.value === 'slot') {
             void loadChoices();
           }
         };
-
+    
         onMounted(() => {
           if (typeof window === 'undefined') return;
           window.addEventListener('cms-content-model-select-change', onSelectorEvent);
         });
-
+    
         onBeforeUnmount(() => {
           if (typeof window === 'undefined') return;
           window.removeEventListener('cms-content-model-select-change', onSelectorEvent);
         });
-
+    
         return () => {
           const currentValue = asString(props.value);
           const resolvedSelect = resolveComponent('v-select');
@@ -1480,7 +1468,7 @@ data:
           const placeholderText = loading.value
             ? 'Loading options...'
             : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : mode.value === 'parent' ? 'Optional: select a parent block' : 'Select a slot'));
-
+    
           const errorNotice = loadError.value
             ? (typeof resolvedNotice !== 'string'
                 ? h(
@@ -1490,7 +1478,7 @@ data:
                   )
                 : h('p', { class: 'cms-content-model-select__error' }, loadError.value))
             : null;
-
+    
           if (hasDirectusSelect) {
             return h('div', { class: 'cms-content-model-select' }, [
               h(resolvedSelect, {
@@ -1505,9 +1493,9 @@ data:
               errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
             ]);
           }
-
+    
           const opts = selectItems.value.map((choice) => h('option', { value: choice.value }, choice.text));
-
+    
           return h('div', { class: 'cms-content-model-select' }, [
             h(
               'select',
@@ -1524,7 +1512,7 @@ data:
         };
       },
     });
-
+    
     export default defineInterface({
       id: 'cms-content-model-select',
       name: 'CMS Content Model Select',
@@ -1619,7 +1607,7 @@ data:
         },
       ],
     });
-
+    
   cms-module-props-editor.package.json: |
     {
       "name": "directus-extension-cms-module-props-editor",
@@ -1632,7 +1620,6 @@ data:
         "host": "^11.0.0"
       }
     }
-
   cms-module-props-editor.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
     import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
@@ -2327,6 +2314,1098 @@ data:
         },
       ],
     });
+  cms-page-blocks-manager.package.json: |
+    {
+      "name": "directus-extension-cms-page-blocks-manager",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "interface",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+  cms-page-blocks-manager.index.js: |
+    import { defineInterface } from '@directus/extensions-sdk';
+    import { defineComponent, h, ref, computed, watch, onMounted, resolveComponent } from 'vue';
+    
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+    
+    const asInteger = (value) => {
+      const parsed = Number.parseInt(asString(value), 10);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    
+    const parseOptions = (value) => {
+      if (!value) return {};
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
+        }
+      }
+      return typeof value === 'object' ? value : {};
+    };
+    
+    const normalizeRows = (response) => {
+      const payload = response?.data;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    };
+    
+    const parseId = (value) => {
+      if (value && typeof value === 'object') {
+        if ('id' in value) return asString(value.id);
+        if ('primaryKey' in value) return asString(value.primaryKey);
+      }
+      return asString(value);
+    };
+    
+    const uniqueNonEmpty = (values) => {
+      const seen = new Set();
+      const result = [];
+      for (const value of values || []) {
+        const normalized = asString(value);
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        result.push(normalized);
+      }
+      return result.sort((a, b) => a.localeCompare(b));
+    };
+    
+    const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    const getPrimaryKeyFromLocation = (collectionName) => {
+      if (typeof window === 'undefined') return '';
+      const targetCollection = asString(collectionName);
+      const path = asString(window.location?.pathname);
+      if (targetCollection && path) {
+        const match = path.match(new RegExp(`/${escapeRegex(targetCollection)}/([^/?#]+)`));
+        if (match?.[1]) return asString(decodeURIComponent(match[1]));
+      }
+      const query = new URLSearchParams(window.location?.search || '');
+      const candidates = ['primaryKey', 'pk', 'item', 'id'].map((key) => asString(query.get(key)));
+      return candidates.find((candidate) => Boolean(candidate)) || '';
+    };
+    
+    const toLower = (value) => asString(value).toLowerCase();
+    
+    const InterfaceComponent = defineComponent({
+      name: 'CmsPageBlocksManager',
+      props: {
+        value: { type: [Array, Object, String, null], default: null },
+        disabled: { type: Boolean, default: false },
+        options: { type: Object, default: () => ({}) },
+        values: { type: Object, default: () => ({}) },
+        field: { type: String, default: '' },
+        collection: { type: String, default: '' },
+      },
+      emits: ['input'],
+      setup(props) {
+        const loading = ref(false);
+        const saving = ref({});
+        const error = ref('');
+        const info = ref('');
+    
+        const pageContext = ref({
+          id: '',
+          slug: '',
+          site_key: '',
+          layout_template_key: '',
+        });
+        const slots = ref([]);
+        const blocks = ref([]);
+        const drafts = ref({});
+    
+        const searchText = ref('');
+        const filterCollection = ref('__all');
+        const filterSlot = ref('__all');
+        const filterScope = ref('__all');
+        const filterGroupTag = ref('__all');
+        const groupBy = ref('template');
+    
+        const resolvedOptions = computed(() => parseOptions(props.options));
+        const pagesCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
+        const pageBlocksCollection = computed(() => asString(resolvedOptions.value?.page_blocks_collection) || 'cms_page_blocks');
+        const layoutTemplatesCollection = computed(() => asString(resolvedOptions.value?.layout_templates_collection) || 'cms_layout_templates');
+        const layoutSlotsCollection = computed(() => asString(resolvedOptions.value?.layout_slots_collection) || 'cms_layout_template_slots');
+        const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'id');
+        const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
+        const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const adminBasePath = computed(() => asString(resolvedOptions.value?.admin_base_path) || '/admin/content');
+        const defaultLimit = computed(() => {
+          const candidate = asInteger(resolvedOptions.value?.default_limit);
+          if (!candidate || candidate < 50) return 400;
+          return Math.min(candidate, 1000);
+        });
+        const defaultSort = computed(() => {
+          const source = resolvedOptions.value?.default_sort;
+          if (Array.isArray(source) && source.length > 0) {
+            return source.map((entry) => asString(entry)).filter(Boolean);
+          }
+          return ['template_scope', 'template_group_key', 'group_tag', 'tree_path', 'sort'];
+        });
+    
+        const pageIdFromValues = computed(() => parseId(props.values?.[pageIdField.value] ?? props.values?.id));
+        const pageId = computed(() => {
+          const fromValues = pageIdFromValues.value;
+          if (fromValues) return fromValues;
+          return getPrimaryKeyFromLocation(pagesCollection.value);
+        });
+    
+        const resetFilters = () => {
+          searchText.value = '';
+          filterCollection.value = '__all';
+          filterSlot.value = '__all';
+          filterScope.value = '__all';
+          filterGroupTag.value = '__all';
+          groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
+        };
+    
+        const apiRequest = async (method, path, query = {}, body = null) => {
+          const url = new URL(path, window.location.origin);
+          Object.entries(query || {}).forEach(([key, value]) => {
+            if (value === null || value === undefined || value === '') return;
+            url.searchParams.set(key, String(value));
+          });
+    
+          const response = await fetch(url.toString(), {
+            method,
+            credentials: 'same-origin',
+            headers: {
+              Accept: 'application/json',
+              ...(body ? { 'Content-Type': 'application/json' } : {}),
+            },
+            ...(body ? { body: JSON.stringify(body) } : {}),
+          });
+    
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const message = payload?.errors?.[0]?.message || `${method} failed (${response.status})`;
+            throw new Error(message);
+          }
+          return payload;
+        };
+    
+        const normalizeBlockRow = (row) => {
+          const groupTag = asString(row?.group_tag);
+          const slot = asString(row?.slot) || 'main';
+          const templateScope = asString(row?.template_scope) || 'page';
+          const templateGroupKey = asString(row?.template_group_key) || 'page-root';
+          const sortValue = asInteger(row?.sort);
+          const treePath = asString(row?.tree_path);
+          const collection = asString(row?.collection);
+          const item = parseId(row?.item);
+          const status = asString(row?.status) || 'draft';
+          const treeDepth = asInteger(row?.tree_depth) ?? 0;
+          const pageSlug = asString(row?.page_slug);
+          const searchTokens = [
+            parseId(row?.id),
+            collection,
+            item,
+            slot,
+            groupTag,
+            templateScope,
+            templateGroupKey,
+            treePath,
+            pageSlug,
+            status,
+          ]
+            .map((entry) => toLower(entry))
+            .filter(Boolean);
+    
+          return {
+            id: parseId(row?.id),
+            collection,
+            item,
+            slot,
+            group_tag: groupTag,
+            template_scope: templateScope,
+            template_group_key: templateGroupKey,
+            tree_path: treePath,
+            tree_depth: treeDepth,
+            sort: sortValue,
+            status,
+            parent_block_id: parseId(row?.parent_block_id),
+            page_slug: pageSlug,
+            date_updated: asString(row?.date_updated),
+            _search_text: searchTokens.join(' '),
+          };
+        };
+    
+        const primeDrafts = () => {
+          const next = {};
+          for (const row of blocks.value) {
+            next[row.id] = {
+              slot: asString(row.slot) || 'main',
+              sort: row.sort,
+              group_tag: asString(row.group_tag),
+            };
+          }
+          drafts.value = next;
+        };
+    
+        const loadPageContext = async () => {
+          if (!pageId.value) {
+            pageContext.value = { id: '', slug: '', site_key: '', layout_template_key: '' };
+            return;
+          }
+          const response = await apiRequest('GET', `/items/${pagesCollection.value}/${encodeURIComponent(pageId.value)}`, {
+            fields: ['id', 'slug', pageSiteField.value, pageTemplateField.value].join(','),
+          });
+          const row = response?.data || {};
+          pageContext.value = {
+            id: parseId(row?.id) || pageId.value,
+            slug: asString(row?.slug),
+            site_key: asString(row?.[pageSiteField.value]),
+            layout_template_key: asString(row?.[pageTemplateField.value]),
+          };
+        };
+    
+        const loadSlots = async () => {
+          const templateKey = asString(pageContext.value.layout_template_key);
+          if (!templateKey) {
+            slots.value = ['main'];
+            return;
+          }
+    
+          const siteKey = asString(pageContext.value.site_key);
+          const filter = {
+            _and: [
+              { template_key: { _eq: templateKey } },
+              siteKey
+                ? {
+                    _or: [
+                      { site_key: { _empty: true } },
+                      { site_key: { _eq: siteKey } },
+                    ],
+                  }
+                : { site_key: { _empty: true } },
+            ],
+          };
+    
+          const response = await apiRequest('GET', `/items/${layoutSlotsCollection.value}`, {
+            fields: 'slot_key',
+            limit: -1,
+            sort: 'slot_key',
+            filter: JSON.stringify(filter),
+          });
+    
+          const values = uniqueNonEmpty(normalizeRows(response).map((row) => row?.slot_key));
+          slots.value = values.length > 0 ? values : ['main'];
+        };
+    
+        const loadBlocks = async () => {
+          if (!pageId.value) {
+            blocks.value = [];
+            drafts.value = {};
+            return;
+          }
+    
+          const filter = { page_id: { _eq: pageId.value } };
+          const response = await apiRequest('GET', `/items/${pageBlocksCollection.value}`, {
+            fields: [
+              'id',
+              'collection',
+              'item',
+              'slot',
+              'group_tag',
+              'template_scope',
+              'template_group_key',
+              'tree_path',
+              'tree_depth',
+              'sort',
+              'status',
+              'parent_block_id',
+              'page_slug',
+              'date_updated',
+            ].join(','),
+            limit: defaultLimit.value,
+            sort: defaultSort.value.join(','),
+            filter: JSON.stringify(filter),
+          });
+    
+          blocks.value = normalizeRows(response).map(normalizeBlockRow);
+          primeDrafts();
+        };
+    
+        const refreshAll = async () => {
+          loading.value = true;
+          error.value = '';
+          info.value = '';
+          try {
+            await loadPageContext();
+            await loadSlots();
+            await loadBlocks();
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to load blocks manager data.';
+          } finally {
+            loading.value = false;
+          }
+        };
+    
+        const isSaving = (rowId) => Boolean(saving.value[rowId]);
+    
+        const getDraft = (row) => {
+          const current = drafts.value[row.id];
+          if (current) return current;
+          return {
+            slot: asString(row.slot) || 'main',
+            sort: row.sort,
+            group_tag: asString(row.group_tag),
+          };
+        };
+    
+        const setDraft = (rowId, patch) => {
+          drafts.value = {
+            ...drafts.value,
+            [rowId]: {
+              ...(drafts.value[rowId] || {}),
+              ...patch,
+            },
+          };
+        };
+    
+        const hasChanges = (row) => {
+          const draft = getDraft(row);
+          const normalizedSlot = asString(draft.slot) || 'main';
+          const normalizedSort = asInteger(draft.sort);
+          const normalizedTag = asString(draft.group_tag);
+          return (
+            normalizedSlot !== (asString(row.slot) || 'main')
+            || normalizedSort !== (asInteger(row.sort))
+            || normalizedTag !== asString(row.group_tag)
+          );
+        };
+    
+        const buildPatchPayload = (row) => {
+          const draft = getDraft(row);
+          const nextSlot = asString(draft.slot) || 'main';
+          const nextSort = asInteger(draft.sort);
+          const nextTag = asString(draft.group_tag);
+    
+          const payload = {};
+          if (nextSlot !== (asString(row.slot) || 'main')) payload.slot = nextSlot;
+          if (nextSort !== asInteger(row.sort)) payload.sort = nextSort;
+          if (nextTag !== asString(row.group_tag)) payload.group_tag = nextTag || null;
+          return payload;
+        };
+    
+        const markSaving = (rowId, active) => {
+          const next = { ...saving.value };
+          if (active) next[rowId] = true;
+          else delete next[rowId];
+          saving.value = next;
+        };
+    
+        const saveRow = async (row) => {
+          if (props.disabled || isSaving(row.id)) return;
+          const payload = buildPatchPayload(row);
+          if (Object.keys(payload).length === 0) return;
+    
+          markSaving(row.id, true);
+          info.value = '';
+          error.value = '';
+          try {
+            const response = await apiRequest(
+              'PATCH',
+              `/items/${pageBlocksCollection.value}/${encodeURIComponent(row.id)}`,
+              {},
+              payload,
+            );
+            const updated = normalizeBlockRow(response?.data || { ...row, ...payload });
+            blocks.value = blocks.value.map((candidate) => (candidate.id === row.id ? updated : candidate));
+            setDraft(row.id, {
+              slot: updated.slot,
+              sort: updated.sort,
+              group_tag: updated.group_tag,
+            });
+            info.value = `Saved block ${row.id}.`;
+          } catch (requestError) {
+            error.value = requestError?.message || `Failed to save block ${row.id}.`;
+          } finally {
+            markSaving(row.id, false);
+          }
+        };
+    
+        const saveAll = async () => {
+          if (props.disabled) return;
+          const changedRows = blocks.value.filter((row) => hasChanges(row));
+          if (changedRows.length === 0) return;
+          info.value = '';
+          error.value = '';
+          for (const row of changedRows) {
+            await saveRow(row);
+            if (error.value) return;
+          }
+          info.value = `Saved ${changedRows.length} block${changedRows.length === 1 ? '' : 's'}.`;
+          await loadBlocks();
+        };
+    
+        const resetRow = (row) => {
+          setDraft(row.id, {
+            slot: asString(row.slot) || 'main',
+            sort: row.sort,
+            group_tag: asString(row.group_tag),
+          });
+        };
+    
+        const openAdminPath = (relativePath, newTab = true) => {
+          const href = `${window.location.origin}${relativePath}`;
+          if (newTab) window.open(href, '_blank', 'noopener,noreferrer');
+          else window.location.assign(href);
+        };
+    
+        const openBlockRow = (row) => {
+          openAdminPath(`${adminBasePath.value}/${pageBlocksCollection.value}/${encodeURIComponent(row.id)}`);
+        };
+    
+        const openContentItem = (row) => {
+          if (!row.collection || !row.item) return;
+          openAdminPath(`${adminBasePath.value}/${encodeURIComponent(row.collection)}/${encodeURIComponent(row.item)}`);
+        };
+    
+        const openBlocksCollection = () => {
+          if (!pageId.value) return;
+          const filter = encodeURIComponent(JSON.stringify({ page_id: { _eq: pageId.value } }));
+          openAdminPath(`${adminBasePath.value}/${pageBlocksCollection.value}?filter=${filter}`);
+        };
+    
+        const collectionChoices = computed(() => uniqueNonEmpty(blocks.value.map((row) => row.collection)));
+        const slotChoices = computed(() => uniqueNonEmpty([...slots.value, ...blocks.value.map((row) => row.slot)]));
+        const scopeChoices = computed(() => uniqueNonEmpty(blocks.value.map((row) => row.template_scope)));
+        const groupTagChoices = computed(() => uniqueNonEmpty(blocks.value.map((row) => row.group_tag)));
+    
+        const filteredBlocks = computed(() => {
+          const needle = toLower(searchText.value);
+          return blocks.value.filter((row) => {
+            if (needle && !row._search_text.includes(needle)) return false;
+            if (filterCollection.value !== '__all' && row.collection !== filterCollection.value) return false;
+            if (filterSlot.value !== '__all' && row.slot !== filterSlot.value) return false;
+            if (filterScope.value !== '__all' && row.template_scope !== filterScope.value) return false;
+            if (filterGroupTag.value !== '__all' && asString(row.group_tag) !== filterGroupTag.value) return false;
+            return true;
+          });
+        });
+    
+        const groupedBlocks = computed(() => {
+          const groups = new Map();
+          const addToGroup = (key, label, row) => {
+            if (!groups.has(key)) groups.set(key, { key, label, rows: [] });
+            groups.get(key).rows.push(row);
+          };
+    
+          for (const row of filteredBlocks.value) {
+            if (groupBy.value === 'none') {
+              addToGroup('all', 'All Blocks', row);
+              continue;
+            }
+            if (groupBy.value === 'group_tag') {
+              const label = asString(row.group_tag) || '(no group tag)';
+              addToGroup(`group:${label}`, `Group Tag: ${label}`, row);
+              continue;
+            }
+            if (groupBy.value === 'slot') {
+              const label = asString(row.slot) || 'main';
+              addToGroup(`slot:${label}`, `Slot: ${label}`, row);
+              continue;
+            }
+            if (groupBy.value === 'collection') {
+              const label = asString(row.collection) || '(unknown)';
+              addToGroup(`collection:${label}`, `Collection: ${label}`, row);
+              continue;
+            }
+            const scope = asString(row.template_scope) || 'page';
+            const templateGroup = asString(row.template_group_key) || 'page-root';
+            const label = `${scope}/${templateGroup}`;
+            addToGroup(`template:${label}`, `Template Group: ${label}`, row);
+          }
+    
+          return Array.from(groups.values()).sort((a, b) => a.label.localeCompare(b.label));
+        });
+    
+        watch(
+          () => JSON.stringify({
+            pageId: pageId.value,
+            pagesCollection: pagesCollection.value,
+            pageBlocksCollection: pageBlocksCollection.value,
+            layoutTemplatesCollection: layoutTemplatesCollection.value,
+            layoutSlotsCollection: layoutSlotsCollection.value,
+            pageSiteField: pageSiteField.value,
+            pageTemplateField: pageTemplateField.value,
+            defaultLimit: defaultLimit.value,
+            defaultSort: defaultSort.value,
+          }),
+          async () => {
+            resetFilters();
+            await refreshAll();
+          },
+          { immediate: true }
+        );
+    
+        onMounted(() => {
+          if (!groupBy.value) {
+            groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
+          }
+        });
+    
+        return () => {
+          const resolvedNotice = resolveComponent('v-notice');
+          const resolvedInput = resolveComponent('v-input');
+          const resolvedSelect = resolveComponent('v-select');
+          const resolvedButton = resolveComponent('v-button');
+          const resolvedChip = resolveComponent('v-chip');
+          const resolvedDivider = resolveComponent('v-divider');
+          const resolvedCard = resolveComponent('v-card');
+    
+          const hasNotice = typeof resolvedNotice !== 'string';
+          const hasInput = typeof resolvedInput !== 'string';
+          const hasSelect = typeof resolvedSelect !== 'string';
+          const hasButton = typeof resolvedButton !== 'string';
+          const hasChip = typeof resolvedChip !== 'string';
+          const hasDivider = typeof resolvedDivider !== 'string';
+          const hasCard = typeof resolvedCard !== 'string';
+    
+          const rows = groupedBlocks.value;
+          const changedCount = blocks.value.filter((row) => hasChanges(row)).length;
+          const canSaveAll = changedCount > 0 && !props.disabled;
+    
+          const styles = {
+            root: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            },
+            toolbar: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+              padding: '12px',
+              borderRadius: 'var(--theme--border-radius)',
+              background: 'var(--theme--background-subdued)',
+            },
+            toolbarRow: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '10px',
+              alignItems: 'center',
+            },
+            controlWide: {
+              minWidth: '360px',
+              flex: '1 1 420px',
+            },
+            controlMedium: {
+              minWidth: '190px',
+              flex: '1 1 220px',
+            },
+            meta: {
+              margin: '0',
+              fontSize: '12px',
+              color: 'var(--theme--foreground-subdued)',
+            },
+            group: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0',
+              overflow: 'hidden',
+            },
+            groupHeader: {
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '10px',
+              padding: '10px 12px',
+              background: 'var(--theme--background-subdued)',
+            },
+            groupLabel: {
+              fontSize: '13px',
+              color: 'var(--theme--foreground-normal)',
+            },
+            row: {
+              padding: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+            },
+            rowMeta: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '8px',
+              alignItems: 'center',
+            },
+            rowEdit: {
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+              gap: '10px',
+              alignItems: 'end',
+            },
+            actions: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '8px',
+              alignItems: 'center',
+            },
+            field: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            },
+            fieldLabel: {
+              fontSize: '12px',
+              color: 'var(--theme--foreground-subdued)',
+              margin: '0 2px',
+            },
+            fieldWide: {
+              gridColumn: 'span 2',
+            },
+          };
+    
+          const toChoiceItems = (values) => (values || []).map((value) => ({ text: asString(value), value: asString(value) }));
+    
+          const renderInputControl = ({ value, onUpdate, disabled, placeholder = '', type = 'text', style = {} }) => {
+            if (hasInput) {
+              return h(resolvedInput, {
+                modelValue: value ?? '',
+                placeholder,
+                disabled,
+                type,
+                'onUpdate:modelValue': (next) => onUpdate(next),
+              });
+            }
+            return h('input', {
+              type,
+              value: value ?? '',
+              placeholder,
+              disabled,
+              style: {
+                minHeight: '34px',
+                width: '100%',
+                border: '1px solid var(--theme--border-normal)',
+                borderRadius: '6px',
+                padding: '6px 10px',
+                ...style,
+              },
+              onInput: (event) => onUpdate(event?.target?.value ?? ''),
+            });
+          };
+    
+          const renderSelectControl = ({ value, items, onUpdate, disabled, style = {} }) => {
+            if (hasSelect) {
+              return h(resolvedSelect, {
+                modelValue: value,
+                items,
+                disabled,
+                allowNone: false,
+                'onUpdate:modelValue': (next) => onUpdate(next),
+              });
+            }
+            return h(
+              'select',
+              {
+                value,
+                disabled,
+                style: {
+                  minHeight: '34px',
+                  width: '100%',
+                  border: '1px solid var(--theme--border-normal)',
+                  borderRadius: '6px',
+                  padding: '6px 10px',
+                  ...style,
+                },
+                onChange: (event) => onUpdate(event?.target?.value ?? ''),
+              },
+              (items || []).map((item) => h('option', { value: item.value }, item.text))
+            );
+          };
+    
+          const renderButtonControl = ({ label, onClick, disabled, primary = false }) => {
+            if (hasButton) {
+              return h(
+                resolvedButton,
+                {
+                  disabled,
+                  secondary: !primary,
+                  small: true,
+                  onClick,
+                },
+                () => label
+              );
+            }
+            return h(
+              'button',
+              {
+                type: 'button',
+                disabled,
+                onClick,
+                style: {
+                  minHeight: '34px',
+                  border: primary ? '1px solid var(--theme--primary)' : '1px solid var(--theme--border-normal)',
+                  borderRadius: '6px',
+                  padding: '6px 10px',
+                  background: primary ? 'var(--theme--primary)' : 'var(--theme--background-page)',
+                  color: primary ? 'var(--theme--primary-alt)' : 'var(--theme--foreground-normal)',
+                  cursor: 'pointer',
+                },
+              },
+              label
+            );
+          };
+    
+          const renderMetaChip = (text) => {
+            if (hasChip) {
+              return h(resolvedChip, { small: true }, () => text);
+            }
+            return h('span', {
+              style: {
+                padding: '2px 6px',
+                borderRadius: '999px',
+                border: '1px solid var(--theme--border-subdued)',
+                background: 'var(--theme--background-subdued)',
+                fontSize: '11px',
+                color: 'var(--theme--foreground-subdued)',
+              },
+            }, text);
+          };
+    
+          const renderCard = ({ className, style, children }) => {
+            if (hasCard) {
+              return h(
+                resolvedCard,
+                {
+                  class: className,
+                  style,
+                },
+                { default: () => children }
+              );
+            }
+            return h('section', {
+              class: className,
+              style: {
+                border: '1px solid var(--theme--border-subdued)',
+                borderRadius: 'var(--theme--border-radius)',
+                background: 'var(--theme--background-page)',
+                ...style,
+              },
+            }, children);
+          };
+    
+          const groupItems = [
+            { text: 'Group: Template', value: 'template' },
+            { text: 'Group: Tag', value: 'group_tag' },
+            { text: 'Group: Slot', value: 'slot' },
+            { text: 'Group: Collection', value: 'collection' },
+            { text: 'Group: None', value: 'none' },
+          ];
+          const collectionItems = [{ text: 'All Collections', value: '__all' }, ...toChoiceItems(collectionChoices.value)];
+          const slotItems = [{ text: 'All Slots', value: '__all' }, ...toChoiceItems(slotChoices.value)];
+          const scopeItems = [{ text: 'All Scopes', value: '__all' }, ...toChoiceItems(scopeChoices.value)];
+          const groupTagItems = [{ text: 'All Tags', value: '__all' }, ...toChoiceItems(groupTagChoices.value)];
+    
+          const children = [
+            renderCard({
+              className: 'cms-page-blocks-manager__toolbar-card',
+              children: [
+                h('div', { class: 'cms-page-blocks-manager__toolbar', style: styles.toolbar }, [
+                  h('div', { class: 'cms-page-blocks-manager__toolbar-row', style: styles.toolbarRow }, [
+                    h('div', { style: styles.controlWide }, [
+                      renderInputControl({
+                        value: searchText.value,
+                        placeholder: 'Search by group, slot, template, collection, id...',
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { searchText.value = asString(next); },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: groupBy.value,
+                        items: groupItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { groupBy.value = asString(next) || 'template'; },
+                      }),
+                    ]),
+                    renderButtonControl({
+                      label: loading.value ? 'Loading...' : 'Reload',
+                      disabled: loading.value,
+                      onClick: refreshAll,
+                    }),
+                    renderButtonControl({
+                      label: `Save Changed (${changedCount})`,
+                      disabled: !canSaveAll,
+                      onClick: saveAll,
+                      primary: true,
+                    }),
+                    renderButtonControl({
+                      label: 'Open Collection View',
+                      disabled: !pageId.value,
+                      onClick: openBlocksCollection,
+                    }),
+                  ]),
+                  h('div', { class: 'cms-page-blocks-manager__toolbar-row', style: styles.toolbarRow }, [
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterCollection.value,
+                        items: collectionItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterCollection.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterSlot.value,
+                        items: slotItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterSlot.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterScope.value,
+                        items: scopeItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterScope.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterGroupTag.value,
+                        items: groupTagItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterGroupTag.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    renderButtonControl({
+                      label: 'Reset Filters',
+                      disabled: props.disabled || loading.value,
+                      onClick: resetFilters,
+                    }),
+                  ]),
+                ]),
+              ],
+            }),
+          ];
+    
+          if (pageId.value) {
+            children.push(
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${filteredBlocks.value.length}/${blocks.value.length}`)
+            );
+          } else {
+            children.push(
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, 'Save this page first to manage blocks.')
+            );
+          }
+    
+          if (error.value) {
+            children.push(
+              hasNotice
+                ? h(resolvedNotice, { type: 'danger' }, () => error.value)
+                : h('p', { class: 'cms-page-blocks-manager__error' }, error.value)
+            );
+          }
+          if (info.value && !error.value) {
+            children.push(
+              hasNotice
+                ? h(resolvedNotice, { type: 'success' }, () => info.value)
+                : h('p', { class: 'cms-page-blocks-manager__hint' }, info.value)
+            );
+          }
+    
+          if (!loading.value && rows.length === 0) {
+            children.push(
+              h('p', { class: 'cms-page-blocks-manager__hint', style: styles.meta }, pageId.value ? 'No blocks match the current filters.' : 'No page context available.')
+            );
+          }
+    
+          for (const group of rows) {
+            children.push(
+              renderCard({
+                className: 'cms-page-blocks-manager__group',
+                style: styles.group,
+                children: [
+                  h('header', { class: 'cms-page-blocks-manager__group-header', style: styles.groupHeader }, [
+                    h('strong', { style: styles.groupLabel }, group.label),
+                    renderMetaChip(`${group.rows.length}`),
+                  ]),
+                  ...(hasDivider ? [h(resolvedDivider)] : []),
+                  ...group.rows.map((row) => {
+                    const draft = getDraft(row);
+                    const slotChoicesForRow = toChoiceItems(uniqueNonEmpty([...(slots.value || []), asString(row.slot) || 'main']));
+                    const changed = hasChanges(row);
+                    const rowSaving = isSaving(row.id);
+                    return h('article', { class: 'cms-page-blocks-manager__row', key: row.id, style: styles.row }, [
+                      h('div', { class: 'cms-page-blocks-manager__row-meta', style: styles.rowMeta }, [
+                        renderMetaChip(row.id),
+                        renderMetaChip(`${row.collection}:${row.item}`),
+                        renderMetaChip(`scope=${row.template_scope}`),
+                        renderMetaChip(`template=${row.template_group_key}`),
+                        renderMetaChip(`depth=${row.tree_depth}`),
+                        renderMetaChip(`status=${row.status}`),
+                      ]),
+                      h('div', { class: 'cms-page-blocks-manager__row-edit', style: styles.rowEdit }, [
+                        h('label', { class: 'cms-page-blocks-manager__field', style: styles.field }, [
+                          h('span', { style: styles.fieldLabel }, 'Slot'),
+                          renderSelectControl({
+                            value: asString(draft.slot) || 'main',
+                            items: slotChoicesForRow,
+                            disabled: props.disabled || rowSaving,
+                            onUpdate: (next) => setDraft(row.id, { slot: asString(next) || 'main' }),
+                          }),
+                        ]),
+                        h('label', { class: 'cms-page-blocks-manager__field', style: styles.field }, [
+                          h('span', { style: styles.fieldLabel }, 'Sort'),
+                          renderInputControl({
+                            value: draft.sort ?? '',
+                            type: 'number',
+                            disabled: props.disabled || rowSaving,
+                            onUpdate: (next) => setDraft(row.id, { sort: asString(next) }),
+                          }),
+                        ]),
+                        h('label', { class: 'cms-page-blocks-manager__field cms-page-blocks-manager__field--wide', style: { ...styles.field, ...styles.fieldWide } }, [
+                          h('span', { style: styles.fieldLabel }, 'Group Tag'),
+                          renderInputControl({
+                            value: asString(draft.group_tag),
+                            placeholder: 'Optional grouping tag',
+                            disabled: props.disabled || rowSaving,
+                            onUpdate: (next) => setDraft(row.id, { group_tag: asString(next) }),
+                          }),
+                        ]),
+                      ]),
+                      h('div', { class: 'cms-page-blocks-manager__actions', style: styles.actions }, [
+                        renderButtonControl({
+                          label: rowSaving ? 'Saving...' : 'Save',
+                          primary: true,
+                          disabled: props.disabled || rowSaving || !changed,
+                          onClick: () => saveRow(row),
+                        }),
+                        renderButtonControl({
+                          label: 'Reset',
+                          disabled: props.disabled || rowSaving || !changed,
+                          onClick: () => resetRow(row),
+                        }),
+                        renderButtonControl({
+                          label: 'Open Block Row',
+                          disabled: rowSaving,
+                          onClick: () => openBlockRow(row),
+                        }),
+                        renderButtonControl({
+                          label: 'Open Content',
+                          disabled: rowSaving || !row.collection || !row.item,
+                          onClick: () => openContentItem(row),
+                        }),
+                      ]),
+                      ...(hasDivider ? [h(resolvedDivider)] : []),
+                    ]);
+                  }),
+                ],
+              })
+            );
+          }
+    
+          return h('div', { class: 'cms-page-blocks-manager', style: styles.root }, children);
+        };
+      },
+    });
+    
+    export default defineInterface({
+      id: 'cms-page-blocks-manager',
+      name: 'CMS Page Blocks Manager',
+      icon: 'view_list',
+      description: 'Grouped and searchable manager for page blocks with quick slot/sort/group edits.',
+      component: InterfaceComponent,
+      types: ['alias'],
+      localTypes: ['m2a', 'o2m'],
+      group: 'relational',
+      options: [
+        {
+          field: 'pages_collection',
+          name: 'Pages Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_pages' },
+        },
+        {
+          field: 'page_blocks_collection',
+          name: 'Page Blocks Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_page_blocks' },
+        },
+        {
+          field: 'layout_templates_collection',
+          name: 'Layout Templates Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_layout_templates' },
+        },
+        {
+          field: 'layout_slots_collection',
+          name: 'Layout Slots Collection',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'cms_layout_template_slots' },
+        },
+        {
+          field: 'page_id_field',
+          name: 'Page ID Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'id' },
+        },
+        {
+          field: 'page_template_field',
+          name: 'Page Template Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'layout_template_key' },
+        },
+        {
+          field: 'page_site_field',
+          name: 'Page Site Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'site_key' },
+        },
+        {
+          field: 'default_group_by',
+          name: 'Default Group By',
+          type: 'string',
+          meta: {
+            width: 'half',
+            interface: 'select-dropdown',
+            options: {
+              choices: [
+                { text: 'Template Group', value: 'template' },
+                { text: 'Group Tag', value: 'group_tag' },
+                { text: 'Slot', value: 'slot' },
+                { text: 'Collection', value: 'collection' },
+                { text: 'None', value: 'none' }
+              ]
+            }
+          },
+          schema: { default_value: 'template' },
+        },
+        {
+          field: 'default_limit',
+          name: 'Default Query Limit',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 400 },
+        },
+        {
+          field: 'admin_base_path',
+          name: 'Admin Base Path',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '/admin/content' },
+        },
+      ],
+    });
 ---
 # Vault Agent Configuration for Directus
 apiVersion: v1
@@ -2335,74 +3414,21 @@ metadata:
   name: vault-agent-config-directus
   namespace: directus
 data:
-  vault-agent.hcl: |
-    pid_file = "/vault/agent.pid"
-    exit_after_auth = false
-    
-    vault {
-      address = "http://vault.vault.svc.cluster.local:8200"
-    }
-    
-    auto_auth {
-      method "kubernetes" {
-        mount_path = "auth/kubernetes"
-        config = {
-          role = "directus"
-        }
-      }
-      
-      sink "file" {
-        config = {
-          path = "/vault/token"
-        }
-      }
-    }
-    
-    template {
-      source      = "/vault-templates/db-creds.tpl"
-      destination = "/vault-secrets/db-creds.env"
-      perms       = 0644
-    }
-    
-    template {
-      source      = "/vault-templates/app-keys.tpl"
-      destination = "/vault-secrets/app-keys.env"
-      perms       = 0644
-    }
-    
-    template {
-      source      = "/vault-templates/openai.tpl"
-      destination = "/vault-secrets/openai.env"
-      perms       = 0644
-    }
-    
-
-    
-    template {
-      source      = "/vault-templates/redis-creds.tpl"
-      destination = "/vault-secrets/redis-creds.env"
-      perms       = 0644
-    }
-  
+  vault-agent.hcl: "pid_file = \"/vault/agent.pid\"\nexit_after_auth = false\n\nvault {\n  address = \"http://vault.vault.svc.cluster.local:8200\"\n}\n\nauto_auth {\n  method \"kubernetes\" {\n    mount_path = \"auth/kubernetes\"\n    config = {\n      role = \"directus\"\n    }\n  }\n  \n  sink \"file\" {\n    config = {\n      path = \"/vault/token\"\n    }\n  }\n}\n\ntemplate {\n  source      = \"/vault-templates/db-creds.tpl\"\n  destination = \"/vault-secrets/db-creds.env\"\n  perms       = 0644\n}\n\ntemplate {\n  source      = \"/vault-templates/app-keys.tpl\"\n  destination = \"/vault-secrets/app-keys.env\"\n  perms       = 0644\n}\n\ntemplate {\n  source      = \"/vault-templates/openai.tpl\"\n  destination = \"/vault-secrets/openai.env\"\n  perms       = 0644\n}\n\n\n\ntemplate {\n  source      = \"/vault-templates/redis-creds.tpl\"\n  destination = \"/vault-secrets/redis-creds.env\"\n  perms       = 0644\n}\n"
   db-creds.tpl: |
     {{ with secret "yugabyte-db/static-creds/directus-app" -}}
     export DB_USER="{{ .Data.username }}"
     export DB_PASSWORD="{{ .Data.password }}"
     {{- end }}
-  
   app-keys.tpl: |
     {{ with secret "secret/data/directus/keys" -}}
     export KEY="{{ .Data.data.key }}"
     export SECRET="{{ .Data.data.secret }}"
     {{- end }}
-  
   openai.tpl: |
     {{ with secret "secret/data/open_ai_key" -}}
     export OPENAI_API_KEY="{{ .Data.data.value }}"
     {{- end }}
-  
-
-  
   redis-creds.tpl: |
     {{ with secret "secret/data/redis" -}}
     export REDIS_PASSWORD="{{ .Data.data.password }}"
@@ -2416,7 +3442,7 @@ metadata:
   namespace: directus
 spec:
   accessModes:
-  - ReadWriteOnce
+    - ReadWriteOnce
   resources:
     requests:
       storage: 10Gi

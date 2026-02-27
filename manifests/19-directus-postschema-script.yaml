@@ -2677,8 +2677,8 @@ data:
         '{modules_collection:"cms_modules",module_key_field:"module_key",props_schema_field:"props_schema",default_props_field:"default_props",pages_collection:"cms_pages",page_site_field:"site_key",include_global:true,show_json_fallback:true}')"
       parent_block_interface_options_json="$(jq -nc \
         '{mode:"parent",page_blocks_collection:"cms_page_blocks",template_refs_collection:"cms_block_template_ref",pages_collection:"cms_pages",page_id_field:"page_id",page_site_field:"site_key",page_slug_field:"page_slug",item_id_field:"id",parent_id_field:"parent_block_id"}')"
-      page_blocks_relation_options_json="$(jq -nc \
-        '{template:"{{template_scope}}/{{template_group_key}} | {{group_tag}} | {{collection}} -> {{slot}} | #{{sort}}",enableCreate:true,enableSelect:true,enableSearchFilter:true,sort:["template_scope","template_group_key","group_tag","tree_path","sort"],sortField:"sort"}')"
+      page_blocks_manager_interface_options_json="$(jq -nc \
+        '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",default_group_by:"template",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
 
       template_note="Required: choose which registered layout template this page uses."
       theme_note="Required: choose which published theme family this page uses."
@@ -2692,7 +2692,7 @@ data:
       template_ref_note="Required: choose which layout template this container block should render."
       parent_block_note="Optional: nest this block under a template-ref block on the same page."
       group_tag_note="Optional editor grouping tag (for example: hero, onboarding, checkout-step-1). Blocks with the same tag can be filtered together."
-      page_blocks_relation_note="Use search to filter blocks by group tag/template context. Blocks are listed with template/group labels and sorted by template/tree + sort."
+      page_blocks_relation_note="Blocks Manager: grouped/searchable block editor for this page with quick open/edit actions."
       internal_metadata_note="Managed automatically from page/block context."
       status_note="Publishing control for this record."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
@@ -3258,23 +3258,8 @@ data:
           return 0
         fi
 
-        _special_value="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-          "SELECT COALESCE(special::text, '') FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
-        _special_value="$(printf '%s' "$_special_value" | tr -d '\r')"
-        _interface_value="list-o2m"
-        _options_sql="NULL"
-        case "$(printf '%s' "${_special_value}" | tr '[:upper:]' '[:lower:]')" in
-          *m2a*)
-            _interface_value="list-m2a"
-            ;;
-          *o2m*)
-            _interface_value="list-o2m"
-            _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${page_blocks_relation_options_json}")"
-            ;;
-          *)
-            _interface_value="list-m2a"
-            ;;
-        esac
+        _interface_value="cms-page-blocks-manager"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${page_blocks_manager_interface_options_json}")"
 
         SETS=""
         if _df_has_col "interface"; then SETS="${SETS},interface='${_interface_value}'"; fi
@@ -5560,6 +5545,7 @@ data:
       _ensure_local_ext_enabled "ai-provider-access"
       _ensure_local_ext_enabled "cms-content-model-select"
       _ensure_local_ext_enabled "cms-module-props-editor"
+      _ensure_local_ext_enabled "cms-page-blocks-manager"
     else
       echo "⚠️ directus_extensions table not found; skipping extension enable."
     fi
