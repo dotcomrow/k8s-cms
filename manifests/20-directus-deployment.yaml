@@ -1095,6 +1095,11 @@ spec:
         - name: AUTH_GITHUB_FIRST_NAME_KEY
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_FIRST_NAME_KEY } }
 
+        startupProbe:
+          httpGet: { path: /server/health, port: 8055 }
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 120
         livenessProbe:
           httpGet: { path: /server/health, port: 8055 }
           initialDelaySeconds: 360
