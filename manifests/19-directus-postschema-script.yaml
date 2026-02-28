@@ -4370,7 +4370,17 @@ data:
             --max-time "${DIRECTUS_API_MAX_TIME_SECONDS}" \
             -H "Authorization: Bearer ${_candidate}" \
             "${DIRECTUS_API_BASE}/users/me" || true)"
-          [ "${_verify_code}" = "200" ]
+          if [ "${_verify_code}" != "200" ]; then
+            return 1
+          fi
+          _flows_code="$(curl -sS -o /tmp/directus-token-verify-flows.json -w '%{http_code}' \
+            --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS}" \
+            --max-time "${DIRECTUS_API_MAX_TIME_SECONDS}" \
+            -H "Authorization: Bearer ${_candidate}" \
+            --get "${DIRECTUS_API_BASE}/flows" \
+            --data-urlencode "limit=1" \
+            --data-urlencode "fields=id" || true)"
+          [ "${_flows_code}" = "200" ]
         }
 
         echo "⏳ Waiting for Directus /server/health before API flow reconciliation..."
@@ -4488,7 +4498,33 @@ data:
                   "SET search_path TO directus, public; UPDATE directus_users SET role='${flow_admin_role_sql}', token='${flow_admin_token_sql}', status='active' WHERE id='${flow_admin_user_id_sql}';"
                 echo "✅ Updated flow admin service user ${flow_admin_email}"
               fi
-    
+
+              # Some Directus auth paths require explicit user-policy access rows.
+              if [ "${ACCESS_TABLE_EXISTS:-0}" = "1" ] && [ -n "${FLOW_ADMIN_POLICY_ID:-}" ] \
+                && [ "${FLOW_ADMIN_POLICY_ID}" != "null" ] && [ -n "${FLOW_ADMIN_USER_ID:-}" ] \
+                && [ "${FLOW_ADMIN_USER_ID}" != "null" ] && _has_access_col "user"; then
+                flow_admin_user_id_sql="$(printf '%s' "$FLOW_ADMIN_USER_ID" | sed "s/'/''/g")"
+                flow_admin_policy_sql="$(printf '%s' "$FLOW_ADMIN_POLICY_ID" | sed "s/'/''/g")"
+                FLOW_USER_ACCESS_WHERE="policy='${flow_admin_policy_sql}' AND \"user\"='${flow_admin_user_id_sql}'"
+                if _has_access_col "role"; then
+                  FLOW_USER_ACCESS_WHERE="${FLOW_USER_ACCESS_WHERE} AND role='${flow_admin_role_sql}'"
+                fi
+                FLOW_USER_ACCESS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT 1 FROM directus.directus_access WHERE ${FLOW_USER_ACCESS_WHERE} LIMIT 1;" || true)"
+                FLOW_USER_ACCESS_EXISTS="$(printf '%s' "$FLOW_USER_ACCESS_EXISTS" | tr -d '\r')"
+                if [ "${FLOW_USER_ACCESS_EXISTS}" != "1" ]; then
+                  FUACOLS="id,policy"
+                  FUAVALS="'$(cat /proc/sys/kernel/random/uuid)','${flow_admin_policy_sql}'"
+                  if _has_access_col "role"; then FUACOLS="${FUACOLS},role"; FUAVALS="${FUAVALS},'${flow_admin_role_sql}'"; fi
+                  FUACOLS="${FUACOLS},\"user\""
+                  FUAVALS="${FUAVALS},'${flow_admin_user_id_sql}'"
+                  if _has_access_col "sort"; then FUACOLS="${FUACOLS},sort"; FUAVALS="${FUAVALS},NULL"; fi
+                  psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                    "SET search_path TO directus, public; INSERT INTO directus_access (${FUACOLS}) VALUES (${FUAVALS});"
+                  echo "✅ Linked flow admin user to administrator policy for flow provisioning"
+                fi
+              fi
+
               payload="$(jq -nc --arg t "$FLOW_ADMIN_TOKEN" '{data:{token:$t}}')"
               FLOW_TOKEN_WRITE_CODE="$(curl -sS -o /tmp/directus-flow-token-write.json -w '%{http_code}' -X POST \
                 -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \

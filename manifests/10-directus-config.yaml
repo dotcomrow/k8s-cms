@@ -2429,7 +2429,10 @@ data:
 
       const created = {
         installed: false,
+        installedXhr: false,
         originalFetch: null,
+        originalXHROpen: null,
+        originalXHRSend: null,
         handlers: {},
       };
       window[BLOCKS_MANAGER_SAVE_MONITOR_KEY] = created;
@@ -2441,11 +2444,19 @@ data:
       if (!monitor || !observerId || typeof observer !== 'function') return () => {};
 
       monitor.handlers[observerId] = observer;
+      const notifyHandlers = (payload) => {
+        for (const handler of Object.values(monitor.handlers)) {
+          try {
+            handler(payload);
+          } catch (observerError) {
+            // Ignore observer handler errors; never block app behavior.
+          }
+        }
+      };
 
       if (!monitor.installed && typeof window.fetch === 'function') {
         monitor.originalFetch = window.fetch.bind(window);
         window.fetch = async (...args) => {
-          const response = await monitor.originalFetch(...args);
           let requestUrl = '';
           let requestMethod = 'GET';
 
@@ -2465,27 +2476,72 @@ data:
             // Ignore observer metadata parse errors.
           }
 
-          for (const handler of Object.values(monitor.handlers)) {
-            try {
-              handler({ method: requestMethod, url: requestUrl, response });
-            } catch (observerError) {
-              // Ignore observer handler errors; never block fetch response.
-            }
+          try {
+            const response = await monitor.originalFetch(...args);
+            notifyHandlers({ method: requestMethod, url: requestUrl, response });
+            return response;
+          } catch (requestError) {
+            notifyHandlers({
+              method: requestMethod,
+              url: requestUrl,
+              response: { ok: false, status: 0 },
+              error: requestError,
+            });
+            throw requestError;
           }
-
-          return response;
         };
         monitor.installed = true;
+      }
+
+      if (!monitor.installedXhr && typeof XMLHttpRequest !== 'undefined') {
+        monitor.originalXHROpen = XMLHttpRequest.prototype.open;
+        monitor.originalXHRSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function patchedBlocksManagerOpen(method, url, ...rest) {
+          this.__cmsBlocksManagerMethod = String(method || 'GET').toUpperCase();
+          this.__cmsBlocksManagerUrl = typeof url === 'string' ? url : asString(url);
+          return monitor.originalXHROpen.call(this, method, url, ...rest);
+        };
+
+        XMLHttpRequest.prototype.send = function patchedBlocksManagerSend(...sendArgs) {
+          if (!this.__cmsBlocksManagerObserved) {
+            this.__cmsBlocksManagerObserved = true;
+            this.addEventListener('loadend', () => {
+              const statusCode = Number(this.status || 0);
+              notifyHandlers({
+                method: asString(this.__cmsBlocksManagerMethod) || 'GET',
+                url: asString(this.__cmsBlocksManagerUrl),
+                response: {
+                  ok: Number.isFinite(statusCode) && statusCode >= 200 && statusCode < 300,
+                  status: statusCode,
+                },
+              });
+              this.__cmsBlocksManagerObserved = false;
+            });
+          }
+          return monitor.originalXHRSend.apply(this, sendArgs);
+        };
+
+        monitor.installedXhr = true;
       }
 
       return () => {
         const currentMonitor = getBlocksManagerSaveMonitor();
         if (!currentMonitor) return;
         delete currentMonitor.handlers[observerId];
-        if (currentMonitor.installed && Object.keys(currentMonitor.handlers).length === 0 && currentMonitor.originalFetch) {
-          window.fetch = currentMonitor.originalFetch;
-          currentMonitor.originalFetch = null;
-          currentMonitor.installed = false;
+        if (Object.keys(currentMonitor.handlers).length === 0) {
+          if (currentMonitor.installed && currentMonitor.originalFetch) {
+            window.fetch = currentMonitor.originalFetch;
+            currentMonitor.originalFetch = null;
+            currentMonitor.installed = false;
+          }
+          if (currentMonitor.installedXhr && currentMonitor.originalXHROpen && currentMonitor.originalXHRSend) {
+            XMLHttpRequest.prototype.open = currentMonitor.originalXHROpen;
+            XMLHttpRequest.prototype.send = currentMonitor.originalXHRSend;
+            currentMonitor.originalXHROpen = null;
+            currentMonitor.originalXHRSend = null;
+            currentMonitor.installedXhr = false;
+          }
         }
       };
     };
@@ -2533,6 +2589,9 @@ data:
         const drawerSnapshotKey = ref('');
         const drawerSnapshotFingerprint = ref('');
         const drawerChangedSinceOpen = ref(false);
+        const drawerLastCollection = ref('');
+        const drawerLastPrimaryKey = ref('');
+        const drawerLastClosedAtMs = ref(0);
         let unregisterSaveObserver = null;
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
@@ -2735,17 +2794,71 @@ data:
           }
         };
 
+        const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        const resolveObservedDrawerTarget = () => {
+          const activeCollection = asString(drawerCollection.value);
+          const activePrimaryKey = parseId(drawerPrimaryKey.value);
+          if (activeCollection && activePrimaryKey) {
+            return { collection: activeCollection, primaryKey: activePrimaryKey };
+          }
+
+          const closedCollection = asString(drawerLastCollection.value);
+          const closedPrimaryKey = parseId(drawerLastPrimaryKey.value);
+          const closedAtMs = Number(drawerLastClosedAtMs.value || 0);
+          if (
+            closedCollection
+            && closedPrimaryKey
+            && Number.isFinite(closedAtMs)
+            && Date.now() - closedAtMs <= 15000
+          ) {
+            return { collection: closedCollection, primaryKey: closedPrimaryKey };
+          }
+
+          return { collection: '', primaryKey: '' };
+        };
+
+        const waitForPersistedDrawerChange = async (
+          collectionName,
+          primaryKey,
+          previousSnapshotFingerprint,
+          previousSnapshotKey,
+        ) => {
+          const collectionKey = asString(collectionName);
+          const itemKey = parseId(primaryKey);
+          const baseline = asString(previousSnapshotFingerprint);
+          if (!collectionKey || !itemKey || !baseline) return false;
+
+          const currentSnapshotKey = `${collectionKey}:${itemKey}`;
+          if (previousSnapshotKey && previousSnapshotKey !== currentSnapshotKey) return false;
+
+          const maxAttempts = 8;
+          for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+            const currentFingerprint = await readItemSnapshotFingerprint(collectionKey, itemKey);
+            if (currentFingerprint && currentFingerprint !== baseline) {
+              return true;
+            }
+            if (attempt < maxAttempts) {
+              await delay(350);
+            }
+          }
+          return false;
+        };
+
         const detectObservedDrawerSave = (payload) => {
           if (!isPrimaryInstance.value) return;
-          if (!drawerActive.value) return;
           if (drawerChangedSinceOpen.value) return;
 
           const method = String(payload?.method || 'GET').toUpperCase();
           if (!['PATCH', 'PUT', 'POST'].includes(method)) return;
-          if (!payload?.response?.ok) return;
+          const statusCode = Number(payload?.response?.status || 0);
+          const responseOk = payload?.response?.ok === true
+            || (Number.isFinite(statusCode) && statusCode >= 200 && statusCode < 300);
+          if (!responseOk) return;
 
-          const collectionKey = asString(drawerCollection.value);
-          const itemKey = parseId(drawerPrimaryKey.value);
+          const observedTarget = resolveObservedDrawerTarget();
+          const collectionKey = asString(observedTarget.collection);
+          const itemKey = parseId(observedTarget.primaryKey);
           if (!collectionKey || !itemKey) return;
 
           let pathname = '';
@@ -2756,10 +2869,11 @@ data:
           }
 
           const segments = pathname.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment));
-          if (segments[0] !== 'items') return;
+          const itemsIndex = segments.indexOf('items');
+          if (itemsIndex === -1 || segments.length <= itemsIndex + 1) return;
 
-          const requestCollection = asString(segments[1]);
-          const requestItem = asString(segments[2]);
+          const requestCollection = asString(segments[itemsIndex + 1]);
+          const requestItem = asString(segments[itemsIndex + 2]);
           if (requestCollection !== collectionKey) return;
 
           if (requestItem && requestItem === itemKey) {
@@ -3133,6 +3247,9 @@ data:
 
           drawerCollection.value = nextCollection;
           drawerPrimaryKey.value = nextPrimaryKey;
+          drawerLastCollection.value = '';
+          drawerLastPrimaryKey.value = '';
+          drawerLastClosedAtMs.value = 0;
           await captureDrawerSnapshot(nextCollection, nextPrimaryKey);
           if (drawerCollection.value === nextCollection && drawerPrimaryKey.value === nextPrimaryKey) {
             drawerActive.value = true;
@@ -3150,6 +3267,9 @@ data:
 
           if (shouldBeActive) return;
 
+          drawerLastCollection.value = previousCollection;
+          drawerLastPrimaryKey.value = previousPrimaryKey;
+          drawerLastClosedAtMs.value = Date.now();
           drawerCollection.value = '';
           drawerPrimaryKey.value = '';
           drawerSnapshotKey.value = '';
@@ -3159,16 +3279,12 @@ data:
 
           let hasPersistedDrawerChange = hadPersistedDrawerChange;
           if (!hasPersistedDrawerChange && previousCollection && previousPrimaryKey) {
-            const currentSnapshotFingerprint = await readItemSnapshotFingerprint(previousCollection, previousPrimaryKey);
-            const currentSnapshotKey = `${previousCollection}:${previousPrimaryKey}`;
-            if (
-              previousSnapshotFingerprint
-              && currentSnapshotFingerprint
-              && previousSnapshotKey === currentSnapshotKey
-              && previousSnapshotFingerprint !== currentSnapshotFingerprint
-            ) {
-              hasPersistedDrawerChange = true;
-            }
+            hasPersistedDrawerChange = await waitForPersistedDrawerChange(
+              previousCollection,
+              previousPrimaryKey,
+              previousSnapshotFingerprint,
+              previousSnapshotKey,
+            );
           }
 
           // Keep the tree view in sync with any edits saved through the drawer.
@@ -3178,7 +3294,7 @@ data:
               markPageDirtyFromDrawerEdits();
             }
           } else if (previousPrimaryKey) {
-            info.value = 'No saved drawer changes detected.';
+            info.value = 'No saved drawer changes detected. Click Save in the drawer before closing.';
           }
         };
 
@@ -3848,6 +3964,7 @@ data:
           if (hasDrawerItem) {
             children.push(
               h(resolvedDrawerItem, {
+                key: `${drawerCollection.value || pageBlocksCollection.value}:${drawerPrimaryKey.value || '+'}`,
                 active: drawerActive.value,
                 collection: drawerCollection.value || pageBlocksCollection.value,
                 primaryKey: drawerPrimaryKey.value || '+',
