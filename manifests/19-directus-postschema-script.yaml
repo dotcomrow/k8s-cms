@@ -4105,6 +4105,7 @@ data:
           _name="$1"
           _id="$(_directus_api_get "/flows" \
             --data-urlencode "filter[name][_eq]=${_name}" \
+            --data-urlencode "sort=-date_updated" \
             --data-urlencode "limit=1" \
             --data-urlencode "fields=id" \
             2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
@@ -4117,10 +4118,82 @@ data:
           _id="$(_directus_api_get "/operations" \
             --data-urlencode "filter[flow][_eq]=${_flow_id}" \
             --data-urlencode "filter[key][_eq]=${_key}" \
+            --data-urlencode "sort=-date_updated" \
             --data-urlencode "limit=1" \
             --data-urlencode "fields=id" \
             2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
           printf '%s' "${_id:-}"
+        }
+
+        _directus_dedupe_operation_key() {
+          _flow_id="$1"
+          _op_key="$2"
+          _keep_id="$3"
+          if [ -z "${_flow_id:-}" ] || [ "${_flow_id}" = "null" ] \
+            || [ -z "${_op_key:-}" ] || [ "${_op_key}" = "null" ] \
+            || [ -z "${_keep_id:-}" ] || [ "${_keep_id}" = "null" ]; then
+            return 0
+          fi
+
+          _flow_sql="$(printf '%s' "${_flow_id}" | sed "s/'/''/g")"
+          _op_key_sql="$(printf '%s' "${_op_key}" | sed "s/'/''/g")"
+          _keep_sql="$(printf '%s' "${_keep_id}" | sed "s/'/''/g")"
+
+          if _psql_yb_retry \
+            "WITH dups AS ( \
+               SELECT id \
+               FROM directus_operations \
+               WHERE flow='${_flow_sql}' \
+                 AND key='${_op_key_sql}' \
+                 AND id<>'${_keep_sql}' \
+             ) \
+             UPDATE directus_operations \
+             SET resolve=NULL \
+             WHERE flow='${_flow_sql}' \
+               AND resolve IN (SELECT id FROM dups); \
+             WITH dups AS ( \
+               SELECT id \
+               FROM directus_operations \
+               WHERE flow='${_flow_sql}' \
+                 AND key='${_op_key_sql}' \
+                 AND id<>'${_keep_sql}' \
+             ) \
+             UPDATE directus_operations \
+             SET reject=NULL \
+             WHERE flow='${_flow_sql}' \
+               AND reject IN (SELECT id FROM dups); \
+             DELETE FROM directus_operations \
+             WHERE flow='${_flow_sql}' \
+               AND key='${_op_key_sql}' \
+               AND id<>'${_keep_sql}';" \
+            "dedupe operation key ${_op_key} in flow ${_flow_id}"; then
+            return 0
+          fi
+
+          echo "⚠️ Failed to dedupe duplicate operations for flow='${_flow_id}' key='${_op_key}'"
+          return 0
+        }
+
+        _directus_deactivate_duplicate_flow_names() {
+          _flow_name="$1"
+          _keep_id="$2"
+          if [ -z "${_flow_name:-}" ] || [ "${_flow_name}" = "null" ] \
+            || [ -z "${_keep_id:-}" ] || [ "${_keep_id}" = "null" ]; then
+            return 0
+          fi
+
+          _flow_name_sql="$(printf '%s' "${_flow_name}" | sed "s/'/''/g")"
+          _keep_sql="$(printf '%s' "${_keep_id}" | sed "s/'/''/g")"
+          if ! _psql_yb_retry \
+            "UPDATE directus_flows \
+             SET status='inactive' \
+             WHERE name='${_flow_name_sql}' \
+               AND id<>'${_keep_sql}' \
+               AND COALESCE(status, '')<>'inactive';" \
+            "deactivate duplicate flows named ${_flow_name}"; then
+            echo "⚠️ Failed to deactivate duplicate flow names for '${_flow_name}'"
+          fi
+          return 0
         }
     
         _directus_upsert_operation() {
@@ -4161,6 +4234,7 @@ data:
               sleep 1
               _attempt=$(( _attempt + 1 ))
             done
+            _directus_dedupe_operation_key "${_flow_id}" "${_op_key}" "${_op_id}"
             printf '%s' "${_op_id}"
             return
           fi
@@ -4181,6 +4255,7 @@ data:
             sleep 1
             _attempt=$(( _attempt + 1 ))
           done
+          _directus_dedupe_operation_key "${_flow_id}" "${_op_key}" "${_op_id}"
           printf '%s' "${_op_id:-}"
         }
     
@@ -5239,6 +5314,10 @@ data:
                 manual_flow_created="$(_directus_api_write "POST" "/flows" "${manual_flow_payload}" 2>/dev/null || true)"
                 manual_flow_id="$(printf '%s' "${manual_flow_created}" | jq -r '.data.id // empty' 2>/dev/null || true)"
               fi
+
+              _directus_deactivate_duplicate_flow_names "${create_flow_name}" "${create_flow_id}"
+              _directus_deactivate_duplicate_flow_names "${update_flow_name}" "${update_flow_id}"
+              _directus_deactivate_duplicate_flow_names "${manual_flow_name}" "${manual_flow_id}"
     
               if [ -z "${create_flow_id:-}" ] || [ -z "${update_flow_id:-}" ] || [ -z "${manual_flow_id:-}" ]; then
                 echo "⚠️ Failed to ensure cache-refresh flows for site_key='${site_key}', target='${target_key}'"
