@@ -3263,18 +3263,20 @@ data:
           const previousSnapshotKey = asString(drawerSnapshotKey.value);
           const previousSnapshotFingerprint = asString(drawerSnapshotFingerprint.value);
           const hadPersistedDrawerChange = Boolean(drawerChangedSinceOpen.value);
-          drawerActive.value = shouldBeActive;
+          if (shouldBeActive) {
+            drawerActive.value = true;
+            return;
+          }
 
-          if (shouldBeActive) return;
+          // Let DrawerItem finish any save-triggered internal lifecycle before
+          // we honor the close request. Closing immediately can race save dispatch.
+          await delay(350);
+          drawerActive.value = false;
 
           drawerLastCollection.value = previousCollection;
           drawerLastPrimaryKey.value = previousPrimaryKey;
           drawerLastClosedAtMs.value = Date.now();
           if (!pageId.value) return;
-
-          // Give DrawerItem a short window to finish any in-flight save pipeline
-          // before we snapshot and reload parent data.
-          await delay(300);
 
           let hasPersistedDrawerChange = hadPersistedDrawerChange;
           if (!hasPersistedDrawerChange && previousCollection && previousPrimaryKey) {
@@ -3973,10 +3975,10 @@ data:
           if (hasDrawerItem) {
             children.push(
               h(resolvedDrawerItem, {
-                key: `${drawerCollection.value || pageBlocksCollection.value}:${drawerPrimaryKey.value || '_'}`,
+                key: `${drawerCollection.value || pageBlocksCollection.value}:${drawerPrimaryKey.value || '+'}`,
                 active: drawerActive.value,
                 collection: drawerCollection.value || pageBlocksCollection.value,
-                primaryKey: drawerPrimaryKey.value || '_',
+                primaryKey: drawerPrimaryKey.value || '+',
                 disabled: props.disabled,
                 nonEditable: props.disabled,
                 'onUpdate:active': (next) => {
@@ -3987,9 +3989,6 @@ data:
                 },
                 onSave: () => {
                   handleDrawerSaved();
-                },
-                'onUpdate:modelValue': () => {
-                  drawerChangedSinceOpen.value = true;
                 },
               })
             );
