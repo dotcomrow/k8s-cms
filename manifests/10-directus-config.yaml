@@ -2461,6 +2461,8 @@ data:
         const drawerActive = ref(false);
         const drawerCollection = ref('');
         const drawerPrimaryKey = ref('');
+        const drawerSnapshotKey = ref('');
+        const drawerSnapshotFingerprint = ref('');
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
@@ -2605,6 +2607,59 @@ data:
             throw new Error(message);
           }
           return payload;
+        };
+
+        const normalizeSnapshot = (value) => {
+          if (Array.isArray(value)) {
+            return value.map((entry) => normalizeSnapshot(entry));
+          }
+          if (value && typeof value === 'object') {
+            const output = {};
+            for (const key of Object.keys(value).sort()) {
+              output[key] = normalizeSnapshot(value[key]);
+            }
+            return output;
+          }
+          return value;
+        };
+
+        const snapshotFingerprintFor = (value) => {
+          try {
+            return JSON.stringify(normalizeSnapshot(value));
+          } catch (snapshotError) {
+            return '';
+          }
+        };
+
+        const readItemSnapshotFingerprint = async (collectionName, primaryKey) => {
+          const collectionKey = asString(collectionName);
+          const itemKey = parseId(primaryKey);
+          if (!collectionKey || !itemKey) return '';
+
+          try {
+            const response = await apiRequest(
+              'GET',
+              `/items/${collectionKey}/${encodeURIComponent(itemKey)}`,
+              { fields: '*' },
+            );
+            return snapshotFingerprintFor(response?.data ?? null);
+          } catch (requestError) {
+            return '';
+          }
+        };
+
+        const captureDrawerSnapshot = async (collectionName, primaryKey) => {
+          const collectionKey = asString(collectionName);
+          const itemKey = parseId(primaryKey);
+          const key = collectionKey && itemKey ? `${collectionKey}:${itemKey}` : '';
+          drawerSnapshotKey.value = key;
+          drawerSnapshotFingerprint.value = '';
+          if (!key) return;
+
+          const fingerprint = await readItemSnapshotFingerprint(collectionKey, itemKey);
+          if (drawerSnapshotKey.value === key) {
+            drawerSnapshotFingerprint.value = fingerprint;
+          }
         };
     
         const normalizeBlockRow = (row) => {
@@ -2964,22 +3019,45 @@ data:
           drawerCollection.value = nextCollection;
           drawerPrimaryKey.value = nextPrimaryKey;
           drawerActive.value = true;
+          captureDrawerSnapshot(nextCollection, nextPrimaryKey);
         };
 
         const handleDrawerActive = async (nextActive) => {
           const shouldBeActive = Boolean(nextActive);
+          const previousCollection = asString(drawerCollection.value);
           const previousPrimaryKey = asString(drawerPrimaryKey.value);
+          const previousSnapshotKey = asString(drawerSnapshotKey.value);
+          const previousSnapshotFingerprint = asString(drawerSnapshotFingerprint.value);
           drawerActive.value = shouldBeActive;
 
           if (shouldBeActive) return;
 
+          drawerCollection.value = '';
           drawerPrimaryKey.value = '';
+          drawerSnapshotKey.value = '';
+          drawerSnapshotFingerprint.value = '';
           if (!pageId.value) return;
+
+          let hasPersistedDrawerChange = false;
+          if (previousCollection && previousPrimaryKey) {
+            const currentSnapshotFingerprint = await readItemSnapshotFingerprint(previousCollection, previousPrimaryKey);
+            const currentSnapshotKey = `${previousCollection}:${previousPrimaryKey}`;
+            if (
+              previousSnapshotFingerprint
+              && currentSnapshotFingerprint
+              && previousSnapshotKey === currentSnapshotKey
+              && previousSnapshotFingerprint !== currentSnapshotFingerprint
+            ) {
+              hasPersistedDrawerChange = true;
+            }
+          }
 
           // Keep the tree view in sync with any edits saved through the drawer.
           await refreshAll();
-          if (previousPrimaryKey) {
+          if (hasPersistedDrawerChange) {
             markPageDirtyFromDrawerEdits();
+          } else if (previousPrimaryKey) {
+            info.value = 'No saved drawer changes detected.';
           }
         };
 
