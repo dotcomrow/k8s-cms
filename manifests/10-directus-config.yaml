@@ -3057,12 +3057,8 @@ data:
 
           // Keep the tree view in sync with any edits saved through the drawer.
           await refreshAll();
-          const isLikelyContentCollection = previousCollection && previousCollection !== pageBlocksCollection.value;
-          if (hasPersistedDrawerChange || (isLikelyContentCollection && previousPrimaryKey)) {
+          if (hasPersistedDrawerChange) {
             markPageDirtyFromDrawerEdits();
-            if (!hasPersistedDrawerChange && isLikelyContentCollection) {
-              info.value = 'Drawer close detected on content item. Page marked dirty so you can publish and trigger refresh.';
-            }
           } else if (previousPrimaryKey) {
             info.value = 'No saved drawer changes detected.';
           }
