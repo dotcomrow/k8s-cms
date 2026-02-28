@@ -3270,12 +3270,11 @@ data:
           drawerLastCollection.value = previousCollection;
           drawerLastPrimaryKey.value = previousPrimaryKey;
           drawerLastClosedAtMs.value = Date.now();
-          drawerCollection.value = '';
-          drawerPrimaryKey.value = '';
-          drawerSnapshotKey.value = '';
-          drawerSnapshotFingerprint.value = '';
-          drawerChangedSinceOpen.value = false;
           if (!pageId.value) return;
+
+          // Give DrawerItem a short window to finish any in-flight save pipeline
+          // before we snapshot and reload parent data.
+          await delay(300);
 
           let hasPersistedDrawerChange = hadPersistedDrawerChange;
           if (!hasPersistedDrawerChange && previousCollection && previousPrimaryKey) {
@@ -3296,6 +3295,16 @@ data:
           } else if (previousPrimaryKey) {
             info.value = 'No saved drawer changes detected. Click Save in the drawer before closing.';
           }
+
+          drawerSnapshotKey.value = '';
+          drawerSnapshotFingerprint.value = '';
+          drawerChangedSinceOpen.value = false;
+        };
+
+        const handleDrawerSaved = async () => {
+          drawerChangedSinceOpen.value = true;
+          markPageDirtyFromDrawerEdits();
+          await refreshAll();
         };
 
         const openBlockRow = (row) => {
@@ -3964,14 +3973,23 @@ data:
           if (hasDrawerItem) {
             children.push(
               h(resolvedDrawerItem, {
-                key: `${drawerCollection.value || pageBlocksCollection.value}:${drawerPrimaryKey.value || '+'}`,
+                key: `${drawerCollection.value || pageBlocksCollection.value}:${drawerPrimaryKey.value || '_'}`,
                 active: drawerActive.value,
                 collection: drawerCollection.value || pageBlocksCollection.value,
-                primaryKey: drawerPrimaryKey.value || '+',
+                primaryKey: drawerPrimaryKey.value || '_',
                 disabled: props.disabled,
                 nonEditable: props.disabled,
                 'onUpdate:active': (next) => {
                   handleDrawerActive(next);
+                },
+                onSaved: () => {
+                  handleDrawerSaved();
+                },
+                onSave: () => {
+                  handleDrawerSaved();
+                },
+                'onUpdate:modelValue': () => {
+                  drawerChangedSinceOpen.value = true;
                 },
               })
             );
