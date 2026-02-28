@@ -2463,6 +2463,10 @@ data:
         const drawerPrimaryKey = ref('');
         const drawerSnapshotKey = ref('');
         const drawerSnapshotFingerprint = ref('');
+        const drawerChangedSinceOpen = ref(false);
+        const drawerMonitorSession = ref(0);
+        const drawerMonitorTimer = ref(null);
+        const drawerMonitorInFlight = ref(false);
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
@@ -2655,12 +2659,61 @@ data:
           const key = collectionKey && itemKey ? `${collectionKey}:${itemKey}` : '';
           drawerSnapshotKey.value = key;
           drawerSnapshotFingerprint.value = '';
+          drawerChangedSinceOpen.value = false;
           if (!key) return;
 
           const fingerprint = await readItemSnapshotFingerprint(collectionKey, itemKey);
           if (drawerSnapshotKey.value === key) {
             drawerSnapshotFingerprint.value = fingerprint;
           }
+        };
+
+        const clearDrawerMonitor = () => {
+          if (drawerMonitorTimer.value) {
+            clearInterval(drawerMonitorTimer.value);
+            drawerMonitorTimer.value = null;
+          }
+          drawerMonitorInFlight.value = false;
+          drawerMonitorSession.value += 1;
+        };
+
+        const evaluateDrawerPersistedChange = async (collectionName, primaryKey) => {
+          const collectionKey = asString(collectionName);
+          const itemKey = parseId(primaryKey);
+          if (!collectionKey || !itemKey) return false;
+          if (drawerChangedSinceOpen.value) return true;
+
+          const currentFingerprint = await readItemSnapshotFingerprint(collectionKey, itemKey);
+          if (!currentFingerprint || !drawerSnapshotFingerprint.value) return false;
+          if (currentFingerprint === drawerSnapshotFingerprint.value) return false;
+
+          drawerChangedSinceOpen.value = true;
+          markPageDirtyFromDrawerEdits();
+          info.value = 'Detected content updates from drawer. Save the page to publish and trigger refresh.';
+          return true;
+        };
+
+        const startDrawerMonitor = (collectionName, primaryKey) => {
+          const collectionKey = asString(collectionName);
+          const itemKey = parseId(primaryKey);
+          if (!collectionKey || !itemKey) return;
+
+          clearDrawerMonitor();
+          const session = drawerMonitorSession.value;
+
+          drawerMonitorTimer.value = setInterval(async () => {
+            if (!drawerActive.value) return;
+            if (drawerMonitorSession.value !== session) return;
+            if (drawerMonitorInFlight.value) return;
+            if (drawerChangedSinceOpen.value) return;
+
+            drawerMonitorInFlight.value = true;
+            try {
+              await evaluateDrawerPersistedChange(collectionKey, itemKey);
+            } finally {
+              drawerMonitorInFlight.value = false;
+            }
+          }, 1500);
         };
     
         const normalizeBlockRow = (row) => {
@@ -3022,6 +3075,7 @@ data:
           await captureDrawerSnapshot(nextCollection, nextPrimaryKey);
           if (drawerCollection.value === nextCollection && drawerPrimaryKey.value === nextPrimaryKey) {
             drawerActive.value = true;
+            startDrawerMonitor(nextCollection, nextPrimaryKey);
           }
         };
 
@@ -3031,18 +3085,21 @@ data:
           const previousPrimaryKey = asString(drawerPrimaryKey.value);
           const previousSnapshotKey = asString(drawerSnapshotKey.value);
           const previousSnapshotFingerprint = asString(drawerSnapshotFingerprint.value);
+          const hadPersistedDrawerChange = Boolean(drawerChangedSinceOpen.value);
           drawerActive.value = shouldBeActive;
 
           if (shouldBeActive) return;
 
+          clearDrawerMonitor();
           drawerCollection.value = '';
           drawerPrimaryKey.value = '';
           drawerSnapshotKey.value = '';
           drawerSnapshotFingerprint.value = '';
+          drawerChangedSinceOpen.value = false;
           if (!pageId.value) return;
 
-          let hasPersistedDrawerChange = false;
-          if (previousCollection && previousPrimaryKey) {
+          let hasPersistedDrawerChange = hadPersistedDrawerChange;
+          if (!hasPersistedDrawerChange && previousCollection && previousPrimaryKey) {
             const currentSnapshotFingerprint = await readItemSnapshotFingerprint(previousCollection, previousPrimaryKey);
             const currentSnapshotKey = `${previousCollection}:${previousPrimaryKey}`;
             if (
@@ -3058,7 +3115,9 @@ data:
           // Keep the tree view in sync with any edits saved through the drawer.
           await refreshAll();
           if (hasPersistedDrawerChange) {
-            markPageDirtyFromDrawerEdits();
+            if (!hadPersistedDrawerChange) {
+              markPageDirtyFromDrawerEdits();
+            }
           } else if (previousPrimaryKey) {
             info.value = 'No saved drawer changes detected.';
           }
@@ -3257,6 +3316,7 @@ data:
         });
     
         onBeforeUnmount(() => {
+          clearDrawerMonitor();
           if (typeof window !== 'undefined') {
             window.removeEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
           }
