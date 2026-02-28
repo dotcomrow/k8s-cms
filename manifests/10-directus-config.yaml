@@ -2458,9 +2458,14 @@ data:
         const filterHierarchy = ref('direct_children');
         const groupBy = ref('template');
         const isPrimaryInstance = ref(true);
-    
+        const drawerActive = ref(false);
+        const drawerCollection = ref('');
+        const drawerPrimaryKey = ref('');
+
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
+        const resolvedDrawerItem = resolveComponent('DrawerItem');
+        const hasDrawerItem = typeof resolvedDrawerItem !== 'string';
     
         const claimPrimaryInstance = () => {
           const registry = getBlocksManagerRegistry();
@@ -2908,14 +2913,42 @@ data:
           const href = `${window.location.origin}${relativePath}`;
           window.location.assign(href);
         };
-    
-        const openBlockRow = (row) => {
-          openAdminPath(`${adminBasePath.value}/${pageBlocksCollection.value}/${encodeURIComponent(row.id)}`);
+
+        const openDrawerItem = (collectionName, primaryKey) => {
+          const nextCollection = asString(collectionName);
+          const nextPrimaryKey = parseId(primaryKey);
+          if (!nextCollection || !nextPrimaryKey) return;
+
+          if (!hasDrawerItem) {
+            openAdminPath(`${adminBasePath.value}/${encodeURIComponent(nextCollection)}/${encodeURIComponent(nextPrimaryKey)}`);
+            return;
+          }
+
+          drawerCollection.value = nextCollection;
+          drawerPrimaryKey.value = nextPrimaryKey;
+          drawerActive.value = true;
         };
-    
+
+        const handleDrawerActive = async (nextActive) => {
+          const shouldBeActive = Boolean(nextActive);
+          drawerActive.value = shouldBeActive;
+
+          if (shouldBeActive) return;
+
+          drawerPrimaryKey.value = '';
+          if (!pageId.value) return;
+
+          // Keep the tree view in sync with any edits saved through the drawer.
+          await refreshAll();
+        };
+
+        const openBlockRow = (row) => {
+          openDrawerItem(pageBlocksCollection.value, row?.id);
+        };
+
         const openContentItem = (row) => {
           if (!row.collection || !row.item) return;
-          openAdminPath(`${adminBasePath.value}/${encodeURIComponent(row.collection)}/${encodeURIComponent(row.item)}`);
+          openDrawerItem(row.collection, row.item);
         };
     
         const openBlocksCollection = () => {
@@ -3203,9 +3236,11 @@ data:
               maxHeight: '68vh',
               overflow: 'auto',
               border: '2px solid var(--theme--border-normal)',
+              outline: '1px solid var(--theme--border-subdued)',
+              outlineOffset: '0',
               borderRadius: 'var(--theme--border-radius)',
               padding: '10px',
-              background: 'var(--theme--background-page)',
+              background: 'var(--theme--background)',
               boxShadow: 'inset 0 0 0 1px var(--theme--border-subdued)',
             },
             treeNodeCard: {
@@ -3557,6 +3592,21 @@ data:
                     : []),
                 ]),
               ])
+            );
+          }
+
+          if (hasDrawerItem) {
+            children.push(
+              h(resolvedDrawerItem, {
+                active: drawerActive.value,
+                collection: drawerCollection.value || pageBlocksCollection.value,
+                primaryKey: drawerPrimaryKey.value || '+',
+                disabled: props.disabled,
+                nonEditable: props.disabled,
+                'onUpdate:active': (next) => {
+                  handleDrawerActive(next);
+                },
+              })
             );
           }
     
