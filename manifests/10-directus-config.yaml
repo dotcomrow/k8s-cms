@@ -2411,6 +2411,7 @@ data:
     const isDirectChildRow = (row) => !asString(row?.parent_block_id);
     const BLOCKS_MANAGER_REGISTRY_KEY = '__cmsPageBlocksManagerActiveByField';
     const BLOCKS_MANAGER_REGISTRY_EVENT = 'cms-page-blocks-manager-registry-updated';
+    const BLOCKS_MANAGER_SAVE_MONITOR_KEY = '__cmsPageBlocksManagerSaveMonitor';
     
     const getBlocksManagerRegistry = () => {
       if (typeof window === 'undefined') return null;
@@ -2419,6 +2420,74 @@ data:
         window[BLOCKS_MANAGER_REGISTRY_KEY] = {};
       }
       return window[BLOCKS_MANAGER_REGISTRY_KEY];
+    };
+
+    const getBlocksManagerSaveMonitor = () => {
+      if (typeof window === 'undefined') return null;
+      const current = window[BLOCKS_MANAGER_SAVE_MONITOR_KEY];
+      if (current && typeof current === 'object') return current;
+
+      const created = {
+        installed: false,
+        originalFetch: null,
+        handlers: {},
+      };
+      window[BLOCKS_MANAGER_SAVE_MONITOR_KEY] = created;
+      return created;
+    };
+
+    const registerBlocksManagerSaveObserver = (observerId, observer) => {
+      const monitor = getBlocksManagerSaveMonitor();
+      if (!monitor || !observerId || typeof observer !== 'function') return () => {};
+
+      monitor.handlers[observerId] = observer;
+
+      if (!monitor.installed && typeof window.fetch === 'function') {
+        monitor.originalFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+          const response = await monitor.originalFetch(...args);
+          let requestUrl = '';
+          let requestMethod = 'GET';
+
+          try {
+            const requestInput = args[0];
+            const requestInit = args[1] || {};
+            if (typeof requestInput === 'string') {
+              requestUrl = requestInput;
+            } else if (requestInput && typeof requestInput.url === 'string') {
+              requestUrl = requestInput.url;
+              if (requestInput.method) requestMethod = String(requestInput.method).toUpperCase();
+            }
+            if (requestInit && requestInit.method) {
+              requestMethod = String(requestInit.method).toUpperCase();
+            }
+          } catch (parseError) {
+            // Ignore observer metadata parse errors.
+          }
+
+          for (const handler of Object.values(monitor.handlers)) {
+            try {
+              handler({ method: requestMethod, url: requestUrl, response });
+            } catch (observerError) {
+              // Ignore observer handler errors; never block fetch response.
+            }
+          }
+
+          return response;
+        };
+        monitor.installed = true;
+      }
+
+      return () => {
+        const currentMonitor = getBlocksManagerSaveMonitor();
+        if (!currentMonitor) return;
+        delete currentMonitor.handlers[observerId];
+        if (currentMonitor.installed && Object.keys(currentMonitor.handlers).length === 0 && currentMonitor.originalFetch) {
+          window.fetch = currentMonitor.originalFetch;
+          currentMonitor.originalFetch = null;
+          currentMonitor.installed = false;
+        }
+      };
     };
     
     const InterfaceComponent = defineComponent({
@@ -2464,9 +2533,7 @@ data:
         const drawerSnapshotKey = ref('');
         const drawerSnapshotFingerprint = ref('');
         const drawerChangedSinceOpen = ref(false);
-        const drawerMonitorSession = ref(0);
-        const drawerMonitorTimer = ref(null);
-        const drawerMonitorInFlight = ref(false);
+        let unregisterSaveObserver = null;
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
@@ -2668,52 +2735,46 @@ data:
           }
         };
 
-        const clearDrawerMonitor = () => {
-          if (drawerMonitorTimer.value) {
-            clearInterval(drawerMonitorTimer.value);
-            drawerMonitorTimer.value = null;
-          }
-          drawerMonitorInFlight.value = false;
-          drawerMonitorSession.value += 1;
-        };
+        const detectObservedDrawerSave = (payload) => {
+          if (!isPrimaryInstance.value) return;
+          if (!drawerActive.value) return;
+          if (drawerChangedSinceOpen.value) return;
 
-        const evaluateDrawerPersistedChange = async (collectionName, primaryKey) => {
-          const collectionKey = asString(collectionName);
-          const itemKey = parseId(primaryKey);
-          if (!collectionKey || !itemKey) return false;
-          if (drawerChangedSinceOpen.value) return true;
+          const method = String(payload?.method || 'GET').toUpperCase();
+          if (!['PATCH', 'PUT', 'POST'].includes(method)) return;
+          if (!payload?.response?.ok) return;
 
-          const currentFingerprint = await readItemSnapshotFingerprint(collectionKey, itemKey);
-          if (!currentFingerprint || !drawerSnapshotFingerprint.value) return false;
-          if (currentFingerprint === drawerSnapshotFingerprint.value) return false;
-
-          drawerChangedSinceOpen.value = true;
-          markPageDirtyFromDrawerEdits();
-          info.value = 'Detected content updates from drawer. Save the page to publish and trigger refresh.';
-          return true;
-        };
-
-        const startDrawerMonitor = (collectionName, primaryKey) => {
-          const collectionKey = asString(collectionName);
-          const itemKey = parseId(primaryKey);
+          const collectionKey = asString(drawerCollection.value);
+          const itemKey = parseId(drawerPrimaryKey.value);
           if (!collectionKey || !itemKey) return;
 
-          clearDrawerMonitor();
-          const session = drawerMonitorSession.value;
+          let pathname = '';
+          try {
+            pathname = new URL(asString(payload?.url || ''), window.location.origin).pathname || '';
+          } catch (parseError) {
+            return;
+          }
 
-          drawerMonitorTimer.value = setInterval(async () => {
-            if (!drawerActive.value) return;
-            if (drawerMonitorSession.value !== session) return;
-            if (drawerMonitorInFlight.value) return;
-            if (drawerChangedSinceOpen.value) return;
+          const segments = pathname.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment));
+          if (segments[0] !== 'items') return;
 
-            drawerMonitorInFlight.value = true;
-            try {
-              await evaluateDrawerPersistedChange(collectionKey, itemKey);
-            } finally {
-              drawerMonitorInFlight.value = false;
-            }
-          }, 1500);
+          const requestCollection = asString(segments[1]);
+          const requestItem = asString(segments[2]);
+          if (requestCollection !== collectionKey) return;
+
+          if (requestItem && requestItem === itemKey) {
+            drawerChangedSinceOpen.value = true;
+            markPageDirtyFromDrawerEdits();
+            info.value = 'Detected content updates from drawer. Save the page to publish and trigger refresh.';
+            return;
+          }
+
+          // Some Directus update flows use collection-level PATCH endpoints.
+          if (!requestItem && method === 'PATCH') {
+            drawerChangedSinceOpen.value = true;
+            markPageDirtyFromDrawerEdits();
+            info.value = 'Detected content updates from drawer. Save the page to publish and trigger refresh.';
+          }
         };
     
         const normalizeBlockRow = (row) => {
@@ -3075,7 +3136,6 @@ data:
           await captureDrawerSnapshot(nextCollection, nextPrimaryKey);
           if (drawerCollection.value === nextCollection && drawerPrimaryKey.value === nextPrimaryKey) {
             drawerActive.value = true;
-            startDrawerMonitor(nextCollection, nextPrimaryKey);
           }
         };
 
@@ -3090,7 +3150,6 @@ data:
 
           if (shouldBeActive) return;
 
-          clearDrawerMonitor();
           drawerCollection.value = '';
           drawerPrimaryKey.value = '';
           drawerSnapshotKey.value = '';
@@ -3310,13 +3369,17 @@ data:
           if (typeof window !== 'undefined') {
             window.addEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
           }
+          unregisterSaveObserver = registerBlocksManagerSaveObserver(instanceToken, detectObservedDrawerSave);
           if (!groupBy.value) {
             groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
           }
         });
     
         onBeforeUnmount(() => {
-          clearDrawerMonitor();
+          if (typeof unregisterSaveObserver === 'function') {
+            unregisterSaveObserver();
+            unregisterSaveObserver = null;
+          }
           if (typeof window !== 'undefined') {
             window.removeEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
           }
