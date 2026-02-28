@@ -170,7 +170,7 @@ data:
               headers: []
             preview:
               enabled: true
-              endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh?mode=purge-and-refresh"
+              endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh?mode=refresh"
               method: POST
               retry_attempts: 12
               retry_delay_ms: 2000
