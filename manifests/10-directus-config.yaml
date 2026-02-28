@@ -2436,6 +2436,7 @@ data:
         const blocks = ref([]);
         const drafts = ref({});
         const selectedContext = ref('__page');
+        const expandedNodes = ref({ __root: true });
     
         const searchText = ref('');
         const filterCollection = ref('__all');
@@ -2521,6 +2522,37 @@ data:
           if (fromValues) return fromValues;
           return getPrimaryKeyFromLocation(pagesCollection.value);
         });
+
+        const isNodeExpanded = (nodeKey, defaultOpen = true) => {
+          const key = asString(nodeKey);
+          if (!key) return Boolean(defaultOpen);
+          const current = expandedNodes.value?.[key];
+          if (typeof current === 'boolean') return current;
+          return Boolean(defaultOpen);
+        };
+
+        const setNodeExpanded = (nodeKey, nextOpen) => {
+          const key = asString(nodeKey);
+          if (!key) return;
+          expandedNodes.value = {
+            ...expandedNodes.value,
+            [key]: Boolean(nextOpen),
+          };
+        };
+
+        const toggleNodeExpanded = (nodeKey, defaultOpen = true) => {
+          setNodeExpanded(nodeKey, !isNodeExpanded(nodeKey, defaultOpen));
+        };
+
+        const expandCollapseAllNodes = (expanded) => {
+          const next = { __root: Boolean(expanded) };
+          for (const row of blocks.value) {
+            const rowId = asString(row?.id);
+            if (!rowId) continue;
+            next[rowId] = Boolean(expanded);
+          }
+          expandedNodes.value = next;
+        };
     
         const resetFilters = () => {
           searchText.value = '';
@@ -3031,6 +3063,21 @@ data:
           },
           { immediate: true }
         );
+
+        watch(
+          () => blocks.value.map((row) => asString(row?.id)).filter(Boolean).join('|'),
+          () => {
+            const valid = new Set(['__root', ...blocks.value.map((row) => asString(row?.id)).filter(Boolean)]);
+            const next = {};
+            for (const [key, value] of Object.entries(expandedNodes.value || {})) {
+              if (!valid.has(key)) continue;
+              next[key] = Boolean(value);
+            }
+            if (!Object.prototype.hasOwnProperty.call(next, '__root')) next.__root = true;
+            expandedNodes.value = next;
+          },
+          { immediate: true }
+        );
     
         onMounted(() => {
           claimPrimaryInstance();
@@ -3140,6 +3187,14 @@ data:
               flexDirection: 'column',
               gap: '10px',
             },
+            treeViewport: {
+              maxHeight: '68vh',
+              overflow: 'auto',
+              border: '1px solid var(--theme--border-subdued)',
+              borderRadius: 'var(--theme--border-radius)',
+              padding: '10px',
+              background: 'var(--theme--background-page)',
+            },
             treeNodeCard: {
               display: 'flex',
               flexDirection: 'column',
@@ -3155,6 +3210,12 @@ data:
               justifyContent: 'space-between',
               alignItems: 'center',
               gap: '8px',
+            },
+            treeNodeHeaderLeft: {
+              display: 'flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '6px',
             },
             treeNodeTitle: {
               fontSize: '13px',
@@ -3334,6 +3395,7 @@ data:
             }
             const childRows = childrenByParent.get(rowId) || [];
             const hasChildren = childRows.length > 0;
+            const nodeExpanded = isNodeExpanded(rowId, true);
             const isTemplateNode = hasChildren
               || toLower(row?.template_scope) === 'template'
               || toLower(row?.collection).includes('template');
@@ -3341,7 +3403,18 @@ data:
             return h('li', { key: rowId }, [
               h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
                 h('header', { class: 'cms-page-blocks-manager__tree-node-header', style: styles.treeNodeHeader }, [
-                  h('strong', { style: styles.treeNodeTitle }, title),
+                  h('div', { style: styles.treeNodeHeaderLeft }, [
+                    ...(hasChildren
+                      ? [
+                          renderButtonControl({
+                            label: nodeExpanded ? 'Collapse' : 'Expand',
+                            disabled: false,
+                            onClick: () => toggleNodeExpanded(rowId, true),
+                          }),
+                        ]
+                      : []),
+                    h('strong', { style: styles.treeNodeTitle }, title),
+                  ]),
                   h('div', { style: styles.treeNodeActions }, [
                     renderButtonControl({
                       label: 'Edit Block',
@@ -3365,13 +3438,14 @@ data:
                   ...(isTemplateNode ? [renderMetaChip(`children=${childRows.length}`)] : []),
                 ]),
               ]),
-              ...(hasChildren
+              ...(hasChildren && nodeExpanded
                 ? [
                     h('ul', { class: 'cms-page-blocks-manager__tree-child-list', style: styles.treeChildList }, childRows.map((childRow) => renderTreeNode(childRow, [...ancestorPath, rowId]))),
                   ]
                 : []),
             ]);
           };
+          const rootExpanded = isNodeExpanded('__root', true);
 
           const children = [
             renderCard({
@@ -3382,6 +3456,16 @@ data:
                     label: loading.value ? 'Loading...' : 'Reload',
                     disabled: loading.value,
                     onClick: refreshAll,
+                  }),
+                  renderButtonControl({
+                    label: 'Expand All',
+                    disabled: loading.value || blocks.value.length === 0,
+                    onClick: () => expandCollapseAllNodes(true),
+                  }),
+                  renderButtonControl({
+                    label: 'Collapse All',
+                    disabled: loading.value || blocks.value.length === 0,
+                    onClick: () => expandCollapseAllNodes(false),
                   }),
                   renderButtonControl({
                     label: 'Open Collection View',
@@ -3426,18 +3510,29 @@ data:
 
           if (pageId.value && rootRows.length > 0) {
             children.push(
-              h('section', { class: 'cms-page-blocks-manager__tree-root', style: styles.treeRoot }, [
-                h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
-                  h('header', { style: styles.treePageHeader }, [
-                    h('strong', { style: styles.treeNodeTitle }, `Page Root: ${pageContext.value.slug || pageId.value}`),
-                    renderMetaChip(`children=${rootRows.length}`),
+              h('div', { class: 'cms-page-blocks-manager__tree-viewport', style: styles.treeViewport }, [
+                h('section', { class: 'cms-page-blocks-manager__tree-root', style: styles.treeRoot }, [
+                  h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
+                    h('header', { style: styles.treePageHeader }, [
+                      h('div', { style: styles.treeNodeHeaderLeft }, [
+                        renderButtonControl({
+                          label: rootExpanded ? 'Collapse' : 'Expand',
+                          disabled: false,
+                          onClick: () => toggleNodeExpanded('__root', true),
+                        }),
+                        h('strong', { style: styles.treeNodeTitle }, `Page Root: ${pageContext.value.slug || pageId.value}`),
+                      ]),
+                      renderMetaChip(`children=${rootRows.length}`),
+                    ]),
+                    h('div', { style: styles.treeNodeMeta }, [
+                      renderMetaChip(`site=${pageContext.value.site_key || '(global)'}`),
+                      renderMetaChip(`layout=${pageContext.value.layout_template_key || '(none)'}`),
+                    ]),
                   ]),
-                  h('div', { style: styles.treeNodeMeta }, [
-                    renderMetaChip(`site=${pageContext.value.site_key || '(global)'}`),
-                    renderMetaChip(`layout=${pageContext.value.layout_template_key || '(none)'}`),
-                  ]),
+                  ...(rootExpanded
+                    ? [h('ul', { class: 'cms-page-blocks-manager__tree-list', style: styles.treeList }, rootRows.map((row) => renderTreeNode(row)))]
+                    : []),
                 ]),
-                h('ul', { class: 'cms-page-blocks-manager__tree-list', style: styles.treeList }, rootRows.map((row) => renderTreeNode(row))),
               ])
             );
           }
