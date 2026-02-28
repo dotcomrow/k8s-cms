@@ -2379,6 +2379,25 @@ data:
       }
       return result.sort((a, b) => a.localeCompare(b));
     };
+
+    const shortId = (value) => {
+      const normalized = asString(value);
+      if (!normalized) return '';
+      if (normalized.length <= 16) return normalized;
+      return `${normalized.slice(0, 8)}...${normalized.slice(-4)}`;
+    };
+
+    const collectionDisplayName = (collection) => {
+      const normalized = toLower(collection);
+      if (!normalized) return 'Block';
+      if (normalized.includes('hero')) return 'Hero';
+      if (normalized.includes('rich_text')) return 'Rich Text';
+      if (normalized.includes('module')) return 'Module';
+      if (normalized.includes('template')) return 'Template';
+      if (normalized.includes('page_block')) return 'Block Link';
+      if (normalized.includes('page')) return 'Page Block';
+      return asString(collection);
+    };
     
     const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     
@@ -3190,10 +3209,11 @@ data:
             treeViewport: {
               maxHeight: '68vh',
               overflow: 'auto',
-              border: '1px solid var(--theme--border-subdued)',
+              border: '2px solid var(--theme--border-normal)',
               borderRadius: 'var(--theme--border-radius)',
               padding: '10px',
               background: 'var(--theme--background-page)',
+              boxShadow: 'inset 0 0 0 1px var(--theme--border-subdued)',
             },
             treeNodeCard: {
               display: 'flex',
@@ -3217,10 +3237,19 @@ data:
               flexWrap: 'wrap',
               gap: '6px',
             },
+            treeNodeTitleWrap: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '2px',
+            },
             treeNodeTitle: {
               fontSize: '13px',
               fontWeight: '600',
               color: 'var(--theme--foreground-normal)',
+            },
+            treeNodeSubtitle: {
+              fontSize: '11px',
+              color: 'var(--theme--foreground-subdued)',
             },
             treeNodeMeta: {
               display: 'flex',
@@ -3396,10 +3425,17 @@ data:
             const childRows = childrenByParent.get(rowId) || [];
             const hasChildren = childRows.length > 0;
             const nodeExpanded = isNodeExpanded(rowId, true);
+            const collectionKey = asString(row?.collection);
+            const itemId = asString(row?.item);
+            const blockTypeLabel = collectionDisplayName(collectionKey);
+            const parentBlockId = asString(row?.parent_block_id) || 'root';
+            const depthValue = asString(row?.tree_depth) || '0';
+            const pathValue = asString(row?.tree_path) || '-';
             const isTemplateNode = hasChildren
               || toLower(row?.template_scope) === 'template'
-              || toLower(row?.collection).includes('template');
-            const title = `${asString(row?.collection) || '(collection?)'}:${asString(row?.item) || '(item?)'}`;
+              || toLower(collectionKey).includes('template');
+            const title = asString(row?.group_tag) || `${blockTypeLabel} (${asString(row?.slot) || 'main'})`;
+            const subtitle = `${collectionKey || '(collection?)'}:${itemId || '(item?)'}`;
             return h('li', { key: rowId }, [
               h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
                 h('header', { class: 'cms-page-blocks-manager__tree-node-header', style: styles.treeNodeHeader }, [
@@ -3413,7 +3449,10 @@ data:
                           }),
                         ]
                       : []),
-                    h('strong', { style: styles.treeNodeTitle }, title),
+                    h('div', { style: styles.treeNodeTitleWrap }, [
+                      h('strong', { style: styles.treeNodeTitle }, title),
+                      h('span', { style: styles.treeNodeSubtitle }, subtitle),
+                    ]),
                   ]),
                   h('div', { style: styles.treeNodeActions }, [
                     renderButtonControl({
@@ -3429,11 +3468,18 @@ data:
                   ]),
                 ]),
                 h('div', { style: styles.treeNodeMeta }, [
-                  renderMetaChip(`id=${rowId || '?'}`),
+                  renderMetaChip(`type=${blockTypeLabel}`),
+                  renderMetaChip(`row=${shortId(rowId) || '?'}`),
+                  renderMetaChip(`content=${shortId(itemId) || '?'}`),
+                  renderMetaChip(`parent=${shortId(parentBlockId)}`),
+                  renderMetaChip(`depth=${depthValue}`),
+                  renderMetaChip(`path=${pathValue}`),
                   renderMetaChip(`slot=${asString(row?.slot) || 'main'}`),
                   renderMetaChip(`sort=${asString(row?.sort) || '-'}`),
                   renderMetaChip(`scope=${asString(row?.template_scope) || 'page'}`),
                   renderMetaChip(`template=${asString(row?.template_group_key) || 'page-root'}`),
+                  ...(asString(row?.page_slug) ? [renderMetaChip(`page=${asString(row.page_slug)}`)] : []),
+                  ...(asString(row?.status) ? [renderMetaChip(`status=${asString(row.status)}`)] : []),
                   ...(asString(row?.group_tag) ? [renderMetaChip(`group=${asString(row.group_tag)}`)] : []),
                   ...(isTemplateNode ? [renderMetaChip(`children=${childRows.length}`)] : []),
                 ]),
@@ -3525,6 +3571,7 @@ data:
                       renderMetaChip(`children=${rootRows.length}`),
                     ]),
                     h('div', { style: styles.treeNodeMeta }, [
+                      renderMetaChip(`page_id=${shortId(pageContext.value.id || pageId.value)}`),
                       renderMetaChip(`site=${pageContext.value.site_key || '(global)'}`),
                       renderMetaChip(`layout=${pageContext.value.layout_template_key || '(none)'}`),
                     ]),
