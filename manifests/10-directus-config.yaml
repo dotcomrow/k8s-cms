@@ -2640,7 +2640,7 @@ data:
             const response = await apiRequest(
               'GET',
               `/items/${collectionKey}/${encodeURIComponent(itemKey)}`,
-              { fields: '*' },
+              {},
             );
             return snapshotFingerprintFor(response?.data ?? null);
           } catch (requestError) {
@@ -3006,7 +3006,7 @@ data:
           window.location.assign(href);
         };
 
-        const openDrawerItem = (collectionName, primaryKey) => {
+        const openDrawerItem = async (collectionName, primaryKey) => {
           const nextCollection = asString(collectionName);
           const nextPrimaryKey = parseId(primaryKey);
           if (!nextCollection || !nextPrimaryKey) return;
@@ -3018,8 +3018,10 @@ data:
 
           drawerCollection.value = nextCollection;
           drawerPrimaryKey.value = nextPrimaryKey;
-          drawerActive.value = true;
-          captureDrawerSnapshot(nextCollection, nextPrimaryKey);
+          await captureDrawerSnapshot(nextCollection, nextPrimaryKey);
+          if (drawerCollection.value === nextCollection && drawerPrimaryKey.value === nextPrimaryKey) {
+            drawerActive.value = true;
+          }
         };
 
         const handleDrawerActive = async (nextActive) => {
