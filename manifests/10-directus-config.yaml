@@ -2432,7 +2432,7 @@ data:
         collection: { type: String, default: '' },
       },
       emits: ['input'],
-      setup(props) {
+      setup(props, { emit }) {
         const loading = ref(false);
         const saving = ref({});
         const error = ref('');
@@ -2675,6 +2675,43 @@ data:
             };
           }
           drafts.value = next;
+        };
+
+        const buildRelationManagerValue = () => {
+          const rows = [];
+          for (const row of blocks.value) {
+            const rowId = parseId(row?.id);
+            const collectionName = asString(row?.collection);
+            const itemId = parseId(row?.item);
+            if (!rowId && (!collectionName || !itemId)) continue;
+
+            const nextRow = {};
+            if (rowId) nextRow.id = rowId;
+            if (collectionName) nextRow.collection = collectionName;
+            if (itemId) nextRow.item = itemId;
+
+            const slot = asString(row?.slot);
+            if (slot) nextRow.slot = slot;
+
+            const sortValue = asInteger(row?.sort);
+            if (sortValue !== null) nextRow.sort = sortValue;
+
+            const parentId = parseId(row?.parent_block_id);
+            if (parentId) nextRow.parent_block_id = parentId;
+
+            const groupTag = asString(row?.group_tag);
+            if (groupTag) nextRow.group_tag = groupTag;
+
+            rows.push(nextRow);
+          }
+          return rows;
+        };
+
+        const markPageDirtyFromDrawerEdits = () => {
+          if (props.disabled) return;
+          // Emit a canonical relation payload so Directus marks the parent form as dirty.
+          emit('input', buildRelationManagerValue());
+          info.value = 'Detected content updates from drawer. Save the page to publish and trigger refresh.';
         };
     
         const loadPageContext = async () => {
@@ -2931,6 +2968,7 @@ data:
 
         const handleDrawerActive = async (nextActive) => {
           const shouldBeActive = Boolean(nextActive);
+          const previousPrimaryKey = asString(drawerPrimaryKey.value);
           drawerActive.value = shouldBeActive;
 
           if (shouldBeActive) return;
@@ -2940,6 +2978,9 @@ data:
 
           // Keep the tree view in sync with any edits saved through the drawer.
           await refreshAll();
+          if (previousPrimaryKey) {
+            markPageDirtyFromDrawerEdits();
+          }
         };
 
         const openBlockRow = (row) => {
