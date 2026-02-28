@@ -2461,6 +2461,7 @@ data:
         const drawerActive = ref(false);
         const drawerCollection = ref('');
         const drawerPrimaryKey = ref('');
+        let drawerRefreshTimer = null;
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
@@ -2963,6 +2964,10 @@ data:
             return;
           }
 
+          if (drawerRefreshTimer) {
+            clearTimeout(drawerRefreshTimer);
+            drawerRefreshTimer = null;
+          }
           drawerCollection.value = nextCollection;
           drawerPrimaryKey.value = nextPrimaryKey;
           drawerActive.value = true;
@@ -2973,11 +2978,18 @@ data:
           drawerActive.value = shouldBeActive;
           if (shouldBeActive) return;
 
-          drawerPrimaryKey.value = '';
+          // Avoid immediate refresh/unmount races with DrawerItem save handling.
+          if (drawerRefreshTimer) {
+            clearTimeout(drawerRefreshTimer);
+            drawerRefreshTimer = null;
+          }
           if (!pageId.value) return;
-
-          // Keep the tree view in sync with any edits saved through the drawer.
-          await refreshAll();
+          drawerRefreshTimer = setTimeout(() => {
+            drawerRefreshTimer = null;
+            if (!drawerActive.value && pageId.value) {
+              void refreshAll();
+            }
+          }, 1200);
         };
 
         const openBlockRow = (row) => {
@@ -3173,6 +3185,10 @@ data:
         });
     
         onBeforeUnmount(() => {
+          if (drawerRefreshTimer) {
+            clearTimeout(drawerRefreshTimer);
+            drawerRefreshTimer = null;
+          }
           if (typeof window !== 'undefined') {
             window.removeEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
           }
