@@ -2458,9 +2458,14 @@ data:
         const filterHierarchy = ref('direct_children');
         const groupBy = ref('template');
         const isPrimaryInstance = ref(true);
+        const drawerActive = ref(false);
+        const drawerCollection = ref('');
+        const drawerPrimaryKey = ref('');
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
+        const resolvedDrawerItem = resolveComponent('DrawerItem');
+        const hasDrawerItem = typeof resolvedDrawerItem !== 'string';
     
         const claimPrimaryInstance = () => {
           const registry = getBlocksManagerRegistry();
@@ -2953,7 +2958,26 @@ data:
           const nextPrimaryKey = parseId(primaryKey);
           if (!nextCollection || !nextPrimaryKey) return;
 
-          openAdminPath(`${adminBasePath.value}/${encodeURIComponent(nextCollection)}/${encodeURIComponent(nextPrimaryKey)}`);
+          if (!hasDrawerItem) {
+            error.value = 'Drawer editor is unavailable. Cannot open editor in-page.';
+            return;
+          }
+
+          drawerCollection.value = nextCollection;
+          drawerPrimaryKey.value = nextPrimaryKey;
+          drawerActive.value = true;
+        };
+
+        const handleDrawerActive = async (nextActive) => {
+          const shouldBeActive = Boolean(nextActive);
+          drawerActive.value = shouldBeActive;
+          if (shouldBeActive) return;
+
+          drawerPrimaryKey.value = '';
+          if (!pageId.value) return;
+
+          // Keep the tree view in sync with any edits saved through the drawer.
+          await refreshAll();
         };
 
         const openBlockRow = (row) => {
@@ -3611,6 +3635,21 @@ data:
                   ]),
                 ]),
               ])
+            );
+          }
+
+          if (hasDrawerItem) {
+            children.push(
+              h(resolvedDrawerItem, {
+                active: drawerActive.value,
+                collection: drawerCollection.value || pageBlocksCollection.value,
+                primaryKey: drawerPrimaryKey.value || '+',
+                disabled: props.disabled,
+                nonEditable: props.disabled,
+                'onUpdate:active': (next) => {
+                  handleDrawerActive(next);
+                },
+              })
             );
           }
 
