@@ -3235,13 +3235,16 @@ data:
             treeViewport: {
               maxHeight: '68vh',
               overflow: 'auto',
-              border: '2px solid var(--theme--border-normal)',
-              outline: '1px solid var(--theme--border-subdued)',
-              outlineOffset: '0',
               borderRadius: 'var(--theme--border-radius)',
-              padding: '10px',
+              padding: '10px 12px',
               background: 'var(--theme--background)',
-              boxShadow: 'inset 0 0 0 1px var(--theme--border-subdued)',
+            },
+            treeViewportFrame: {
+              border: '2px solid var(--theme--border-color-subdued)',
+              borderRadius: 'calc(var(--theme--border-radius) + 2px)',
+              padding: '2px',
+              background: 'var(--theme--background-subdued)',
+              boxShadow: '0 0 0 1px var(--theme--border-color-subdued)',
             },
             treeNodeCard: {
               display: 'flex',
@@ -3572,24 +3575,26 @@ data:
 
           if (pageId.value && rootRows.length > 0) {
             children.push(
-              h('div', { class: 'cms-page-blocks-manager__tree-viewport', style: styles.treeViewport }, [
-                h('section', { class: 'cms-page-blocks-manager__tree-root', style: styles.treeRoot }, [
-                  h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
-                  h('header', { style: styles.treePageHeader }, [
-                    h('div', { style: styles.treeNodeHeaderLeft }, [
-                      renderButtonControl({
-                        label: rootExpanded ? 'Collapse' : 'Expand',
-                        disabled: false,
-                        onClick: () => toggleNodeExpanded('__root', true),
-                      }),
-                      h('strong', { style: styles.treeNodeTitle }, `Page Root: ${pageContext.value.slug || pageId.value}`),
+              h('div', { class: 'cms-page-blocks-manager__tree-viewport-frame', style: styles.treeViewportFrame }, [
+                h('div', { class: 'cms-page-blocks-manager__tree-viewport', style: styles.treeViewport }, [
+                  h('section', { class: 'cms-page-blocks-manager__tree-root', style: styles.treeRoot }, [
+                    h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
+                    h('header', { style: styles.treePageHeader }, [
+                      h('div', { style: styles.treeNodeHeaderLeft }, [
+                        renderButtonControl({
+                          label: rootExpanded ? 'Collapse' : 'Expand',
+                          disabled: false,
+                          onClick: () => toggleNodeExpanded('__root', true),
+                        }),
+                        h('strong', { style: styles.treeNodeTitle }, `Page Root: ${pageContext.value.slug || pageId.value}`),
+                      ]),
+                      renderMetaChip(`children=${rootRows.length}`),
                     ]),
-                    renderMetaChip(`children=${rootRows.length}`),
                   ]),
-                ]),
-                  ...(rootExpanded
-                    ? [h('ul', { class: 'cms-page-blocks-manager__tree-list', style: styles.treeList }, rootRows.map((row) => renderTreeNode(row)))]
-                    : []),
+                    ...(rootExpanded
+                      ? [h('ul', { class: 'cms-page-blocks-manager__tree-list', style: styles.treeList }, rootRows.map((row) => renderTreeNode(row)))]
+                      : []),
+                  ]),
                 ]),
               ])
             );
