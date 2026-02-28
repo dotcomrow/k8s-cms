@@ -2593,6 +2593,7 @@ data:
     
           const response = await fetch(url.toString(), {
             method,
+            cache: 'no-store',
             credentials: 'same-origin',
             headers: {
               Accept: 'application/json',
@@ -3056,8 +3057,12 @@ data:
 
           // Keep the tree view in sync with any edits saved through the drawer.
           await refreshAll();
-          if (hasPersistedDrawerChange) {
+          const isLikelyContentCollection = previousCollection && previousCollection !== pageBlocksCollection.value;
+          if (hasPersistedDrawerChange || (isLikelyContentCollection && previousPrimaryKey)) {
             markPageDirtyFromDrawerEdits();
+            if (!hasPersistedDrawerChange && isLikelyContentCollection) {
+              info.value = 'Drawer close detected on content item. Page marked dirty so you can publish and trigger refresh.';
+            }
           } else if (previousPrimaryKey) {
             info.value = 'No saved drawer changes detected.';
           }
