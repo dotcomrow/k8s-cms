@@ -2992,6 +2992,33 @@ data:
           }, 1200);
         };
 
+        const handleDrawerInput = async (edits) => {
+          const collection = asString(drawerCollection.value);
+          const primaryKey = parseId(drawerPrimaryKey.value);
+          if (!collection || !primaryKey || primaryKey === '+') return;
+          if (!edits || typeof edits !== 'object') return;
+
+          const patchPayload = { ...edits };
+          // Primary key is included by DrawerItem for existing items; don't patch it.
+          delete patchPayload.id;
+
+          if (Object.keys(patchPayload).length === 0) return;
+
+          error.value = '';
+          try {
+            await apiRequest(
+              'PATCH',
+              `/items/${collection}/${encodeURIComponent(primaryKey)}`,
+              {},
+              patchPayload,
+            );
+            markPageDirtyFromDrawerEdits();
+            info.value = 'Saved drawer edits. Save the page to publish and trigger refresh.';
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to save drawer edits.';
+          }
+        };
+
         const openBlockRow = (row) => {
           openDrawerItem(pageBlocksCollection.value, row?.id);
         };
@@ -3662,6 +3689,9 @@ data:
                 primaryKey: drawerPrimaryKey.value || '+',
                 disabled: props.disabled,
                 nonEditable: props.disabled,
+                onInput: (payload) => {
+                  void handleDrawerInput(payload);
+                },
                 'onUpdate:active': (next) => {
                   handleDrawerActive(next);
                 },
