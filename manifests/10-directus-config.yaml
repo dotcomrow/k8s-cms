@@ -2411,7 +2411,6 @@ data:
     const isDirectChildRow = (row) => !asString(row?.parent_block_id);
     const BLOCKS_MANAGER_REGISTRY_KEY = '__cmsPageBlocksManagerActiveByField';
     const BLOCKS_MANAGER_REGISTRY_EVENT = 'cms-page-blocks-manager-registry-updated';
-    const BLOCKS_MANAGER_SAVE_MONITOR_KEY = '__cmsPageBlocksManagerSaveMonitor';
     
     const getBlocksManagerRegistry = () => {
       if (typeof window === 'undefined') return null;
@@ -2422,130 +2421,6 @@ data:
       return window[BLOCKS_MANAGER_REGISTRY_KEY];
     };
 
-    const getBlocksManagerSaveMonitor = () => {
-      if (typeof window === 'undefined') return null;
-      const current = window[BLOCKS_MANAGER_SAVE_MONITOR_KEY];
-      if (current && typeof current === 'object') return current;
-
-      const created = {
-        installed: false,
-        installedXhr: false,
-        originalFetch: null,
-        originalXHROpen: null,
-        originalXHRSend: null,
-        handlers: {},
-      };
-      window[BLOCKS_MANAGER_SAVE_MONITOR_KEY] = created;
-      return created;
-    };
-
-    const registerBlocksManagerSaveObserver = (observerId, observer) => {
-      const monitor = getBlocksManagerSaveMonitor();
-      if (!monitor || !observerId || typeof observer !== 'function') return () => {};
-
-      monitor.handlers[observerId] = observer;
-      const notifyHandlers = (payload) => {
-        for (const handler of Object.values(monitor.handlers)) {
-          try {
-            handler(payload);
-          } catch (observerError) {
-            // Ignore observer handler errors; never block app behavior.
-          }
-        }
-      };
-
-      if (!monitor.installed && typeof window.fetch === 'function') {
-        monitor.originalFetch = window.fetch.bind(window);
-        window.fetch = async (...args) => {
-          let requestUrl = '';
-          let requestMethod = 'GET';
-
-          try {
-            const requestInput = args[0];
-            const requestInit = args[1] || {};
-            if (typeof requestInput === 'string') {
-              requestUrl = requestInput;
-            } else if (requestInput && typeof requestInput.url === 'string') {
-              requestUrl = requestInput.url;
-              if (requestInput.method) requestMethod = String(requestInput.method).toUpperCase();
-            }
-            if (requestInit && requestInit.method) {
-              requestMethod = String(requestInit.method).toUpperCase();
-            }
-          } catch (parseError) {
-            // Ignore observer metadata parse errors.
-          }
-
-          try {
-            const response = await monitor.originalFetch(...args);
-            notifyHandlers({ method: requestMethod, url: requestUrl, response });
-            return response;
-          } catch (requestError) {
-            notifyHandlers({
-              method: requestMethod,
-              url: requestUrl,
-              response: { ok: false, status: 0 },
-              error: requestError,
-            });
-            throw requestError;
-          }
-        };
-        monitor.installed = true;
-      }
-
-      if (!monitor.installedXhr && typeof XMLHttpRequest !== 'undefined') {
-        monitor.originalXHROpen = XMLHttpRequest.prototype.open;
-        monitor.originalXHRSend = XMLHttpRequest.prototype.send;
-
-        XMLHttpRequest.prototype.open = function patchedBlocksManagerOpen(method, url, ...rest) {
-          this.__cmsBlocksManagerMethod = String(method || 'GET').toUpperCase();
-          this.__cmsBlocksManagerUrl = typeof url === 'string' ? url : asString(url);
-          return monitor.originalXHROpen.call(this, method, url, ...rest);
-        };
-
-        XMLHttpRequest.prototype.send = function patchedBlocksManagerSend(...sendArgs) {
-          if (!this.__cmsBlocksManagerObserved) {
-            this.__cmsBlocksManagerObserved = true;
-            this.addEventListener('loadend', () => {
-              const statusCode = Number(this.status || 0);
-              notifyHandlers({
-                method: asString(this.__cmsBlocksManagerMethod) || 'GET',
-                url: asString(this.__cmsBlocksManagerUrl),
-                response: {
-                  ok: Number.isFinite(statusCode) && statusCode >= 200 && statusCode < 300,
-                  status: statusCode,
-                },
-              });
-              this.__cmsBlocksManagerObserved = false;
-            });
-          }
-          return monitor.originalXHRSend.apply(this, sendArgs);
-        };
-
-        monitor.installedXhr = true;
-      }
-
-      return () => {
-        const currentMonitor = getBlocksManagerSaveMonitor();
-        if (!currentMonitor) return;
-        delete currentMonitor.handlers[observerId];
-        if (Object.keys(currentMonitor.handlers).length === 0) {
-          if (currentMonitor.installed && currentMonitor.originalFetch) {
-            window.fetch = currentMonitor.originalFetch;
-            currentMonitor.originalFetch = null;
-            currentMonitor.installed = false;
-          }
-          if (currentMonitor.installedXhr && currentMonitor.originalXHROpen && currentMonitor.originalXHRSend) {
-            XMLHttpRequest.prototype.open = currentMonitor.originalXHROpen;
-            XMLHttpRequest.prototype.send = currentMonitor.originalXHRSend;
-            currentMonitor.originalXHROpen = null;
-            currentMonitor.originalXHRSend = null;
-            currentMonitor.installedXhr = false;
-          }
-        }
-      };
-    };
-    
     const InterfaceComponent = defineComponent({
       name: 'CmsPageBlocksManager',
       props: {
@@ -2586,13 +2461,6 @@ data:
         const drawerActive = ref(false);
         const drawerCollection = ref('');
         const drawerPrimaryKey = ref('');
-        const drawerSnapshotKey = ref('');
-        const drawerSnapshotFingerprint = ref('');
-        const drawerChangedSinceOpen = ref(false);
-        const drawerLastCollection = ref('');
-        const drawerLastPrimaryKey = ref('');
-        const drawerLastClosedAtMs = ref(0);
-        let unregisterSaveObserver = null;
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
@@ -2740,156 +2608,6 @@ data:
           return payload;
         };
 
-        const normalizeSnapshot = (value) => {
-          if (Array.isArray(value)) {
-            return value.map((entry) => normalizeSnapshot(entry));
-          }
-          if (value && typeof value === 'object') {
-            const output = {};
-            for (const key of Object.keys(value).sort()) {
-              output[key] = normalizeSnapshot(value[key]);
-            }
-            return output;
-          }
-          return value;
-        };
-
-        const snapshotFingerprintFor = (value) => {
-          try {
-            return JSON.stringify(normalizeSnapshot(value));
-          } catch (snapshotError) {
-            return '';
-          }
-        };
-
-        const readItemSnapshotFingerprint = async (collectionName, primaryKey) => {
-          const collectionKey = asString(collectionName);
-          const itemKey = parseId(primaryKey);
-          if (!collectionKey || !itemKey) return '';
-
-          try {
-            const response = await apiRequest(
-              'GET',
-              `/items/${collectionKey}/${encodeURIComponent(itemKey)}`,
-              {},
-            );
-            return snapshotFingerprintFor(response?.data ?? null);
-          } catch (requestError) {
-            return '';
-          }
-        };
-
-        const captureDrawerSnapshot = async (collectionName, primaryKey) => {
-          const collectionKey = asString(collectionName);
-          const itemKey = parseId(primaryKey);
-          const key = collectionKey && itemKey ? `${collectionKey}:${itemKey}` : '';
-          drawerSnapshotKey.value = key;
-          drawerSnapshotFingerprint.value = '';
-          drawerChangedSinceOpen.value = false;
-          if (!key) return;
-
-          const fingerprint = await readItemSnapshotFingerprint(collectionKey, itemKey);
-          if (drawerSnapshotKey.value === key) {
-            drawerSnapshotFingerprint.value = fingerprint;
-          }
-        };
-
-        const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-        const resolveObservedDrawerTarget = () => {
-          const activeCollection = asString(drawerCollection.value);
-          const activePrimaryKey = parseId(drawerPrimaryKey.value);
-          if (activeCollection && activePrimaryKey) {
-            return { collection: activeCollection, primaryKey: activePrimaryKey };
-          }
-
-          const closedCollection = asString(drawerLastCollection.value);
-          const closedPrimaryKey = parseId(drawerLastPrimaryKey.value);
-          const closedAtMs = Number(drawerLastClosedAtMs.value || 0);
-          if (
-            closedCollection
-            && closedPrimaryKey
-            && Number.isFinite(closedAtMs)
-            && Date.now() - closedAtMs <= 15000
-          ) {
-            return { collection: closedCollection, primaryKey: closedPrimaryKey };
-          }
-
-          return { collection: '', primaryKey: '' };
-        };
-
-        const waitForPersistedDrawerChange = async (
-          collectionName,
-          primaryKey,
-          previousSnapshotFingerprint,
-          previousSnapshotKey,
-        ) => {
-          const collectionKey = asString(collectionName);
-          const itemKey = parseId(primaryKey);
-          const baseline = asString(previousSnapshotFingerprint);
-          if (!collectionKey || !itemKey || !baseline) return false;
-
-          const currentSnapshotKey = `${collectionKey}:${itemKey}`;
-          if (previousSnapshotKey && previousSnapshotKey !== currentSnapshotKey) return false;
-
-          const maxAttempts = 8;
-          for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-            const currentFingerprint = await readItemSnapshotFingerprint(collectionKey, itemKey);
-            if (currentFingerprint && currentFingerprint !== baseline) {
-              return true;
-            }
-            if (attempt < maxAttempts) {
-              await delay(350);
-            }
-          }
-          return false;
-        };
-
-        const detectObservedDrawerSave = (payload) => {
-          if (!isPrimaryInstance.value) return;
-          if (drawerChangedSinceOpen.value) return;
-
-          const method = String(payload?.method || 'GET').toUpperCase();
-          if (!['PATCH', 'PUT', 'POST'].includes(method)) return;
-          const statusCode = Number(payload?.response?.status || 0);
-          const responseOk = payload?.response?.ok === true
-            || (Number.isFinite(statusCode) && statusCode >= 200 && statusCode < 300);
-          if (!responseOk) return;
-
-          const observedTarget = resolveObservedDrawerTarget();
-          const collectionKey = asString(observedTarget.collection);
-          const itemKey = parseId(observedTarget.primaryKey);
-          if (!collectionKey || !itemKey) return;
-
-          let pathname = '';
-          try {
-            pathname = new URL(asString(payload?.url || ''), window.location.origin).pathname || '';
-          } catch (parseError) {
-            return;
-          }
-
-          const segments = pathname.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment));
-          const itemsIndex = segments.indexOf('items');
-          if (itemsIndex === -1 || segments.length <= itemsIndex + 1) return;
-
-          const requestCollection = asString(segments[itemsIndex + 1]);
-          const requestItem = asString(segments[itemsIndex + 2]);
-          if (requestCollection !== collectionKey) return;
-
-          if (requestItem && requestItem === itemKey) {
-            drawerChangedSinceOpen.value = true;
-            markPageDirtyFromDrawerEdits();
-            info.value = 'Detected content updates from drawer. Save the page to publish and trigger refresh.';
-            return;
-          }
-
-          // Some Directus update flows use collection-level PATCH endpoints.
-          if (!requestItem && method === 'PATCH') {
-            drawerChangedSinceOpen.value = true;
-            markPageDirtyFromDrawerEdits();
-            info.value = 'Detected content updates from drawer. Save the page to publish and trigger refresh.';
-          }
-        };
     
         const normalizeBlockRow = (row) => {
           const groupTag = asString(row?.group_tag);
@@ -3247,10 +2965,6 @@ data:
 
           drawerCollection.value = nextCollection;
           drawerPrimaryKey.value = nextPrimaryKey;
-          drawerLastCollection.value = '';
-          drawerLastPrimaryKey.value = '';
-          drawerLastClosedAtMs.value = 0;
-          await captureDrawerSnapshot(nextCollection, nextPrimaryKey);
           if (drawerCollection.value === nextCollection && drawerPrimaryKey.value === nextPrimaryKey) {
             drawerActive.value = true;
           }
@@ -3258,54 +2972,11 @@ data:
 
         const handleDrawerActive = async (nextActive) => {
           const shouldBeActive = Boolean(nextActive);
-          const previousCollection = asString(drawerCollection.value);
-          const previousPrimaryKey = asString(drawerPrimaryKey.value);
-          const previousSnapshotKey = asString(drawerSnapshotKey.value);
-          const previousSnapshotFingerprint = asString(drawerSnapshotFingerprint.value);
-          const hadPersistedDrawerChange = Boolean(drawerChangedSinceOpen.value);
-          if (shouldBeActive) {
-            drawerActive.value = true;
-            return;
-          }
-
-          // Let DrawerItem finish any save-triggered internal lifecycle before
-          // we honor the close request. Closing immediately can race save dispatch.
-          await delay(350);
-          drawerActive.value = false;
-
-          drawerLastCollection.value = previousCollection;
-          drawerLastPrimaryKey.value = previousPrimaryKey;
-          drawerLastClosedAtMs.value = Date.now();
+          drawerActive.value = shouldBeActive;
+          if (shouldBeActive) return;
           if (!pageId.value) return;
 
-          let hasPersistedDrawerChange = hadPersistedDrawerChange;
-          if (!hasPersistedDrawerChange && previousCollection && previousPrimaryKey) {
-            hasPersistedDrawerChange = await waitForPersistedDrawerChange(
-              previousCollection,
-              previousPrimaryKey,
-              previousSnapshotFingerprint,
-              previousSnapshotKey,
-            );
-          }
-
           // Keep the tree view in sync with any edits saved through the drawer.
-          await refreshAll();
-          if (hasPersistedDrawerChange) {
-            if (!hadPersistedDrawerChange) {
-              markPageDirtyFromDrawerEdits();
-            }
-          } else if (previousPrimaryKey) {
-            info.value = 'No saved drawer changes detected. Click Save in the drawer before closing.';
-          }
-
-          drawerSnapshotKey.value = '';
-          drawerSnapshotFingerprint.value = '';
-          drawerChangedSinceOpen.value = false;
-        };
-
-        const handleDrawerSaved = async () => {
-          drawerChangedSinceOpen.value = true;
-          markPageDirtyFromDrawerEdits();
           await refreshAll();
         };
 
@@ -3496,17 +3167,12 @@ data:
           if (typeof window !== 'undefined') {
             window.addEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
           }
-          unregisterSaveObserver = registerBlocksManagerSaveObserver(instanceToken, detectObservedDrawerSave);
           if (!groupBy.value) {
             groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
           }
         });
     
         onBeforeUnmount(() => {
-          if (typeof unregisterSaveObserver === 'function') {
-            unregisterSaveObserver();
-            unregisterSaveObserver = null;
-          }
           if (typeof window !== 'undefined') {
             window.removeEventListener(BLOCKS_MANAGER_REGISTRY_EVENT, claimPrimaryInstance);
           }
@@ -3983,12 +3649,6 @@ data:
                 nonEditable: props.disabled,
                 'onUpdate:active': (next) => {
                   handleDrawerActive(next);
-                },
-                onSaved: () => {
-                  handleDrawerSaved();
-                },
-                onSave: () => {
-                  handleDrawerSaved();
                 },
               })
             );
