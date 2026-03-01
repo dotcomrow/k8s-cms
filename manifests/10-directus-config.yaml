@@ -1622,7 +1622,7 @@ data:
     }
   cms-asset-url-picker.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
-    import { defineComponent, h, ref, computed, watch } from 'vue';
+    import { defineComponent, h, ref, computed, watch, resolveComponent } from 'vue';
 
     const asString = (value) => {
       if (value === null || value === undefined) return '';
@@ -1807,83 +1807,142 @@ data:
           },
         );
 
-        return () => h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, [
-          h('input', {
-            type: 'text',
-            disabled: props.disabled,
-            value: currentValue.value,
-            placeholder: 'https://... or /assets/<file-id>',
-            onInput: (event) => emit('input', event?.target?.value || ''),
-          }),
-          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
-            showLibrary.value ? h('button', { type: 'button', disabled: props.disabled, onClick: () => { pickerOpen.value = !pickerOpen.value; } }, pickerOpen.value ? 'Close Library' : 'Browse Files') : null,
-            showUpload.value ? h('button', { type: 'button', disabled: props.disabled || uploading.value, onClick: openUploadChooser }, uploading.value ? 'Uploading...' : 'Upload File') : null,
-            h('button', { type: 'button', disabled: props.disabled || !currentValue.value, onClick: () => emit('input', '') }, 'Clear'),
-          ]),
-          showPreview.value && currentValue.value ? h('div', { style: { maxWidth: '220px' } }, [
-            h('img', {
-              src: currentValue.value,
-              alt: 'Selected asset preview',
-              style: { width: '100%', height: 'auto', borderRadius: '8px', border: '1px solid var(--theme--border-subdued)' },
-            }),
-          ]) : null,
-          pickerOpen.value ? h('section', {
-            style: {
-              border: '1px solid var(--theme--border-subdued)',
-              borderRadius: '8px',
-              padding: '10px',
-              background: 'var(--theme--background-subdued)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '8px',
-              maxHeight: '320px',
-              overflow: 'auto',
-            },
-          }, [
-            h('div', { style: { display: 'flex', gap: '8px' } }, [
-              h('input', {
-                type: 'search',
-                value: query.value,
-                placeholder: 'Search files',
-                onInput: (event) => { query.value = event?.target?.value || ''; },
-                onKeydown: async (event) => { if (event?.key === 'Enter') await loadFiles(); },
-                style: { flex: '1 1 auto' },
-              }),
-              h('button', { type: 'button', onClick: loadFiles, disabled: loading.value }, loading.value ? 'Loading...' : 'Search'),
-            ]),
-            error.value ? h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, error.value) : null,
-            ...files.value.map((row) => h('button', {
-              type: 'button',
+        return () => {
+          const resolvedInput = resolveComponent('v-input');
+          const resolvedButton = resolveComponent('v-button');
+          const resolvedNotice = resolveComponent('v-notice');
+
+          const hasInput = typeof resolvedInput !== 'string';
+          const hasButton = typeof resolvedButton !== 'string';
+          const hasNotice = typeof resolvedNotice !== 'string';
+
+          const renderInput = ({ value, placeholder, disabled = false, type = 'text', onUpdate }) => {
+            if (hasInput) {
+              return h(resolvedInput, {
+                modelValue: value ?? '',
+                placeholder,
+                disabled,
+                type,
+                'onUpdate:modelValue': (next) => onUpdate(next ?? ''),
+              });
+            }
+            return h('input', {
+              type,
+              value: value ?? '',
+              placeholder,
+              disabled,
+              onInput: (event) => onUpdate(event?.target?.value || ''),
+            });
+          };
+
+          const renderButton = ({ label, onClick, disabled = false, primary = false, style = {} }) => {
+            if (hasButton) {
+              return h(
+                resolvedButton,
+                {
+                  disabled,
+                  secondary: !primary,
+                  small: true,
+                  onClick,
+                  style,
+                },
+                () => label,
+              );
+            }
+            return h('button', { type: 'button', disabled, onClick, style }, label);
+          };
+
+          const renderError = error.value
+            ? (hasNotice
+              ? h(resolvedNotice, { type: 'danger' }, () => error.value)
+              : h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, error.value))
+            : null;
+
+          return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, [
+            renderInput({
+              type: 'text',
+              value: currentValue.value,
               disabled: props.disabled,
-              onClick: () => selectFile(row),
+              placeholder: 'https://... or /assets/<file-id>',
+              onUpdate: (next) => emit('input', next),
+            }),
+            h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+              showLibrary.value
+                ? renderButton({
+                    label: pickerOpen.value ? 'Close Library' : 'Browse Files',
+                    disabled: props.disabled,
+                    onClick: () => { pickerOpen.value = !pickerOpen.value; },
+                  })
+                : null,
+              showUpload.value
+                ? renderButton({
+                    label: uploading.value ? 'Uploading...' : 'Upload File',
+                    disabled: props.disabled || uploading.value,
+                    onClick: openUploadChooser,
+                  })
+                : null,
+              renderButton({
+                label: 'Clear',
+                disabled: props.disabled || !currentValue.value,
+                onClick: () => emit('input', ''),
+              }),
+            ]),
+            showPreview.value && currentValue.value ? h('div', { style: { maxWidth: '220px' } }, [
+              h('img', {
+                src: currentValue.value,
+                alt: 'Selected asset preview',
+                style: { width: '100%', height: 'auto', borderRadius: '8px', border: '1px solid var(--theme--border-subdued)' },
+              }),
+            ]) : null,
+            pickerOpen.value ? h('section', {
               style: {
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                width: '100%',
-                textAlign: 'left',
                 border: '1px solid var(--theme--border-subdued)',
-                borderRadius: '6px',
-                padding: '6px 8px',
-                background: 'var(--theme--background-page)',
+                borderRadius: '8px',
+                padding: '10px',
+                background: 'var(--theme--background-subdued)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                maxHeight: '320px',
+                overflow: 'auto',
               },
             }, [
-              showPreview.value ? h('img', {
-                src: resolveAssetUrlFromId(row?.id),
-                alt: asString(row?.title) || asString(row?.filename_download) || 'file',
-                style: { width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' },
-              }) : null,
-              h('span', `${asString(row?.title) || asString(row?.filename_download) || asString(row?.id)}`),
-            ])),
-          ]) : null,
-          h('input', {
-            ref: hiddenFileInput,
-            type: 'file',
-            accept: accept.value,
-            style: { display: 'none' },
-            onChange: onUploadChange,
-          }),
-        ]);
+              h('div', { style: { display: 'flex', gap: '8px' } }, [
+                h('div', { style: { flex: '1 1 auto' } }, [
+                  renderInput({
+                    type: 'search',
+                    value: query.value,
+                    placeholder: 'Search files',
+                    onUpdate: (next) => { query.value = next; },
+                  }),
+                ]),
+                renderButton({
+                  label: loading.value ? 'Loading...' : 'Search',
+                  disabled: loading.value,
+                  onClick: () => { void loadFiles(); },
+                }),
+              ]),
+              renderError,
+              ...files.value.map((row) => renderButton({
+                label: `${asString(row?.title) || asString(row?.filename_download) || asString(row?.id)}`,
+                disabled: props.disabled,
+                onClick: () => selectFile(row),
+                style: {
+                  justifyContent: 'flex-start',
+                  width: '100%',
+                  textAlign: 'left',
+                },
+              })),
+            ]) : null,
+            h('input', {
+              ref: hiddenFileInput,
+              type: 'file',
+              accept: accept.value,
+              style: { display: 'none' },
+              onChange: onUploadChange,
+            }),
+          ]);
+        };
       },
     });
 
@@ -3040,6 +3099,7 @@ data:
       setup(props, { emit }) {
         const loading = ref(false);
         const saving = ref({});
+        const deleting = ref({});
         const creatingBlockType = ref('');
         const error = ref('');
         const info = ref('');
@@ -3188,6 +3248,18 @@ data:
           groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
           selectedContext.value = PAGE_CONTEXT_ID;
         };
+
+        const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        const isTransientSchemaMismatchMessage = (message) => {
+          const normalized = toLower(message);
+          return (
+            normalized.includes('mismatched_schema')
+            || normalized.includes('catalog snapshot')
+            || normalized.includes('catalog version mismatch')
+            || normalized.includes('invalidated')
+          );
+        };
     
         const apiRequest = async (method, path, query = {}, body = null) => {
           const url = new URL(path, window.location.origin);
@@ -3195,24 +3267,52 @@ data:
             if (value === null || value === undefined || value === '') return;
             url.searchParams.set(key, String(value));
           });
-    
-          const response = await fetch(url.toString(), {
-            method,
-            cache: 'no-store',
-            credentials: 'same-origin',
-            headers: {
-              Accept: 'application/json',
-              ...(body ? { 'Content-Type': 'application/json' } : {}),
-            },
-            ...(body ? { body: JSON.stringify(body) } : {}),
-          });
-    
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            const message = payload?.errors?.[0]?.message || `${method} failed (${response.status})`;
-            throw new Error(message);
+
+          const upperMethod = toLower(method) === 'get' ? 'GET' : method;
+          const maxAttempts = upperMethod === 'GET' ? 5 : 1;
+
+          for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+            try {
+              const response = await fetch(url.toString(), {
+                method: upperMethod,
+                cache: 'no-store',
+                credentials: 'same-origin',
+                headers: {
+                  Accept: 'application/json',
+                  ...(body ? { 'Content-Type': 'application/json' } : {}),
+                },
+                ...(body ? { body: JSON.stringify(body) } : {}),
+              });
+
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                const message = payload?.errors?.[0]?.message || `${upperMethod} failed (${response.status})`;
+                const canRetry =
+                  upperMethod === 'GET'
+                  && attempt < maxAttempts
+                  && isTransientSchemaMismatchMessage(message);
+                if (canRetry) {
+                  await delay(300 * attempt);
+                  continue;
+                }
+                throw new Error(message);
+              }
+              return payload;
+            } catch (error) {
+              const message = error?.message || `${upperMethod} failed`;
+              const canRetry =
+                upperMethod === 'GET'
+                && attempt < maxAttempts
+                && isTransientSchemaMismatchMessage(message);
+              if (canRetry) {
+                await delay(300 * attempt);
+                continue;
+              }
+              throw error;
+            }
           }
-          return payload;
+
+          throw new Error(`${upperMethod} failed after retries.`);
         };
 
     
@@ -3502,6 +3602,15 @@ data:
           else delete next[rowId];
           saving.value = next;
         };
+
+        const isDeleting = (rowId) => Boolean(deleting.value[rowId]);
+
+        const markDeleting = (rowId, active) => {
+          const next = { ...deleting.value };
+          if (active) next[rowId] = true;
+          else delete next[rowId];
+          deleting.value = next;
+        };
     
         const saveRow = async (row) => {
           if (props.disabled || isSaving(row.id)) return;
@@ -3632,6 +3741,94 @@ data:
         const openContentItem = (row) => {
           if (!row.collection || !row.item) return;
           openDrawerItem(row.collection, row.item);
+        };
+
+        const collectDescendantRowIds = (rootRowId) => {
+          const rootId = parseId(rootRowId);
+          if (!rootId) return [];
+          const childrenByParentId = new Map();
+          for (const row of blocks.value) {
+            const rowId = parseId(row?.id);
+            if (!rowId) continue;
+            const parentId = parseId(row?.parent_block_id);
+            if (!parentId) continue;
+            if (!childrenByParentId.has(parentId)) childrenByParentId.set(parentId, []);
+            childrenByParentId.get(parentId).push(rowId);
+          }
+
+          const ordered = [];
+          const stack = [rootId];
+          const seen = new Set();
+          while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current || seen.has(current)) continue;
+            seen.add(current);
+            ordered.push(current);
+            const children = childrenByParentId.get(current) || [];
+            for (const childId of children) {
+              stack.push(childId);
+            }
+          }
+          return ordered;
+        };
+
+        const deleteBlockRow = async (row) => {
+          if (props.disabled) return;
+          const rowId = parseId(row?.id);
+          if (!rowId || isDeleting(rowId) || isSaving(rowId)) return;
+
+          const subtreeIds = collectDescendantRowIds(rowId);
+          if (subtreeIds.length === 0) return;
+          const subtreeCount = subtreeIds.length;
+          const requiresCascadeConfirm = subtreeCount > 1;
+          const confirmMessage = requiresCascadeConfirm
+            ? `Delete this block and ${subtreeCount - 1} nested block(s)?`
+            : 'Delete this block?';
+          if (typeof window !== 'undefined' && !window.confirm(confirmMessage)) return;
+
+          markDeleting(rowId, true);
+          error.value = '';
+          info.value = '';
+
+          try {
+            const rowById = new Map(blocks.value.map((candidate) => [parseId(candidate?.id), candidate]));
+            const deletionOrder = [...subtreeIds].sort((left, right) => {
+              const leftDepth = asInteger(rowById.get(left)?.tree_depth) ?? 0;
+              const rightDepth = asInteger(rowById.get(right)?.tree_depth) ?? 0;
+              return rightDepth - leftDepth;
+            });
+
+            for (const targetId of deletionOrder) {
+              await apiRequest(
+                'DELETE',
+                `/items/${pageBlocksCollection.value}/${encodeURIComponent(targetId)}`,
+              );
+            }
+
+            const deleted = new Set(subtreeIds);
+            blocks.value = blocks.value.filter((candidate) => !deleted.has(parseId(candidate?.id)));
+
+            const nextDrafts = { ...drafts.value };
+            for (const deletedId of deleted) {
+              delete nextDrafts[deletedId];
+            }
+            drafts.value = nextDrafts;
+
+            if (
+              asString(drawerCollection.value) === asString(pageBlocksCollection.value)
+              && deleted.has(parseId(drawerPrimaryKey.value))
+            ) {
+              drawerActive.value = false;
+            }
+
+            emit('input', buildRelationManagerValue());
+            info.value = `Deleted ${subtreeCount} block${subtreeCount === 1 ? '' : 's'}. Save the page to publish and trigger refresh.`;
+            await refreshAll();
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to delete block.';
+          } finally {
+            markDeleting(rowId, false);
+          }
         };
     
         const openBlocksCollection = () => {
@@ -4031,6 +4228,7 @@ data:
           const resolvedInput = resolveComponent('v-input');
           const resolvedSelect = resolveComponent('v-select');
           const resolvedButton = resolveComponent('v-button');
+          const resolvedIcon = resolveComponent('v-icon');
           const resolvedChip = resolveComponent('v-chip');
           const resolvedDivider = resolveComponent('v-divider');
           const resolvedCard = resolveComponent('v-card');
@@ -4039,6 +4237,7 @@ data:
           const hasInput = typeof resolvedInput !== 'string';
           const hasSelect = typeof resolvedSelect !== 'string';
           const hasButton = typeof resolvedButton !== 'string';
+          const hasIcon = typeof resolvedIcon !== 'string';
           const hasChip = typeof resolvedChip !== 'string';
           const hasDivider = typeof resolvedDivider !== 'string';
           const hasCard = typeof resolvedCard !== 'string';
@@ -4128,50 +4327,75 @@ data:
             treeNodeCard: {
               display: 'flex',
               flexDirection: 'column',
-              gap: '10px',
-              padding: '10px 12px',
+              gap: '6px',
+              padding: '8px 10px',
               border: '1px solid var(--theme--border-subdued)',
               borderRadius: 'var(--theme--border-radius)',
               background: 'var(--theme--background-page)',
             },
             treeNodeHeader: {
               display: 'flex',
-              flexWrap: 'wrap',
+              flexWrap: 'nowrap',
               justifyContent: 'space-between',
               alignItems: 'center',
-              gap: '8px',
+              gap: '6px',
             },
             treeNodeHeaderLeft: {
               display: 'flex',
               alignItems: 'center',
-              flexWrap: 'wrap',
-              gap: '6px',
+              minWidth: 0,
+              flexWrap: 'nowrap',
+              gap: '4px',
             },
             treeNodeTitleWrap: {
               display: 'flex',
               flexDirection: 'column',
               gap: '2px',
+              minWidth: 0,
             },
             treeNodeTitle: {
-              fontSize: '13px',
+              fontSize: '12px',
               fontWeight: '600',
               color: 'var(--theme--foreground-normal)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
             },
             treeNodeSubtitle: {
-              fontSize: '11px',
+              fontSize: '10px',
               color: 'var(--theme--foreground-subdued)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
             },
             treeNodeMeta: {
               display: 'flex',
               flexWrap: 'wrap',
-              gap: '6px',
+              gap: '4px',
               alignItems: 'center',
             },
             treeNodeActions: {
               display: 'flex',
-              flexWrap: 'wrap',
-              gap: '6px',
+              flexWrap: 'nowrap',
+              gap: '4px',
               alignItems: 'center',
+              marginLeft: '8px',
+            },
+            iconButtonFallback: {
+              width: '28px',
+              minWidth: '28px',
+              height: '28px',
+              minHeight: '28px',
+              border: '1px solid var(--theme--border-normal)',
+              borderRadius: '6px',
+              background: 'var(--theme--background-page)',
+              color: 'var(--theme--foreground-normal)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              padding: '0',
+              lineHeight: 1,
             },
             treeList: {
               listStyle: 'none',
@@ -4283,6 +4507,46 @@ data:
               label
             );
           };
+
+          const renderIconControl = ({ icon, fallbackIcon = '•', label, onClick, disabled = false, danger = false }) => {
+            if (hasButton) {
+              return h(
+                resolvedButton,
+                {
+                  disabled,
+                  small: true,
+                  secondary: true,
+                  title: label,
+                  'aria-label': label,
+                  style: danger ? { color: 'var(--theme--danger)' } : {},
+                  onClick,
+                },
+                () => (hasIcon
+                  ? h(resolvedIcon, { name: icon })
+                  : h('span', { style: { fontSize: '14px', lineHeight: 1 } }, fallbackIcon))
+              );
+            }
+            return h(
+              'button',
+              {
+                type: 'button',
+                disabled,
+                title: label,
+                'aria-label': label,
+                onClick,
+                style: {
+                  ...styles.iconButtonFallback,
+                  ...(danger
+                    ? {
+                        border: '1px solid var(--theme--danger)',
+                        color: 'var(--theme--danger)',
+                      }
+                    : {}),
+                },
+              },
+              fallbackIcon
+            );
+          };
     
           const renderMetaChip = (text) => {
             if (hasChip) {
@@ -4290,11 +4554,11 @@ data:
             }
             return h('span', {
               style: {
-                padding: '2px 6px',
+                padding: '1px 5px',
                 borderRadius: '999px',
                 border: '1px solid var(--theme--border-subdued)',
                 background: 'var(--theme--background-subdued)',
-                fontSize: '11px',
+                fontSize: '10px',
                 color: 'var(--theme--foreground-subdued)',
               },
             }, text);
@@ -4342,15 +4606,19 @@ data:
               || toLower(collectionKey).includes('template');
             const title = asString(row?.group_tag) || `${blockTypeLabel} (${asString(row?.slot) || 'main'})`;
             const subtitle = collectionKey || '(collection?)';
+            const rowBusy = isSaving(rowId) || isDeleting(rowId);
+            const rowTemplateKey = asString(row?.template_group_key);
             return h('li', { key: rowId }, [
               h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
                 h('header', { class: 'cms-page-blocks-manager__tree-node-header', style: styles.treeNodeHeader }, [
                   h('div', { style: styles.treeNodeHeaderLeft }, [
                     ...(hasChildren
                       ? [
-                          renderButtonControl({
-                            label: nodeExpanded ? 'Collapse' : 'Expand',
-                            disabled: false,
+                          renderIconControl({
+                            icon: nodeExpanded ? 'remove' : 'add',
+                            fallbackIcon: nodeExpanded ? '−' : '+',
+                            label: nodeExpanded ? 'Collapse children' : 'Expand children',
+                            disabled: rowBusy,
                             onClick: () => toggleNodeExpanded(rowId, true),
                           }),
                         ]
@@ -4361,25 +4629,37 @@ data:
                     ]),
                   ]),
                   h('div', { style: styles.treeNodeActions }, [
-                    renderButtonControl({
-                      label: 'Edit Block',
-                      disabled: !rowId,
+                    renderIconControl({
+                      icon: 'tune',
+                      fallbackIcon: 'B',
+                      label: 'Edit block settings',
+                      disabled: !rowId || rowBusy,
                       onClick: () => openBlockRow(row),
                     }),
-                    renderButtonControl({
-                      label: 'Edit Content',
-                      disabled: !row.collection || !row.item,
+                    renderIconControl({
+                      icon: 'edit_note',
+                      fallbackIcon: 'C',
+                      label: 'Edit block content',
+                      disabled: !row.collection || !row.item || rowBusy,
                       onClick: () => openContentItem(row),
+                    }),
+                    renderIconControl({
+                      icon: 'delete',
+                      fallbackIcon: '🗑',
+                      label: isDeleting(rowId) ? 'Deleting block...' : 'Delete block',
+                      disabled: !rowId || rowBusy,
+                      danger: true,
+                      onClick: () => { void deleteBlockRow(row); },
                     }),
                   ]),
                 ]),
                 h('div', { style: styles.treeNodeMeta }, [
-                  renderMetaChip(`type=${blockTypeLabel}`),
-                  renderMetaChip(`slot=${asString(row?.slot) || 'main'}`),
-                  renderMetaChip(`sort=${asString(row?.sort) || '-'}`),
-                  renderMetaChip(`template=${asString(row?.template_group_key) || 'page-root'}`),
-                  ...(asString(row?.group_tag) ? [renderMetaChip(`group=${asString(row.group_tag)}`)] : []),
-                  ...(isTemplateNode ? [renderMetaChip(`children=${childRows.length}`)] : []),
+                  renderMetaChip(blockTypeLabel),
+                  renderMetaChip(`slot:${asString(row?.slot) || 'main'}`),
+                  ...(asInteger(row?.sort) !== null ? [renderMetaChip(`sort:${asInteger(row?.sort)}`)] : []),
+                  ...(asString(row?.group_tag) ? [renderMetaChip(`group:${asString(row.group_tag)}`)] : []),
+                  ...(rowTemplateKey && rowTemplateKey !== 'page-root' ? [renderMetaChip(`tpl:${rowTemplateKey}`)] : []),
+                  ...(isTemplateNode ? [renderMetaChip(`children:${childRows.length}`)] : []),
                 ]),
               ]),
               ...(hasChildren && nodeExpanded
@@ -4486,8 +4766,10 @@ data:
                     h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
                     h('header', { style: styles.treePageHeader }, [
                       h('div', { style: styles.treeNodeHeaderLeft }, [
-                        renderButtonControl({
-                          label: rootExpanded ? 'Collapse' : 'Expand',
+                        renderIconControl({
+                          icon: rootExpanded ? 'remove' : 'add',
+                          fallbackIcon: rootExpanded ? '−' : '+',
+                          label: rootExpanded ? 'Collapse tree' : 'Expand tree',
                           disabled: false,
                           onClick: () => toggleNodeExpanded('__root', true),
                         }),
