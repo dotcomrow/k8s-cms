@@ -287,6 +287,53 @@ data:
           imageUrl: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=1200"
           alt: "Decorative scene"
           caption: "Responsive aspect ratio media"
+      - module_key: radix-image
+        name: Radix Image
+        description: "Standalone image block for page content with alt/caption/object-fit controls."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: media.image
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            imageUrl:
+              type: string
+              title: Image URL
+            alt:
+              type: string
+              title: Alt Text
+            caption:
+              type: string
+              title: Caption
+            objectFit:
+              type: string
+              title: Object Fit
+              enum:
+                - cover
+                - contain
+                - fill
+            loading:
+              type: string
+              title: Loading
+              enum:
+                - lazy
+                - eager
+            width:
+              type: number
+              title: Width
+            height:
+              type: number
+              title: Height
+        default_props:
+          imageUrl: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=1200"
+          alt: "Decorative image"
+          caption: "Image caption"
+          objectFit: cover
+          loading: lazy
+          width: 1200
+          height: 675
       - module_key: radix-avatar
         name: Radix Avatar
         description: "User avatar with image fallback initials."

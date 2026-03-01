@@ -1608,6 +1608,305 @@ data:
       ],
     });
     
+  cms-asset-url-picker.package.json: |
+    {
+      "name": "directus-extension-cms-asset-url-picker",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "interface",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+  cms-asset-url-picker.index.js: |
+    import { defineInterface } from '@directus/extensions-sdk';
+    import { defineComponent, h, ref, computed, watch } from 'vue';
+
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const asInteger = (value, fallback) => {
+      const parsed = Number.parseInt(asString(value), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    };
+
+    const parseOptions = (value) => {
+      if (!value) return {};
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
+        }
+      }
+      return typeof value === 'object' ? value : {};
+    };
+
+    const normalizeRows = (response) => {
+      const payload = response?.data;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    };
+
+    const defaultAssetPath = '/assets';
+
+    const InterfaceComponent = defineComponent({
+      name: 'CmsAssetUrlPicker',
+      props: {
+        value: { type: [String, Number, null], default: null },
+        disabled: { type: Boolean, default: false },
+        options: { type: Object, default: () => ({}) },
+      },
+      emits: ['input'],
+      setup(props, { emit }) {
+        const pickerOpen = ref(false);
+        const loading = ref(false);
+        const uploading = ref(false);
+        const error = ref('');
+        const query = ref('');
+        const files = ref([]);
+        const hiddenFileInput = ref(null);
+
+        const resolvedOptions = computed(() => parseOptions(props.options));
+        const storeAbsoluteUrl = computed(() => {
+          const raw = asString(resolvedOptions.value?.store_absolute_url).toLowerCase();
+          if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+          return true;
+        });
+        const assetPath = computed(() => {
+          const configured = asString(resolvedOptions.value?.asset_path);
+          return configured ? (configured.startsWith('/') ? configured : `/${configured}`) : defaultAssetPath;
+        });
+        const assetBaseUrl = computed(() => {
+          const configured = asString(resolvedOptions.value?.asset_base_url);
+          if (configured) return configured.replace(/\/+$/, '');
+          if (typeof window !== 'undefined' && window.location?.origin) {
+            return window.location.origin.replace(/\/+$/, '');
+          }
+          return '';
+        });
+        const accept = computed(() => asString(resolvedOptions.value?.accept) || 'image/*');
+        const limit = computed(() => asInteger(resolvedOptions.value?.limit, 40));
+        const showPreview = computed(() => {
+          const raw = asString(resolvedOptions.value?.show_preview).toLowerCase();
+          if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+          return true;
+        });
+        const showUpload = computed(() => {
+          const raw = asString(resolvedOptions.value?.show_upload).toLowerCase();
+          if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+          return true;
+        });
+        const showLibrary = computed(() => {
+          const raw = asString(resolvedOptions.value?.show_library).toLowerCase();
+          if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+          return true;
+        });
+
+        const currentValue = computed(() => (props.value === null || props.value === undefined ? '' : String(props.value)));
+
+        const resolveAssetUrlFromId = (id) => {
+          const normalizedId = asString(id);
+          if (!normalizedId) return '';
+          const relative = `${assetPath.value.replace(/\/+$/, '')}/${encodeURIComponent(normalizedId)}`;
+          if (!storeAbsoluteUrl.value) return relative;
+          return assetBaseUrl.value ? `${assetBaseUrl.value}${relative}` : relative;
+        };
+
+        const apiRequest = async (method, path, queryParams = null, body = null, isFormData = false) => {
+          const url = new URL(path, window.location.origin);
+          if (queryParams && typeof queryParams === 'object') {
+            Object.entries(queryParams).forEach(([key, value]) => {
+              if (value === null || value === undefined || value === '') return;
+              url.searchParams.set(key, String(value));
+            });
+          }
+
+          const headers = { Accept: 'application/json' };
+          if (!isFormData && body !== null) headers['Content-Type'] = 'application/json';
+
+          const response = await fetch(url.toString(), {
+            method,
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers,
+            body: body === null ? null : isFormData ? body : JSON.stringify(body),
+          });
+
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload?.errors?.[0]?.message || `${method} ${path} failed (${response.status})`);
+          }
+          return payload;
+        };
+
+        const loadFiles = async () => {
+          loading.value = true;
+          error.value = '';
+          try {
+            const response = await apiRequest('GET', '/files', {
+              fields: 'id,title,filename_download,type,width,height',
+              limit: limit.value,
+              sort: '-uploaded_on',
+              search: asString(query.value) || undefined,
+            });
+            files.value = normalizeRows(response);
+          } catch (requestError) {
+            files.value = [];
+            error.value = requestError?.message || 'Failed to load files.';
+          } finally {
+            loading.value = false;
+          }
+        };
+
+        const selectFile = (row) => {
+          const fileId = asString(row?.id);
+          if (!fileId) return;
+          emit('input', resolveAssetUrlFromId(fileId));
+          pickerOpen.value = false;
+        };
+
+        const openUploadChooser = () => {
+          const input = hiddenFileInput.value;
+          if (!input || props.disabled) return;
+          input.click();
+        };
+
+        const onUploadChange = async (event) => {
+          const file = event?.target?.files?.[0];
+          if (!file) return;
+          uploading.value = true;
+          error.value = '';
+          try {
+            const form = new FormData();
+            form.append('file', file);
+            const response = await apiRequest('POST', '/files', null, form, true);
+            const fileId = asString(response?.data?.id);
+            if (!fileId) throw new Error('Upload succeeded but file id was missing.');
+            emit('input', resolveAssetUrlFromId(fileId));
+            pickerOpen.value = false;
+            await loadFiles();
+          } catch (uploadError) {
+            error.value = uploadError?.message || 'Failed to upload file.';
+          } finally {
+            uploading.value = false;
+            if (event?.target) event.target.value = '';
+          }
+        };
+
+        watch(
+          () => pickerOpen.value,
+          async (isOpen) => {
+            if (isOpen) await loadFiles();
+          },
+        );
+
+        return () => h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, [
+          h('input', {
+            type: 'text',
+            disabled: props.disabled,
+            value: currentValue.value,
+            placeholder: 'https://... or /assets/<file-id>',
+            onInput: (event) => emit('input', event?.target?.value || ''),
+          }),
+          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+            showLibrary.value ? h('button', { type: 'button', disabled: props.disabled, onClick: () => { pickerOpen.value = !pickerOpen.value; } }, pickerOpen.value ? 'Close Library' : 'Browse Files') : null,
+            showUpload.value ? h('button', { type: 'button', disabled: props.disabled || uploading.value, onClick: openUploadChooser }, uploading.value ? 'Uploading...' : 'Upload File') : null,
+            h('button', { type: 'button', disabled: props.disabled || !currentValue.value, onClick: () => emit('input', '') }, 'Clear'),
+          ]),
+          showPreview.value && currentValue.value ? h('div', { style: { maxWidth: '220px' } }, [
+            h('img', {
+              src: currentValue.value,
+              alt: 'Selected asset preview',
+              style: { width: '100%', height: 'auto', borderRadius: '8px', border: '1px solid var(--theme--border-subdued)' },
+            }),
+          ]) : null,
+          pickerOpen.value ? h('section', {
+            style: {
+              border: '1px solid var(--theme--border-subdued)',
+              borderRadius: '8px',
+              padding: '10px',
+              background: 'var(--theme--background-subdued)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              maxHeight: '320px',
+              overflow: 'auto',
+            },
+          }, [
+            h('div', { style: { display: 'flex', gap: '8px' } }, [
+              h('input', {
+                type: 'search',
+                value: query.value,
+                placeholder: 'Search files',
+                onInput: (event) => { query.value = event?.target?.value || ''; },
+                onKeydown: async (event) => { if (event?.key === 'Enter') await loadFiles(); },
+                style: { flex: '1 1 auto' },
+              }),
+              h('button', { type: 'button', onClick: loadFiles, disabled: loading.value }, loading.value ? 'Loading...' : 'Search'),
+            ]),
+            error.value ? h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, error.value) : null,
+            ...files.value.map((row) => h('button', {
+              type: 'button',
+              disabled: props.disabled,
+              onClick: () => selectFile(row),
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                width: '100%',
+                textAlign: 'left',
+                border: '1px solid var(--theme--border-subdued)',
+                borderRadius: '6px',
+                padding: '6px 8px',
+                background: 'var(--theme--background-page)',
+              },
+            }, [
+              showPreview.value ? h('img', {
+                src: resolveAssetUrlFromId(row?.id),
+                alt: asString(row?.title) || asString(row?.filename_download) || 'file',
+                style: { width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' },
+              }) : null,
+              h('span', `${asString(row?.title) || asString(row?.filename_download) || asString(row?.id)}`),
+            ])),
+          ]) : null,
+          h('input', {
+            ref: hiddenFileInput,
+            type: 'file',
+            accept: accept.value,
+            style: { display: 'none' },
+            onChange: onUploadChange,
+          }),
+        ]);
+      },
+    });
+
+    export default defineInterface({
+      id: 'cms-asset-url-picker',
+      name: 'CMS Asset URL Picker',
+      icon: 'image',
+      description: 'Pick/upload Directus Files and store URL value for shell rendering.',
+      component: InterfaceComponent,
+      types: ['string', 'text'],
+      group: 'selection',
+      options: [
+        { field: 'asset_base_url', name: 'Asset Base URL', type: 'string', meta: { width: 'half', interface: 'input' }, schema: { default_value: '' } },
+        { field: 'asset_path', name: 'Asset Path', type: 'string', meta: { width: 'half', interface: 'input' }, schema: { default_value: '/assets' } },
+        { field: 'store_absolute_url', name: 'Store Absolute URL', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: true } },
+        { field: 'accept', name: 'Upload Accept', type: 'string', meta: { width: 'half', interface: 'input' }, schema: { default_value: 'image/*' } },
+        { field: 'show_preview', name: 'Show Preview', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: true } },
+        { field: 'show_upload', name: 'Show Upload', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: true } },
+        { field: 'show_library', name: 'Show Library', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: true } },
+        { field: 'limit', name: 'Library Limit', type: 'integer', meta: { width: 'half', interface: 'input' }, schema: { default_value: 40 } },
+      ],
+    });
+
   cms-module-props-editor.package.json: |
     {
       "name": "directus-extension-cms-module-props-editor",
@@ -1632,6 +1931,11 @@ data:
     const asInputString = (value) => {
       if (value === null || value === undefined) return '';
       return String(value);
+    };
+
+    const asInteger = (value, fallback) => {
+      const parsed = Number.parseInt(asString(value), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
     };
 
     const parseJsonLike = (value, fallback) => {
@@ -1716,6 +2020,13 @@ data:
         const pendingModuleDefaults = ref({});
         const applyPendingDefaultsForModuleKey = ref('');
         const moduleKeyOverride = ref('');
+        const assetPickerField = ref('');
+        const assetPickerQuery = ref('');
+        const assetPickerRows = ref([]);
+        const assetPickerLoading = ref(false);
+        const assetPickerError = ref('');
+        const assetPickerUploading = ref(false);
+        const assetUploadInput = ref(null);
 
         const resolvedOptions = computed(() => parseOptions(props.options));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
@@ -1734,6 +2045,34 @@ data:
           return v !== false;
         });
         const pageCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
+        const assetPath = computed(() => {
+          const configured = asString(resolvedOptions.value?.asset_path);
+          return configured ? (configured.startsWith('/') ? configured : `/${configured}`) : '/assets';
+        });
+        const assetBaseUrl = computed(() => {
+          const configured = asString(resolvedOptions.value?.asset_base_url);
+          if (configured) return configured.replace(/\/+$/, '');
+          if (typeof window !== 'undefined' && window.location?.origin) {
+            return window.location.origin.replace(/\/+$/, '');
+          }
+          return '';
+        });
+        const assetStoreAbsolute = computed(() => {
+          const raw = asString(resolvedOptions.value?.asset_store_absolute).toLowerCase();
+          if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+          return true;
+        });
+        const assetPickerLimit = computed(() => asInteger(resolvedOptions.value?.asset_picker_limit, 40));
+        const assetPickerAccept = computed(() => asString(resolvedOptions.value?.asset_picker_accept) || 'image/*');
+        const assetPickerKeys = computed(() => {
+          const raw = resolvedOptions.value?.asset_picker_keys;
+          if (!Array.isArray(raw)) return [];
+          return raw.map((entry) => asString(entry).toLowerCase()).filter(Boolean);
+        });
+        const assetFieldPattern = computed(() => {
+          const configured = asString(resolvedOptions.value?.asset_field_pattern);
+          return configured || '(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)';
+        });
 
         const moduleKeyFromValues = computed(() => asString(props.values?.[moduleKeyField.value] ?? props.values?.module_key));
         const moduleKey = computed(() => asString(moduleKeyOverride.value) || moduleKeyFromValues.value);
@@ -1803,6 +2142,125 @@ data:
             throw new Error(message);
           }
           return payload;
+        };
+
+        const isAssetLikeProperty = (propKey, schema) => {
+          const key = asString(propKey).toLowerCase();
+          if (!key) return false;
+
+          if (assetPickerKeys.value.includes(key)) {
+            return true;
+          }
+
+          const schemaFormat = asString(schema?.format).toLowerCase();
+          const schemaType = asString(schema?.type).toLowerCase();
+          if (schemaFormat === 'image' || schemaFormat === 'asset-url') {
+            return true;
+          }
+          if (schemaType === 'string' && schemaFormat === 'uri') {
+            return /(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon)/i.test(key);
+          }
+
+          try {
+            return new RegExp(assetFieldPattern.value, 'i').test(key);
+          } catch {
+            return /(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon)/i.test(key);
+          }
+        };
+
+        const resolveAssetUrlFromId = (id) => {
+          const normalizedId = asString(id);
+          if (!normalizedId) return '';
+          const relative = `${assetPath.value.replace(/\/+$/, '')}/${encodeURIComponent(normalizedId)}`;
+          if (!assetStoreAbsolute.value) return relative;
+          return assetBaseUrl.value ? `${assetBaseUrl.value}${relative}` : relative;
+        };
+
+        const loadAssetPickerFiles = async () => {
+          assetPickerLoading.value = true;
+          assetPickerError.value = '';
+          try {
+            const response = await apiGet('/files', {
+              fields: 'id,title,filename_download,type,width,height',
+              limit: assetPickerLimit.value,
+              sort: '-uploaded_on',
+              search: asString(assetPickerQuery.value) || undefined,
+            });
+            assetPickerRows.value = normalizeRows(response);
+          } catch (error) {
+            assetPickerRows.value = [];
+            assetPickerError.value = error?.message || 'Failed to load files.';
+          } finally {
+            assetPickerLoading.value = false;
+          }
+        };
+
+        const toggleAssetPicker = async (propKey) => {
+          const key = asString(propKey);
+          if (!key) return;
+          if (assetPickerField.value === key) {
+            assetPickerField.value = '';
+            return;
+          }
+          assetPickerField.value = key;
+          assetPickerQuery.value = '';
+          await loadAssetPickerFiles();
+        };
+
+        const chooseAsset = (propKey, row) => {
+          const key = asString(propKey);
+          if (!key) return;
+          const url = resolveAssetUrlFromId(row?.id);
+          if (!url) return;
+          setPropertyValue(key, url);
+          assetPickerField.value = '';
+        };
+
+        const openAssetUploadChooser = (propKey) => {
+          const input = assetUploadInput.value;
+          if (!input || props.disabled || loading.value) return;
+          input.dataset.field = asString(propKey);
+          input.click();
+        };
+
+        const onAssetUploadChange = async (event) => {
+          const input = event?.target;
+          const file = input?.files?.[0];
+          const propKey = asString(input?.dataset?.field || assetPickerField.value);
+          if (!file || !propKey) return;
+
+          assetPickerUploading.value = true;
+          assetPickerError.value = '';
+          try {
+            const form = new FormData();
+            form.append('file', file);
+            const response = await fetch('/files', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { Accept: 'application/json' },
+              body: form,
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              const message = payload?.errors?.[0]?.message || `Upload failed (${response.status})`;
+              throw new Error(message);
+            }
+            const fileId = asString(payload?.data?.id);
+            if (!fileId) {
+              throw new Error('Upload succeeded but no file id was returned.');
+            }
+            setPropertyValue(propKey, resolveAssetUrlFromId(fileId));
+            assetPickerField.value = propKey;
+            await loadAssetPickerFiles();
+          } catch (error) {
+            assetPickerError.value = error?.message || 'Failed to upload file.';
+          } finally {
+            assetPickerUploading.value = false;
+            if (input) {
+              input.value = '';
+              input.dataset.field = '';
+            }
+          }
         };
 
         const buildScopedFilter = (site) => {
@@ -2084,13 +2542,108 @@ data:
               },
             });
           } else {
-            control = h('input', {
-              id: inputId,
-              type: 'text',
-              disabled: props.disabled || loading.value,
-              value: asInputString(value),
-              onInput: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
-            });
+            const supportsAssetPicker = isAssetLikeProperty(propKey, schema);
+            const currentValue = asInputString(value);
+            const isPickerOpen = assetPickerField.value === propKey;
+            const pickerButtons = supportsAssetPicker
+              ? h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' } }, [
+                  h('button', {
+                    type: 'button',
+                    disabled: props.disabled || loading.value,
+                    onClick: () => { toggleAssetPicker(propKey); },
+                  }, isPickerOpen ? 'Close Library' : 'Browse Files'),
+                  h('button', {
+                    type: 'button',
+                    disabled: props.disabled || loading.value || assetPickerUploading.value,
+                    onClick: () => { openAssetUploadChooser(propKey); },
+                  }, assetPickerUploading.value && isPickerOpen ? 'Uploading...' : 'Upload File'),
+                  h('button', {
+                    type: 'button',
+                    disabled: props.disabled || loading.value || !currentValue,
+                    onClick: () => setPropertyValue(propKey, ''),
+                  }, 'Clear'),
+                ])
+              : null;
+
+            const pickerPanel = supportsAssetPicker && isPickerOpen
+              ? h('section', {
+                  style: {
+                    border: '1px solid var(--theme--border-subdued)',
+                    borderRadius: '8px',
+                    padding: '10px',
+                    marginTop: '8px',
+                    background: 'var(--theme--background-subdued)',
+                    display: 'grid',
+                    gap: '8px',
+                    maxHeight: '300px',
+                    overflow: 'auto',
+                  },
+                }, [
+                  h('div', { style: { display: 'flex', gap: '8px' } }, [
+                    h('input', {
+                      type: 'search',
+                      value: assetPickerQuery.value,
+                      placeholder: 'Search files',
+                      onInput: (event) => { assetPickerQuery.value = asInputString(event?.target?.value); },
+                      onKeydown: async (event) => { if (event?.key === 'Enter') await loadAssetPickerFiles(); },
+                      style: { flex: '1 1 auto' },
+                    }),
+                    h('button', {
+                      type: 'button',
+                      disabled: assetPickerLoading.value,
+                      onClick: loadAssetPickerFiles,
+                    }, assetPickerLoading.value ? 'Loading...' : 'Search'),
+                  ]),
+                  assetPickerError.value ? h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, assetPickerError.value) : null,
+                  ...assetPickerRows.value.map((row) => h('button', {
+                    type: 'button',
+                    disabled: props.disabled || loading.value,
+                    onClick: () => chooseAsset(propKey, row),
+                    style: {
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      width: '100%',
+                      textAlign: 'left',
+                      border: '1px solid var(--theme--border-subdued)',
+                      borderRadius: '6px',
+                      padding: '6px 8px',
+                      background: 'var(--theme--background-page)',
+                    },
+                  }, [
+                    h('img', {
+                      src: resolveAssetUrlFromId(row?.id),
+                      alt: asString(row?.title) || asString(row?.filename_download) || 'file',
+                      style: { width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' },
+                    }),
+                    h('span', asString(row?.title) || asString(row?.filename_download) || asString(row?.id)),
+                  ])),
+                ])
+              : null;
+
+            control = h('div', { style: { display: 'grid', gap: '4px' } }, [
+              h('input', {
+                id: inputId,
+                type: 'text',
+                disabled: props.disabled || loading.value,
+                value: currentValue,
+                onInput: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
+              }),
+              pickerButtons,
+              currentValue && supportsAssetPicker ? h('img', {
+                src: currentValue,
+                alt: `${title} preview`,
+                style: {
+                  maxWidth: '220px',
+                  width: '100%',
+                  height: 'auto',
+                  borderRadius: '8px',
+                  border: '1px solid var(--theme--border-subdued)',
+                  background: 'var(--theme--background-page)',
+                },
+              }) : null,
+              pickerPanel,
+            ]);
           }
 
           return h('div', { class: 'cms-module-props-editor__field', key: propKey }, [
@@ -2242,6 +2795,16 @@ data:
             );
           }
 
+          children.push(
+            h('input', {
+              ref: assetUploadInput,
+              type: 'file',
+              accept: assetPickerAccept.value,
+              style: { display: 'none' },
+              onChange: onAssetUploadChange,
+            })
+          );
+
           return h('div', { class: 'cms-module-props-editor' }, children);
         };
       },
@@ -2311,6 +2874,48 @@ data:
           type: 'boolean',
           meta: { width: 'half', interface: 'boolean' },
           schema: { default_value: true },
+        },
+        {
+          field: 'asset_field_pattern',
+          name: 'Asset Field Pattern',
+          type: 'string',
+          meta: { width: 'full', interface: 'input' },
+          schema: { default_value: '(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)' },
+        },
+        {
+          field: 'asset_base_url',
+          name: 'Asset Base URL',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
+        },
+        {
+          field: 'asset_path',
+          name: 'Asset Path',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '/assets' },
+        },
+        {
+          field: 'asset_store_absolute',
+          name: 'Store Absolute URL',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: true },
+        },
+        {
+          field: 'asset_picker_limit',
+          name: 'Asset Picker Limit',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 40 },
+        },
+        {
+          field: 'asset_picker_accept',
+          name: 'Asset Upload Accept',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'image/*' },
         },
       ],
     });
