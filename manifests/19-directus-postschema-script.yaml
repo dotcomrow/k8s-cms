@@ -336,6 +336,15 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS analytics_google_measurement_id TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS analytics_openobserve_rum_script_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS analytics_openobserve_rum_config JSONB; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_title TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_description TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_theme_color TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_apple_touch_icon_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_canonical_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_robots TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_generator TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_position TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_dock_direction TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
@@ -533,6 +542,59 @@ data:
       END
       WHERE p.analytics_openobserve_rum_config IS NULL
          OR jsonb_typeof(p.analytics_openobserve_rum_config) IS DISTINCT FROM 'object';" "normalize cms_pages.analytics_openobserve_rum_config"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_title = NULLIF(BTRIM(p.head_title), '')
+      WHERE p.head_title IS DISTINCT FROM NULLIF(BTRIM(p.head_title), '');" "normalize cms_pages.head_title"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_description = NULLIF(BTRIM(p.head_description), '')
+      WHERE p.head_description IS DISTINCT FROM NULLIF(BTRIM(p.head_description), '');" "normalize cms_pages.head_description"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_theme_color = CASE
+        WHEN NULLIF(BTRIM(p.head_theme_color), '') IS NULL THEN NULL
+        WHEN LOWER(NULLIF(BTRIM(p.head_theme_color), '')) ~ '^#[0-9a-f]{3}([0-9a-f]{3}|[0-9a-f]{5})?$' THEN LOWER(NULLIF(BTRIM(p.head_theme_color), ''))
+        ELSE NULL
+      END
+      WHERE p.head_theme_color IS DISTINCT FROM CASE
+        WHEN NULLIF(BTRIM(p.head_theme_color), '') IS NULL THEN NULL
+        WHEN LOWER(NULLIF(BTRIM(p.head_theme_color), '')) ~ '^#[0-9a-f]{3}([0-9a-f]{3}|[0-9a-f]{5})?$' THEN LOWER(NULLIF(BTRIM(p.head_theme_color), ''))
+        ELSE NULL
+      END;" "normalize cms_pages.head_theme_color"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_manifest_url = NULLIF(BTRIM(p.head_manifest_url), '')
+      WHERE p.head_manifest_url IS DISTINCT FROM NULLIF(BTRIM(p.head_manifest_url), '');" "normalize cms_pages.head_manifest_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_url = NULLIF(BTRIM(p.head_icon_url), '')
+      WHERE p.head_icon_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_url), '');" "normalize cms_pages.head_icon_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_apple_touch_icon_url = NULLIF(BTRIM(p.head_apple_touch_icon_url), '')
+      WHERE p.head_apple_touch_icon_url IS DISTINCT FROM NULLIF(BTRIM(p.head_apple_touch_icon_url), '');" "normalize cms_pages.head_apple_touch_icon_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_canonical_url = NULLIF(BTRIM(p.head_canonical_url), '')
+      WHERE p.head_canonical_url IS DISTINCT FROM NULLIF(BTRIM(p.head_canonical_url), '');" "normalize cms_pages.head_canonical_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_robots = NULLIF(BTRIM(p.head_robots), '')
+      WHERE p.head_robots IS DISTINCT FROM NULLIF(BTRIM(p.head_robots), '');" "normalize cms_pages.head_robots"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_generator = NULLIF(BTRIM(p.head_generator), '')
+      WHERE p.head_generator IS DISTINCT FROM NULLIF(BTRIM(p.head_generator), '');" "normalize cms_pages.head_generator"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_page_blocks pb
@@ -1142,7 +1204,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","slug","title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -2718,6 +2780,15 @@ data:
       analytics_google_measurement_id_note="Optional: Google Analytics 4 measurement id (example: G-XXXXXXXXXX). When set, the shell injects gtag on this page."
       analytics_openobserve_rum_script_url_note="Optional: OpenObserve browser RUM script URL. Leave empty to disable OpenObserve RUM for this page."
       analytics_openobserve_rum_config_note="Optional JSON object passed to OpenObserve RUM init. Use {} when not configured."
+      head_title_note="Optional: browser/page title override for this page (falls back to SEO title then page title)."
+      head_description_note="Optional: meta description override for this page (falls back to SEO description)."
+      head_theme_color_note="Optional: browser theme color (hex like #ffffff or #101820)."
+      head_manifest_url_note="Optional: web app manifest URL (for example /manifest.json)."
+      head_icon_url_note="Optional: favicon/icon URL used in the page head."
+      head_apple_touch_icon_url_note="Optional: Apple touch icon URL used in the page head."
+      head_canonical_url_note="Optional: canonical URL for SEO (absolute URL recommended)."
+      head_robots_note="Optional: robots meta content (for example index,follow or noindex,nofollow)."
+      head_generator_note="Optional: generator meta value (defaults to Next.js when empty)."
       widget_dock_position_note="Required: choose where the widget dock is anchored on this page."
       widget_dock_direction_note="Required: choose widget dock direction (vertical stack or horizontal row)."
       theme_selector_dock_position_note="Required: choose where the theme selector sits inside the widget dock."
@@ -2752,6 +2823,15 @@ data:
       analytics_google_measurement_id_note_sql="$(printf '%s' "${analytics_google_measurement_id_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_script_url_note_sql="$(printf '%s' "${analytics_openobserve_rum_script_url_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_config_note_sql="$(printf '%s' "${analytics_openobserve_rum_config_note}" | sed "s/'/''/g")"
+      head_title_note_sql="$(printf '%s' "${head_title_note}" | sed "s/'/''/g")"
+      head_description_note_sql="$(printf '%s' "${head_description_note}" | sed "s/'/''/g")"
+      head_theme_color_note_sql="$(printf '%s' "${head_theme_color_note}" | sed "s/'/''/g")"
+      head_manifest_url_note_sql="$(printf '%s' "${head_manifest_url_note}" | sed "s/'/''/g")"
+      head_icon_url_note_sql="$(printf '%s' "${head_icon_url_note}" | sed "s/'/''/g")"
+      head_apple_touch_icon_url_note_sql="$(printf '%s' "${head_apple_touch_icon_url_note}" | sed "s/'/''/g")"
+      head_canonical_url_note_sql="$(printf '%s' "${head_canonical_url_note}" | sed "s/'/''/g")"
+      head_robots_note_sql="$(printf '%s' "${head_robots_note}" | sed "s/'/''/g")"
+      head_generator_note_sql="$(printf '%s' "${head_generator_note}" | sed "s/'/''/g")"
       widget_dock_position_note_sql="$(printf '%s' "${widget_dock_position_note}" | sed "s/'/''/g")"
       widget_dock_direction_note_sql="$(printf '%s' "${widget_dock_direction_note}" | sed "s/'/''/g")"
       theme_selector_dock_position_note_sql="$(printf '%s' "${theme_selector_dock_position_note}" | sed "s/'/''/g")"
@@ -3276,6 +3356,68 @@ data:
         echo "✅ Created theme_selector_dock_position field UX on ${_collection}"
       }
 
+      _upsert_page_head_input_field_meta() {
+        _field="$1"
+        _sort="${2:-50}"
+        _width="${3:-full}"
+        _note_sql="${4:-}"
+        _interface="${5:-input}"
+        _collection="cms_pages"
+        if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _interface_sql="$(printf '%s' "${_interface}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='${_interface_sql}'"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='${_width}'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then SETS="${SETS},note='${_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated ${_field} field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'${_interface_sql}'"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'${_width}'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created ${_field} field UX on ${_collection}"
+      }
+
       _upsert_page_block_slot_field_meta_dynamic() {
         _collection="cms_page_blocks"
         _field="slot"
@@ -3476,7 +3618,7 @@ data:
         if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
         if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
         if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
-        if _df_has_col "sort"; then SETS="${SETS},sort=11"; fi
+        if _df_has_col "sort"; then SETS="${SETS},sort=30"; fi
         if _df_has_col "note"; then SETS="${SETS},note='${page_blocks_relation_note_sql}'"; fi
         if [ -n "${SETS:-}" ]; then
           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -3840,6 +3982,15 @@ data:
       _upsert_page_widget_dock_position_field_meta
       _upsert_page_widget_dock_direction_field_meta
       _upsert_page_theme_selector_dock_position_field_meta
+      _upsert_page_head_input_field_meta "head_title" 11 "half" "${head_title_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_description" 12 "full" "${head_description_note_sql}" "input-multiline"
+      _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_manifest_url" 14 "half" "${head_manifest_url_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_icon_url" 15 "half" "${head_icon_url_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 16 "half" "${head_apple_touch_icon_url_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_canonical_url" 17 "full" "${head_canonical_url_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_robots" 18 "full" "${head_robots_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_generator" 19 "half" "${head_generator_note_sql}" "input"
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_page_block_parent_field_meta_dynamic
       _upsert_page_block_group_tag_field_meta_dynamic
