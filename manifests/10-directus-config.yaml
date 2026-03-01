@@ -3101,6 +3101,7 @@ data:
         const saving = ref({});
         const deleting = ref({});
         const creatingBlockType = ref('');
+        const addBlockType = ref('rich_text');
         const error = ref('');
         const info = ref('');
     
@@ -3170,7 +3171,13 @@ data:
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
-        const adminBasePath = computed(() => asString(resolvedOptions.value?.admin_base_path) || '/admin/content');
+        const addBlockTypeChoices = [
+          { text: 'Rich Text', value: 'rich_text' },
+          { text: 'Hero', value: 'hero' },
+          { text: 'Image', value: 'image' },
+          { text: 'Module', value: 'module' },
+          { text: 'Template', value: 'template_ref' },
+        ];
         const defaultLimit = computed(() => {
           const candidate = asInteger(resolvedOptions.value?.default_limit);
           if (!candidate || candidate < 50) return 400;
@@ -3664,11 +3671,6 @@ data:
           });
         };
     
-        const openAdminPath = (relativePath) => {
-          const href = `${window.location.origin}${relativePath}`;
-          window.location.assign(href);
-        };
-
         const openDrawerItem = (collectionName, primaryKey) => {
           const nextCollection = asString(collectionName);
           const nextPrimaryKey = parseId(primaryKey);
@@ -3831,12 +3833,6 @@ data:
           }
         };
     
-        const openBlocksCollection = () => {
-          if (!pageId.value) return;
-          const filter = encodeURIComponent(JSON.stringify({ page_id: { _eq: pageId.value } }));
-          openAdminPath(`${adminBasePath.value}/${pageBlocksCollection.value}?filter=${filter}`);
-        };
-
         const publishedSiteScopeFilter = () => {
           const siteKey = asString(pageContext.value?.site_key);
           return siteKey
@@ -4265,12 +4261,35 @@ data:
             if (!row?.id) continue;
             blockById.set(asString(row.id), row);
           }
+
+          const searchNeedle = toLower(searchText.value);
+          const visibleRowIds = new Set();
+          if (searchNeedle) {
+            for (const row of blocks.value) {
+              const rowId = asString(row?.id);
+              if (!rowId) continue;
+              if (toLower(row?._search_text).includes(searchNeedle)) {
+                visibleRowIds.add(rowId);
+                let parentId = parseId(row?.parent_block_id);
+                while (parentId) {
+                  if (visibleRowIds.has(parentId)) break;
+                  visibleRowIds.add(parentId);
+                  parentId = parseId(blockById.get(parentId)?.parent_block_id);
+                }
+              }
+            }
+          }
+
+          const rowsForTree = searchNeedle
+            ? blocks.value.filter((row) => visibleRowIds.has(asString(row?.id)))
+            : blocks.value;
+
           const childrenByParent = new Map();
           const pushChild = (parentKey, row) => {
             if (!childrenByParent.has(parentKey)) childrenByParent.set(parentKey, []);
             childrenByParent.get(parentKey).push(row);
           };
-          for (const row of blocks.value) {
+          for (const row of rowsForTree) {
             const rowId = asString(row?.id);
             if (!rowId) continue;
             const parentId = parseId(row?.parent_block_id);
@@ -4284,6 +4303,7 @@ data:
             entry.sort(sortBlockRows);
           }
           const rootRows = childrenByParent.get('__root') || [];
+          const visibleCount = rowsForTree.length;
 
           const styles = {
             root: {
@@ -4299,6 +4319,16 @@ data:
               padding: '12px',
               borderRadius: 'var(--theme--border-radius)',
               background: 'var(--theme--background-subdued)',
+            },
+            toolbarSearch: {
+              minWidth: '220px',
+              flex: '1 1 280px',
+            },
+            toolbarActionGroup: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              flexWrap: 'wrap',
             },
             meta: {
               margin: '0',
@@ -4670,58 +4700,61 @@ data:
             ]);
           };
           const rootExpanded = isNodeExpanded('__root', true);
+          const selectedAddTypeLabel = addBlockTypeChoices.find((item) => item.value === addBlockType.value)?.text || 'Block';
+          const creatingAddTypeLabel = addBlockTypeChoices.find((item) => item.value === creatingBlockType.value)?.text || 'Block';
 
           const children = [
             renderCard({
               className: 'cms-page-blocks-manager__toolbar-card',
               children: [
                 h('div', { class: 'cms-page-blocks-manager__toolbar', style: styles.toolbar }, [
-                  renderButtonControl({
-                    label: loading.value ? 'Loading...' : 'Reload',
-                    disabled: loading.value,
-                    onClick: refreshAll,
-                  }),
-                  renderButtonControl({
-                    label: 'Expand All',
-                    disabled: loading.value || blocks.value.length === 0,
-                    onClick: () => expandCollapseAllNodes(true),
-                  }),
-                  renderButtonControl({
-                    label: 'Collapse All',
-                    disabled: loading.value || blocks.value.length === 0,
-                    onClick: () => expandCollapseAllNodes(false),
-                  }),
-                  renderButtonControl({
-                    label: 'Open Collection View',
-                    disabled: !pageId.value,
-                    onClick: openBlocksCollection,
-                  }),
-                  renderButtonControl({
-                    label: creatingBlockType.value === 'rich_text' ? 'Adding Rich Text...' : 'Add Rich Text',
-                    disabled: !pageId.value || !!creatingBlockType.value || loading.value,
-                    primary: true,
-                    onClick: () => { void createPageBlockWithContent('rich_text'); },
-                  }),
-                  renderButtonControl({
-                    label: creatingBlockType.value === 'hero' ? 'Adding Hero...' : 'Add Hero',
-                    disabled: !pageId.value || !!creatingBlockType.value || loading.value,
-                    onClick: () => { void createPageBlockWithContent('hero'); },
-                  }),
-                  renderButtonControl({
-                    label: creatingBlockType.value === 'image' ? 'Adding Image...' : 'Add Image',
-                    disabled: !pageId.value || !!creatingBlockType.value || loading.value,
-                    onClick: () => { void createPageBlockWithContent('image'); },
-                  }),
-                  renderButtonControl({
-                    label: creatingBlockType.value === 'module' ? 'Adding Module...' : 'Add Module',
-                    disabled: !pageId.value || !!creatingBlockType.value || loading.value,
-                    onClick: () => { void createPageBlockWithContent('module'); },
-                  }),
-                  renderButtonControl({
-                    label: creatingBlockType.value === 'template_ref' ? 'Adding Template...' : 'Add Template',
-                    disabled: !pageId.value || !!creatingBlockType.value || loading.value,
-                    onClick: () => { void createPageBlockWithContent('template_ref'); },
-                  }),
+                  h('div', { style: styles.toolbarActionGroup }, [
+                    renderIconControl({
+                      icon: 'autorenew',
+                      fallbackIcon: '↻',
+                      label: loading.value ? 'Loading...' : 'Reload blocks',
+                      disabled: loading.value,
+                      onClick: () => { void refreshAll(); },
+                    }),
+                    renderIconControl({
+                      icon: 'unfold_more',
+                      fallbackIcon: '▾▾',
+                      label: 'Expand all',
+                      disabled: loading.value || blocks.value.length === 0,
+                      onClick: () => expandCollapseAllNodes(true),
+                    }),
+                    renderIconControl({
+                      icon: 'unfold_less',
+                      fallbackIcon: '▴▴',
+                      label: 'Collapse all',
+                      disabled: loading.value || blocks.value.length === 0,
+                      onClick: () => expandCollapseAllNodes(false),
+                    }),
+                  ]),
+                  h('div', { style: styles.toolbarSearch }, [
+                    renderInputControl({
+                      value: searchText.value,
+                      disabled: loading.value,
+                      placeholder: 'Search blocks (type, slot, group, template, id)',
+                      onUpdate: (next) => { searchText.value = asString(next); },
+                    }),
+                  ]),
+                  h('div', { style: styles.toolbarActionGroup }, [
+                    h('div', { style: { minWidth: '180px' } }, [
+                      renderSelectControl({
+                        value: addBlockType.value,
+                        items: addBlockTypeChoices,
+                        disabled: !pageId.value || !!creatingBlockType.value || loading.value,
+                        onUpdate: (next) => { addBlockType.value = asString(next) || 'rich_text'; },
+                      }),
+                    ]),
+                    renderButtonControl({
+                      label: creatingBlockType.value ? `Adding ${creatingAddTypeLabel}...` : `Add ${selectedAddTypeLabel}`,
+                      disabled: !pageId.value || !!creatingBlockType.value || loading.value,
+                      primary: true,
+                      onClick: () => { void createPageBlockWithContent(addBlockType.value); },
+                    }),
+                  ]),
                 ]),
               ],
             }),
@@ -4729,7 +4762,7 @@ data:
 
           if (pageId.value) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${blocks.value.length}`)
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${visibleCount}/${blocks.value.length}`)
             );
           } else {
             children.push(
@@ -4754,7 +4787,13 @@ data:
 
           if (!loading.value && rootRows.length === 0) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__hint', style: styles.meta }, pageId.value ? 'No blocks found for this page.' : 'No page context available.')
+              h(
+                'p',
+                { class: 'cms-page-blocks-manager__hint', style: styles.meta },
+                pageId.value
+                  ? (searchNeedle ? 'No blocks match the current search.' : 'No blocks found for this page.')
+                  : 'No page context available.'
+              )
             );
           }
 
