@@ -3128,6 +3128,9 @@ data:
         const drawerActive = ref(false);
         const drawerCollection = ref('');
         const drawerPrimaryKey = ref('');
+        const drawerSessionKey = ref(0);
+        const drawerSnapshotHash = ref('');
+        const drawerSavedByInput = ref(false);
         let drawerRefreshTimer = null;
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
@@ -3320,6 +3323,49 @@ data:
           }
 
           throw new Error(`${upperMethod} failed after retries.`);
+        };
+
+        const toStableObject = (value) => {
+          if (Array.isArray(value)) {
+            return value.map((entry) => toStableObject(entry));
+          }
+          if (!value || typeof value !== 'object') return value;
+          const output = {};
+          for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
+            output[key] = toStableObject(value[key]);
+          }
+          return output;
+        };
+
+        const toSnapshotHash = (value) => {
+          try {
+            return JSON.stringify(toStableObject(value ?? null));
+          } catch {
+            return '';
+          }
+        };
+
+        const fetchDrawerSnapshotHash = async (collectionName, primaryKey) => {
+          const collection = asString(collectionName);
+          const rowId = parseId(primaryKey);
+          if (!collection || !rowId || rowId === '+') return '';
+          try {
+            const response = await apiRequest(
+              'GET',
+              `/items/${collection}/${encodeURIComponent(rowId)}`,
+              { fields: '*' },
+            );
+            return toSnapshotHash(response?.data || null);
+          } catch {
+            return '';
+          }
+        };
+
+        const captureDrawerSnapshot = async (collectionName, primaryKey, sessionToken) => {
+          const snapshot = await fetchDrawerSnapshotHash(collectionName, primaryKey);
+          if (sessionToken !== drawerSessionKey.value) return '';
+          drawerSnapshotHash.value = snapshot;
+          return snapshot;
         };
 
     
@@ -3685,15 +3731,41 @@ data:
             clearTimeout(drawerRefreshTimer);
             drawerRefreshTimer = null;
           }
+          drawerSessionKey.value += 1;
+          const nextSession = drawerSessionKey.value;
+          drawerSavedByInput.value = false;
+          drawerSnapshotHash.value = '';
           drawerCollection.value = nextCollection;
           drawerPrimaryKey.value = nextPrimaryKey;
           drawerActive.value = true;
+          void captureDrawerSnapshot(nextCollection, nextPrimaryKey, nextSession);
         };
 
         const handleDrawerActive = async (nextActive) => {
           const shouldBeActive = Boolean(nextActive);
           drawerActive.value = shouldBeActive;
           if (shouldBeActive) return;
+
+          const closingCollection = asString(drawerCollection.value);
+          const closingPrimaryKey = parseId(drawerPrimaryKey.value);
+          const closingSession = drawerSessionKey.value;
+          let changedWhileOpen = drawerSavedByInput.value;
+          if (!changedWhileOpen) {
+            const beforeSnapshot = asString(drawerSnapshotHash.value);
+            const afterSnapshot = await fetchDrawerSnapshotHash(closingCollection, closingPrimaryKey);
+            if (
+              closingSession === drawerSessionKey.value
+              && beforeSnapshot
+              && afterSnapshot
+              && beforeSnapshot !== afterSnapshot
+            ) {
+              changedWhileOpen = true;
+            }
+          }
+          if (changedWhileOpen) {
+            markPageDirtyFromDrawerEdits();
+          }
+          drawerSavedByInput.value = false;
 
           // Avoid immediate refresh/unmount races with DrawerItem save handling.
           if (drawerRefreshTimer) {
@@ -3714,26 +3786,10 @@ data:
           const primaryKey = parseId(drawerPrimaryKey.value);
           if (!collection || !primaryKey || primaryKey === '+') return;
           if (!edits || typeof edits !== 'object') return;
-
-          const patchPayload = { ...edits };
-          // Primary key is included by DrawerItem for existing items; don't patch it.
-          delete patchPayload.id;
-
-          if (Object.keys(patchPayload).length === 0) return;
-
-          error.value = '';
-          try {
-            await apiRequest(
-              'PATCH',
-              `/items/${collection}/${encodeURIComponent(primaryKey)}`,
-              {},
-              patchPayload,
-            );
-            markPageDirtyFromDrawerEdits();
-            info.value = 'Saved drawer edits. Save the page to publish and trigger refresh.';
-          } catch (requestError) {
-            error.value = requestError?.message || 'Failed to save drawer edits.';
-          }
+          drawerSavedByInput.value = true;
+          void captureDrawerSnapshot(collection, primaryKey, drawerSessionKey.value);
+          markPageDirtyFromDrawerEdits();
+          info.value = 'Saved drawer edits. Save the page to publish and trigger refresh.';
         };
 
         const openBlockRow = (row) => {
@@ -4829,6 +4885,7 @@ data:
           if (hasDrawerItem) {
             children.push(
               h(resolvedDrawerItem, {
+                key: `${drawerCollection.value || pageBlocksCollection.value}:${drawerPrimaryKey.value || '+'}:${drawerSessionKey.value}`,
                 active: drawerActive.value,
                 collection: drawerCollection.value || pageBlocksCollection.value,
                 primaryKey: drawerPrimaryKey.value || '+',
