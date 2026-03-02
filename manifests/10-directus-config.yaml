@@ -3131,6 +3131,7 @@ data:
         const drawerSessionKey = ref(0);
         const drawerSnapshotHash = ref('');
         const drawerSavedByInput = ref(false);
+        const drawerPendingPatch = ref({});
         let drawerRefreshTimer = null;
 
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
@@ -3343,6 +3344,39 @@ data:
           } catch {
             return '';
           }
+        };
+
+        const unwrapDrawerPayload = (value) => {
+          if (!value || typeof value !== 'object') return {};
+          const candidateKeys = ['edits', 'values', 'data', 'item'];
+          for (const key of candidateKeys) {
+            const nested = value?.[key];
+            if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+              return nested;
+            }
+          }
+          return value;
+        };
+
+        const sanitizeDrawerPatchPayload = (value) => {
+          const source = unwrapDrawerPayload(value);
+          if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+
+          const blockedKeys = new Set([
+            'id',
+            'date_created',
+            'date_updated',
+            'user_created',
+            'user_updated',
+            '__typename',
+          ]);
+          const payload = {};
+          for (const [rawKey, rawValue] of Object.entries(source)) {
+            const key = asString(rawKey);
+            if (!key || blockedKeys.has(key) || key.startsWith('$')) continue;
+            payload[key] = rawValue;
+          }
+          return payload;
         };
 
         const fetchDrawerSnapshotHash = async (collectionName, primaryKey) => {
@@ -3735,10 +3769,27 @@ data:
           const nextSession = drawerSessionKey.value;
           drawerSavedByInput.value = false;
           drawerSnapshotHash.value = '';
+          drawerPendingPatch.value = {};
           drawerCollection.value = nextCollection;
           drawerPrimaryKey.value = nextPrimaryKey;
           drawerActive.value = true;
           void captureDrawerSnapshot(nextCollection, nextPrimaryKey, nextSession);
+        };
+
+        const detectDrawerSnapshotChange = async (collectionName, primaryKey, beforeSnapshot, sessionToken) => {
+          const delays = [0, 220, 420, 760, 1200];
+          let latestSnapshot = '';
+          for (const waitMs of delays) {
+            if (waitMs > 0) await delay(waitMs);
+            latestSnapshot = await fetchDrawerSnapshotHash(collectionName, primaryKey);
+            if (sessionToken !== drawerSessionKey.value) {
+              return { changed: false, latestSnapshot: '' };
+            }
+            if (beforeSnapshot && latestSnapshot && latestSnapshot !== beforeSnapshot) {
+              return { changed: true, latestSnapshot };
+            }
+          }
+          return { changed: false, latestSnapshot };
         };
 
         const handleDrawerActive = async (nextActive) => {
@@ -3752,20 +3803,26 @@ data:
           let changedWhileOpen = drawerSavedByInput.value;
           if (!changedWhileOpen) {
             const beforeSnapshot = asString(drawerSnapshotHash.value);
-            const afterSnapshot = await fetchDrawerSnapshotHash(closingCollection, closingPrimaryKey);
-            if (
-              closingSession === drawerSessionKey.value
-              && beforeSnapshot
-              && afterSnapshot
-              && beforeSnapshot !== afterSnapshot
-            ) {
-              changedWhileOpen = true;
+            if (beforeSnapshot && closingCollection && closingPrimaryKey && closingPrimaryKey !== '+') {
+              const { changed, latestSnapshot } = await detectDrawerSnapshotChange(
+                closingCollection,
+                closingPrimaryKey,
+                beforeSnapshot,
+                closingSession,
+              );
+              if (changed) {
+                changedWhileOpen = true;
+                if (latestSnapshot) {
+                  drawerSnapshotHash.value = latestSnapshot;
+                }
+              }
             }
           }
           if (changedWhileOpen) {
             markPageDirtyFromDrawerEdits();
           }
           drawerSavedByInput.value = false;
+          drawerPendingPatch.value = {};
 
           // Avoid immediate refresh/unmount races with DrawerItem save handling.
           if (drawerRefreshTimer) {
@@ -3786,10 +3843,46 @@ data:
           const primaryKey = parseId(drawerPrimaryKey.value);
           if (!collection || !primaryKey || primaryKey === '+') return;
           if (!edits || typeof edits !== 'object') return;
-          drawerSavedByInput.value = true;
-          void captureDrawerSnapshot(collection, primaryKey, drawerSessionKey.value);
-          markPageDirtyFromDrawerEdits();
-          info.value = 'Saved drawer edits. Save the page to publish and trigger refresh.';
+          const sanitizedPatch = sanitizeDrawerPatchPayload(edits);
+          if (Object.keys(sanitizedPatch).length === 0) return;
+          drawerPendingPatch.value = sanitizedPatch;
+
+          try {
+            const response = await apiRequest(
+              'PATCH',
+              `/items/${collection}/${encodeURIComponent(primaryKey)}`,
+              {},
+              sanitizedPatch,
+            );
+
+            const updatedRow = response?.data || null;
+            drawerSavedByInput.value = true;
+            drawerPendingPatch.value = {};
+
+            if (collection === asString(pageBlocksCollection.value) && updatedRow) {
+              const normalizedUpdated = normalizeBlockRow(updatedRow);
+              blocks.value = blocks.value.map((candidate) => (
+                candidate.id === normalizedUpdated.id ? normalizedUpdated : candidate
+              ));
+              setDraft(normalizedUpdated.id, {
+                slot: normalizedUpdated.slot,
+                sort: normalizedUpdated.sort,
+                group_tag: normalizedUpdated.group_tag,
+              });
+            }
+
+            const nextSnapshot = updatedRow ? toSnapshotHash(updatedRow) : '';
+            if (nextSnapshot) {
+              drawerSnapshotHash.value = nextSnapshot;
+            } else {
+              void captureDrawerSnapshot(collection, primaryKey, drawerSessionKey.value);
+            }
+
+            markPageDirtyFromDrawerEdits();
+            info.value = 'Saved drawer edits. Save the page to publish and trigger refresh.';
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to persist drawer edits.';
+          }
         };
 
         const openBlockRow = (row) => {
@@ -4892,6 +4985,15 @@ data:
                 disabled: props.disabled,
                 nonEditable: props.disabled,
                 onInput: (payload) => {
+                  void handleDrawerInput(payload);
+                },
+                onSave: (payload) => {
+                  void handleDrawerInput(payload);
+                },
+                onSaved: (payload) => {
+                  void handleDrawerInput(payload);
+                },
+                onSubmit: (payload) => {
                   void handleDrawerInput(payload);
                 },
                 'onUpdate:active': (next) => {

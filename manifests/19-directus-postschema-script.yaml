@@ -2847,6 +2847,8 @@ data:
       analytics_google_measurement_id_note="Optional: Google Analytics 4 measurement id (example: G-XXXXXXXXXX). When set, the shell injects gtag on this page."
       analytics_openobserve_rum_script_url_note="Optional: OpenObserve browser RUM script URL. Leave empty to disable OpenObserve RUM for this page."
       analytics_openobserve_rum_config_note="Optional JSON object passed to OpenObserve RUM init. Use {} when not configured."
+      seo_title_note="Optional: SEO title used when head title override is empty."
+      seo_description_note="Optional: SEO description used when head description override is empty."
       head_title_note="Optional: browser/page title override for this page (falls back to SEO title then page title)."
       head_description_note="Optional: meta description override for this page (falls back to SEO description)."
       head_theme_color_note="Optional: browser theme color (hex like #ffffff or #101820)."
@@ -2902,6 +2904,8 @@ data:
       analytics_google_measurement_id_note_sql="$(printf '%s' "${analytics_google_measurement_id_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_script_url_note_sql="$(printf '%s' "${analytics_openobserve_rum_script_url_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_config_note_sql="$(printf '%s' "${analytics_openobserve_rum_config_note}" | sed "s/'/''/g")"
+      seo_title_note_sql="$(printf '%s' "${seo_title_note}" | sed "s/'/''/g")"
+      seo_description_note_sql="$(printf '%s' "${seo_description_note}" | sed "s/'/''/g")"
       head_title_note_sql="$(printf '%s' "${head_title_note}" | sed "s/'/''/g")"
       head_description_note_sql="$(printf '%s' "${head_description_note}" | sed "s/'/''/g")"
       head_theme_color_note_sql="$(printf '%s' "${head_theme_color_note}" | sed "s/'/''/g")"
@@ -2920,6 +2924,8 @@ data:
       head_canonical_url_note_sql="$(printf '%s' "${head_canonical_url_note}" | sed "s/'/''/g")"
       head_robots_note_sql="$(printf '%s' "${head_robots_note}" | sed "s/'/''/g")"
       head_generator_note_sql="$(printf '%s' "${head_generator_note}" | sed "s/'/''/g")"
+      seo_title_name_sql="$(printf '%s' "SEO Title" | sed "s/'/''/g")"
+      seo_description_name_sql="$(printf '%s' "SEO Description" | sed "s/'/''/g")"
       head_title_name_sql="$(printf '%s' "Head Title" | sed "s/'/''/g")"
       head_description_name_sql="$(printf '%s' "Head Description" | sed "s/'/''/g")"
       head_theme_color_name_sql="$(printf '%s' "Theme Color" | sed "s/'/''/g")"
@@ -4154,6 +4160,8 @@ data:
       _upsert_page_widget_dock_position_field_meta
       _upsert_page_widget_dock_direction_field_meta
       _upsert_page_theme_selector_dock_position_field_meta
+      _upsert_page_head_input_field_meta "seo_title" 9 "full" "${seo_title_note_sql}" "input" "" "${seo_title_name_sql}"
+      _upsert_page_head_input_field_meta "seo_description" 10 "full" "${seo_description_note_sql}" "input-multiline" "" "${seo_description_name_sql}"
       _upsert_page_head_input_field_meta "head_title" 11 "half" "${head_title_note_sql}" "input" "" "${head_title_name_sql}"
       _upsert_page_head_input_field_meta "head_description" 12 "full" "${head_description_note_sql}" "input-multiline" "" "${head_description_name_sql}"
       _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "input" "" "${head_theme_color_name_sql}"
@@ -4437,16 +4445,23 @@ data:
     
         _directus_find_flow_id_by_name() {
           _name="$1"
-          _id="$(_directus_api_get "/flows" \
-            --data-urlencode "filter[name][_eq]=${_name}" \
-            --data-urlencode "sort=-date_updated" \
-            --data-urlencode "limit=1" \
-            --data-urlencode "fields=id" \
-            2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
+          _name_sql="$(printf '%s' "${_name}" | sed "s/'/''/g")"
+          _id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id
+             FROM directus.directus_flows
+             WHERE name='${_name_sql}'
+             ORDER BY
+               CASE WHEN COALESCE(status, '')='active' THEN 0 ELSE 1 END,
+               COALESCE(date_updated, date_created) DESC NULLS LAST,
+               id DESC
+             LIMIT 1;" || true)"
           if [ -z "${_id:-}" ] || [ "${_id}" = "null" ]; then
-            _name_sql="$(printf '%s' "${_name}" | sed "s/'/''/g")"
-            _id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SELECT id FROM directus.directus_flows WHERE name='${_name_sql}' ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
+            _id="$(_directus_api_get "/flows" \
+              --data-urlencode "filter[name][_eq]=${_name}" \
+              --data-urlencode "sort=-status,-date_updated,-date_created,-id" \
+              --data-urlencode "limit=1" \
+              --data-urlencode "fields=id" \
+              2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
           fi
           _id="$(printf '%s' "${_id:-}" | tr -d '\r')"
           printf '%s' "${_id:-}"
@@ -4626,17 +4641,17 @@ data:
             '{} | (if $resolve != "" and $resolve != "null" then .resolve=$resolve else . end) | (if $reject != "" and $reject != "null" then .reject=$reject else . end)')"
 
           # Directus enforces unique(resolve) and unique(reject) on directus_operations.
-          # Clear conflicting links within the same flow before writing this operation's links.
+          # Clear conflicting links globally before writing this operation's links.
           if [ "${_resolve_sql}" != "NULL" ]; then
             if ! _psql_yb_retry \
-              "SET search_path TO directus, public; UPDATE directus_operations SET resolve=NULL WHERE id<>'${_op_id_sql}' AND flow=(SELECT flow FROM directus_operations WHERE id='${_op_id_sql}') AND resolve=${_resolve_sql};" \
+              "SET search_path TO directus, public; UPDATE directus_operations SET resolve=NULL WHERE id<>'${_op_id_sql}' AND resolve=${_resolve_sql};" \
               "clear conflicting resolve link for ${_op_id}"; then
               echo "⚠️ Unable to clear conflicting resolve links for operation '${_op_id}'"
             fi
           fi
           if [ "${_reject_sql}" != "NULL" ]; then
             if ! _psql_yb_retry \
-              "SET search_path TO directus, public; UPDATE directus_operations SET reject=NULL WHERE id<>'${_op_id_sql}' AND flow=(SELECT flow FROM directus_operations WHERE id='${_op_id_sql}') AND reject=${_reject_sql};" \
+              "SET search_path TO directus, public; UPDATE directus_operations SET reject=NULL WHERE id<>'${_op_id_sql}' AND reject=${_reject_sql};" \
               "clear conflicting reject link for ${_op_id}"; then
               echo "⚠️ Unable to clear conflicting reject links for operation '${_op_id}'"
             fi
