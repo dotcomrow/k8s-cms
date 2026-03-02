@@ -330,6 +330,7 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_package_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_mode TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS widget_dock_enabled BOOLEAN; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS widget_dock_position TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS widget_dock_direction TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_selector_dock_position TEXT; \
@@ -487,6 +488,11 @@ data:
       WHERE p.theme_mode IS NULL
          OR LOWER(COALESCE(p.theme_mode, '')) NOT IN ('auto','light','dark')
          OR p.theme_mode <> LOWER(p.theme_mode);" "normalize cms_pages.theme_mode"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET widget_dock_enabled = COALESCE(p.widget_dock_enabled, true)
+      WHERE p.widget_dock_enabled IS NULL;" "normalize cms_pages.widget_dock_enabled"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_pages p
@@ -869,6 +875,8 @@ data:
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_mode_check CHECK (theme_mode IN ('auto','light','dark'));
           END IF;
+          ALTER TABLE cms_pages ALTER COLUMN widget_dock_enabled SET DEFAULT true;
+          ALTER TABLE cms_pages ALTER COLUMN widget_dock_enabled SET NOT NULL;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_position SET DEFAULT 'top-right';
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_position SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_widget_dock_position_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
@@ -1000,6 +1008,12 @@ data:
         "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='options' LIMIT 1;" || true)"
       DF_DISPLAY_OPTIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
         "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='display_options' LIMIT 1;" || true)"
+      DF_CONDITIONS_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='conditions' LIMIT 1;" || true)"
+      DF_SPECIAL_DATA_TYPE="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT data_type FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='special' LIMIT 1;" || true)"
+      DF_SPECIAL_UDT_NAME="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT udt_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_fields' AND column_name='special' LIMIT 1;" || true)"
     
       _df_json_sql() {
         _t="$1"
@@ -1014,6 +1028,30 @@ data:
           json) printf "'%s'::json" "$_json_sql" ;;
           text|character\ varying) printf "'%s'" "$_json_sql" ;;
           *) printf "NULL" ;;
+        esac
+      }
+
+      _df_special_group_sql() {
+        if ! _df_has_col "special"; then
+          printf "NULL"
+          return
+        fi
+        case "${DF_SPECIAL_DATA_TYPE:-}:${DF_SPECIAL_UDT_NAME:-}" in
+          ARRAY:*)
+            printf "ARRAY['alias','no-data','group']::text[]"
+            ;;
+          jsonb:*)
+            printf "'[\"alias\",\"no-data\",\"group\"]'::jsonb"
+            ;;
+          json:*)
+            printf "'[\"alias\",\"no-data\",\"group\"]'::json"
+            ;;
+          text:*|character\ varying:*)
+            printf "'alias,no-data,group'"
+            ;;
+          *)
+            printf "NULL"
+            ;;
         esac
       }
     
@@ -1271,7 +1309,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -2868,6 +2906,7 @@ data:
       head_robots_note="Optional: robots meta content (for example index,follow or noindex,nofollow)."
       head_generator_note="Optional: generator meta value (defaults to Next.js when empty)."
       hero_background_image_note="Optional: hero image URL. Use file picker to choose/upload from Directus Files."
+      widget_dock_enabled_note="Enable/disable the widget dock for this page. When disabled, dock position/direction selectors are locked."
       widget_dock_position_note="Required: choose where the widget dock is anchored on this page."
       widget_dock_direction_note="Required: choose widget dock direction (vertical stack or horizontal row)."
       theme_selector_dock_position_note="Required: choose where the theme selector sits inside the widget dock."
@@ -2898,6 +2937,8 @@ data:
       theme_selector_dock_position_display_options_json="$(jq -nc --argjson choices "${theme_selector_dock_position_choices_json}" '{choices:$choices}')"
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
+      widget_dock_dependent_readonly_conditions_json="$(jq -nc '[{"name":"Widget dock disabled","rule":{"widget_dock_enabled":{"_neq":true}},"readonly":true}]')"
+      openobserve_config_readonly_conditions_json="$(jq -nc '[{"name":"OpenObserve URL required","rule":{"_or":[{"analytics_openobserve_rum_script_url":{"_null":true}},{"analytics_openobserve_rum_script_url":{"_eq":""}}]},"readonly":true}]')"
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
       theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
@@ -2945,6 +2986,8 @@ data:
       head_robots_name_sql="$(printf '%s' "Robots" | sed "s/'/''/g")"
       head_generator_name_sql="$(printf '%s' "Generator" | sed "s/'/''/g")"
       hero_background_image_note_sql="$(printf '%s' "${hero_background_image_note}" | sed "s/'/''/g")"
+      widget_dock_enabled_note_sql="$(printf '%s' "${widget_dock_enabled_note}" | sed "s/'/''/g")"
+      widget_dock_enabled_name_sql="$(printf '%s' "Enable Widget Dock" | sed "s/'/''/g")"
       widget_dock_position_note_sql="$(printf '%s' "${widget_dock_position_note}" | sed "s/'/''/g")"
       widget_dock_direction_note_sql="$(printf '%s' "${widget_dock_direction_note}" | sed "s/'/''/g")"
       theme_selector_dock_position_note_sql="$(printf '%s' "${theme_selector_dock_position_note}" | sed "s/'/''/g")"
@@ -3298,6 +3341,62 @@ data:
         echo "✅ Created analytics_openobserve_rum_config field UX on ${_collection}"
       }
 
+      _upsert_page_widget_dock_enabled_field_meta() {
+        _collection="cms_pages"
+        _field="widget_dock_enabled"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='boolean'"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "name"; then SETS="${SETS},name='${widget_dock_enabled_name_sql}'"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=8"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${widget_dock_enabled_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated widget_dock_enabled field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'boolean'"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'${widget_dock_enabled_name_sql}'"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},8"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${widget_dock_enabled_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created widget_dock_enabled field UX on ${_collection}"
+      }
+
       _upsert_page_widget_dock_position_field_meta() {
         _collection="cms_pages"
         _field="widget_dock_position"
@@ -3327,7 +3426,7 @@ data:
           if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
           if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
           if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
-          if _df_has_col "sort"; then SETS="${SETS},sort=8"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=9"; fi
           if _df_has_col "note"; then SETS="${SETS},note='${widget_dock_position_note_sql}'"; fi
           if [ -n "${SETS:-}" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -3347,7 +3446,7 @@ data:
         if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
         if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
         if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
-        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},8"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},9"; fi
         if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${widget_dock_position_note_sql}'"; fi
 
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -3384,7 +3483,7 @@ data:
           if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
           if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
           if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
-          if _df_has_col "sort"; then SETS="${SETS},sort=9"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=10"; fi
           if _df_has_col "note"; then SETS="${SETS},note='${widget_dock_direction_note_sql}'"; fi
           if [ -n "${SETS:-}" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -3404,7 +3503,7 @@ data:
         if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
         if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
         if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
-        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},9"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},10"; fi
         if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${widget_dock_direction_note_sql}'"; fi
 
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -3441,7 +3540,7 @@ data:
           if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
           if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
           if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
-          if _df_has_col "sort"; then SETS="${SETS},sort=10"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=11"; fi
           if _df_has_col "note"; then SETS="${SETS},note='${theme_selector_dock_position_note_sql}'"; fi
           if [ -n "${SETS:-}" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -3461,7 +3560,7 @@ data:
         if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
         if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
         if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
-        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},10"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},11"; fi
         if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${theme_selector_dock_position_note_sql}'"; fi
 
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -4150,6 +4249,86 @@ data:
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created status field UX on ${_collection}"
       }
+
+      _upsert_page_section_group_field_meta() {
+        _field="$1"
+        _label="$2"
+        _sort="${3:-50}"
+        _icon="${4:-folder}"
+        if [ -z "${_field:-}" ] || [ -z "${_label:-}" ]; then
+          return 0
+        fi
+        _collection="cms_pages"
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _label_sql="$(printf '%s' "${_label}" | sed "s/'/''/g")"
+        _options_json="$(jq -nc --arg header "${_label}" --arg icon "${_icon}" '{header:$header,icon:$icon,start:"open"}')"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
+        _special_sql="$(_df_special_group_sql)"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='group-detail'"; fi
+          if _df_has_col "name"; then SETS="${SETS},name='${_label_sql}'"; fi
+          if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "group"; then SETS="${SETS},\"group\"=NULL"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated page section group '${_field}'"
+          fi
+          return 0
+        fi
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'group-detail'"; fi
+        if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'${_label_sql}'"; fi
+        if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then FCOLS="${FCOLS},special"; FVALS="${FVALS},${_special_sql}"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created page section group '${_field}'"
+      }
+
+      _assign_page_field_group() {
+        _field="$1"
+        _group_field="$2"
+        if [ -z "${_field:-}" ] || [ -z "${_group_field:-}" ] || ! _df_has_col "group"; then
+          return 0
+        fi
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _group_sql="$(printf '%s' "${_group_field}" | sed "s/'/''/g")"
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; UPDATE directus_fields SET \"group\"='${_group_sql}' WHERE collection='cms_pages' AND field='${_field_sql}';" >/dev/null 2>&1 || true
+      }
+
+      _set_page_field_conditions() {
+        _field="$1"
+        _conditions_json="$2"
+        if [ -z "${_field:-}" ] || [ -z "${_conditions_json:-}" ] || [ "${_conditions_json}" = "null" ] || ! _df_has_col "conditions"; then
+          return 0
+        fi
+        _conditions_sql="$(_df_json_sql "${DF_CONDITIONS_TYPE:-}" "${_conditions_json}")"
+        if [ "${_conditions_sql}" = "NULL" ]; then
+          return 0
+        fi
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; UPDATE directus_fields SET conditions=${_conditions_sql} WHERE collection='cms_pages' AND field='${_field_sql}';" >/dev/null 2>&1 || true
+      }
     
       _upsert_page_layout_template_field_meta
       _upsert_page_theme_package_field_meta
@@ -4157,6 +4336,7 @@ data:
       _upsert_page_analytics_google_measurement_id_field_meta
       _upsert_page_analytics_openobserve_rum_script_url_field_meta
       _upsert_page_analytics_openobserve_rum_config_field_meta
+      _upsert_page_widget_dock_enabled_field_meta
       _upsert_page_widget_dock_position_field_meta
       _upsert_page_widget_dock_direction_field_meta
       _upsert_page_theme_selector_dock_position_field_meta
@@ -4192,6 +4372,54 @@ data:
       _upsert_status_dropdown_field_meta "cms_block_template_ref" 1
       _upsert_status_dropdown_field_meta "cms_block_hero" 1
       _upsert_status_dropdown_field_meta "cms_modules" 1
+      _upsert_page_section_group_field_meta "_section_page_settings" "Page" 1 "article"
+      _upsert_page_section_group_field_meta "_section_layout" "Layout" 2 "dashboard_customize"
+      _upsert_page_section_group_field_meta "_section_theme" "Theme" 3 "palette"
+      _upsert_page_section_group_field_meta "_section_widget_dock" "Widget Dock" 4 "widgets"
+      _upsert_page_section_group_field_meta "_section_analytics" "Analytics + Monitoring" 5 "insights"
+      _upsert_page_section_group_field_meta "_section_seo" "SEO" 6 "manage_search"
+      _upsert_page_section_group_field_meta "_section_meta" "Meta + Icons" 7 "flag"
+      _upsert_page_section_group_field_meta "_section_blocks" "Blocks" 8 "account_tree"
+      _assign_page_field_group "site_key" "_section_page_settings"
+      _assign_page_field_group "slug" "_section_page_settings"
+      _assign_page_field_group "title" "_section_page_settings"
+      _assign_page_field_group "status" "_section_page_settings"
+      _assign_page_field_group "refresh_target" "_section_page_settings"
+      _assign_page_field_group "layout_template_key" "_section_layout"
+      _assign_page_field_group "theme_package_key" "_section_theme"
+      _assign_page_field_group "theme_mode" "_section_theme"
+      _assign_page_field_group "widget_dock_enabled" "_section_widget_dock"
+      _assign_page_field_group "widget_dock_position" "_section_widget_dock"
+      _assign_page_field_group "widget_dock_direction" "_section_widget_dock"
+      _assign_page_field_group "theme_selector_dock_position" "_section_widget_dock"
+      _assign_page_field_group "analytics_google_measurement_id" "_section_analytics"
+      _assign_page_field_group "analytics_openobserve_rum_script_url" "_section_analytics"
+      _assign_page_field_group "analytics_openobserve_rum_config" "_section_analytics"
+      _assign_page_field_group "seo_title" "_section_seo"
+      _assign_page_field_group "seo_description" "_section_seo"
+      _assign_page_field_group "head_title" "_section_meta"
+      _assign_page_field_group "head_description" "_section_meta"
+      _assign_page_field_group "head_theme_color" "_section_meta"
+      _assign_page_field_group "head_manifest_url" "_section_meta"
+      _assign_page_field_group "head_icon_url" "_section_meta"
+      _assign_page_field_group "head_icon_shortcut_url" "_section_meta"
+      _assign_page_field_group "head_icon_svg_url" "_section_meta"
+      _assign_page_field_group "head_icon_16_url" "_section_meta"
+      _assign_page_field_group "head_icon_32_url" "_section_meta"
+      _assign_page_field_group "head_icon_180_url" "_section_meta"
+      _assign_page_field_group "head_icon_192_url" "_section_meta"
+      _assign_page_field_group "head_icon_512_url" "_section_meta"
+      _assign_page_field_group "head_apple_touch_icon_url" "_section_meta"
+      _assign_page_field_group "head_icon_mask_url" "_section_meta"
+      _assign_page_field_group "head_icon_mask_color" "_section_meta"
+      _assign_page_field_group "head_canonical_url" "_section_meta"
+      _assign_page_field_group "head_robots" "_section_meta"
+      _assign_page_field_group "head_generator" "_section_meta"
+      _assign_page_field_group "blocks" "_section_blocks"
+      _set_page_field_conditions "widget_dock_position" "${widget_dock_dependent_readonly_conditions_json}"
+      _set_page_field_conditions "widget_dock_direction" "${widget_dock_dependent_readonly_conditions_json}"
+      _set_page_field_conditions "theme_selector_dock_position" "${widget_dock_dependent_readonly_conditions_json}"
+      _set_page_field_conditions "analytics_openobserve_rum_config" "${openobserve_config_readonly_conditions_json}"
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "template_group_key" 72
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "template_root_block_id" 73
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "template_ancestor_block_ids" 74
@@ -5071,7 +5299,7 @@ data:
                 if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
                   seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, NULLIF(BTRIM(analytics_google_measurement_id), ''), NULLIF(BTRIM(analytics_openobserve_rum_script_url), ''), CASE WHEN analytics_openobserve_rum_config IS NULL OR jsonb_typeof(analytics_openobserve_rum_config) IS DISTINCT FROM 'object' THEN '{}'::jsonb ELSE analytics_openobserve_rum_config END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(theme_selector_dock_position) ELSE 'start' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, NULLIF(BTRIM(analytics_google_measurement_id), ''), NULLIF(BTRIM(analytics_openobserve_rum_script_url), ''), CASE WHEN analytics_openobserve_rum_config IS NULL OR jsonb_typeof(analytics_openobserve_rum_config) IS DISTINCT FROM 'object' THEN '{}'::jsonb ELSE analytics_openobserve_rum_config END, COALESCE(widget_dock_enabled, true), CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(theme_selector_dock_position) ELSE 'start' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
     
                   # Clone supported homepage blocks so the new site homepage has immediate content.
                   pb_map_file="$(mktemp)"
@@ -5156,7 +5384,7 @@ data:
                 else
                   title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto',NULL,NULL,'{}'::jsonb,'top-right','vertical','start','top-right','vertical','both');"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto',NULL,NULL,'{}'::jsonb,true,'top-right','vertical','start','top-right','vertical','both');"
                   echo "✅ Created default homepage for site_key='${site_key}'"
                 fi
                 HOME_PAGE_ID="$NEW_HOME_ID"
