@@ -138,6 +138,77 @@ data:
       fi
     fi
 
+    CACHE_TARGETS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='cms_cache_refresh_targets' LIMIT 1;" || true)"
+    if [ "${RECON_FLOW_HEALTHY}" = "1" ] && [ "${FLOW_TABLE_EXISTS:-0}" = "1" ] && [ "${CACHE_TARGETS_TABLE_EXISTS:-0}" = "1" ]; then
+      CACHE_TARGETS_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT COUNT(*) FROM directus.cms_cache_refresh_targets;" || true)"
+      CACHE_TARGETS_COUNT="$(printf '%s' "${CACHE_TARGETS_COUNT:-0}" | tr -d '\r')"
+      if [ -n "${CACHE_TARGETS_COUNT:-}" ] && [ "${CACHE_TARGETS_COUNT}" != "0" ]; then
+        FLOW_DUP_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT COUNT(*) FROM ( \
+             SELECT f.name \
+             FROM directus.directus_flows f \
+             WHERE f.name LIKE 'CMS Cache Refresh (%/%) - %' \
+             GROUP BY f.name \
+             HAVING COUNT(*) > 1 \
+           ) d;" || true)"
+        FLOW_DUP_COUNT="$(printf '%s' "${FLOW_DUP_COUNT:-0}" | tr -d '\r')"
+        if [ -n "${FLOW_DUP_COUNT:-}" ] && [ "${FLOW_DUP_COUNT}" != "0" ]; then
+          RECON_FLOW_HEALTHY="0"
+          echo "⚠️ Duplicate cache-refresh flow names detected (${FLOW_DUP_COUNT}); forcing reconcile despite checksum match."
+        fi
+
+        if [ "${RECON_FLOW_HEALTHY}" = "1" ]; then
+          FLOW_TARGET_MISMATCH_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "WITH targets AS ( \
+               SELECT site_key, target_key, enabled, endpoint, \
+                      ('CMS Cache Refresh (' || site_key || '/' || target_key || ') - Create') AS create_name, \
+                      ('CMS Cache Refresh (' || site_key || '/' || target_key || ') - Update') AS update_name, \
+                      ('CMS Cache Refresh (' || site_key || '/' || target_key || ') - Manual') AS manual_name \
+               FROM directus.cms_cache_refresh_targets \
+             ), expected AS ( \
+               SELECT site_key, target_key, endpoint, \
+                      CASE WHEN enabled THEN 'active' ELSE 'inactive' END AS expected_status, \
+                      unnest(ARRAY[create_name, update_name, manual_name]) AS flow_name \
+               FROM targets \
+             ), current_flows AS ( \
+               SELECT e.flow_name, e.endpoint, e.expected_status, \
+                      f.id AS flow_id, \
+                      COALESCE(f.status, '') AS flow_status, \
+                      COALESCE(( \
+                        SELECT o.options::jsonb->>'url' \
+                        FROM directus.directus_operations o \
+                        WHERE o.flow = f.id \
+                          AND o.key = 'refresh_cache_attempt_1' \
+                        LIMIT 1 \
+                      ), '') AS op_url \
+               FROM expected e \
+               LEFT JOIN LATERAL ( \
+                 SELECT id, status \
+                 FROM directus.directus_flows \
+                 WHERE name = e.flow_name \
+                 ORDER BY \
+                   CASE WHEN COALESCE(status, '') = 'active' THEN 0 ELSE 1 END, \
+                   date_created DESC NULLS LAST, \
+                   id DESC \
+                 LIMIT 1 \
+               ) f ON true \
+             ) \
+             SELECT COUNT(*) \
+             FROM current_flows \
+             WHERE flow_id IS NULL \
+                OR flow_status IS DISTINCT FROM expected_status \
+                OR (expected_status = 'active' AND op_url IS DISTINCT FROM endpoint);" || true)"
+          FLOW_TARGET_MISMATCH_COUNT="$(printf '%s' "${FLOW_TARGET_MISMATCH_COUNT:-0}" | tr -d '\r')"
+          if [ -n "${FLOW_TARGET_MISMATCH_COUNT:-}" ] && [ "${FLOW_TARGET_MISMATCH_COUNT}" != "0" ]; then
+            RECON_FLOW_HEALTHY="0"
+            echo "⚠️ Cache-refresh flow state differs from cms_cache_refresh_targets (${FLOW_TARGET_MISMATCH_COUNT} mismatches); forcing reconcile despite checksum match."
+          fi
+        fi
+      fi
+    fi
+
     if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ]; then
       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
         "SET search_path TO directus, public; UPDATE schema_patch_log SET last_checked_at=now() WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null
@@ -4770,13 +4841,13 @@ data:
              WHERE name='${_name_sql}'
              ORDER BY
                CASE WHEN COALESCE(status, '')='active' THEN 0 ELSE 1 END,
-               COALESCE(date_updated, date_created) DESC NULLS LAST,
+               date_created DESC NULLS LAST,
                id DESC
              LIMIT 1;" || true)"
           if [ -z "${_id:-}" ] || [ "${_id}" = "null" ]; then
             _id="$(_directus_api_get "/flows" \
               --data-urlencode "filter[name][_eq]=${_name}" \
-              --data-urlencode "sort=-status,-date_updated,-date_created,-id" \
+              --data-urlencode "sort=-status,-date_created,-id" \
               --data-urlencode "limit=1" \
               --data-urlencode "fields=id" \
               2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
