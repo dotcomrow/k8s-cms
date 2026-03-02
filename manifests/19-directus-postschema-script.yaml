@@ -1337,6 +1337,38 @@ data:
            VALUES ('all', 'cms_pages', 'tabular', ${cms_pages_layout_query_sql}, ${cms_pages_layout_options_sql}, 'view_column');"
         echo "✅ Created cms_pages global tabular preset with site_key column"
       fi
+
+      cache_targets_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='cms_cache_refresh_targets' LIMIT 1;" || true)"
+      cache_targets_exists="$(printf '%s' "${cache_targets_exists}" | tr -d '\r')"
+      if [ "${cache_targets_exists}" = "1" ]; then
+        cache_targets_tabular_fields_json='["site_key","target_key","enabled","endpoint","date_updated"]'
+        cache_targets_layout_query_json="$(jq -nc --argjson fields "${cache_targets_tabular_fields_json}" \
+          '{tabular:{fields:$fields,sort:["site_key","target_key"]}}')"
+        cache_targets_layout_options_json="$(jq -nc '{}')"
+        cache_targets_layout_query_sql="$(_dp_json_sql "${DP_LAYOUT_QUERY_TYPE:-}" "${cache_targets_layout_query_json}")"
+        cache_targets_layout_options_sql="$(_dp_json_sql "${DP_LAYOUT_OPTIONS_TYPE:-}" "${cache_targets_layout_options_json}")"
+        cache_targets_preset_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT id FROM directus.directus_presets WHERE collection='cms_cache_refresh_targets' AND COALESCE(bookmark,'')='all' AND role IS NULL AND \"user\" IS NULL ORDER BY id DESC LIMIT 1;" || true)"
+        cache_targets_preset_id="$(printf '%s' "${cache_targets_preset_id}" | tr -d '\r')"
+        if [ -n "${cache_targets_preset_id:-}" ] && [ "${cache_targets_preset_id}" != "null" ]; then
+          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+            "SET search_path TO directus, public; \
+             UPDATE directus_presets \
+                SET layout='tabular', \
+                    layout_query=${cache_targets_layout_query_sql}, \
+                    layout_options=${cache_targets_layout_options_sql}, \
+                    icon='link' \
+              WHERE id=${cache_targets_preset_id};"
+          echo "✅ Updated cms_cache_refresh_targets preset"
+        else
+          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+            "SET search_path TO directus, public; \
+             INSERT INTO directus_presets (bookmark, collection, layout, layout_query, layout_options, icon) \
+             VALUES ('all', 'cms_cache_refresh_targets', 'tabular', ${cache_targets_layout_query_sql}, ${cache_targets_layout_options_sql}, 'link');"
+          echo "✅ Created cms_cache_refresh_targets preset"
+        fi
+      fi
     else
       echo "  └─ directus_presets table not found; skipping cms_pages list preset"
     fi
@@ -1918,6 +1950,61 @@ data:
     if command -v _upsert_refresh_target_field_meta >/dev/null 2>&1; then
       _upsert_refresh_target_field_meta "cms_theme_packages"
     fi
+
+    # 5b.1.1) Ensure cache refresh target registry exists for UI-managed endpoint overrides.
+    # This becomes the single editor-facing place to change refresh endpoints without code edits.
+    echo "🧱 Ensuring cms_cache_refresh_targets exists..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE TABLE IF NOT EXISTS cms_cache_refresh_targets ( \
+         id UUID PRIMARY KEY, \
+         site_key TEXT NOT NULL, \
+         target_key TEXT NOT NULL, \
+         enabled BOOLEAN NOT NULL DEFAULT false, \
+         endpoint TEXT NOT NULL DEFAULT '', \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS target_key TEXT; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS enabled BOOLEAN; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS endpoint TEXT; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN enabled SET DEFAULT false; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN endpoint SET DEFAULT ''; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_cache_refresh_targets SET enabled = COALESCE(enabled, false) WHERE enabled IS NULL; \
+       UPDATE cms_cache_refresh_targets SET endpoint = COALESCE(endpoint, '') WHERE endpoint IS NULL; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN site_key SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN target_key SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN enabled SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN endpoint SET NOT NULL; \
+       DO \$\$ \
+       BEGIN \
+         IF EXISTS ( \
+           SELECT 1 FROM pg_indexes \
+           WHERE schemaname = 'directus' \
+             AND indexname = 'cms_cache_refresh_targets_site_target_unique' \
+         ) THEN \
+           RETURN; \
+         END IF; \
+         IF NOT EXISTS ( \
+           SELECT 1 \
+           FROM ( \
+             SELECT site_key, target_key, COUNT(*) AS c \
+             FROM cms_cache_refresh_targets \
+             GROUP BY site_key, target_key \
+             HAVING COUNT(*) > 1 \
+           ) dups \
+         ) THEN \
+           CREATE UNIQUE INDEX cms_cache_refresh_targets_site_target_unique \
+           ON cms_cache_refresh_targets (site_key, target_key); \
+         ELSE \
+           RAISE NOTICE 'Skipping cms_cache_refresh_targets_site_target_unique due to duplicate (site_key,target_key) rows'; \
+         END IF; \
+       END \
+       \$\$;"
 
     # 5b.2) Ensure module registry + module content block collections exist and seed modules from GitOps config.
     echo "🧱 Ensuring cms_modules exists..."
@@ -4449,6 +4536,9 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 103
       _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_position" 104
       _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_dock_direction" 105
+      _upsert_hidden_internal_field_meta_dynamic "cms_cache_refresh_targets" "id" 106
+      _upsert_hidden_internal_field_meta_dynamic "cms_cache_refresh_targets" "date_created" 107
+      _upsert_hidden_internal_field_meta_dynamic "cms_cache_refresh_targets" "date_updated" 108
       set -e
     else
       echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot/module UX config"
@@ -5844,7 +5934,53 @@ data:
               if [ -z "${target_key:-}" ] || [ "${target_key}" = "null" ]; then
                 continue
               fi
-    
+
+              # UI-managed endpoint registry:
+              # seed missing (site_key,target_key) rows from sites.yaml defaults,
+              # then always read effective enabled/endpoint from Directus DB.
+              target_site_sql="$(printf '%s' "${site_key}" | sed "s/'/''/g")"
+              target_key_sql="$(printf '%s' "${target_key}" | sed "s/'/''/g")"
+              target_endpoint_seed="$(printf '%s' "${target_endpoint_raw:-}" | tr -d '\r')"
+              target_endpoint_seed_sql="$(printf '%s' "${target_endpoint_seed}" | sed "s/'/''/g")"
+              target_enabled_seed="false"
+              case "$(printf '%s' "${target_enabled_raw:-}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes|on) target_enabled_seed="true" ;;
+                *) target_enabled_seed="false" ;;
+              esac
+
+              target_cfg_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT id FROM directus.cms_cache_refresh_targets WHERE site_key='${target_site_sql}' AND target_key='${target_key_sql}' LIMIT 1;" || true)"
+              target_cfg_id="$(printf '%s' "${target_cfg_id}" | tr -d '\r')"
+              if [ -z "${target_cfg_id:-}" ] || [ "${target_cfg_id}" = "null" ]; then
+                target_cfg_id="$(cat /proc/sys/kernel/random/uuid)"
+                target_cfg_id_sql="$(printf '%s' "${target_cfg_id}" | sed "s/'/''/g")"
+                if ! _psql_yb_retry "INSERT INTO cms_cache_refresh_targets (id, site_key, target_key, enabled, endpoint, date_created, date_updated)
+                  VALUES ('${target_cfg_id_sql}', '${target_site_sql}', '${target_key_sql}', ${target_enabled_seed}, '${target_endpoint_seed_sql}', now(), now())
+                  ON CONFLICT (site_key, target_key) DO NOTHING;" "seed cache refresh target registry for ${site_key}/${target_key}"; then
+                  echo "⚠️ failed to seed cache refresh target registry for site_key='${site_key}', target='${target_key}'"
+                fi
+              fi
+
+              target_cfg_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT row_to_json(src)::text
+                   FROM (
+                     SELECT enabled, endpoint
+                     FROM directus.cms_cache_refresh_targets
+                     WHERE site_key='${target_site_sql}'
+                       AND target_key='${target_key_sql}'
+                     ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST
+                     LIMIT 1
+                   ) src;" || true)"
+              target_cfg_json="$(printf '%s' "${target_cfg_json}" | tr -d '\r')"
+              if [ -n "${target_cfg_json:-}" ] && [ "${target_cfg_json}" != "null" ]; then
+                target_cfg_enabled="$(printf '%s' "${target_cfg_json}" | jq -r '.enabled // empty' 2>/dev/null || true)"
+                target_cfg_endpoint="$(printf '%s' "${target_cfg_json}" | jq -r '.endpoint // ""' 2>/dev/null || true)"
+                if [ -n "${target_cfg_enabled:-}" ] && [ "${target_cfg_enabled}" != "null" ]; then
+                  target_enabled_raw="${target_cfg_enabled}"
+                fi
+                target_endpoint_raw="${target_cfg_endpoint}"
+              fi
+
               case "$(printf '%s' "${target_enabled_raw:-}" | tr '[:upper:]' '[:lower:]')" in
                 1|true|yes|on) target_enabled="true" ;;
                 *) target_enabled="false" ;;
