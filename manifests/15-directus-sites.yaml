@@ -8,6 +8,12 @@ metadata:
     app: directus
 data:
   sites.yaml: |
+    # Single-source cache refresh endpoints for all sites/targets.
+    # Update URLs here only; site target endpoint fields below reference these anchors.
+    cache_refresh_endpoint_templates:
+      prod_refresh_url: &cache_refresh_prod_refresh_url "https://suncoast-systems-cf-www-home-app.suncoast.systems/api/cache/refresh?mode=refresh"
+      preview_refresh_url: &cache_refresh_preview_refresh_url "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh?mode=refresh"
+
     sites:
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
@@ -23,12 +29,12 @@ data:
           targets:
             prod:
               enabled: false
-              endpoint: ""
+              endpoint: *cache_refresh_prod_refresh_url
               method: POST
               headers: []
             preview:
               enabled: false
-              endpoint: ""
+              endpoint: *cache_refresh_preview_refresh_url
               method: POST
               headers: []
           auth:
@@ -165,12 +171,12 @@ data:
           targets:
             prod:
               enabled: false
-              endpoint: ""
+              endpoint: *cache_refresh_prod_refresh_url
               method: POST
               headers: []
             preview:
               enabled: true
-              endpoint: "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh?mode=refresh"
+              endpoint: *cache_refresh_preview_refresh_url
               method: POST
               retry_attempts: 12
               retry_delay_ms: 2000
