@@ -342,6 +342,15 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_apple_touch_icon_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_shortcut_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_svg_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_16_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_32_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_180_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_192_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_512_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_mask_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_mask_color TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_canonical_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_robots TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_generator TEXT; \
@@ -580,6 +589,59 @@ data:
     if ! _psql_yb_retry "UPDATE cms_pages p
       SET head_apple_touch_icon_url = NULLIF(BTRIM(p.head_apple_touch_icon_url), '')
       WHERE p.head_apple_touch_icon_url IS DISTINCT FROM NULLIF(BTRIM(p.head_apple_touch_icon_url), '');" "normalize cms_pages.head_apple_touch_icon_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_shortcut_url = NULLIF(BTRIM(p.head_icon_shortcut_url), '')
+      WHERE p.head_icon_shortcut_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_shortcut_url), '');" "normalize cms_pages.head_icon_shortcut_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_svg_url = NULLIF(BTRIM(p.head_icon_svg_url), '')
+      WHERE p.head_icon_svg_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_svg_url), '');" "normalize cms_pages.head_icon_svg_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_16_url = NULLIF(BTRIM(p.head_icon_16_url), '')
+      WHERE p.head_icon_16_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_16_url), '');" "normalize cms_pages.head_icon_16_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_32_url = NULLIF(BTRIM(p.head_icon_32_url), '')
+      WHERE p.head_icon_32_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_32_url), '');" "normalize cms_pages.head_icon_32_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_180_url = NULLIF(BTRIM(p.head_icon_180_url), '')
+      WHERE p.head_icon_180_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_180_url), '');" "normalize cms_pages.head_icon_180_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_192_url = NULLIF(BTRIM(p.head_icon_192_url), '')
+      WHERE p.head_icon_192_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_192_url), '');" "normalize cms_pages.head_icon_192_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_512_url = NULLIF(BTRIM(p.head_icon_512_url), '')
+      WHERE p.head_icon_512_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_512_url), '');" "normalize cms_pages.head_icon_512_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_mask_url = NULLIF(BTRIM(p.head_icon_mask_url), '')
+      WHERE p.head_icon_mask_url IS DISTINCT FROM NULLIF(BTRIM(p.head_icon_mask_url), '');" "normalize cms_pages.head_icon_mask_url"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET head_icon_mask_color = CASE
+        WHEN NULLIF(BTRIM(p.head_icon_mask_color), '') IS NULL THEN NULL
+        WHEN LOWER(NULLIF(BTRIM(p.head_icon_mask_color), '')) ~ '^#[0-9a-f]{3}([0-9a-f]{3}|[0-9a-f]{5})?$' THEN LOWER(NULLIF(BTRIM(p.head_icon_mask_color), ''))
+        ELSE NULL
+      END
+      WHERE p.head_icon_mask_color IS DISTINCT FROM CASE
+        WHEN NULLIF(BTRIM(p.head_icon_mask_color), '') IS NULL THEN NULL
+        WHEN LOWER(NULLIF(BTRIM(p.head_icon_mask_color), '')) ~ '^#[0-9a-f]{3}([0-9a-f]{3}|[0-9a-f]{5})?$' THEN LOWER(NULLIF(BTRIM(p.head_icon_mask_color), ''))
+        ELSE NULL
+      END;" "normalize cms_pages.head_icon_mask_color"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_pages p
@@ -2789,8 +2851,17 @@ data:
       head_description_note="Optional: meta description override for this page (falls back to SEO description)."
       head_theme_color_note="Optional: browser theme color (hex like #ffffff or #101820)."
       head_manifest_url_note="Optional: web app manifest URL (for example /manifest.json)."
-      head_icon_url_note="Optional: favicon/icon URL used in the page head. Use file picker to choose/upload from Directus Files."
-      head_apple_touch_icon_url_note="Optional: Apple touch icon URL used in the page head. Use file picker to choose/upload from Directus Files."
+      head_icon_url_note="Optional: primary icon source. When size-specific fields are empty, the shell derives 16/32/180/192/512 icons from this asset."
+      head_icon_shortcut_url_note="Optional: shortcut icon override (rel=shortcut icon)."
+      head_icon_svg_url_note="Optional: SVG icon override."
+      head_icon_16_url_note="Optional: explicit 16x16 icon override."
+      head_icon_32_url_note="Optional: explicit 32x32 icon override."
+      head_icon_180_url_note="Optional: explicit 180x180 icon override."
+      head_icon_192_url_note="Optional: explicit 192x192 icon override."
+      head_icon_512_url_note="Optional: explicit 512x512 icon override."
+      head_apple_touch_icon_url_note="Optional: Apple touch icon override."
+      head_icon_mask_url_note="Optional: Safari pinned-tab mask icon URL."
+      head_icon_mask_color_note="Optional: Safari mask icon color (hex like #0f172a)."
       head_canonical_url_note="Optional: canonical URL for SEO (absolute URL recommended)."
       head_robots_note="Optional: robots meta content (for example index,follow or noindex,nofollow)."
       head_generator_note="Optional: generator meta value (defaults to Next.js when empty)."
@@ -2836,10 +2907,37 @@ data:
       head_theme_color_note_sql="$(printf '%s' "${head_theme_color_note}" | sed "s/'/''/g")"
       head_manifest_url_note_sql="$(printf '%s' "${head_manifest_url_note}" | sed "s/'/''/g")"
       head_icon_url_note_sql="$(printf '%s' "${head_icon_url_note}" | sed "s/'/''/g")"
+      head_icon_shortcut_url_note_sql="$(printf '%s' "${head_icon_shortcut_url_note}" | sed "s/'/''/g")"
+      head_icon_svg_url_note_sql="$(printf '%s' "${head_icon_svg_url_note}" | sed "s/'/''/g")"
+      head_icon_16_url_note_sql="$(printf '%s' "${head_icon_16_url_note}" | sed "s/'/''/g")"
+      head_icon_32_url_note_sql="$(printf '%s' "${head_icon_32_url_note}" | sed "s/'/''/g")"
+      head_icon_180_url_note_sql="$(printf '%s' "${head_icon_180_url_note}" | sed "s/'/''/g")"
+      head_icon_192_url_note_sql="$(printf '%s' "${head_icon_192_url_note}" | sed "s/'/''/g")"
+      head_icon_512_url_note_sql="$(printf '%s' "${head_icon_512_url_note}" | sed "s/'/''/g")"
       head_apple_touch_icon_url_note_sql="$(printf '%s' "${head_apple_touch_icon_url_note}" | sed "s/'/''/g")"
+      head_icon_mask_url_note_sql="$(printf '%s' "${head_icon_mask_url_note}" | sed "s/'/''/g")"
+      head_icon_mask_color_note_sql="$(printf '%s' "${head_icon_mask_color_note}" | sed "s/'/''/g")"
       head_canonical_url_note_sql="$(printf '%s' "${head_canonical_url_note}" | sed "s/'/''/g")"
       head_robots_note_sql="$(printf '%s' "${head_robots_note}" | sed "s/'/''/g")"
       head_generator_note_sql="$(printf '%s' "${head_generator_note}" | sed "s/'/''/g")"
+      head_title_name_sql="$(printf '%s' "Head Title" | sed "s/'/''/g")"
+      head_description_name_sql="$(printf '%s' "Head Description" | sed "s/'/''/g")"
+      head_theme_color_name_sql="$(printf '%s' "Theme Color" | sed "s/'/''/g")"
+      head_manifest_url_name_sql="$(printf '%s' "Manifest URL" | sed "s/'/''/g")"
+      head_icon_url_name_sql="$(printf '%s' "Icon" | sed "s/'/''/g")"
+      head_icon_shortcut_url_name_sql="$(printf '%s' "Icon (Shortcut)" | sed "s/'/''/g")"
+      head_icon_svg_url_name_sql="$(printf '%s' "Icon (SVG)" | sed "s/'/''/g")"
+      head_icon_16_url_name_sql="$(printf '%s' "Icon 16x16" | sed "s/'/''/g")"
+      head_icon_32_url_name_sql="$(printf '%s' "Icon 32x32" | sed "s/'/''/g")"
+      head_icon_180_url_name_sql="$(printf '%s' "Icon 180x180" | sed "s/'/''/g")"
+      head_icon_192_url_name_sql="$(printf '%s' "Icon 192x192" | sed "s/'/''/g")"
+      head_icon_512_url_name_sql="$(printf '%s' "Icon 512x512" | sed "s/'/''/g")"
+      head_apple_touch_icon_url_name_sql="$(printf '%s' "Icon (Apple Touch)" | sed "s/'/''/g")"
+      head_icon_mask_url_name_sql="$(printf '%s' "Icon (Safari Mask)" | sed "s/'/''/g")"
+      head_icon_mask_color_name_sql="$(printf '%s' "Icon (Mask Color)" | sed "s/'/''/g")"
+      head_canonical_url_name_sql="$(printf '%s' "Canonical URL" | sed "s/'/''/g")"
+      head_robots_name_sql="$(printf '%s' "Robots" | sed "s/'/''/g")"
+      head_generator_name_sql="$(printf '%s' "Generator" | sed "s/'/''/g")"
       hero_background_image_note_sql="$(printf '%s' "${hero_background_image_note}" | sed "s/'/''/g")"
       widget_dock_position_note_sql="$(printf '%s' "${widget_dock_position_note}" | sed "s/'/''/g")"
       widget_dock_direction_note_sql="$(printf '%s' "${widget_dock_direction_note}" | sed "s/'/''/g")"
@@ -3372,6 +3470,7 @@ data:
         _note_sql="${4:-}"
         _interface="${5:-input}"
         _options_json="${6:-}"
+        _name_sql="${7:-}"
         _collection="cms_pages"
         if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
           return 0
@@ -3407,6 +3506,7 @@ data:
           if _df_has_col "required"; then SETS="${SETS},required=false"; fi
           if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
           if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "name" && [ -n "${_name_sql:-}" ]; then SETS="${SETS},name='${_name_sql}'"; fi
           if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then SETS="${SETS},options=${_options_sql}"; fi
           if _df_has_col "width"; then SETS="${SETS},width='${_width}'"; fi
           if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
@@ -3425,6 +3525,7 @@ data:
         if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
         if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
         if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "name" && [ -n "${_name_sql:-}" ]; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'${_name_sql}'"; fi
         if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
         if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'${_width}'"; fi
         if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
@@ -4053,15 +4154,24 @@ data:
       _upsert_page_widget_dock_position_field_meta
       _upsert_page_widget_dock_direction_field_meta
       _upsert_page_theme_selector_dock_position_field_meta
-      _upsert_page_head_input_field_meta "head_title" 11 "half" "${head_title_note_sql}" "input"
-      _upsert_page_head_input_field_meta "head_description" 12 "full" "${head_description_note_sql}" "input-multiline"
-      _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "input"
-      _upsert_page_head_input_field_meta "head_manifest_url" 14 "half" "${head_manifest_url_note_sql}" "input"
-      _upsert_page_head_input_field_meta "head_icon_url" 15 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}"
-      _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 16 "half" "${head_apple_touch_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}"
-      _upsert_page_head_input_field_meta "head_canonical_url" 17 "full" "${head_canonical_url_note_sql}" "input"
-      _upsert_page_head_input_field_meta "head_robots" 18 "full" "${head_robots_note_sql}" "input"
-      _upsert_page_head_input_field_meta "head_generator" 19 "half" "${head_generator_note_sql}" "input"
+      _upsert_page_head_input_field_meta "head_title" 11 "half" "${head_title_note_sql}" "input" "" "${head_title_name_sql}"
+      _upsert_page_head_input_field_meta "head_description" 12 "full" "${head_description_note_sql}" "input-multiline" "" "${head_description_name_sql}"
+      _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "input" "" "${head_theme_color_name_sql}"
+      _upsert_page_head_input_field_meta "head_manifest_url" 14 "half" "${head_manifest_url_note_sql}" "input" "" "${head_manifest_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_url" 15 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_shortcut_url" 16 "half" "${head_icon_shortcut_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_shortcut_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_svg_url" 17 "half" "${head_icon_svg_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_svg_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_16_url" 18 "half" "${head_icon_16_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_16_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_32_url" 19 "half" "${head_icon_32_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_32_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_180_url" 20 "half" "${head_icon_180_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_180_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_192_url" 21 "half" "${head_icon_192_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_192_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_512_url" 22 "half" "${head_icon_512_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_512_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 23 "half" "${head_apple_touch_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_apple_touch_icon_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_mask_url" 24 "half" "${head_icon_mask_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_mask_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_mask_color" 25 "half" "${head_icon_mask_color_note_sql}" "input" "" "${head_icon_mask_color_name_sql}"
+      _upsert_page_head_input_field_meta "head_canonical_url" 26 "full" "${head_canonical_url_note_sql}" "input" "" "${head_canonical_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_robots" 27 "full" "${head_robots_note_sql}" "input" "" "${head_robots_name_sql}"
+      _upsert_page_head_input_field_meta "head_generator" 28 "half" "${head_generator_note_sql}" "input" "" "${head_generator_name_sql}"
       _upsert_block_hero_background_image_field_meta
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_page_block_parent_field_meta_dynamic
