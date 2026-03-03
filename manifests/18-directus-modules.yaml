@@ -1001,3 +1001,91 @@ data:
         default_props:
           triggerLabel: "Hover me"
           content: "Helpful tooltip content."
+      - module_key: mfe-generic-remote
+        name: MFE Generic Remote
+        description: "Generic MFE module contract. Use this as the base shape for any loaded micro-frontend."
+        provider: mfe
+        status: published
+        site_key: null
+        component_type: mfe.remote
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            registryKey:
+              type: string
+              title: Registry Key
+            manifestUrl:
+              type: string
+              title: Manifest URL
+            entryExport:
+              type: string
+              title: Entry Export
+            version:
+              type: string
+              title: Version
+            mountStrategy:
+              type: string
+              title: Mount Strategy
+              enum:
+                - module
+                - iframe
+            sandbox:
+              type: boolean
+              title: Sandbox
+            preload:
+              type: boolean
+              title: Preload
+            routeBase:
+              type: string
+              title: Route Base
+            async:
+              type: object
+              title: Async Transport
+              additionalProperties: false
+              properties:
+                mode:
+                  type: string
+                  title: Mode
+                  enum:
+                    - none
+                    - graphql-stream
+                    - kafka-graphql-bridge
+                requestChannel:
+                  type: string
+                  title: Request Channel
+                responseChannel:
+                  type: string
+                  title: Response Channel
+                correlationIdPath:
+                  type: string
+                  title: Correlation Id Path
+              required:
+                - mode
+            input:
+              type: object
+              title: Input Defaults
+              additionalProperties: true
+            ui:
+              type: object
+              title: UI Configuration
+              additionalProperties: true
+          required:
+            - registryKey
+            - mountStrategy
+        default_props:
+          registryKey: ""
+          manifestUrl: ""
+          entryExport: "mount"
+          version: "latest"
+          mountStrategy: "module"
+          sandbox: true
+          preload: false
+          routeBase: ""
+          async:
+            mode: "none"
+            requestChannel: ""
+            responseChannel: ""
+            correlationIdPath: "requestId"
+          input: {}
+          ui: {}

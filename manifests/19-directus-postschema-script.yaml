@@ -449,6 +449,7 @@ data:
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS module_provider TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
@@ -846,6 +847,52 @@ data:
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_block_module m
+      SET module_provider = COALESCE(
+        NULLIF((
+          SELECT LOWER(BTRIM(COALESCE(mm.provider, '')))
+          FROM directus.cms_modules mm
+          WHERE mm.module_key = m.module_key
+            AND LOWER(COALESCE(mm.status, 'published')) = 'published'
+            AND (
+              COALESCE(NULLIF(BTRIM(COALESCE(mm.site_key, '')), ''), '') = ''
+              OR COALESCE(NULLIF(BTRIM(COALESCE(mm.site_key, '')), ''), '') = COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '')
+            )
+          ORDER BY CASE WHEN COALESCE(NULLIF(BTRIM(COALESCE(mm.site_key, '')), ''), '') = COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') THEN 0 ELSE 1 END,
+                   COALESCE(mm.date_updated, mm.date_created, now()) DESC
+          LIMIT 1
+        ), ''),
+        NULLIF(LOWER(BTRIM(COALESCE(m.module_provider, ''))), ''),
+        'radix'
+      )
+      WHERE m.module_key IS NOT NULL
+        AND BTRIM(m.module_key) <> ''
+        AND m.module_provider IS DISTINCT FROM COALESCE(
+          NULLIF((
+            SELECT LOWER(BTRIM(COALESCE(mm.provider, '')))
+            FROM directus.cms_modules mm
+            WHERE mm.module_key = m.module_key
+              AND LOWER(COALESCE(mm.status, 'published')) = 'published'
+              AND (
+                COALESCE(NULLIF(BTRIM(COALESCE(mm.site_key, '')), ''), '') = ''
+                OR COALESCE(NULLIF(BTRIM(COALESCE(mm.site_key, '')), ''), '') = COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '')
+              )
+            ORDER BY CASE WHEN COALESCE(NULLIF(BTRIM(COALESCE(mm.site_key, '')), ''), '') = COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') THEN 0 ELSE 1 END,
+                     COALESCE(mm.date_updated, mm.date_created, now()) DESC
+            LIMIT 1
+          ), ''),
+          NULLIF(LOWER(BTRIM(COALESCE(m.module_provider, ''))), ''),
+          'radix'
+        );" "normalize cms_block_module.module_provider"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_block_module m
+      SET module_provider = COALESCE(NULLIF(LOWER(BTRIM(COALESCE(m.module_provider, ''))), ''), 'radix')
+      WHERE m.module_provider IS NULL
+         OR BTRIM(COALESCE(m.module_provider, '')) = ''
+         OR m.module_provider <> LOWER(BTRIM(COALESCE(m.module_provider, '')));" "default cms_block_module.module_provider"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_block_module m
       SET site_key = pb.site_key,
           page_slug = pb.page_slug,
           refresh_target = pb.refresh_target
@@ -1015,6 +1062,8 @@ data:
           END IF;
         END IF;
         IF to_regclass('directus.cms_block_module') IS NOT NULL THEN
+          ALTER TABLE cms_block_module ALTER COLUMN module_provider SET DEFAULT 'radix';
+          ALTER TABLE cms_block_module ALTER COLUMN module_provider SET NOT NULL;
           ALTER TABLE cms_block_module ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_block_module ALTER COLUMN refresh_target SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_refresh_target_check' AND conrelid = 'directus.cms_block_module'::regclass) THEN
@@ -2148,6 +2197,7 @@ data:
          id UUID PRIMARY KEY, \
          status TEXT NOT NULL DEFAULT 'draft', \
          sort INTEGER NULL, \
+         module_provider TEXT NOT NULL DEFAULT 'radix', \
          module_key TEXT NOT NULL, \
          props_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          site_key TEXT NULL, \
@@ -2158,6 +2208,7 @@ data:
        ); \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS status TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS module_provider TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS module_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS props_json JSONB; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS site_key TEXT; \
@@ -2166,6 +2217,7 @@ data:
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN module_provider SET DEFAULT 'radix'; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN props_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN date_created SET DEFAULT now();"
@@ -2762,11 +2814,13 @@ data:
        DECLARE \
          _site_key TEXT; \
          _module_key TEXT; \
+         _module_provider TEXT; \
          _normalized_refresh_target TEXT; \
          _default_props JSONB; \
        BEGIN \
          _site_key := COALESCE(NULLIF(BTRIM(COALESCE(NEW.site_key, '')), ''), ''); \
          _module_key := COALESCE(NULLIF(BTRIM(COALESCE(NEW.module_key, '')), ''), ''); \
+         _module_provider := COALESCE(NULLIF(LOWER(BTRIM(COALESCE(NEW.module_provider, ''))), ''), ''); \
          _normalized_refresh_target := CASE \
            WHEN LOWER(COALESCE(NEW.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(NEW.refresh_target) \
            ELSE 'both' \
@@ -2777,13 +2831,28 @@ data:
            NEW.props_json := '{}'::jsonb; \
          END IF; \
          IF _module_key = '' THEN \
+           NEW.module_provider := COALESCE(NULLIF(_module_provider, ''), 'radix'); \
            RETURN NEW; \
          END IF; \
+         IF _module_provider = '' THEN \
+           SELECT COALESCE(NULLIF(LOWER(BTRIM(COALESCE(m.provider, ''))), ''), 'radix') \
+             INTO _module_provider \
+           FROM directus.cms_modules m \
+           WHERE m.module_key = _module_key \
+             AND LOWER(COALESCE(m.status, 'published')) = 'published' \
+             AND (COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = '' OR COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = _site_key) \
+           ORDER BY CASE WHEN COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = _site_key THEN 0 ELSE 1 END, \
+                    COALESCE(m.date_updated, m.date_created, now()) DESC \
+           LIMIT 1; \
+         END IF; \
+         _module_provider := COALESCE(NULLIF(_module_provider, ''), 'radix'); \
+         NEW.module_provider := _module_provider; \
          SELECT COALESCE(m.default_props, '{}'::jsonb) \
            INTO _default_props \
          FROM directus.cms_modules m \
          WHERE m.module_key = _module_key \
            AND LOWER(COALESCE(m.status, 'published')) = 'published' \
+           AND COALESCE(NULLIF(LOWER(BTRIM(COALESCE(m.provider, ''))), ''), 'radix') = _module_provider \
            AND (COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = '' OR COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = _site_key) \
          ORDER BY CASE WHEN COALESCE(NULLIF(BTRIM(COALESCE(m.site_key, '')), ''), '') = _site_key THEN 0 ELSE 1 END, \
                   COALESCE(m.date_updated, m.date_created, now()) DESC \
@@ -2878,7 +2947,7 @@ data:
             AND to_regclass('directus.cms_modules') IS NOT NULL THEN \
            DROP TRIGGER IF EXISTS cms_block_module_apply_defaults ON cms_block_module; \
            CREATE TRIGGER cms_block_module_apply_defaults \
-           BEFORE INSERT OR UPDATE OF module_key, props_json, site_key, refresh_target \
+           BEFORE INSERT OR UPDATE OF module_provider, module_key, props_json, site_key, refresh_target \
            ON cms_block_module \
            FOR EACH ROW \
            EXECUTE FUNCTION directus.apply_cms_block_module_defaults(); \
@@ -3028,10 +3097,10 @@ data:
       slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices}')"
       module_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices,allowNone:false}')"
       module_interface_options_json="$(jq -nc --argjson choices "${module_choices_json}" \
-        '{mode:"module",modules_collection:"cms_modules",pages_collection:"cms_pages",module_value_field:"module_key",module_label_field:"name",page_site_field:"site_key",include_global:true,choices:$choices}')"
+        '{mode:"module",modules_collection:"cms_modules",pages_collection:"cms_pages",module_value_field:"module_key",module_label_field:"name",module_provider_field:"module_provider",page_site_field:"site_key",include_global:true,choices:$choices}')"
       module_display_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices}')"
       module_props_interface_options_json="$(jq -nc \
-        '{modules_collection:"cms_modules",module_key_field:"module_key",props_schema_field:"props_schema",default_props_field:"default_props",pages_collection:"cms_pages",page_site_field:"site_key",include_global:true,show_json_fallback:true,asset_field_pattern:"(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)",asset_base_url:"",asset_path:"/assets",asset_store_absolute:true,asset_picker_limit:40,asset_picker_accept:"image/*"}')"
+        '{modules_collection:"cms_modules",module_key_field:"module_key",module_provider_field:"module_provider",props_schema_field:"props_schema",default_props_field:"default_props",pages_collection:"cms_pages",page_site_field:"site_key",include_global:true,show_json_fallback:true,asset_field_pattern:"(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)",asset_base_url:"",asset_path:"/assets",asset_store_absolute:true,asset_picker_limit:40,asset_picker_accept:"image/*"}')"
       parent_block_interface_options_json="$(jq -nc \
         '{mode:"parent",page_blocks_collection:"cms_page_blocks",template_refs_collection:"cms_block_template_ref",pages_collection:"cms_pages",page_id_field:"page_id",page_site_field:"site_key",page_slug_field:"page_slug",item_id_field:"id",parent_id_field:"parent_block_id"}')"
       page_blocks_manager_interface_options_json="$(jq -nc \
@@ -4592,9 +4661,10 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "site_key" 82
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "page_slug" 83
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "refresh_target" 84
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_created" 85
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_updated" 86
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "sort" 87
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "module_provider" 85
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_created" 86
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_updated" 87
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "sort" 88
       _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "id" 88
       _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "site_key" 89
       _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "page_slug" 90
@@ -5488,7 +5558,7 @@ data:
                             ;;
                           cms_block_module)
                             copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                              "WITH ins AS (INSERT INTO directus.cms_block_module (id, status, sort, module_key, props_json, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, module_key, COALESCE(props_json, '{}'::jsonb), '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_module WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                              "WITH ins AS (INSERT INTO directus.cms_block_module (id, status, sort, module_provider, module_key, props_json, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, COALESCE(NULLIF(LOWER(BTRIM(COALESCE(module_provider, ''))), ''), 'radix'), module_key, COALESCE(props_json, '{}'::jsonb), '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_module WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                             ;;
                           cms_block_template_ref)
                             copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \

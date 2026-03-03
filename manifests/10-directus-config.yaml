@@ -607,6 +607,28 @@ data:
       }
       return typeof value === 'object' ? value : {};
     };
+
+    const normalizeProviderList = (value) => {
+      if (Array.isArray(value)) {
+        return Array.from(
+          new Set(
+            value
+              .map((entry) => asString(entry).toLowerCase())
+              .filter(Boolean),
+          ),
+        );
+      }
+      const raw = asString(value).toLowerCase();
+      if (!raw) return [];
+      return Array.from(
+        new Set(
+          raw
+            .split(',')
+            .map((entry) => asString(entry).toLowerCase())
+            .filter(Boolean),
+        ),
+      );
+    };
     
     const InterfaceComponent = defineComponent({
       name: 'CmsContentModelSelect',
@@ -678,6 +700,17 @@ data:
         const themeLabelField = computed(() => asString(resolvedOptions.value?.theme_label_field) || 'name');
         const moduleValueField = computed(() => asString(resolvedOptions.value?.module_value_field) || 'module_key');
         const moduleLabelField = computed(() => asString(resolvedOptions.value?.module_label_field) || 'name');
+        const moduleProviderField = computed(() => asString(resolvedOptions.value?.module_provider_field) || 'module_provider');
+        const staticModuleProviders = computed(() => {
+          const fromList = normalizeProviderList(resolvedOptions.value?.module_provider_in);
+          if (fromList.length > 0) return fromList;
+          return normalizeProviderList(resolvedOptions.value?.module_provider);
+        });
+        const dynamicModuleProviders = computed(() => normalizeProviderList(props.values?.[moduleProviderField.value]));
+        const effectiveModuleProviders = computed(() => {
+          if (dynamicModuleProviders.value.length > 0) return dynamicModuleProviders.value;
+          return staticModuleProviders.value;
+        });
         const includeGlobal = computed(() => {
           const v = resolvedOptions.value?.include_global;
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
@@ -801,14 +834,19 @@ data:
     
         const loadModuleChoices = async () => {
           const siteKey = asString(props.values?.[pageSiteField.value]);
+          const providers = effectiveModuleProviders.value;
+          const providerClause = providers.length === 1
+            ? { provider: { _eq: providers[0] } }
+            : (providers.length > 1 ? { provider: { _in: providers } } : null);
           const filter = {
             _and: [
               { status: { _eq: 'published' } },
               buildScopedFilter(siteKey),
+              ...(providerClause ? [providerClause] : []),
             ],
           };
           const response = await apiGet(`/items/${modulesCollection.value}`, {
-            fields: [moduleValueField.value, moduleLabelField.value, 'site_key', 'status'].join(','),
+            fields: [moduleValueField.value, moduleLabelField.value, 'provider', 'site_key', 'status'].join(','),
             limit: -1,
             sort: moduleValueField.value,
             filter: JSON.stringify(filter),
@@ -1180,7 +1218,11 @@ data:
                   : mode.value === 'theme'
                     ? 'No published themes available for this site scope.'
                     : mode.value === 'module'
-                      ? 'No published modules available for this site scope.'
+                      ? (
+                          effectiveModuleProviders.value.length > 0
+                            ? `No published modules available for provider "${effectiveModuleProviders.value.join(',')}" in this site scope.`
+                            : 'No published modules available for this site scope.'
+                        )
                       : 'No valid slots available for this page template and site scope.';
               }
             }
@@ -1309,6 +1351,9 @@ data:
             pageSlug: asString(props.values?.[pageSlugField.value]),
             pageTemplate: asString(props.values?.[pageTemplateField.value]),
             parentBlockId: parseId(props.values?.[parentIdField.value]),
+            moduleProviderField: moduleProviderField.value,
+            moduleProvider: asString(props.values?.[moduleProviderField.value]),
+            staticModuleProviders: staticModuleProviders.value.join(','),
             parentSelectionOverride: asString(parentSelectionOverride.value),
             recordId: resolveRecordContext().recordId,
             blockCollection: asString(props.values?.collection),
@@ -1569,6 +1614,20 @@ data:
           type: 'string',
           meta: { width: 'half', interface: 'input' },
           schema: { default_value: 'cms_modules' },
+        },
+        {
+          field: 'module_provider_field',
+          name: 'Module Provider Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'module_provider' },
+        },
+        {
+          field: 'module_provider',
+          name: 'Module Provider Filter',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
         },
         {
           field: 'page_blocks_collection',
@@ -2042,6 +2101,28 @@ data:
       return typeof value === 'object' ? value : {};
     };
 
+    const normalizeProviderList = (value) => {
+      if (Array.isArray(value)) {
+        return Array.from(
+          new Set(
+            value
+              .map((entry) => asString(entry).toLowerCase())
+              .filter(Boolean),
+          ),
+        );
+      }
+      const raw = asString(value).toLowerCase();
+      if (!raw) return [];
+      return Array.from(
+        new Set(
+          raw
+            .split(',')
+            .map((entry) => asString(entry).toLowerCase())
+            .filter(Boolean),
+        ),
+      );
+    };
+
     const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     const getPrimaryKeyFromLocation = (collectionName) => {
@@ -2090,9 +2171,20 @@ data:
         const resolvedOptions = computed(() => parseOptions(props.options));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
         const moduleKeyField = computed(() => asString(resolvedOptions.value?.module_key_field) || 'module_key');
+        const moduleProviderField = computed(() => asString(resolvedOptions.value?.module_provider_field) || 'module_provider');
         const propsSchemaField = computed(() => asString(resolvedOptions.value?.props_schema_field) || 'props_schema');
         const defaultPropsField = computed(() => asString(resolvedOptions.value?.default_props_field) || 'default_props');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const staticModuleProviders = computed(() => {
+          const fromList = normalizeProviderList(resolvedOptions.value?.module_provider_in);
+          if (fromList.length > 0) return fromList;
+          return normalizeProviderList(resolvedOptions.value?.module_provider);
+        });
+        const dynamicModuleProviders = computed(() => normalizeProviderList(props.values?.[moduleProviderField.value]));
+        const effectiveModuleProviders = computed(() => {
+          if (dynamicModuleProviders.value.length > 0) return dynamicModuleProviders.value;
+          return staticModuleProviders.value;
+        });
         const includeGlobal = computed(() => {
           const v = resolvedOptions.value?.include_global;
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
@@ -2364,11 +2456,16 @@ data:
             _and: [
               { [moduleKeyField.value]: { _eq: key } },
               { status: { _eq: 'published' } },
+              ...(effectiveModuleProviders.value.length === 1
+                ? [{ provider: { _eq: effectiveModuleProviders.value[0] } }]
+                : effectiveModuleProviders.value.length > 1
+                  ? [{ provider: { _in: effectiveModuleProviders.value } }]
+                  : []),
               buildScopedFilter(effectiveSiteKey),
             ],
           };
           const response = await apiGet(`/items/${modulesCollection.value}`, {
-            fields: ['id', moduleKeyField.value, 'name', 'description', 'site_key', propsSchemaField.value, defaultPropsField.value].join(','),
+            fields: ['id', moduleKeyField.value, 'provider', 'name', 'description', 'site_key', propsSchemaField.value, defaultPropsField.value].join(','),
             limit: -1,
             sort: 'site_key',
             filter: JSON.stringify(filter),
@@ -2377,7 +2474,9 @@ data:
           const rows = normalizeRows(response);
           if (rows.length === 0) {
             moduleDefinition.value = null;
-            loadError.value = `No published module definition found for "${key}".`;
+            loadError.value = effectiveModuleProviders.value.length > 0
+              ? `No published module definition found for "${key}" with provider "${effectiveModuleProviders.value.join(',')}".`
+              : `No published module definition found for "${key}".`;
             return;
           }
 
@@ -2399,6 +2498,9 @@ data:
         watch(
           () => JSON.stringify({
             moduleKey: moduleKey.value,
+            moduleProviderField: moduleProviderField.value,
+            moduleProvider: asString(props.values?.[moduleProviderField.value]),
+            staticModuleProviders: staticModuleProviders.value.join(','),
             siteKey: siteKey.value,
             modulesCollection: modulesCollection.value,
             moduleKeyField: moduleKeyField.value,
@@ -2893,6 +2995,20 @@ data:
           schema: { default_value: 'module_key' },
         },
         {
+          field: 'module_provider_field',
+          name: 'Module Provider Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'module_provider' },
+        },
+        {
+          field: 'module_provider',
+          name: 'Module Provider Filter',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
+        },
+        {
           field: 'props_schema_field',
           name: 'Props Schema Field',
           type: 'string',
@@ -3180,6 +3296,7 @@ data:
           { text: 'Hero', value: 'hero' },
           { text: 'Image', value: 'image' },
           { text: 'Module', value: 'module' },
+          { text: 'MFE', value: 'mfe' },
           { text: 'Template', value: 'template_ref' },
         ];
         const defaultLimit = computed(() => {
@@ -4027,19 +4144,30 @@ data:
           return Math.max(...siblingSorts) + 10;
         };
 
-        const resolveDefaultPublishedModuleKey = async (preferredModuleKey = '') => {
+        const resolveDefaultPublishedModuleKey = async (preferredModuleKey = '', providerFilter = []) => {
           const preferred = asString(preferredModuleKey);
+          const normalizedProviders = Array.from(
+            new Set(
+              (Array.isArray(providerFilter) ? providerFilter : [providerFilter])
+                .map((entry) => asString(entry).toLowerCase())
+                .filter(Boolean),
+            ),
+          );
+          const providerClause = normalizedProviders.length === 1
+            ? { provider: { _eq: normalizedProviders[0] } }
+            : (normalizedProviders.length > 1 ? { provider: { _in: normalizedProviders } } : null);
           const filter = {
             _and: [
               { status: { _eq: 'published' } },
               publishedSiteScopeFilter(),
+              ...(providerClause ? [providerClause] : []),
               ...(preferred ? [{ module_key: { _eq: preferred } }] : []),
             ],
           };
           const response = await apiRequest('GET', '/items/cms_modules', {
-            fields: 'module_key,site_key',
+            fields: 'module_key,provider,site_key',
             limit: 50,
-            sort: 'site_key,module_key',
+            sort: 'site_key,provider,module_key',
             filter: JSON.stringify(filter),
           });
           const rows = normalizeRows(response);
@@ -4097,24 +4225,38 @@ data:
                 subheadline: '',
               };
             } else if (type === 'module') {
-              const moduleKey = await resolveDefaultPublishedModuleKey('');
+              const moduleKey = await resolveDefaultPublishedModuleKey('', ['radix']);
               if (!moduleKey) {
-                throw new Error('No published modules are available for this site context.');
+                throw new Error('No published UI modules are available for this site context.');
               }
               contentCollection = 'cms_block_module';
               contentPayload = {
                 status: 'published',
+                module_provider: 'radix',
                 module_key: moduleKey,
                 props_json: {},
               };
             } else if (type === 'image') {
-              const moduleKey = await resolveDefaultPublishedModuleKey('radix-image');
+              const moduleKey = await resolveDefaultPublishedModuleKey('radix-image', ['radix']);
               if (!moduleKey) {
                 throw new Error('The radix-image module is not available yet. Deploy modules first.');
               }
               contentCollection = 'cms_block_module';
               contentPayload = {
                 status: 'published',
+                module_provider: 'radix',
+                module_key: moduleKey,
+                props_json: {},
+              };
+            } else if (type === 'mfe') {
+              const moduleKey = await resolveDefaultPublishedModuleKey('', ['mfe']);
+              if (!moduleKey) {
+                throw new Error('No published MFE modules are available for this site context.');
+              }
+              contentCollection = 'cms_block_module';
+              contentPayload = {
+                status: 'published',
+                module_provider: 'mfe',
                 module_key: moduleKey,
                 props_json: {},
               };
