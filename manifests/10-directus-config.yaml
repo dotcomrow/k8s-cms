@@ -1718,7 +1718,7 @@ data:
     const InterfaceComponent = defineComponent({
       name: 'CmsAssetUrlPicker',
       props: {
-        value: { type: [String, Number, null], default: null },
+        value: { type: [String, Number, Object, null], default: null },
         disabled: { type: Boolean, default: false },
         options: { type: Object, default: () => ({}) },
       },
@@ -1767,8 +1767,28 @@ data:
           if (['0', 'false', 'no', 'off'].includes(raw)) return false;
           return true;
         });
+        const storeFileId = computed(() => {
+          const raw = asString(resolvedOptions.value?.store_file_id).toLowerCase();
+          if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+          return false;
+        });
 
-        const currentValue = computed(() => (props.value === null || props.value === undefined ? '' : String(props.value)));
+        const currentValue = computed(() => {
+          if (props.value && typeof props.value === 'object') {
+            if ('id' in props.value) return asString(props.value.id);
+            return '';
+          }
+          return props.value === null || props.value === undefined ? '' : String(props.value);
+        });
+
+        const extractAssetIdFromValue = (value) => {
+          const raw = asString(value);
+          if (!raw) return '';
+          const pathStyle = raw.match(/\/assets\/([0-9a-fA-F-]{36})(?:[/?#]|$)/);
+          if (pathStyle?.[1]) return asString(pathStyle[1]);
+          if (/^[0-9a-fA-F-]{36}$/.test(raw)) return raw;
+          return '';
+        };
 
         const resolveAssetUrlFromId = (id) => {
           const normalizedId = asString(id);
@@ -1777,6 +1797,23 @@ data:
           if (!storeAbsoluteUrl.value) return relative;
           return assetBaseUrl.value ? `${assetBaseUrl.value}${relative}` : relative;
         };
+
+        const toStoredValue = (fileId) => {
+          const normalizedId = asString(fileId);
+          if (!normalizedId) return '';
+          if (storeFileId.value) return normalizedId;
+          return resolveAssetUrlFromId(normalizedId);
+        };
+
+        const previewSource = computed(() => {
+          const raw = currentValue.value;
+          if (!raw) return '';
+          if (storeFileId.value) {
+            const id = extractAssetIdFromValue(raw);
+            return id ? resolveAssetUrlFromId(id) : '';
+          }
+          return raw;
+        });
 
         const apiRequest = async (method, path, queryParams = null, body = null, isFormData = false) => {
           const url = new URL(path, window.location.origin);
@@ -1827,7 +1864,7 @@ data:
         const selectFile = (row) => {
           const fileId = asString(row?.id);
           if (!fileId) return;
-          emit('input', resolveAssetUrlFromId(fileId));
+          emit('input', toStoredValue(fileId));
           pickerOpen.value = false;
         };
 
@@ -1848,7 +1885,7 @@ data:
             const response = await apiRequest('POST', '/files', null, form, true);
             const fileId = asString(response?.data?.id);
             if (!fileId) throw new Error('Upload succeeded but file id was missing.');
-            emit('input', resolveAssetUrlFromId(fileId));
+            emit('input', toStoredValue(fileId));
             pickerOpen.value = false;
             await loadFiles();
           } catch (uploadError) {
@@ -1922,8 +1959,16 @@ data:
               type: 'text',
               value: currentValue.value,
               disabled: props.disabled,
-              placeholder: 'https://... or /assets/<file-id>',
-              onUpdate: (next) => emit('input', next),
+              placeholder: storeFileId.value ? '<file-id> or /assets/<file-id>' : 'https://... or /assets/<file-id>',
+              onUpdate: (next) => {
+                const normalized = asString(next);
+                if (storeFileId.value) {
+                  const extractedId = extractAssetIdFromValue(normalized);
+                  emit('input', extractedId || normalized);
+                  return;
+                }
+                emit('input', normalized);
+              },
             }),
             h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
               showLibrary.value
@@ -1946,9 +1991,9 @@ data:
                 onClick: () => emit('input', ''),
               }),
             ]),
-            showPreview.value && currentValue.value ? h('div', { style: { maxWidth: '220px' } }, [
+            showPreview.value && previewSource.value ? h('div', { style: { maxWidth: '220px' } }, [
               h('img', {
-                src: currentValue.value,
+                src: previewSource.value,
                 alt: 'Selected asset preview',
                 style: { width: '100%', height: 'auto', borderRadius: '8px', border: '1px solid var(--theme--border-subdued)' },
               }),
@@ -2011,12 +2056,13 @@ data:
       icon: 'image',
       description: 'Pick/upload Directus Files and store URL value for shell rendering.',
       component: InterfaceComponent,
-      types: ['string', 'text'],
+      types: ['string', 'text', 'uuid'],
       group: 'selection',
       options: [
         { field: 'asset_base_url', name: 'Asset Base URL', type: 'string', meta: { width: 'half', interface: 'input' }, schema: { default_value: '' } },
         { field: 'asset_path', name: 'Asset Path', type: 'string', meta: { width: 'half', interface: 'input' }, schema: { default_value: '/assets' } },
         { field: 'store_absolute_url', name: 'Store Absolute URL', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: true } },
+        { field: 'store_file_id', name: 'Store File ID (UUID)', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: false } },
         { field: 'accept', name: 'Upload Accept', type: 'string', meta: { width: 'half', interface: 'input' }, schema: { default_value: 'image/*' } },
         { field: 'show_preview', name: 'Show Preview', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: true } },
         { field: 'show_upload', name: 'Show Upload', type: 'boolean', meta: { width: 'half', interface: 'boolean' }, schema: { default_value: true } },

@@ -3132,7 +3132,7 @@ data:
       head_canonical_url_note="Optional: canonical URL for SEO (absolute URL recommended)."
       head_robots_note="Optional: robots meta content (for example index,follow or noindex,nofollow)."
       head_generator_note="Optional: generator meta value (defaults to Next.js when empty)."
-      hero_background_image_note="Optional: hero image URL. Use file picker to choose/upload from Directus Files."
+      hero_background_image_note="Optional: hero image file reference. Use file picker to choose/upload from Directus Files."
       widget_dock_enabled_note="Enable/disable the widget dock for this page. When disabled, dock position/direction selectors are locked."
       widget_dock_position_note="Required: choose where the widget dock is anchored on this page."
       widget_dock_direction_note="Required: choose widget dock direction (vertical stack or horizontal row)."
@@ -3166,6 +3166,8 @@ data:
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       widget_dock_dependent_readonly_conditions_json="$(jq -nc '[{"name":"Widget dock disabled","rule":{"widget_dock_enabled":{"_neq":true}},"readonly":true}]')"
       openobserve_config_readonly_conditions_json="$(jq -nc '[{"name":"OpenObserve URL required","rule":{"_or":[{"analytics_openobserve_rum_script_url":{"_null":true}},{"analytics_openobserve_rum_script_url":{"_eq":""}}]},"readonly":true}]')"
+      hero_background_asset_picker_options_json="$(jq -nc \
+        '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,store_file_id:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
       theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
@@ -3884,7 +3886,7 @@ data:
         fi
         _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
         _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
-        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${asset_url_picker_options_json}")"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${hero_background_asset_picker_options_json}")"
         _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
         _exists="$(printf '%s' "$_exists" | tr -d '\r')"
