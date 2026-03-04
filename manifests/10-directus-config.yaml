@@ -2218,6 +2218,9 @@ data:
         const pendingModuleDefaults = ref({});
         const applyPendingDefaultsForModuleKey = ref('');
         const moduleKeyOverride = ref('');
+        const recordModuleKey = ref('');
+        const recordModuleProvider = ref('');
+        const recordSiteKey = ref('');
         const assetPickerField = ref('');
         const assetPickerQuery = ref('');
         const assetPickerRows = ref([]);
@@ -2284,16 +2287,48 @@ data:
           return configured || '(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)';
         });
 
-        const moduleKeyFromValues = computed(() => asString(props.values?.[moduleKeyField.value] ?? props.values?.module_key));
-        const moduleKey = computed(() => asString(moduleKeyOverride.value) || moduleKeyFromValues.value);
-        const siteKey = computed(() => asString(props.values?.[pageSiteField.value] ?? props.values?.site_key));
-        const recordCollectionKey = computed(() => asString(props.collection).toLowerCase());
-        const resolveRecordId = () => {
-          const fromValues = parseId(props.values?.id);
-          if (fromValues) return fromValues;
-          const fromLocation = getPrimaryKeyFromLocation(asString(props.collection));
-          return asString(fromLocation);
+        const resolveRecordContext = () => {
+          const explicitCollection = asString(props.collection);
+          const contentCollection = asString(props.values?.collection);
+
+          // In M2A drawers, interface may mount on cms_page_blocks with content in (collection,item).
+          const isEmbeddedContent =
+            contentCollection &&
+            contentCollection !== explicitCollection &&
+            /^cms_block_/i.test(contentCollection);
+
+          const recordCollection = isEmbeddedContent
+            ? contentCollection
+            : (explicitCollection || 'cms_block_module');
+
+          let recordId = isEmbeddedContent
+            ? parseId(props.values?.item)
+            : (parseId(props.values?.id) || parseId(props.values?.item));
+
+          if (!recordId) {
+            recordId = getPrimaryKeyFromLocation(recordCollection);
+          }
+
+          return { recordCollection, recordId };
         };
+
+        const moduleKeyFromValues = computed(() =>
+          asString(
+            props.values?.[moduleKeyField.value]
+            ?? props.values?.module_key
+            ?? recordModuleKey.value
+          )
+        );
+        const moduleKey = computed(() => asString(moduleKeyOverride.value) || moduleKeyFromValues.value);
+        const siteKey = computed(() =>
+          asString(
+            props.values?.[pageSiteField.value]
+            ?? props.values?.site_key
+            ?? recordSiteKey.value
+          )
+        );
+        const recordCollectionKey = computed(() => asString(props.collection).toLowerCase());
+        const resolveRecordId = () => asString(resolveRecordContext().recordId);
 
         const incomingProps = computed(() => normalizeObject(parseJsonLike(props.value, {})));
 
@@ -2353,6 +2388,55 @@ data:
             throw new Error(message);
           }
           return payload;
+        };
+
+        const loadRecordFallbackValues = async () => {
+          const { recordCollection, recordId } = resolveRecordContext();
+          if (!recordCollection || !recordId) {
+            recordModuleKey.value = '';
+            recordModuleProvider.value = '';
+            recordSiteKey.value = '';
+            return;
+          }
+
+          try {
+            let rowCollection = recordCollection;
+            let rowId = recordId;
+            let inheritedSiteKey = '';
+
+            if (asString(recordCollection).toLowerCase() === 'cms_page_blocks') {
+              const blockResponse = await apiGet(`/items/${recordCollection}/${encodeURIComponent(recordId)}`, {
+                fields: 'collection,item,site_key',
+              });
+              const blockRow = blockResponse?.data || {};
+              const contentCollection = asString(blockRow?.collection);
+              const contentItemId = parseId(blockRow?.item);
+              inheritedSiteKey = asString(blockRow?.site_key);
+              if (contentCollection && contentItemId) {
+                rowCollection = contentCollection;
+                rowId = contentItemId;
+              }
+            }
+
+            const response = await apiGet(`/items/${rowCollection}/${encodeURIComponent(rowId)}`, {
+              fields: [moduleKeyField.value, moduleProviderField.value, pageSiteField.value, 'site_key'].join(','),
+            });
+            const row = response?.data || {};
+            const loadedModuleKey = asString(row?.[moduleKeyField.value] ?? row?.module_key);
+            const loadedModuleProvider = asString(row?.[moduleProviderField.value] ?? row?.module_provider);
+            const loadedSiteKey = asString(row?.[pageSiteField.value] ?? row?.site_key ?? inheritedSiteKey);
+
+            recordModuleKey.value = loadedModuleKey;
+            recordModuleProvider.value = loadedModuleProvider;
+            if (loadedSiteKey) {
+              recordSiteKey.value = loadedSiteKey;
+            }
+          } catch {
+            // Clear fallback hints when record lookup fails.
+            recordModuleKey.value = '';
+            recordModuleProvider.value = '';
+            recordSiteKey.value = '';
+          }
         };
 
         const isAssetLikeProperty = (propKey, schema) => {
@@ -2529,7 +2613,11 @@ data:
         };
 
         const fetchModuleDefinition = async () => {
-          const key = moduleKey.value;
+          let key = moduleKey.value;
+          if (!key) {
+            await loadRecordFallbackValues();
+            key = moduleKey.value;
+          }
           if (!key) {
             moduleDefinition.value = null;
             loadError.value = 'Select a module before configuring props.';
@@ -2549,6 +2637,9 @@ data:
                 // keep empty; we'll still resolve global module definitions.
               }
             }
+          }
+          if (!effectiveSiteKey) {
+            effectiveSiteKey = asString(recordSiteKey.value);
           }
 
           const filter = {
@@ -2601,17 +2692,22 @@ data:
           () => JSON.stringify({
             moduleKey: moduleKey.value,
             moduleProviderField: moduleProviderField.value,
-            moduleProvider: asString(props.values?.[moduleProviderField.value]),
+            moduleProvider: asString(props.values?.[moduleProviderField.value] ?? recordModuleProvider.value),
             staticModuleProviders: staticModuleProviders.value.join(','),
             siteKey: siteKey.value,
             modulesCollection: modulesCollection.value,
             moduleKeyField: moduleKeyField.value,
             propsSchemaField: propsSchemaField.value,
             defaultPropsField: defaultPropsField.value,
+            collection: asString(props.collection),
+            recordId: resolveRecordId(),
+            blockCollection: asString(props.values?.collection),
+            blockItem: parseId(props.values?.item),
           }),
           async () => {
             loading.value = true;
             try {
+              await loadRecordFallbackValues();
               await fetchModuleDefinition();
             } catch (error) {
               moduleDefinition.value = null;
@@ -4358,6 +4454,31 @@ data:
           openDrawerItem(row.collection, row.item);
         };
 
+        const resolveDrawerFields = (collectionName) => {
+          const key = asString(collectionName).toLowerCase();
+          if (!key) return ['*'];
+          if (key === asString(pageBlocksCollection.value).toLowerCase()) {
+            return ['id', 'slot', 'parent_block_id', 'group_tag', 'sort', 'collection', 'item'];
+          }
+          if (key === 'cms_block_module') {
+            return ['id', 'status', 'module_key', 'props_json', 'module_provider'];
+          }
+          if (key === 'cms_block_rich_text') {
+            return ['id', 'status', 'body'];
+          }
+          if (key === 'cms_block_hero') {
+            return ['id', 'status', 'headline', 'subheadline', 'background_image', 'cta_label', 'cta_url'];
+          }
+          if (key === 'cms_block_template_ref') {
+            return ['id', 'status', 'name', 'template_key'];
+          }
+          return ['*'];
+        };
+
+        const drawerFields = computed(() =>
+          resolveDrawerFields(drawerCollection.value || pageBlocksCollection.value)
+        );
+
         const collectDescendantRowIds = (rootRowId) => {
           const rootId = parseId(rootRowId);
           if (!rootId) return [];
@@ -5471,6 +5592,7 @@ data:
                 active: drawerActive.value,
                 collection: drawerCollection.value || pageBlocksCollection.value,
                 primaryKey: drawerPrimaryKey.value || '+',
+                fields: drawerFields.value,
                 disabled: props.disabled,
                 nonEditable: props.disabled,
                 onInput: (payload) => {
