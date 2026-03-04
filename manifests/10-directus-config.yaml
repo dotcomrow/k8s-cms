@@ -2205,6 +2205,7 @@ data:
         values: { type: Object, default: () => ({}) },
         field: { type: String, default: '' },
         collection: { type: String, default: '' },
+        primaryKey: { type: [String, Number, Object, null], default: null },
       },
       emits: ['input'],
       setup(props, { emit }) {
@@ -2303,7 +2304,11 @@ data:
 
           let recordId = isEmbeddedContent
             ? parseId(props.values?.item)
-            : (parseId(props.values?.id) || parseId(props.values?.item));
+            : (
+              parseId(props.primaryKey)
+              || parseId(props.values?.id)
+              || parseId(props.values?.item)
+            );
 
           if (!recordId) {
             recordId = getPrimaryKeyFromLocation(recordCollection);
