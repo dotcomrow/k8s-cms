@@ -2251,8 +2251,8 @@ data:
         });
         const showJsonFallback = computed(() => {
           const v = resolvedOptions.value?.show_json_fallback;
-          if (typeof v === 'string') return v.toLowerCase() !== 'false';
-          return v !== false;
+          if (typeof v === 'string') return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
+          return v === true;
         });
         const pageCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
         const assetPath = computed(() => {
@@ -3318,7 +3318,7 @@ data:
           name: 'Show JSON Fallback',
           type: 'boolean',
           meta: { width: 'half', interface: 'boolean' },
-          schema: { default_value: true },
+          schema: { default_value: false },
         },
         {
           field: 'asset_field_pattern',
