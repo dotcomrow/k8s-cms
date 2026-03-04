@@ -2272,7 +2272,7 @@ data:
           return true;
         });
         const assetPickerLimit = computed(() => asInteger(resolvedOptions.value?.asset_picker_limit, 40));
-        const assetPickerAccept = computed(() => asString(resolvedOptions.value?.asset_picker_accept) || 'image/*');
+        const assetPickerAccept = computed(() => asString(resolvedOptions.value?.asset_picker_accept) || '*/*');
         const assetPickerKeys = computed(() => {
           const raw = resolvedOptions.value?.asset_picker_keys;
           if (!Array.isArray(raw)) return [];
@@ -2764,6 +2764,10 @@ data:
             const supportsAssetPicker = isAssetLikeProperty(propKey, schema);
             const currentValue = asInputString(value);
             const isPickerOpen = assetPickerField.value === propKey;
+            const schemaFormat = asString(schema?.format).toLowerCase();
+            const showImagePreview =
+              schemaFormat === 'image' ||
+              /(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)/i.test(propKey);
             const pickerButtons = supportsAssetPicker
               ? h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' } }, [
                   h('button', {
@@ -2814,29 +2818,50 @@ data:
                     }, assetPickerLoading.value ? 'Loading...' : 'Search'),
                   ]),
                   assetPickerError.value ? h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, assetPickerError.value) : null,
-                  ...assetPickerRows.value.map((row) => h('button', {
-                    type: 'button',
-                    disabled: props.disabled || loading.value,
-                    onClick: () => chooseAsset(propKey, row),
-                    style: {
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      width: '100%',
-                      textAlign: 'left',
-                      border: '1px solid var(--theme--border-subdued)',
-                      borderRadius: '6px',
-                      padding: '6px 8px',
-                      background: 'var(--theme--background-page)',
-                    },
-                  }, [
-                    h('img', {
-                      src: resolveAssetUrlFromId(row?.id),
-                      alt: asString(row?.title) || asString(row?.filename_download) || 'file',
-                      style: { width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' },
-                    }),
-                    h('span', asString(row?.title) || asString(row?.filename_download) || asString(row?.id)),
-                  ])),
+                  ...assetPickerRows.value.map((row) => {
+                    const rowType = asString(row?.type).toLowerCase();
+                    const rowIsImage = rowType.startsWith('image/');
+                    const rowLabel = asString(row?.title) || asString(row?.filename_download) || asString(row?.id);
+                    return h('button', {
+                      type: 'button',
+                      disabled: props.disabled || loading.value,
+                      onClick: () => chooseAsset(propKey, row),
+                      style: {
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        width: '100%',
+                        textAlign: 'left',
+                        border: '1px solid var(--theme--border-subdued)',
+                        borderRadius: '6px',
+                        padding: '6px 8px',
+                        background: 'var(--theme--background-page)',
+                      },
+                    }, [
+                      rowIsImage
+                        ? h('img', {
+                            src: resolveAssetUrlFromId(row?.id),
+                            alt: rowLabel || 'file',
+                            style: { width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' },
+                          })
+                        : h('span', {
+                            style: {
+                              width: '36px',
+                              height: '36px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              border: '1px solid var(--theme--border-subdued)',
+                              background: 'var(--theme--background-subdued)',
+                              color: 'var(--theme--foreground-subdued)',
+                              fontSize: '11px',
+                              textTransform: 'uppercase',
+                            },
+                          }, rowType.split('/')[0] || 'file'),
+                      h('span', rowLabel),
+                    ]);
+                  }),
                 ])
               : null;
 
@@ -2849,18 +2874,37 @@ data:
                 onInput: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
               }),
               pickerButtons,
-              currentValue && supportsAssetPicker ? h('img', {
-                src: currentValue,
-                alt: `${title} preview`,
-                style: {
-                  maxWidth: '220px',
-                  width: '100%',
-                  height: 'auto',
-                  borderRadius: '8px',
-                  border: '1px solid var(--theme--border-subdued)',
-                  background: 'var(--theme--background-page)',
-                },
-              }) : null,
+              currentValue && supportsAssetPicker
+                ? showImagePreview
+                  ? h('img', {
+                      src: currentValue,
+                      alt: `${title} preview`,
+                      style: {
+                        maxWidth: '220px',
+                        width: '100%',
+                        height: 'auto',
+                        borderRadius: '8px',
+                        border: '1px solid var(--theme--border-subdued)',
+                        background: 'var(--theme--background-page)',
+                      },
+                    })
+                  : h('a', {
+                      href: currentValue,
+                      target: '_blank',
+                      rel: 'noopener noreferrer',
+                      style: {
+                        display: 'inline-flex',
+                        width: 'fit-content',
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--theme--border-subdued)',
+                        color: 'var(--theme--primary)',
+                        textDecoration: 'none',
+                        fontSize: '12px',
+                        wordBreak: 'break-all',
+                      },
+                    }, 'Open selected media')
+                : null,
               pickerPanel,
             ]);
           }
@@ -3113,7 +3157,7 @@ data:
           name: 'Asset Field Pattern',
           type: 'string',
           meta: { width: 'full', interface: 'input' },
-          schema: { default_value: '(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)' },
+          schema: { default_value: '(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero|media|video|audio|animation|lottie|file|document)' },
         },
         {
           field: 'asset_base_url',
@@ -3148,7 +3192,7 @@ data:
           name: 'Asset Upload Accept',
           type: 'string',
           meta: { width: 'half', interface: 'input' },
-          schema: { default_value: 'image/*' },
+          schema: { default_value: '*/*' },
         },
       ],
     });

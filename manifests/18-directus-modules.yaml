@@ -276,6 +276,7 @@ data:
             imageUrl:
               type: string
               title: Image URL
+              format: asset-url
             alt:
               type: string
               title: Alt Text
@@ -301,6 +302,7 @@ data:
             imageUrl:
               type: string
               title: Image URL
+              format: asset-url
             alt:
               type: string
               title: Alt Text
@@ -334,6 +336,94 @@ data:
           loading: lazy
           width: 1200
           height: 675
+      - module_key: radix-media
+        name: Radix Media
+        description: "Generic media block for image/video/audio/file. Supports Directus uploads and remote URLs."
+        provider: radix
+        status: published
+        site_key: null
+        component_type: media.generic
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            mediaType:
+              type: string
+              title: Media Type
+              enum:
+                - auto
+                - image
+                - video
+                - audio
+                - file
+            mediaUrl:
+              type: string
+              title: Media URL or Directus Asset
+              format: asset-url
+              description: "Use Browse Files/Upload File for Directus-hosted media or paste a remote URL."
+            posterUrl:
+              type: string
+              title: Poster URL (video)
+              format: asset-url
+            alt:
+              type: string
+              title: Alt Text
+            caption:
+              type: string
+              title: Caption
+            objectFit:
+              type: string
+              title: Object Fit
+              enum:
+                - cover
+                - contain
+                - fill
+            loading:
+              type: string
+              title: Loading
+              enum:
+                - lazy
+                - eager
+            controls:
+              type: boolean
+              title: Controls
+            autoplay:
+              type: boolean
+              title: Autoplay
+            muted:
+              type: boolean
+              title: Muted
+            loop:
+              type: boolean
+              title: Loop
+            width:
+              type: number
+              title: Width
+            height:
+              type: number
+              title: Height
+            openInNewTab:
+              type: boolean
+              title: Open File Link In New Tab
+            linkLabel:
+              type: string
+              title: File Link Label
+        default_props:
+          mediaType: auto
+          mediaUrl: ""
+          posterUrl: ""
+          alt: "Media item"
+          caption: ""
+          objectFit: cover
+          loading: lazy
+          controls: true
+          autoplay: false
+          muted: false
+          loop: false
+          width: 1200
+          height: 675
+          openInNewTab: true
+          linkLabel: "Open media"
       - module_key: radix-avatar
         name: Radix Avatar
         description: "User avatar with image fallback initials."
@@ -351,6 +441,7 @@ data:
             imageUrl:
               type: string
               title: Image URL
+              format: asset-url
             fallback:
               type: string
               title: Fallback Text
