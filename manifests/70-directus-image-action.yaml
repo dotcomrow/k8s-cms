@@ -1,0 +1,646 @@
+# Directus image action service:
+# - Provides a Hasura Action endpoint that fetches image bytes and returns base64/data-url payloads.
+# - Provides a raw image proxy endpoint for Directus asset UUIDs.
+# - Includes an explicit OpenAPI YAML document.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-image-action
+  namespace: directus
+data:
+  requirements.txt: |
+    fastapi==0.115.5
+    uvicorn==0.30.6
+    httpx==0.27.2
+  openapi.yaml: |
+    openapi: 3.0.3
+    info:
+      title: Directus Image Action API
+      version: 1.0.0
+      description: Service used by Hasura Actions to fetch and encode image assets.
+    servers:
+      - url: http://directus-image-action.directus.svc.cluster.local:8080
+    paths:
+      /healthz:
+        get:
+          summary: Health check
+          responses:
+            "200":
+              description: Service is healthy
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      ok:
+                        type: boolean
+                      vault_token:
+                        type: boolean
+      /hasura/actions/fetch-image:
+        post:
+          summary: Fetch image for Hasura Action
+          description: Accepts Hasura Action request envelope and returns encoded image payload.
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/HasuraActionRequest"
+          responses:
+            "200":
+              description: Image fetched and encoded
+              content:
+                application/json:
+                  schema:
+                    $ref: "#/components/schemas/FetchImageResponse"
+      /fetch-image:
+        post:
+          summary: Fetch image directly
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/FetchImageInput"
+          responses:
+            "200":
+              description: Image fetched and encoded
+              content:
+                application/json:
+                  schema:
+                    $ref: "#/components/schemas/FetchImageResponse"
+      /image/{asset_id}:
+        get:
+          summary: Proxy raw Directus asset bytes by UUID
+          parameters:
+            - in: path
+              name: asset_id
+              required: true
+              schema:
+                type: string
+                format: uuid
+          responses:
+            "200":
+              description: Raw image bytes
+              content:
+                image/*:
+                  schema:
+                    type: string
+                    format: binary
+    components:
+      schemas:
+        FetchImageInput:
+          type: object
+          properties:
+            asset_id:
+              type: string
+              format: uuid
+            image_url:
+              type: string
+            query:
+              type: object
+              additionalProperties:
+                type: string
+            timeout_seconds:
+              type: number
+            max_bytes:
+              type: integer
+            include_base64:
+              type: boolean
+            include_data_url:
+              type: boolean
+        HasuraActionRequest:
+          type: object
+          properties:
+            action:
+              type: object
+              additionalProperties: true
+            input:
+              $ref: "#/components/schemas/FetchImageInput"
+            session_variables:
+              type: object
+              additionalProperties:
+                type: string
+            request_query:
+              type: string
+          required: [input]
+        FetchImageResponse:
+          type: object
+          properties:
+            ok:
+              type: boolean
+            source_url:
+              type: string
+            content_type:
+              type: string
+            content_length:
+              type: integer
+            sha256:
+              type: string
+            etag:
+              type: string
+              nullable: true
+            cache_control:
+              type: string
+              nullable: true
+            last_modified:
+              type: string
+              nullable: true
+            base64:
+              type: string
+              nullable: true
+            data_url:
+              type: string
+              nullable: true
+  app.py: |
+    import base64
+    import hashlib
+    import json
+    import os
+    import re
+    import threading
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from typing import Any, Dict, Optional, Tuple
+
+    import httpx
+    from fastapi import FastAPI, HTTPException, Request, Response
+    from pydantic import BaseModel, Field, model_validator
+
+    APP_VERSION = "1.0.0"
+
+    DIRECTUS_ASSET_BASE_URL = os.environ.get(
+      "DIRECTUS_ASSET_BASE_URL",
+      "http://directus-service.directus.svc.cluster.local:8055",
+    ).rstrip("/")
+    DIRECTUS_ASSET_PATH = os.environ.get("DIRECTUS_ASSET_PATH", "/assets")
+    DIRECTUS_STATIC_TOKEN = os.environ.get("DIRECTUS_STATIC_TOKEN", "").strip()
+
+    VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200").rstrip("/")
+    VAULT_TOKEN_FILE = os.environ.get("VAULT_TOKEN_FILE", "/vault-secrets/vault-token")
+    DIRECTUS_TOKEN_VAULT_PATH = os.environ.get("DIRECTUS_TOKEN_VAULT_PATH", "secret/data/directus/gravitee")
+    DIRECTUS_TOKEN_VAULT_KEY = os.environ.get("DIRECTUS_TOKEN_VAULT_KEY", "token")
+    TOKEN_CACHE_SECONDS = int(os.environ.get("DIRECTUS_TOKEN_CACHE_SECONDS", "300"))
+
+    ALLOW_ANY_IMAGE_HOSTS = os.environ.get("ALLOW_ANY_IMAGE_HOSTS", "false").lower() in (
+      "1",
+      "true",
+      "yes",
+      "on",
+    )
+    ALLOWED_IMAGE_HOSTS = {
+      host.strip().lower()
+      for host in os.environ.get(
+        "ALLOWED_IMAGE_HOSTS",
+        "directus-service.directus.svc.cluster.local,cms.teleport.app.suncoast.systems",
+      ).split(",")
+      if host.strip()
+    }
+
+    DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DEFAULT_TIMEOUT_SECONDS", "20"))
+    DEFAULT_MAX_BYTES = int(os.environ.get("DEFAULT_MAX_BYTES", "10485760"))
+    MAX_BYTES_HARD_LIMIT = int(os.environ.get("MAX_BYTES_HARD_LIMIT", "26214400"))
+    CONNECT_TIMEOUT_SECONDS = float(os.environ.get("CONNECT_TIMEOUT_SECONDS", "5"))
+    FOLLOW_REDIRECTS = os.environ.get("FOLLOW_REDIRECTS", "true").lower() in ("1", "true", "yes", "on")
+    USER_AGENT = os.environ.get("IMAGE_ACTION_USER_AGENT", "directus-image-action/1.0")
+
+    _uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+    _token_lock = threading.Lock()
+    _token_cache = {"token": "", "loaded_at": 0.0}
+
+    app = FastAPI(
+      title="Directus Image Action API",
+      version=APP_VERSION,
+      description=(
+        "Fetches image bytes from Directus (or approved URLs) and returns encoded payloads "
+        "for Hasura GraphQL Actions."
+      ),
+      docs_url="/docs",
+      redoc_url="/redoc",
+      openapi_url="/openapi.json",
+    )
+
+    _directus_host = urllib.parse.urlparse(DIRECTUS_ASSET_BASE_URL).hostname or ""
+
+    class FetchImageInput(BaseModel):
+      asset_id: Optional[str] = Field(
+        default=None,
+        description="Directus asset UUID. Exactly one of asset_id or image_url is required.",
+      )
+      image_url: Optional[str] = Field(
+        default=None,
+        description="Absolute URL for image fetch. Exactly one of asset_id or image_url is required.",
+      )
+      query: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Optional query parameters appended to the source URL.",
+      )
+      timeout_seconds: Optional[float] = Field(
+        default=None,
+        ge=1,
+        le=120,
+        description="Per-request timeout. Defaults to DEFAULT_TIMEOUT_SECONDS.",
+      )
+      max_bytes: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Maximum image payload size in bytes. Defaults to DEFAULT_MAX_BYTES.",
+      )
+      include_base64: bool = Field(default=True, description="Return base64 body.")
+      include_data_url: bool = Field(default=False, description="Return data URL.")
+
+      @model_validator(mode="after")
+      def validate_source(self):
+        has_asset_id = bool((self.asset_id or "").strip())
+        has_image_url = bool((self.image_url or "").strip())
+        if has_asset_id == has_image_url:
+          raise ValueError("Exactly one of asset_id or image_url must be provided")
+        if has_asset_id:
+          normalized = (self.asset_id or "").strip()
+          if not _uuid_re.match(normalized):
+            raise ValueError("asset_id must be a UUID")
+          self.asset_id = normalized
+        if has_image_url:
+          self.image_url = (self.image_url or "").strip()
+        return self
+
+    class HasuraActionRequest(BaseModel):
+      action: Optional[Dict[str, Any]] = None
+      input: FetchImageInput
+      session_variables: Optional[Dict[str, str]] = None
+      request_query: Optional[str] = None
+
+    class FetchImageResponse(BaseModel):
+      ok: bool = True
+      source_url: str
+      content_type: str
+      content_length: int
+      sha256: str
+      etag: Optional[str] = None
+      cache_control: Optional[str] = None
+      last_modified: Optional[str] = None
+      base64: Optional[str] = None
+      data_url: Optional[str] = None
+
+    def _read_file(path: str) -> str:
+      try:
+        with open(path, "r", encoding="utf-8") as handle:
+          return handle.read().strip()
+      except Exception:
+        return ""
+
+    def _vault_read(path: str) -> Dict[str, Any]:
+      vault_token = _read_file(VAULT_TOKEN_FILE)
+      if not vault_token:
+        raise RuntimeError("Vault token is not available")
+      url = f"{VAULT_ADDR}/v1/{path.lstrip('/')}"
+      req = urllib.request.Request(url, headers={"X-Vault-Token": vault_token})
+      try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+          if resp.status != 200:
+            raise RuntimeError(f"Vault returned HTTP {resp.status}")
+          return json.load(resp)
+      except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Vault returned HTTP {exc.code}") from exc
+      except Exception as exc:
+        raise RuntimeError("Vault request failed") from exc
+
+    def _token_from_vault_payload(payload: Dict[str, Any]) -> str:
+      try:
+        data = (payload.get("data", {}).get("data", {}) or {})
+        token = data.get(DIRECTUS_TOKEN_VAULT_KEY)
+        return token.strip() if isinstance(token, str) else ""
+      except Exception:
+        return ""
+
+    def _get_directus_token() -> str:
+      if DIRECTUS_STATIC_TOKEN:
+        return DIRECTUS_STATIC_TOKEN
+
+      now = time.time()
+      with _token_lock:
+        token = _token_cache.get("token", "")
+        loaded_at = _token_cache.get("loaded_at", 0.0)
+        if token and now - loaded_at < TOKEN_CACHE_SECONDS:
+          return token
+
+      token = _token_from_vault_payload(_vault_read(DIRECTUS_TOKEN_VAULT_PATH))
+      with _token_lock:
+        _token_cache["token"] = token
+        _token_cache["loaded_at"] = now
+      return token
+
+    def _is_allowed_url(url: str) -> bool:
+      parsed = urllib.parse.urlparse(url)
+      if parsed.scheme not in ("http", "https"):
+        return False
+      if ALLOW_ANY_IMAGE_HOSTS:
+        return True
+      host = (parsed.hostname or "").lower()
+      return host in ALLOWED_IMAGE_HOSTS
+
+    def _normalize_asset_path(path: str) -> str:
+      out = path.strip() or "/assets"
+      if not out.startswith("/"):
+        out = "/" + out
+      return out.rstrip("/")
+
+    def _append_query(url: str, query: Optional[Dict[str, str]]) -> str:
+      if not query:
+        return url
+      parsed = urllib.parse.urlparse(url)
+      existing = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+      for k, v in query.items():
+        key = (k or "").strip()
+        if not key:
+          continue
+        existing[key] = [str(v)]
+      new_query = urllib.parse.urlencode(existing, doseq=True)
+      return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+    def _source_url_from_input(payload: FetchImageInput) -> str:
+      if payload.asset_id:
+        asset_path = _normalize_asset_path(DIRECTUS_ASSET_PATH)
+        source = f"{DIRECTUS_ASSET_BASE_URL}{asset_path}/{urllib.parse.quote(payload.asset_id)}"
+      else:
+        source = payload.image_url or ""
+      return _append_query(source, payload.query)
+
+    async def _fetch_image_bytes(source_url: str, timeout_seconds: float, max_bytes: int) -> Tuple[bytes, Dict[str, str]]:
+      if max_bytes > MAX_BYTES_HARD_LIMIT:
+        raise HTTPException(
+          status_code=400,
+          detail=f"max_bytes exceeds configured limit ({MAX_BYTES_HARD_LIMIT})",
+        )
+      if not _is_allowed_url(source_url):
+        raise HTTPException(status_code=400, detail="image URL host is not allowed")
+
+      headers = {
+        "accept": "image/*,application/octet-stream;q=0.8",
+        "user-agent": USER_AGENT,
+      }
+
+      parsed = urllib.parse.urlparse(source_url)
+      request_host = (parsed.hostname or "").lower()
+      if _directus_host and request_host == _directus_host:
+        try:
+          token = _get_directus_token()
+          if token:
+            headers["authorization"] = f"Bearer {token}"
+        except Exception:
+          # Keep request path available for public assets even if Vault/token is unavailable.
+          pass
+
+      timeout = httpx.Timeout(timeout_seconds, connect=min(CONNECT_TIMEOUT_SECONDS, timeout_seconds))
+      async with httpx.AsyncClient(timeout=timeout, follow_redirects=FOLLOW_REDIRECTS) as client:
+        async with client.stream("GET", source_url, headers=headers) as resp:
+          if resp.status_code >= 400:
+            raise HTTPException(
+              status_code=502,
+              detail=f"image upstream returned HTTP {resp.status_code}",
+            )
+          content_type = (resp.headers.get("content-type") or "application/octet-stream").split(";")[0].strip().lower()
+          if not (content_type.startswith("image/") or content_type == "application/octet-stream"):
+            raise HTTPException(status_code=415, detail=f"unsupported content type: {content_type}")
+
+          body = bytearray()
+          async for chunk in resp.aiter_bytes():
+            if not chunk:
+              continue
+            body.extend(chunk)
+            if len(body) > max_bytes:
+              raise HTTPException(status_code=413, detail="image payload exceeds max_bytes")
+
+          response_meta = {
+            "content-type": content_type,
+            "etag": resp.headers.get("etag", ""),
+            "cache-control": resp.headers.get("cache-control", ""),
+            "last-modified": resp.headers.get("last-modified", ""),
+          }
+          return bytes(body), response_meta
+
+    async def _build_fetch_response(payload: FetchImageInput) -> FetchImageResponse:
+      source_url = _source_url_from_input(payload)
+      timeout_seconds = float(payload.timeout_seconds or DEFAULT_TIMEOUT_SECONDS)
+      max_bytes = int(payload.max_bytes or DEFAULT_MAX_BYTES)
+      body, meta = await _fetch_image_bytes(source_url, timeout_seconds, max_bytes)
+
+      sha = hashlib.sha256(body).hexdigest()
+      b64: Optional[str] = None
+      data_url: Optional[str] = None
+      if payload.include_base64 or payload.include_data_url:
+        b64 = base64.b64encode(body).decode("ascii")
+      if payload.include_data_url:
+        data_url = f"data:{meta['content-type']};base64,{b64 or ''}"
+      if not payload.include_base64:
+        b64 = None
+
+      return FetchImageResponse(
+        source_url=source_url,
+        content_type=meta["content-type"],
+        content_length=len(body),
+        sha256=sha,
+        etag=meta["etag"] or None,
+        cache_control=meta["cache-control"] or None,
+        last_modified=meta["last-modified"] or None,
+        base64=b64,
+        data_url=data_url,
+      )
+
+    @app.get("/healthz")
+    async def healthz():
+      vault_token_present = bool(_read_file(VAULT_TOKEN_FILE))
+      return {
+        "ok": True,
+        "vault_token": vault_token_present,
+      }
+
+    @app.get("/openapi.yaml", include_in_schema=False)
+    async def openapi_yaml():
+      try:
+        with open("/app/openapi.yaml", "r", encoding="utf-8") as handle:
+          return Response(content=handle.read(), media_type="application/yaml")
+      except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"openapi.yaml unavailable: {exc}") from exc
+
+    @app.post("/fetch-image", response_model=FetchImageResponse)
+    async def fetch_image(payload: FetchImageInput):
+      return await _build_fetch_response(payload)
+
+    @app.post("/hasura/actions/fetch-image", response_model=FetchImageResponse)
+    async def hasura_fetch_image(payload: HasuraActionRequest):
+      return await _build_fetch_response(payload.input)
+
+    @app.get("/image/{asset_id}")
+    async def proxy_directus_asset(asset_id: str, request: Request):
+      if not _uuid_re.match(asset_id):
+        raise HTTPException(status_code=400, detail="asset_id must be a UUID")
+      query: Dict[str, str] = {}
+      for key, values in request.query_params.multi_items():
+        if key and values is not None:
+          query[key] = values
+      source = _append_query(
+        f"{DIRECTUS_ASSET_BASE_URL}{_normalize_asset_path(DIRECTUS_ASSET_PATH)}/{urllib.parse.quote(asset_id)}",
+        query,
+      )
+      body, meta = await _fetch_image_bytes(source, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_BYTES)
+      headers: Dict[str, str] = {}
+      if meta.get("etag"):
+        headers["etag"] = meta["etag"]
+      if meta.get("cache-control"):
+        headers["cache-control"] = meta["cache-control"]
+      if meta.get("last-modified"):
+        headers["last-modified"] = meta["last-modified"]
+      return Response(content=body, media_type=meta["content-type"], headers=headers)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config-directus-image-action
+  namespace: directus
+data:
+  vault-agent.hcl: |
+    pid_file = "/vault/agent.pid"
+    exit_after_auth = false
+
+    vault {
+      address = "http://vault.vault.svc.cluster.local:8200"
+    }
+
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "directus"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault-secrets/vault-token"
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: directus-image-action
+  namespace: directus
+  labels:
+    app: directus-image-action
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: directus-image-action
+  template:
+    metadata:
+      labels:
+        app: directus-image-action
+    spec:
+      # Reuse the Directus SA so Vault Kubernetes auth role binding already works.
+      serviceAccountName: directus
+      containers:
+        - name: vault-agent
+          image: hashicorp/vault:1.15.4
+          command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
+          volumeMounts:
+            - name: vault-agent-config
+              mountPath: /vault-config
+            - name: vault-secrets
+              mountPath: /vault-secrets
+        - name: directus-image-action
+          image: python:3.11-slim
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DIRECTUS_ASSET_BASE_URL
+              value: "http://directus-service.directus.svc.cluster.local:8055"
+            - name: DIRECTUS_ASSET_PATH
+              value: "/assets"
+            - name: VAULT_ADDR
+              value: "http://vault.vault.svc.cluster.local:8200"
+            - name: VAULT_TOKEN_FILE
+              value: "/vault-secrets/vault-token"
+            - name: DIRECTUS_TOKEN_VAULT_PATH
+              value: "secret/data/directus/gravitee/openapi/admin"
+            - name: DIRECTUS_TOKEN_VAULT_KEY
+              value: "token"
+            - name: DIRECTUS_TOKEN_CACHE_SECONDS
+              value: "300"
+            - name: ALLOW_ANY_IMAGE_HOSTS
+              value: "false"
+            - name: ALLOWED_IMAGE_HOSTS
+              value: "directus-service.directus.svc.cluster.local,cms.teleport.app.suncoast.systems"
+            - name: DEFAULT_TIMEOUT_SECONDS
+              value: "20"
+            - name: DEFAULT_MAX_BYTES
+              value: "10485760"
+            - name: MAX_BYTES_HARD_LIMIT
+              value: "26214400"
+            - name: CONNECT_TIMEOUT_SECONDS
+              value: "5"
+            - name: FOLLOW_REDIRECTS
+              value: "true"
+            - name: IMAGE_ACTION_USER_AGENT
+              value: "directus-image-action/1.0"
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              pip install --no-cache-dir -r /app/requirements.txt >/dev/null
+              echo "Waiting for Vault agent to authenticate..."
+              while [ ! -f /vault-secrets/vault-token ]; do
+                sleep 2
+              done
+              python -m uvicorn app:app --app-dir /app --host 0.0.0.0 --port 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: vault-secrets
+              mountPath: /vault-secrets
+      volumes:
+        - name: app
+          configMap:
+            name: directus-image-action
+        - name: vault-agent-config
+          configMap:
+            name: vault-agent-config-directus-image-action
+        - name: vault-secrets
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: directus-image-action
+  namespace: directus
+  labels:
+    app: directus-image-action
+spec:
+  selector:
+    app: directus-image-action
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

@@ -1,0 +1,153 @@
+openapi: 3.0.3
+info:
+  title: Directus Image Action API
+  version: 1.0.0
+  description: |
+    Service used by Hasura GraphQL Actions to fetch image bytes and return
+    encoded payloads (base64/data URL), plus a raw Directus asset proxy endpoint.
+servers:
+  - url: http://directus-image-action.directus.svc.cluster.local:8080
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: healthz
+      responses:
+        "200":
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  vault_token:
+                    type: boolean
+  /hasura/actions/fetch-image:
+    post:
+      summary: Fetch image using Hasura action envelope
+      operationId: hasuraFetchImage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HasuraActionRequest"
+      responses:
+        "200":
+          description: Encoded image payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchImageResponse"
+  /fetch-image:
+    post:
+      summary: Fetch image directly
+      operationId: fetchImage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FetchImageInput"
+      responses:
+        "200":
+          description: Encoded image payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchImageResponse"
+  /image/{asset_id}:
+    get:
+      summary: Proxy raw Directus asset bytes by UUID
+      operationId: proxyImageByAssetId
+      parameters:
+        - in: path
+          name: asset_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Raw image bytes
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+components:
+  schemas:
+    FetchImageInput:
+      type: object
+      description: "Provide exactly one source field: `asset_id` or `image_url`."
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Directus file UUID.
+        image_url:
+          type: string
+          description: Absolute image URL.
+        query:
+          type: object
+          additionalProperties:
+            type: string
+          description: Query parameters appended to the source URL.
+        timeout_seconds:
+          type: number
+          description: Request timeout in seconds.
+        max_bytes:
+          type: integer
+          description: Maximum payload size in bytes.
+        include_base64:
+          type: boolean
+          default: true
+        include_data_url:
+          type: boolean
+          default: false
+    HasuraActionRequest:
+      type: object
+      properties:
+        action:
+          type: object
+          additionalProperties: true
+        input:
+          $ref: "#/components/schemas/FetchImageInput"
+        session_variables:
+          type: object
+          additionalProperties:
+            type: string
+        request_query:
+          type: string
+      required:
+        - input
+    FetchImageResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        source_url:
+          type: string
+        content_type:
+          type: string
+        content_length:
+          type: integer
+        sha256:
+          type: string
+        etag:
+          type: string
+          nullable: true
+        cache_control:
+          type: string
+          nullable: true
+        last_modified:
+          type: string
+          nullable: true
+        base64:
+          type: string
+          nullable: true
+        data_url:
+          type: string
+          nullable: true
