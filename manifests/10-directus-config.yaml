@@ -2489,6 +2489,45 @@ data:
           return { site_key: { _empty: true } };
         };
 
+        const countSchemaPropertyKeys = (schemaCandidate) => {
+          const parsedSchema = normalizeObject(parseJsonLike(schemaCandidate, {}));
+          const properties = normalizeObject(parsedSchema?.properties);
+          return Object.keys(properties).length;
+        };
+
+        const toEpochMs = (value) => {
+          const raw = asString(value);
+          if (!raw) return 0;
+          const parsed = Date.parse(raw);
+          return Number.isFinite(parsed) ? parsed : 0;
+        };
+
+        const selectPreferredModuleDefinition = (rows, effectiveSiteKey) => {
+          const targetSiteKey = asString(effectiveSiteKey);
+          if (!Array.isArray(rows) || rows.length === 0) return null;
+
+          const compareRows = (left, right) => {
+            const leftSite = asString(left?.site_key);
+            const rightSite = asString(right?.site_key);
+
+            const leftScopeRank = targetSiteKey && leftSite === targetSiteKey ? 0 : leftSite ? 2 : 1;
+            const rightScopeRank = targetSiteKey && rightSite === targetSiteKey ? 0 : rightSite ? 2 : 1;
+            if (leftScopeRank !== rightScopeRank) return leftScopeRank - rightScopeRank;
+
+            const leftSchemaRank = countSchemaPropertyKeys(left?.[propsSchemaField.value]) > 0 ? 0 : 1;
+            const rightSchemaRank = countSchemaPropertyKeys(right?.[propsSchemaField.value]) > 0 ? 0 : 1;
+            if (leftSchemaRank !== rightSchemaRank) return leftSchemaRank - rightSchemaRank;
+
+            const leftUpdated = Math.max(toEpochMs(left?.date_updated), toEpochMs(left?.date_created));
+            const rightUpdated = Math.max(toEpochMs(right?.date_updated), toEpochMs(right?.date_created));
+            if (leftUpdated !== rightUpdated) return rightUpdated - leftUpdated;
+
+            return asString(left?.id).localeCompare(asString(right?.id));
+          };
+
+          return [...rows].sort(compareRows)[0] || rows[0];
+        };
+
         const fetchModuleDefinition = async () => {
           const key = moduleKey.value;
           if (!key) {
@@ -2525,9 +2564,9 @@ data:
             ],
           };
           const response = await apiGet(`/items/${modulesCollection.value}`, {
-            fields: ['id', moduleKeyField.value, 'provider', 'name', 'description', 'site_key', propsSchemaField.value, defaultPropsField.value].join(','),
+            fields: ['id', moduleKeyField.value, 'provider', 'name', 'description', 'site_key', propsSchemaField.value, defaultPropsField.value, 'date_created', 'date_updated'].join(','),
             limit: -1,
-            sort: 'site_key',
+            sort: '-date_updated,-date_created,site_key,id',
             filter: JSON.stringify(filter),
           });
 
@@ -2540,9 +2579,12 @@ data:
             return;
           }
 
-          const preferred =
-            rows.find((row) => asString(row?.site_key) && asString(row?.site_key) === effectiveSiteKey)
-            || rows[0];
+          const preferred = selectPreferredModuleDefinition(rows, effectiveSiteKey);
+          if (!preferred) {
+            moduleDefinition.value = null;
+            loadError.value = `No usable module definition found for "${key}".`;
+            return;
+          }
 
           moduleDefinition.value = preferred;
           loadError.value = '';
@@ -2581,7 +2623,44 @@ data:
           { immediate: true }
         );
 
-        const resolvedSchema = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[propsSchemaField.value], {})));
+        const defaultProps = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[defaultPropsField.value], {})));
+        const resolvedSchema = computed(() => {
+          const parsedSchema = normalizeObject(parseJsonLike(moduleDefinition.value?.[propsSchemaField.value], {}));
+          const parsedProperties = normalizeObject(parsedSchema?.properties);
+          if (Object.keys(parsedProperties).length > 0) {
+            return parsedSchema;
+          }
+
+          const inferredProperties = {};
+          for (const [key, rawValue] of Object.entries(defaultProps.value || {})) {
+            const propKey = asString(key);
+            if (!propKey) continue;
+            let inferredType = 'string';
+            if (Array.isArray(rawValue)) {
+              inferredType = 'array';
+            } else if (rawValue && typeof rawValue === 'object') {
+              inferredType = 'object';
+            } else if (typeof rawValue === 'boolean') {
+              inferredType = 'boolean';
+            } else if (typeof rawValue === 'number') {
+              inferredType = Number.isInteger(rawValue) ? 'integer' : 'number';
+            }
+            inferredProperties[propKey] = {
+              type: inferredType,
+              title: propKey,
+            };
+          }
+
+          if (Object.keys(inferredProperties).length === 0) {
+            return parsedSchema;
+          }
+
+          return {
+            ...parsedSchema,
+            type: 'object',
+            properties: inferredProperties,
+          };
+        });
         const schemaProperties = computed(() => normalizeObject(resolvedSchema.value?.properties));
         const isComplexPropertySchema = (schemaValue) => {
           const schema = normalizeObject(schemaValue);
@@ -2597,8 +2676,6 @@ data:
           const required = Array.isArray(resolvedSchema.value?.required) ? resolvedSchema.value.required : [];
           return new Set(required.map((value) => asString(value)));
         });
-        const defaultProps = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[defaultPropsField.value], {})));
-
         const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
 
         const emitProps = (nextProps) => {
