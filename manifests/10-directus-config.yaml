@@ -1721,6 +1721,8 @@ data:
         value: { type: [String, Number, Object, null], default: null },
         disabled: { type: Boolean, default: false },
         options: { type: Object, default: () => ({}) },
+        field: { type: String, default: '' },
+        collection: { type: String, default: '' },
       },
       emits: ['input'],
       setup(props, { emit }) {
@@ -1767,11 +1769,21 @@ data:
           if (['0', 'false', 'no', 'off'].includes(raw)) return false;
           return true;
         });
+        const fieldKey = computed(() => asString(props.field).toLowerCase());
+        const collectionKey = computed(() => asString(props.collection).toLowerCase());
         const storeFileId = computed(() => {
           const raw = asString(resolvedOptions.value?.store_file_id).toLowerCase();
           if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
           return false;
         });
+        const implicitRelationStoreFileId = computed(() => {
+          // Directus relation values often arrive as objects with { id, ... }.
+          if (props.value && typeof props.value === 'object' && 'id' in props.value) return true;
+          // Defensive fallback for known relation-backed image fields where metadata can drift.
+          if (collectionKey.value === 'cms_block_hero' && fieldKey.value === 'background_image') return true;
+          return false;
+        });
+        const effectiveStoreFileId = computed(() => storeFileId.value || implicitRelationStoreFileId.value);
 
         const currentValue = computed(() => {
           if (props.value && typeof props.value === 'object') {
@@ -1801,14 +1813,14 @@ data:
         const toStoredValue = (fileId) => {
           const normalizedId = asString(fileId);
           if (!normalizedId) return '';
-          if (storeFileId.value) return normalizedId;
+          if (effectiveStoreFileId.value) return normalizedId;
           return resolveAssetUrlFromId(normalizedId);
         };
 
         const previewSource = computed(() => {
           const raw = currentValue.value;
           if (!raw) return '';
-          if (storeFileId.value) {
+          if (effectiveStoreFileId.value) {
             const id = extractAssetIdFromValue(raw);
             return id ? resolveAssetUrlFromId(id) : '';
           }
@@ -1959,10 +1971,10 @@ data:
               type: 'text',
               value: currentValue.value,
               disabled: props.disabled,
-              placeholder: storeFileId.value ? '<file-id> or /assets/<file-id>' : 'https://... or /assets/<file-id>',
+              placeholder: effectiveStoreFileId.value ? '<file-id> or /assets/<file-id>' : 'https://... or /assets/<file-id>',
               onUpdate: (next) => {
                 const normalized = asString(next);
-                if (storeFileId.value) {
+                if (effectiveStoreFileId.value) {
                   const extractedId = extractAssetIdFromValue(normalized);
                   emit('input', extractedId || normalized);
                   return;
