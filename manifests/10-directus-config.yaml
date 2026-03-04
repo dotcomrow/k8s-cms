@@ -2225,6 +2225,7 @@ data:
         const assetPickerError = ref('');
         const assetPickerUploading = ref(false);
         const assetUploadInput = ref(null);
+        const propertyDraftValues = ref({});
 
         const resolvedOptions = computed(() => parseOptions(props.options));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
@@ -2300,6 +2301,7 @@ data:
           () => JSON.stringify(incomingProps.value),
           () => {
             localProps.value = { ...incomingProps.value };
+            propertyDraftValues.value = {};
             jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
             schemaError.value = '';
           },
@@ -2641,6 +2643,7 @@ data:
           (nextModuleKey) => {
             if (!nextModuleKey) return;
             emitProps(pendingModuleDefaults.value);
+            propertyDraftValues.value = {};
             pendingModuleDefaults.value = {};
             applyPendingDefaultsForModuleKey.value = '';
             schemaError.value = '';
@@ -2686,6 +2689,11 @@ data:
           } else {
             next[key] = value;
           }
+          if (Object.prototype.hasOwnProperty.call(propertyDraftValues.value, key)) {
+            const nextDrafts = { ...propertyDraftValues.value };
+            delete nextDrafts[key];
+            propertyDraftValues.value = nextDrafts;
+          }
           emitProps(next);
         };
 
@@ -2698,39 +2706,167 @@ data:
           const isRequired = schemaRequiredSet.value.has(propKey);
           const enumValues = Array.isArray(schema.enum) ? schema.enum.map((entry) => asString(entry)).filter(Boolean) : [];
           const inputId = `cms-module-prop-${propKey}`;
+          const disabled = props.disabled || loading.value;
+
+          const resolvedInput = resolveComponent('v-input');
+          const resolvedSelect = resolveComponent('v-select');
+          const resolvedTextarea = resolveComponent('v-textarea');
+          const resolvedCheckbox = resolveComponent('v-checkbox');
+          const resolvedButton = resolveComponent('v-button');
+          const resolvedNotice = resolveComponent('v-notice');
+
+          const hasInput = typeof resolvedInput !== 'string';
+          const hasSelect = typeof resolvedSelect !== 'string';
+          const hasTextarea = typeof resolvedTextarea !== 'string';
+          const hasCheckbox = typeof resolvedCheckbox !== 'string';
+          const hasButton = typeof resolvedButton !== 'string';
+          const hasNotice = typeof resolvedNotice !== 'string';
+
+          const renderInputControl = ({ id, modelValue, onUpdate, type: inputType = 'text', placeholder = '', onBlur = null, onKeydown = null, style = {} }) => {
+            if (hasInput) {
+              return h(resolvedInput, {
+                id,
+                modelValue: modelValue ?? '',
+                type: inputType,
+                placeholder,
+                disabled,
+                style,
+                'onUpdate:modelValue': (next) => onUpdate(asInputString(next)),
+                onBlur,
+                onKeydown,
+              });
+            }
+            return h('input', {
+              id,
+              type: inputType,
+              value: modelValue ?? '',
+              placeholder,
+              disabled,
+              style,
+              onInput: (event) => onUpdate(asInputString(event?.target?.value)),
+              onBlur,
+              onKeydown,
+            });
+          };
+
+          const renderTextareaControl = ({ id, modelValue, rows = 4, placeholder = '', onUpdate = null, onBlur = null, style = {} }) => {
+            if (hasTextarea) {
+              return h(resolvedTextarea, {
+                id,
+                modelValue: modelValue ?? '',
+                rows,
+                placeholder,
+                disabled,
+                monospace: true,
+                style,
+                'onUpdate:modelValue': onUpdate ? (next) => onUpdate(asInputString(next)) : undefined,
+                onBlur,
+              });
+            }
+            return h('textarea', {
+              id,
+              rows,
+              value: modelValue ?? '',
+              placeholder,
+              disabled,
+              style,
+              onInput: onUpdate ? (event) => onUpdate(asInputString(event?.target?.value)) : undefined,
+              onBlur,
+            });
+          };
+
+          const renderSelectControl = ({ id, modelValue, items, placeholder = '' }) => {
+            if (hasSelect) {
+              return h(resolvedSelect, {
+                id,
+                modelValue: modelValue || null,
+                items,
+                placeholder,
+                disabled,
+                showDeselect: true,
+                'onUpdate:modelValue': (next) => setPropertyValue(propKey, asInputString(next)),
+              });
+            }
+            return h(
+              'select',
+              {
+                id,
+                disabled,
+                value: modelValue,
+                onChange: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
+              },
+              [
+                h('option', { value: '' }, placeholder || `Select ${title}`),
+                ...items.map((entry) => h('option', { value: entry.value }, entry.text)),
+              ],
+            );
+          };
+
+          const renderCheckboxControl = ({ id, modelValue }) => {
+            if (hasCheckbox) {
+              return h(resolvedCheckbox, {
+                id,
+                modelValue: Boolean(modelValue),
+                disabled,
+                'onUpdate:modelValue': (next) => setPropertyValue(propKey, Boolean(next)),
+              });
+            }
+            return h('input', {
+              id,
+              type: 'checkbox',
+              disabled,
+              checked: Boolean(modelValue),
+              onChange: (event) => setPropertyValue(propKey, Boolean(event?.target?.checked)),
+            });
+          };
+
+          const renderButtonControl = ({ label, onClick, disabled: buttonDisabled = false, primary = false, style = {}, children = null }) => {
+            if (hasButton) {
+              return h(
+                resolvedButton,
+                {
+                  disabled: buttonDisabled,
+                  secondary: !primary,
+                  small: true,
+                  onClick,
+                  style,
+                },
+                children ? { default: () => children } : () => label,
+              );
+            }
+            return h('button', { type: 'button', disabled: buttonDisabled, onClick, style }, children || label);
+          };
+
+          const renderErrorNotice = (message) => {
+            if (!message) return null;
+            if (hasNotice) {
+              return h(resolvedNotice, { type: 'danger', icon: 'warning' }, { default: () => message });
+            }
+            return h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, message);
+          };
 
           let control = null;
 
           if (enumValues.length > 0) {
-            control = h(
-              'select',
-              {
-                id: inputId,
-                disabled: props.disabled || loading.value,
-                value: asInputString(value),
-                onChange: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
-              },
-              [
-                h('option', { value: '' }, `Select ${title}`),
-                ...enumValues.map((entry) => h('option', { value: entry }, entry)),
-              ],
-            );
-          } else if (type === 'boolean') {
-            control = h('input', {
+            const items = enumValues.map((entry) => ({ text: entry, value: entry }));
+            control = renderSelectControl({
               id: inputId,
-              type: 'checkbox',
-              disabled: props.disabled || loading.value,
-              checked: Boolean(value),
-              onChange: (event) => setPropertyValue(propKey, Boolean(event?.target?.checked)),
+              modelValue: asInputString(value),
+              items,
+              placeholder: `Select ${title}`,
+            });
+          } else if (type === 'boolean') {
+            control = renderCheckboxControl({
+              id: inputId,
+              modelValue: value,
             });
           } else if (type === 'number' || type === 'integer') {
-            control = h('input', {
+            control = renderInputControl({
               id: inputId,
               type: 'number',
-              disabled: props.disabled || loading.value,
-              value: asString(value),
-              onInput: (event) => {
-                const raw = asString(event?.target?.value);
+              modelValue: asInputString(value),
+              onUpdate: (rawValue) => {
+                const raw = asString(rawValue);
                 if (!raw) {
                   setPropertyValue(propKey, undefined);
                   return;
@@ -2740,15 +2876,28 @@ data:
               },
             });
           } else if (type === 'array' || type === 'object') {
-            control = h('textarea', {
+            const existingDraft = Object.prototype.hasOwnProperty.call(propertyDraftValues.value, propKey)
+              ? propertyDraftValues.value[propKey]
+              : null;
+            const draftValue = existingDraft === null
+              ? (value === undefined ? '' : JSON.stringify(value, null, 2))
+              : asInputString(existingDraft);
+
+            control = renderTextareaControl({
               id: inputId,
-              disabled: props.disabled || loading.value,
               rows: 4,
-              value: value === undefined ? '' : JSON.stringify(value, null, 2),
+              modelValue: draftValue,
+              onUpdate: (nextValue) => {
+                propertyDraftValues.value = {
+                  ...propertyDraftValues.value,
+                  [propKey]: asInputString(nextValue),
+                };
+              },
               onBlur: (event) => {
-                const raw = asString(event?.target?.value);
+                const raw = asString(event?.target?.value ?? propertyDraftValues.value[propKey]);
                 if (!raw) {
                   setPropertyValue(propKey, undefined);
+                  schemaError.value = '';
                   return;
                 }
                 try {
@@ -2768,23 +2917,24 @@ data:
             const showImagePreview =
               schemaFormat === 'image' ||
               /(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)/i.test(propKey);
+
             const pickerButtons = supportsAssetPicker
               ? h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' } }, [
-                  h('button', {
-                    type: 'button',
-                    disabled: props.disabled || loading.value,
-                    onClick: () => { toggleAssetPicker(propKey); },
-                  }, isPickerOpen ? 'Close Library' : 'Browse Files'),
-                  h('button', {
-                    type: 'button',
-                    disabled: props.disabled || loading.value || assetPickerUploading.value,
+                  renderButtonControl({
+                    label: isPickerOpen ? 'Close Library' : 'Browse Files',
+                    disabled: disabled,
+                    onClick: () => { void toggleAssetPicker(propKey); },
+                  }),
+                  renderButtonControl({
+                    label: assetPickerUploading.value && isPickerOpen ? 'Uploading...' : 'Upload File',
+                    disabled: disabled || assetPickerUploading.value,
                     onClick: () => { openAssetUploadChooser(propKey); },
-                  }, assetPickerUploading.value && isPickerOpen ? 'Uploading...' : 'Upload File'),
-                  h('button', {
-                    type: 'button',
-                    disabled: props.disabled || loading.value || !currentValue,
+                  }),
+                  renderButtonControl({
+                    label: 'Clear',
+                    disabled: disabled || !currentValue,
                     onClick: () => setPropertyValue(propKey, ''),
-                  }, 'Clear'),
+                  }),
                 ])
               : null;
 
@@ -2802,76 +2952,83 @@ data:
                     overflow: 'auto',
                   },
                 }, [
-                  h('div', { style: { display: 'flex', gap: '8px' } }, [
-                    h('input', {
-                      type: 'search',
-                      value: assetPickerQuery.value,
-                      placeholder: 'Search files',
-                      onInput: (event) => { assetPickerQuery.value = asInputString(event?.target?.value); },
-                      onKeydown: async (event) => { if (event?.key === 'Enter') await loadAssetPickerFiles(); },
-                      style: { flex: '1 1 auto' },
-                    }),
-                    h('button', {
-                      type: 'button',
+                  h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, [
+                    h('div', { style: { flex: '1 1 auto' } }, [
+                      renderInputControl({
+                        id: `${inputId}-asset-search`,
+                        type: 'search',
+                        modelValue: assetPickerQuery.value,
+                        placeholder: 'Search files',
+                        onUpdate: (nextValue) => { assetPickerQuery.value = asInputString(nextValue); },
+                        onKeydown: async (event) => { if (event?.key === 'Enter') await loadAssetPickerFiles(); },
+                      }),
+                    ]),
+                    renderButtonControl({
+                      label: assetPickerLoading.value ? 'Loading...' : 'Search',
                       disabled: assetPickerLoading.value,
-                      onClick: loadAssetPickerFiles,
-                    }, assetPickerLoading.value ? 'Loading...' : 'Search'),
+                      onClick: () => { void loadAssetPickerFiles(); },
+                    }),
                   ]),
-                  assetPickerError.value ? h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, assetPickerError.value) : null,
+                  renderErrorNotice(assetPickerError.value),
                   ...assetPickerRows.value.map((row) => {
                     const rowType = asString(row?.type).toLowerCase();
                     const rowIsImage = rowType.startsWith('image/');
                     const rowLabel = asString(row?.title) || asString(row?.filename_download) || asString(row?.id);
-                    return h('button', {
-                      type: 'button',
-                      disabled: props.disabled || loading.value,
-                      onClick: () => chooseAsset(propKey, row),
+                    const previewNode = rowIsImage
+                      ? h('img', {
+                          src: resolveAssetUrlFromId(row?.id),
+                          alt: rowLabel || 'file',
+                          style: { width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' },
+                        })
+                      : h('span', {
+                          style: {
+                            width: '36px',
+                            height: '36px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: '4px',
+                            border: '1px solid var(--theme--border-subdued)',
+                            background: 'var(--theme--background-subdued)',
+                            color: 'var(--theme--foreground-subdued)',
+                            fontSize: '11px',
+                            textTransform: 'uppercase',
+                          },
+                        }, rowType.split('/')[0] || 'file');
+
+                    const rowChildren = h('span', {
                       style: {
-                        display: 'flex',
+                        display: 'inline-flex',
                         alignItems: 'center',
                         gap: '8px',
                         width: '100%',
-                        textAlign: 'left',
-                        border: '1px solid var(--theme--border-subdued)',
-                        borderRadius: '6px',
-                        padding: '6px 8px',
-                        background: 'var(--theme--background-page)',
+                        justifyContent: 'flex-start',
+                        textTransform: 'none',
                       },
-                    }, [
-                      rowIsImage
-                        ? h('img', {
-                            src: resolveAssetUrlFromId(row?.id),
-                            alt: rowLabel || 'file',
-                            style: { width: '36px', height: '36px', objectFit: 'cover', borderRadius: '4px' },
-                          })
-                        : h('span', {
-                            style: {
-                              width: '36px',
-                              height: '36px',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              borderRadius: '4px',
-                              border: '1px solid var(--theme--border-subdued)',
-                              background: 'var(--theme--background-subdued)',
-                              color: 'var(--theme--foreground-subdued)',
-                              fontSize: '11px',
-                              textTransform: 'uppercase',
-                            },
-                          }, rowType.split('/')[0] || 'file'),
-                      h('span', rowLabel),
-                    ]);
+                    }, [previewNode, h('span', rowLabel)]);
+
+                    return renderButtonControl({
+                      label: rowLabel,
+                      disabled: disabled,
+                      onClick: () => chooseAsset(propKey, row),
+                      style: {
+                        width: '100%',
+                        justifyContent: 'flex-start',
+                        textAlign: 'left',
+                        padding: '6px 8px',
+                      },
+                      children: rowChildren,
+                    });
                   }),
                 ])
               : null;
 
             control = h('div', { style: { display: 'grid', gap: '4px' } }, [
-              h('input', {
+              renderInputControl({
                 id: inputId,
                 type: 'text',
-                disabled: props.disabled || loading.value,
-                value: currentValue,
-                onInput: (event) => setPropertyValue(propKey, asInputString(event?.target?.value)),
+                modelValue: currentValue,
+                onUpdate: (nextValue) => setPropertyValue(propKey, asInputString(nextValue)),
               }),
               pickerButtons,
               currentValue && supportsAssetPicker
@@ -2890,8 +3047,6 @@ data:
                     })
                   : h('a', {
                       href: currentValue,
-                      target: '_blank',
-                      rel: 'noopener noreferrer',
                       style: {
                         display: 'inline-flex',
                         width: 'fit-content',
@@ -2973,8 +3128,10 @@ data:
           if (showJsonFallback.value) {
             const resolvedCodeEditor = resolveComponent('v-input-code');
             const resolvedTextarea = resolveComponent('v-textarea');
+            const resolvedButton = resolveComponent('v-button');
             const hasCodeEditor = typeof resolvedCodeEditor !== 'string';
             const hasTextarea = typeof resolvedTextarea !== 'string';
+            const hasButton = typeof resolvedButton !== 'string';
             const jsonPlaceholder = '{\n  "key": "value"\n}';
 
             let jsonControl = null;
@@ -3037,20 +3194,31 @@ data:
               h('section', { class: 'cms-module-props-editor__json' }, [
                 h('div', { class: 'cms-module-props-editor__json-header', style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } }, [
                   h('strong', 'Advanced JSON editor'),
-                  h('button', {
-                    type: 'button',
-                    disabled: props.disabled || loading.value,
-                    onClick: formatJsonEditorValue,
-                    style: {
-                      border: '1px solid var(--theme--border-normal)',
-                      background: 'var(--theme--background-page)',
-                      color: 'var(--theme--foreground-normal)',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      padding: '4px 8px',
-                      cursor: props.disabled || loading.value ? 'not-allowed' : 'pointer',
-                    },
-                  }, 'Format JSON'),
+                  hasButton
+                    ? h(
+                        resolvedButton,
+                        {
+                          disabled: props.disabled || loading.value,
+                          secondary: true,
+                          small: true,
+                          onClick: formatJsonEditorValue,
+                        },
+                        () => 'Format JSON',
+                      )
+                    : h('button', {
+                        type: 'button',
+                        disabled: props.disabled || loading.value,
+                        onClick: formatJsonEditorValue,
+                        style: {
+                          border: '1px solid var(--theme--border-normal)',
+                          background: 'var(--theme--background-page)',
+                          color: 'var(--theme--foreground-normal)',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          padding: '4px 8px',
+                          cursor: props.disabled || loading.value ? 'not-allowed' : 'pointer',
+                        },
+                      }, 'Format JSON'),
                 ]),
                 jsonControl,
                 h('p', { class: 'cms-module-props-editor__hint' }, 'Editor is always visible. Changes are validated and saved on blur.'),
