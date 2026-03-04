@@ -634,8 +634,55 @@ kind: Service
 metadata:
   name: directus-image-action
   namespace: directus
+  annotations:
+    # Gravitee discovery
+    gravitee.io/expose: "true"
+    gravitee.io/context-path: "/directus-image-action"
+    gravitee.io/approval-required: "admin"
+
+    # Definition metadata (string)
+    gravitee.io/description: "Directus Image Action API for Hasura handlers"
+    gravitee.io/version: "latest"
+    gravitee.io/tags: "directus,cms,hasura,image,media"
+    gravitee.io/definition-name: "directus-image-action-api"
+    gravitee.io/definition-summary: "Directus Image Action API"
+    gravitee.io/definition-description: "Fetch/encode image assets for Hasura GraphQL actions"
+    gravitee.io/definition-version: "latest"
+    gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-openapi-url: "http://directus-image-action.directus.svc.cluster.local:8080/openapi.json"
+    gravitee.io/definition-context-path: "/directus-image-action"
+    gravitee.io/definition-visibility: "PUBLIC"
+    gravitee.io/definition-state: "STARTED"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
+
+    # Listener hints
+    gravitee.io/definition-listener-host: "directus-image-action.directus.svc.cluster.local"
+    gravitee.io/definition-listener-port: "8080"
+
+    # Definition list fields (comma-separated)
+    gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-tags: "directus,cms,hasura,image,media"
+    gravitee.io/definition-labels: "internal,cms,hasura,media"
+    gravitee.io/definition-categories: "cms"
+    gravitee.io/definition-path-mappings: "/directus-image-action/*"
+
+    # Definition JSON fields (raw JSON strings)
+    gravitee.io/definition-metadata: '{"owner":"cms","slack":"#cms"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","service":"directus-image-action"}'
+    gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"directus-image-action-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://directus-image-action.directus.svc.cluster.local:8080"},"secondary":false}]}]'
+    gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://directus-image-action.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+    gravitee.io/definition-resources: '[]'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"No auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"}}'
+    gravitee.io/definition-flows: '[]'
+    gravitee.io/definition-response-templates: '{}'
+    gravitee.io/definition-analytics: '{"enabled":true,"logging":{"condition":"true","content":{"headers":true,"payload":false,"messageHeaders":false,"messageMetadata":false,"messagePayload":false},"mode":{"entrypoint":true,"endpoint":true},"phase":{"request":true,"response":true}}}'
+
+    # Optional overrides (leave empty to let sync controller generate)
+    gravitee.io/definition-entrypoints: '[]'
   labels:
     app: directus-image-action
+    app.kubernetes.io/name: directus-image-action
+    app.kubernetes.io/component: media
 spec:
   selector:
     app: directus-image-action
