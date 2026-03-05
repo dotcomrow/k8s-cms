@@ -405,7 +405,10 @@ app.use(
     windowMs: Number(env.RATE_WINDOW_MS),
     max: Number(env.RATE_MAX),
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    // Cloud Run sets X-Forwarded-For; trust proxy is set above.
+    // Keep runtime resilient even if upstream proxy config drifts.
+    validate: false
   })
 );
 
@@ -443,5 +446,8 @@ app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: 
 // Start
 app.listen(Number(env.PORT), "0.0.0.0", () => {
   console.log(`[profile-proxy] listening on :${env.PORT}`);
+  console.log(
+    `[profile-proxy] trust_proxy=${String(app.get("trust proxy"))} rate_limit_window_ms=${env.RATE_WINDOW_MS} rate_limit_max=${env.RATE_MAX}`
+  );
   if (REQUIRE_API_KEY) console.log(`[profile-proxy] API key required via header X-API-Key`);
 });
