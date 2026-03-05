@@ -398,6 +398,7 @@ data:
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_package_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_mode TEXT; \
@@ -430,6 +431,7 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_dock_direction TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS slot TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS parent_block_id UUID; \
@@ -444,16 +446,20 @@ data:
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS template_nearest_block_id UUID; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS module_provider TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_layout_templates ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
@@ -479,13 +485,28 @@ data:
              ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_slug_unique; \
            END IF; \
          END IF; \
+         IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_pages_site_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
+           ALTER TABLE cms_pages DROP CONSTRAINT cms_pages_site_slug_unique; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_pages_site_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
+           ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_site_slug_unique; \
+         END IF; \
          IF NOT EXISTS ( \
            SELECT 1 \
            FROM pg_constraint \
-           WHERE conname IN ('cms_pages_site_slug_unique', 'demo_pages_site_slug_unique') \
+           WHERE conname = 'cms_pages_site_channel_slug_unique' \
              AND conrelid = 'directus.cms_pages'::regclass \
          ) THEN \
-           ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_site_slug_unique UNIQUE (site_key, slug); \
+           IF NOT EXISTS ( \
+             SELECT 1 \
+             FROM cms_pages \
+             GROUP BY site_key, release_channel, slug \
+             HAVING COUNT(*) > 1 \
+           ) THEN \
+             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_site_channel_slug_unique UNIQUE (site_key, release_channel, slug); \
+           ELSE \
+             RAISE NOTICE 'Skipping cms_pages_site_channel_slug_unique due to duplicate (site_key,release_channel,slug) rows'; \
+           END IF; \
          END IF; \
          IF NOT EXISTS ( \
            SELECT 1 \
@@ -550,6 +571,16 @@ data:
       WHERE p.refresh_target IS NULL
          OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both')
          OR p.refresh_target <> LOWER(p.refresh_target);" "normalize cms_pages.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET release_channel = CASE
+        WHEN LOWER(COALESCE(p.release_channel, '')) IN ('preview','prod') THEN LOWER(p.release_channel)
+        ELSE 'preview'
+      END
+      WHERE p.release_channel IS NULL
+         OR LOWER(COALESCE(p.release_channel, '')) NOT IN ('preview','prod')
+         OR p.release_channel <> LOWER(p.release_channel);" "normalize cms_pages.release_channel"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_pages p
@@ -748,6 +779,16 @@ data:
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_page_blocks pb
+      SET release_channel = CASE
+        WHEN LOWER(COALESCE(pb.release_channel, '')) IN ('preview','prod') THEN LOWER(pb.release_channel)
+        ELSE 'preview'
+      END
+      WHERE pb.release_channel IS NULL
+         OR LOWER(COALESCE(pb.release_channel, '')) NOT IN ('preview','prod')
+         OR pb.release_channel <> LOWER(pb.release_channel);" "normalize cms_page_blocks.release_channel"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_page_blocks pb
       SET slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main')
       WHERE pb.slot IS NULL
          OR BTRIM(COALESCE(pb.slot, '')) = ''
@@ -778,11 +819,13 @@ data:
     fi
     if ! _psql_yb_retry "UPDATE cms_page_blocks pb
       SET site_key = p.site_key,
+          release_channel = p.release_channel,
           page_slug = p.slug,
           refresh_target = p.refresh_target
       FROM cms_pages p
       WHERE pb.page_id = p.id
         AND (pb.site_key IS DISTINCT FROM p.site_key
+          OR pb.release_channel IS DISTINCT FROM p.release_channel
           OR pb.page_slug IS DISTINCT FROM p.slug
           OR pb.refresh_target IS DISTINCT FROM p.refresh_target);" "propagate metadata to cms_page_blocks"; then
       sync_site_metadata_failed="1"
@@ -798,13 +841,25 @@ data:
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_block_rich_text rt
+      SET release_channel = CASE
+        WHEN LOWER(COALESCE(rt.release_channel, '')) IN ('preview','prod') THEN LOWER(rt.release_channel)
+        ELSE 'preview'
+      END
+      WHERE rt.release_channel IS NULL
+         OR LOWER(COALESCE(rt.release_channel, '')) NOT IN ('preview','prod')
+         OR rt.release_channel <> LOWER(rt.release_channel);" "normalize cms_block_rich_text.release_channel"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_block_rich_text rt
       SET site_key = pb.site_key,
+          release_channel = pb.release_channel,
           page_slug = pb.page_slug,
           refresh_target = pb.refresh_target
       FROM cms_page_blocks pb
       WHERE pb.collection = 'cms_block_rich_text'
         AND pb.item = rt.id::text
         AND (rt.site_key IS DISTINCT FROM pb.site_key
+          OR rt.release_channel IS DISTINCT FROM pb.release_channel
           OR rt.page_slug IS DISTINCT FROM pb.page_slug
           OR rt.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_rich_text"; then
       sync_site_metadata_failed="1"
@@ -820,18 +875,30 @@ data:
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_block_hero h
+      SET release_channel = CASE
+        WHEN LOWER(COALESCE(h.release_channel, '')) IN ('preview','prod') THEN LOWER(h.release_channel)
+        ELSE 'preview'
+      END
+      WHERE h.release_channel IS NULL
+         OR LOWER(COALESCE(h.release_channel, '')) NOT IN ('preview','prod')
+         OR h.release_channel <> LOWER(h.release_channel);" "normalize cms_block_hero.release_channel"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_block_hero h
       SET background_image = NULLIF(BTRIM(h.background_image), '')
       WHERE h.background_image IS DISTINCT FROM NULLIF(BTRIM(h.background_image), '');" "normalize cms_block_hero.background_image"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_block_hero h
       SET site_key = pb.site_key,
+          release_channel = pb.release_channel,
           page_slug = pb.page_slug,
           refresh_target = pb.refresh_target
       FROM cms_page_blocks pb
       WHERE pb.collection = 'cms_block_hero'
         AND pb.item = h.id::text
         AND (h.site_key IS DISTINCT FROM pb.site_key
+          OR h.release_channel IS DISTINCT FROM pb.release_channel
           OR h.page_slug IS DISTINCT FROM pb.page_slug
           OR h.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_hero"; then
       sync_site_metadata_failed="1"
@@ -844,6 +911,16 @@ data:
       WHERE m.refresh_target IS NULL
          OR LOWER(COALESCE(m.refresh_target, '')) NOT IN ('preview','prod','both')
          OR m.refresh_target <> LOWER(m.refresh_target);" "normalize cms_block_module.refresh_target"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_block_module m
+      SET release_channel = CASE
+        WHEN LOWER(COALESCE(m.release_channel, '')) IN ('preview','prod') THEN LOWER(m.release_channel)
+        ELSE 'preview'
+      END
+      WHERE m.release_channel IS NULL
+         OR LOWER(COALESCE(m.release_channel, '')) NOT IN ('preview','prod')
+         OR m.release_channel <> LOWER(m.release_channel);" "normalize cms_block_module.release_channel"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_block_module m
@@ -894,12 +971,14 @@ data:
     fi
     if ! _psql_yb_retry "UPDATE cms_block_module m
       SET site_key = pb.site_key,
+          release_channel = pb.release_channel,
           page_slug = pb.page_slug,
           refresh_target = pb.refresh_target
       FROM cms_page_blocks pb
       WHERE pb.collection = 'cms_block_module'
         AND pb.item = m.id::text
         AND (m.site_key IS DISTINCT FROM pb.site_key
+          OR m.release_channel IS DISTINCT FROM pb.release_channel
           OR m.page_slug IS DISTINCT FROM pb.page_slug
           OR m.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_module"; then
       sync_site_metadata_failed="1"
@@ -915,13 +994,25 @@ data:
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_block_template_ref tr
+      SET release_channel = CASE
+        WHEN LOWER(COALESCE(tr.release_channel, '')) IN ('preview','prod') THEN LOWER(tr.release_channel)
+        ELSE 'preview'
+      END
+      WHERE tr.release_channel IS NULL
+         OR LOWER(COALESCE(tr.release_channel, '')) NOT IN ('preview','prod')
+         OR tr.release_channel <> LOWER(tr.release_channel);" "normalize cms_block_template_ref.release_channel"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_block_template_ref tr
       SET site_key = pb.site_key,
+          release_channel = pb.release_channel,
           page_slug = pb.page_slug,
           refresh_target = pb.refresh_target
       FROM cms_page_blocks pb
       WHERE pb.collection = 'cms_block_template_ref'
         AND pb.item = tr.id::text
         AND (tr.site_key IS DISTINCT FROM pb.site_key
+          OR tr.release_channel IS DISTINCT FROM pb.release_channel
           OR tr.page_slug IS DISTINCT FROM pb.page_slug
           OR tr.refresh_target IS DISTINCT FROM pb.refresh_target);" "propagate metadata to cms_block_template_ref"; then
       sync_site_metadata_failed="1"
@@ -988,6 +1079,11 @@ data:
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_refresh_target_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
+          ALTER TABLE cms_pages ALTER COLUMN release_channel SET DEFAULT 'preview';
+          ALTER TABLE cms_pages ALTER COLUMN release_channel SET NOT NULL;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_release_channel_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+            ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_release_channel_check CHECK (release_channel IN ('preview','prod'));
+          END IF;
           ALTER TABLE cms_pages ALTER COLUMN theme_mode SET DEFAULT 'auto';
           ALTER TABLE cms_pages ALTER COLUMN theme_mode SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
@@ -1028,6 +1124,8 @@ data:
           ALTER TABLE cms_page_blocks ALTER COLUMN slot SET NOT NULL;
           ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_page_blocks ALTER COLUMN refresh_target SET NOT NULL;
+          ALTER TABLE cms_page_blocks ALTER COLUMN release_channel SET DEFAULT 'preview';
+          ALTER TABLE cms_page_blocks ALTER COLUMN release_channel SET NOT NULL;
           ALTER TABLE cms_page_blocks ALTER COLUMN tree_depth SET DEFAULT 0;
           ALTER TABLE cms_page_blocks ALTER COLUMN tree_depth SET NOT NULL;
           ALTER TABLE cms_page_blocks ALTER COLUMN template_scope SET DEFAULT 'page';
@@ -1043,6 +1141,9 @@ data:
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_refresh_target_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_release_channel_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
+            ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_release_channel_check CHECK (release_channel IN ('preview','prod'));
+          END IF;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_template_scope_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_template_scope_check CHECK (template_scope IN ('page','template'));
           END IF;
@@ -1050,15 +1151,25 @@ data:
         IF to_regclass('directus.cms_block_rich_text') IS NOT NULL THEN
           ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target SET NOT NULL;
+          ALTER TABLE cms_block_rich_text ALTER COLUMN release_channel SET DEFAULT 'preview';
+          ALTER TABLE cms_block_rich_text ALTER COLUMN release_channel SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_refresh_target_check' AND conrelid = 'directus.cms_block_rich_text'::regclass) THEN
             ALTER TABLE cms_block_rich_text ADD CONSTRAINT cms_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_release_channel_check' AND conrelid = 'directus.cms_block_rich_text'::regclass) THEN
+            ALTER TABLE cms_block_rich_text ADD CONSTRAINT cms_block_rich_text_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_block_hero') IS NOT NULL THEN
           ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET NOT NULL;
+          ALTER TABLE cms_block_hero ALTER COLUMN release_channel SET DEFAULT 'preview';
+          ALTER TABLE cms_block_hero ALTER COLUMN release_channel SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_refresh_target_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
             ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_release_channel_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
+            ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_block_module') IS NOT NULL THEN
@@ -1066,15 +1177,25 @@ data:
           ALTER TABLE cms_block_module ALTER COLUMN module_provider SET NOT NULL;
           ALTER TABLE cms_block_module ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_block_module ALTER COLUMN refresh_target SET NOT NULL;
+          ALTER TABLE cms_block_module ALTER COLUMN release_channel SET DEFAULT 'preview';
+          ALTER TABLE cms_block_module ALTER COLUMN release_channel SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_refresh_target_check' AND conrelid = 'directus.cms_block_module'::regclass) THEN
             ALTER TABLE cms_block_module ADD CONSTRAINT cms_block_module_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_release_channel_check' AND conrelid = 'directus.cms_block_module'::regclass) THEN
+            ALTER TABLE cms_block_module ADD CONSTRAINT cms_block_module_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_block_template_ref') IS NOT NULL THEN
           ALTER TABLE cms_block_template_ref ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_block_template_ref ALTER COLUMN refresh_target SET NOT NULL;
+          ALTER TABLE cms_block_template_ref ALTER COLUMN release_channel SET DEFAULT 'preview';
+          ALTER TABLE cms_block_template_ref ALTER COLUMN release_channel SET NOT NULL;
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_template_ref_refresh_target_check' AND conrelid = 'directus.cms_block_template_ref'::regclass) THEN
             ALTER TABLE cms_block_template_ref ADD CONSTRAINT cms_block_template_ref_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_template_ref_release_channel_check' AND conrelid = 'directus.cms_block_template_ref'::regclass) THEN
+            ALTER TABLE cms_block_template_ref ADD CONSTRAINT cms_block_template_ref_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_layout_templates') IS NOT NULL THEN
@@ -1322,22 +1443,26 @@ data:
       _upsert_hidden_internal_field_meta "cms_page_blocks" "page_id" 59
       _upsert_hidden_internal_field_meta "cms_page_blocks" "page" 60 false
       _upsert_hidden_internal_field_meta "cms_page_blocks" "site_key" 61
-      _upsert_hidden_internal_field_meta "cms_page_blocks" "page_slug" 62
-      _upsert_hidden_internal_field_meta "cms_page_blocks" "refresh_target" 63
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "release_channel" 62
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "page_slug" 63
+      _upsert_hidden_internal_field_meta "cms_page_blocks" "refresh_target" 64
       _upsert_hidden_internal_field_meta "cms_page_blocks" "collection" 64 false
       _upsert_hidden_internal_field_meta "cms_page_blocks" "item" 65 false
       _upsert_hidden_internal_field_meta "cms_block_rich_text" "id" 69
       _upsert_hidden_internal_field_meta "cms_block_rich_text" "site_key" 70
-      _upsert_hidden_internal_field_meta "cms_block_rich_text" "page_slug" 71
-      _upsert_hidden_internal_field_meta "cms_block_rich_text" "refresh_target" 72
+      _upsert_hidden_internal_field_meta "cms_block_rich_text" "release_channel" 71
+      _upsert_hidden_internal_field_meta "cms_block_rich_text" "page_slug" 72
+      _upsert_hidden_internal_field_meta "cms_block_rich_text" "refresh_target" 73
       _upsert_hidden_internal_field_meta "cms_block_hero" "id" 79
       _upsert_hidden_internal_field_meta "cms_block_hero" "site_key" 80
-      _upsert_hidden_internal_field_meta "cms_block_hero" "page_slug" 81
-      _upsert_hidden_internal_field_meta "cms_block_hero" "refresh_target" 82
+      _upsert_hidden_internal_field_meta "cms_block_hero" "release_channel" 81
+      _upsert_hidden_internal_field_meta "cms_block_hero" "page_slug" 82
+      _upsert_hidden_internal_field_meta "cms_block_hero" "refresh_target" 83
       _upsert_hidden_internal_field_meta "cms_block_module" "id" 83
       _upsert_hidden_internal_field_meta "cms_block_module" "site_key" 84
-      _upsert_hidden_internal_field_meta "cms_block_module" "page_slug" 85
-      _upsert_hidden_internal_field_meta "cms_block_module" "refresh_target" 86
+      _upsert_hidden_internal_field_meta "cms_block_module" "release_channel" 85
+      _upsert_hidden_internal_field_meta "cms_block_module" "page_slug" 86
+      _upsert_hidden_internal_field_meta "cms_block_module" "refresh_target" 87
       _upsert_hidden_internal_field_meta "cms_layout_templates" "id" 89
       _upsert_hidden_internal_field_meta "cms_layout_template_slots" "id" 89
       _upsert_hidden_internal_field_meta "cms_theme_packages" "id" 89
@@ -1429,7 +1554,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","release_channel","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -2201,6 +2326,7 @@ data:
          module_key TEXT NOT NULL, \
          props_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          site_key TEXT NULL, \
+         release_channel TEXT NOT NULL DEFAULT 'preview', \
          page_slug TEXT NULL, \
          refresh_target TEXT NOT NULL DEFAULT 'both', \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
@@ -2212,6 +2338,7 @@ data:
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS module_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS props_json JSONB; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_module ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
@@ -2219,6 +2346,7 @@ data:
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN module_provider SET DEFAULT 'radix'; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN props_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN release_channel SET DEFAULT 'preview'; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_block_module ALTER COLUMN date_created SET DEFAULT now();"
 
@@ -2232,6 +2360,7 @@ data:
          name TEXT NULL, \
          template_key TEXT NOT NULL, \
          site_key TEXT NULL, \
+         release_channel TEXT NOT NULL DEFAULT 'preview', \
          page_slug TEXT NULL, \
          refresh_target TEXT NOT NULL DEFAULT 'both', \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
@@ -2242,11 +2371,13 @@ data:
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS name TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS template_key TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_block_template_ref ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_block_template_ref ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_block_template_ref ALTER COLUMN release_channel SET DEFAULT 'preview'; \
        ALTER TABLE IF EXISTS cms_block_template_ref ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_block_template_ref ALTER COLUMN date_created SET DEFAULT now();"
 
@@ -2444,6 +2575,7 @@ data:
        DECLARE \
          _template_key TEXT; \
          _site_key TEXT; \
+         _page_release_channel TEXT; \
          _page_slug TEXT; \
          _page_refresh_target TEXT; \
          _parent_block_id UUID; \
@@ -2464,12 +2596,16 @@ data:
          END IF; \
          SELECT COALESCE(NULLIF(BTRIM(p.layout_template_key), ''), ''), \
                 COALESCE(NULLIF(BTRIM(p.site_key), ''), ''), \
+                CASE \
+                  WHEN LOWER(COALESCE(p.release_channel, '')) IN ('preview','prod') THEN LOWER(p.release_channel) \
+                  ELSE 'preview' \
+                END, \
                 COALESCE(NULLIF(BTRIM(p.slug), ''), ''), \
                 CASE \
                   WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
                   ELSE 'both' \
                 END \
-           INTO _template_key, _site_key, _page_slug, _page_refresh_target \
+           INTO _template_key, _site_key, _page_release_channel, _page_slug, _page_refresh_target \
          FROM directus.cms_pages p \
          WHERE p.id = NEW.page_id \
          LIMIT 1; \
@@ -2477,6 +2613,7 @@ data:
            RAISE EXCEPTION 'cms_page_blocks.page_id % does not reference an existing cms_pages row', NEW.page_id; \
          END IF; \
          NEW.site_key := NULLIF(_site_key, ''); \
+         NEW.release_channel := COALESCE(NULLIF(_page_release_channel, ''), 'preview'); \
          NEW.page_slug := NULLIF(_page_slug, ''); \
          NEW.refresh_target := COALESCE(NULLIF(_page_refresh_target, ''), 'both'); \
          IF _parent_block_id IS NOT NULL THEN \
@@ -2549,37 +2686,45 @@ data:
          IF NEW.collection = 'cms_block_rich_text' THEN \
            UPDATE directus.cms_block_rich_text rt \
               SET site_key = NEW.site_key, \
+                  release_channel = NEW.release_channel, \
                   page_slug = NEW.page_slug, \
                   refresh_target = _refresh_target \
             WHERE rt.id::text = NEW.item \
               AND (rt.site_key IS DISTINCT FROM NEW.site_key \
+                OR rt.release_channel IS DISTINCT FROM NEW.release_channel \
                 OR rt.page_slug IS DISTINCT FROM NEW.page_slug \
                 OR rt.refresh_target IS DISTINCT FROM _refresh_target); \
          ELSIF NEW.collection = 'cms_block_hero' THEN \
            UPDATE directus.cms_block_hero h \
               SET site_key = NEW.site_key, \
+                  release_channel = NEW.release_channel, \
                   page_slug = NEW.page_slug, \
                   refresh_target = _refresh_target \
             WHERE h.id::text = NEW.item \
               AND (h.site_key IS DISTINCT FROM NEW.site_key \
+                OR h.release_channel IS DISTINCT FROM NEW.release_channel \
                 OR h.page_slug IS DISTINCT FROM NEW.page_slug \
                 OR h.refresh_target IS DISTINCT FROM _refresh_target); \
          ELSIF NEW.collection = 'cms_block_module' THEN \
            UPDATE directus.cms_block_module m \
               SET site_key = NEW.site_key, \
+                  release_channel = NEW.release_channel, \
                   page_slug = NEW.page_slug, \
                   refresh_target = _refresh_target \
             WHERE m.id::text = NEW.item \
               AND (m.site_key IS DISTINCT FROM NEW.site_key \
+                OR m.release_channel IS DISTINCT FROM NEW.release_channel \
                 OR m.page_slug IS DISTINCT FROM NEW.page_slug \
                 OR m.refresh_target IS DISTINCT FROM _refresh_target); \
          ELSIF NEW.collection = 'cms_block_template_ref' THEN \
            UPDATE directus.cms_block_template_ref tr \
               SET site_key = NEW.site_key, \
+                  release_channel = NEW.release_channel, \
                   page_slug = NEW.page_slug, \
                   refresh_target = _refresh_target \
             WHERE tr.id::text = NEW.item \
               AND (tr.site_key IS DISTINCT FROM NEW.site_key \
+                OR tr.release_channel IS DISTINCT FROM NEW.release_channel \
                 OR tr.page_slug IS DISTINCT FROM NEW.page_slug \
                 OR tr.refresh_target IS DISTINCT FROM _refresh_target); \
          END IF; \
@@ -2602,16 +2747,19 @@ data:
          END; \
          UPDATE directus.cms_page_blocks pb \
             SET site_key = NEW.site_key, \
+                release_channel = NEW.release_channel, \
                 page_slug = NEW.slug, \
                 refresh_target = _refresh_target, \
                 slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main') \
           WHERE pb.page_id = NEW.id \
             AND (pb.site_key IS DISTINCT FROM NEW.site_key \
+              OR pb.release_channel IS DISTINCT FROM NEW.release_channel \
               OR pb.page_slug IS DISTINCT FROM NEW.slug \
               OR pb.refresh_target IS DISTINCT FROM _refresh_target \
               OR pb.slot IS DISTINCT FROM COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main')); \
          UPDATE directus.cms_block_rich_text rt \
             SET site_key = pb.site_key, \
+                release_channel = pb.release_channel, \
                 page_slug = pb.page_slug, \
                 refresh_target = pb.refresh_target \
            FROM directus.cms_page_blocks pb \
@@ -2619,10 +2767,12 @@ data:
             AND pb.collection = 'cms_block_rich_text' \
             AND pb.item = rt.id::text \
             AND (rt.site_key IS DISTINCT FROM pb.site_key \
+              OR rt.release_channel IS DISTINCT FROM pb.release_channel \
               OR rt.page_slug IS DISTINCT FROM pb.page_slug \
               OR rt.refresh_target IS DISTINCT FROM pb.refresh_target); \
          UPDATE directus.cms_block_hero h \
             SET site_key = pb.site_key, \
+                release_channel = pb.release_channel, \
                 page_slug = pb.page_slug, \
                 refresh_target = pb.refresh_target \
            FROM directus.cms_page_blocks pb \
@@ -2630,10 +2780,12 @@ data:
             AND pb.collection = 'cms_block_hero' \
             AND pb.item = h.id::text \
             AND (h.site_key IS DISTINCT FROM pb.site_key \
+              OR h.release_channel IS DISTINCT FROM pb.release_channel \
               OR h.page_slug IS DISTINCT FROM pb.page_slug \
               OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
          UPDATE directus.cms_block_module m \
             SET site_key = pb.site_key, \
+                release_channel = pb.release_channel, \
                 page_slug = pb.page_slug, \
                 refresh_target = pb.refresh_target \
            FROM directus.cms_page_blocks pb \
@@ -2641,10 +2793,12 @@ data:
             AND pb.collection = 'cms_block_module' \
             AND pb.item = m.id::text \
          AND (m.site_key IS DISTINCT FROM pb.site_key \
+              OR m.release_channel IS DISTINCT FROM pb.release_channel \
               OR m.page_slug IS DISTINCT FROM pb.page_slug \
               OR m.refresh_target IS DISTINCT FROM pb.refresh_target); \
          UPDATE directus.cms_block_template_ref tr \
             SET site_key = pb.site_key, \
+                release_channel = pb.release_channel, \
                 page_slug = pb.page_slug, \
                 refresh_target = pb.refresh_target \
            FROM directus.cms_page_blocks pb \
@@ -2652,6 +2806,7 @@ data:
             AND pb.collection = 'cms_block_template_ref' \
             AND pb.item = tr.id::text \
          AND (tr.site_key IS DISTINCT FROM pb.site_key \
+              OR tr.release_channel IS DISTINCT FROM pb.release_channel \
               OR tr.page_slug IS DISTINCT FROM pb.page_slug \
               OR tr.refresh_target IS DISTINCT FROM pb.refresh_target); \
          RETURN NEW; \
@@ -2938,7 +3093,7 @@ data:
             AND to_regclass('directus.cms_block_template_ref') IS NOT NULL THEN \
            DROP TRIGGER IF EXISTS cms_pages_sync_block_metadata ON cms_pages; \
            CREATE TRIGGER cms_pages_sync_block_metadata \
-           AFTER INSERT OR UPDATE OF site_key, slug, refresh_target \
+           AFTER INSERT OR UPDATE OF site_key, release_channel, slug, refresh_target \
            ON cms_pages \
            FOR EACH ROW \
            EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page(); \
@@ -3108,6 +3263,7 @@ data:
 
       template_note="Required: choose which registered layout template this page uses."
       theme_note="Required: choose which published theme family this page uses."
+      release_channel_note="Required: choose which release channel this page belongs to (preview or prod)."
       theme_mode_note="Required: choose how this page resolves theme variants (Auto uses system light/dark preference)."
       analytics_google_measurement_id_note="Optional: Google Analytics 4 measurement id (example: G-XXXXXXXXXX). When set, the shell injects gtag on this page."
       analytics_openobserve_rum_script_url_note="Optional: OpenObserve browser RUM script URL. Leave empty to disable OpenObserve RUM for this page."
@@ -3147,12 +3303,15 @@ data:
       internal_metadata_note="Managed automatically from page/block context."
       status_note="Publishing control for this record."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
+      release_channel_choices_json="$(jq -nc '[ {"text":"Preview","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Prod","value":"prod","foreground":"#92400E","background":"#FEF3C7"} ]')"
       theme_mode_choices_json="$(jq -nc '[ {"text":"Auto (System)","value":"auto","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Light","value":"light","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Dark","value":"dark","foreground":"#92400E","background":"#FEF3C7"} ]')"
       widget_dock_position_choices_json="$(jq -nc '[ {"text":"Top Right","value":"top-right","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Top Left","value":"top-left","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Bottom Right","value":"bottom-right","foreground":"#92400E","background":"#FEF3C7"}, {"text":"Bottom Left","value":"bottom-left","foreground":"#6D28D9","background":"#EDE9FE"} ]')"
       widget_dock_direction_choices_json="$(jq -nc '[ {"text":"Vertical","value":"vertical","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Horizontal","value":"horizontal","foreground":"#065F46","background":"#D1FAE5"} ]')"
       theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
       asset_url_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
+      release_channel_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      release_channel_display_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices}')"
       theme_mode_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       theme_mode_display_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices}')"
       analytics_openobserve_rum_config_options_json="$(jq -nc '{language:"json",lineNumber:true,template:"{}"}')"
@@ -3170,6 +3329,7 @@ data:
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,store_file_id:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
+      release_channel_note_sql="$(printf '%s' "${release_channel_note}" | sed "s/'/''/g")"
       theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
       analytics_google_measurement_id_note_sql="$(printf '%s' "${analytics_google_measurement_id_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_script_url_note_sql="$(printf '%s' "${analytics_openobserve_rum_script_url_note}" | sed "s/'/''/g")"
@@ -3342,6 +3502,70 @@ data:
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created theme_package_key field UX on ${_collection}"
+      }
+
+      _upsert_page_release_channel_field_meta() {
+        _collection="cms_pages"
+        _field="release_channel"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${release_channel_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${release_channel_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=2"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${release_channel_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated release_channel field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},2"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${release_channel_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created release_channel field UX on ${_collection}"
       }
 
       _upsert_page_theme_mode_field_meta() {
@@ -4561,6 +4785,7 @@ data:
     
       _upsert_page_layout_template_field_meta
       _upsert_page_theme_package_field_meta
+      _upsert_page_release_channel_field_meta
       _upsert_page_theme_mode_field_meta
       _upsert_page_analytics_google_measurement_id_field_meta
       _upsert_page_analytics_openobserve_rum_script_url_field_meta
@@ -4613,6 +4838,7 @@ data:
       _assign_page_field_group "slug" "_section_page_settings"
       _assign_page_field_group "title" "_section_page_settings"
       _assign_page_field_group "status" "_section_page_settings"
+      _assign_page_field_group "release_channel" "_section_page_settings"
       _assign_page_field_group "refresh_target" "_section_page_settings"
       _assign_page_field_group "layout_template_key" "_section_layout"
       _assign_page_field_group "theme_package_key" "_section_theme"
@@ -4657,23 +4883,26 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "template_scope" 77
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "tree_depth" 78
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "tree_path" 79
-      _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "date_created" 80
-      _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "date_updated" 81
+      _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "release_channel" 80
+      _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "date_created" 81
+      _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "date_updated" 82
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "id" 81
       _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "site_key" 82
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "page_slug" 83
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "refresh_target" 84
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "module_provider" 85
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_created" 86
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_updated" 87
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "sort" 88
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "id" 88
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "site_key" 89
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "page_slug" 90
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "refresh_target" 91
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "date_created" 92
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "date_updated" 93
-      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "sort" 94
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "release_channel" 83
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "page_slug" 84
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "refresh_target" 85
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "module_provider" 86
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_created" 87
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "date_updated" 88
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_module" "sort" 89
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "id" 89
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "site_key" 90
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "release_channel" 91
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "page_slug" 92
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "refresh_target" 93
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "date_created" 94
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "date_updated" 95
+      _upsert_hidden_internal_field_meta_dynamic "cms_block_template_ref" "sort" 96
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "id" 101
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_created" 102
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 103
@@ -5462,6 +5691,7 @@ data:
         printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
           site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
           homepage_slug="$(printf '%s' "$site" | jq -r '.homepage_slug // "home"')"
+          homepage_release_channel_raw="$(printf '%s' "$site" | jq -r '.homepage_release_channel // .release_channel // "preview"')"
           homepage_layout_template_key="$(printf '%s' "$site" | jq -r '.homepage_layout_template_key // .layout_template_key // "spa-default"')"
           homepage_theme_package_key="$(printf '%s' "$site" | jq -r '.homepage_theme_package_key // .theme_package_key // empty')"
           client_key="$(printf '%s' "$site" | jq -r '.client_key // .clientId // empty')"
@@ -5488,12 +5718,17 @@ data:
           if [ -z "${homepage_theme_package_key:-}" ] || [ "${homepage_theme_package_key}" = "null" ]; then
             homepage_theme_package_key=""
           fi
+          case "$(printf '%s' "${homepage_release_channel_raw:-preview}" | tr '[:upper:]' '[:lower:]')" in
+            preview|prod) homepage_release_channel="$(printf '%s' "${homepage_release_channel_raw:-preview}" | tr '[:upper:]' '[:lower:]')" ;;
+            *) homepage_release_channel="preview" ;;
+          esac
 
-          # Ensure each site has a homepage row keyed by (site_key, homepage_slug).
+          # Ensure each site has a homepage row keyed by (site_key, release_channel, homepage_slug).
           # If absent, claim an unscoped page first; otherwise clone page metadata from any existing slug match.
           if [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ]; then
             site_key_sql="$(printf '%s' "$site_key" | sed "s/'/''/g")"
             homepage_slug_sql="$(printf '%s' "$homepage_slug" | sed "s/'/''/g")"
+            homepage_release_channel_sql="$(printf '%s' "$homepage_release_channel" | sed "s/'/''/g")"
             homepage_layout_template_key_sql=""
             homepage_layout_template_value_sql="NULL"
             homepage_theme_package_key_sql=""
@@ -5508,23 +5743,23 @@ data:
             fi
     
             HOME_PAGE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SELECT id FROM directus.cms_pages WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' LIMIT 1;" || true)"
+              "SELECT id FROM directus.cms_pages WHERE site_key='${site_key_sql}' AND release_channel='${homepage_release_channel_sql}' AND slug='${homepage_slug_sql}' LIMIT 1;" || true)"
             HOME_PAGE_ID="$(printf '%s' "$HOME_PAGE_ID" | tr -d '\r')"
-    
+
             if [ -z "${HOME_PAGE_ID:-}" ] || [ "${HOME_PAGE_ID}" = "null" ]; then
               UNSCOPED_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                "SELECT id FROM directus.cms_pages WHERE slug='${homepage_slug_sql}' AND (site_key IS NULL OR site_key='') ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
+                "SELECT id FROM directus.cms_pages WHERE slug='${homepage_slug_sql}' AND release_channel='${homepage_release_channel_sql}' AND (site_key IS NULL OR site_key='') ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
               UNSCOPED_ID="$(printf '%s' "$UNSCOPED_ID" | tr -d '\r')"
     
               if [ -n "${UNSCOPED_ID:-}" ] && [ "${UNSCOPED_ID}" != "null" ]; then
                 unscoped_id_sql="$(printf '%s' "$UNSCOPED_ID" | sed "s/'/''/g")"
                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                  "SET search_path TO directus, public; UPDATE cms_pages SET site_key='${site_key_sql}' WHERE id='${unscoped_id_sql}';"
+                  "SET search_path TO directus, public; UPDATE cms_pages SET site_key='${site_key_sql}', release_channel='${homepage_release_channel_sql}' WHERE id='${unscoped_id_sql}';"
                 HOME_PAGE_ID="$UNSCOPED_ID"
-                echo "✅ Assigned existing homepage slug='${homepage_slug}' to site_key='${site_key}'"
+                echo "✅ Assigned existing homepage slug='${homepage_slug}' to site_key='${site_key}' (release_channel='${homepage_release_channel}')"
               else
                 SEED_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                  "SELECT id FROM directus.cms_pages WHERE slug='${homepage_slug_sql}' ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
+                  "SELECT id FROM directus.cms_pages WHERE slug='${homepage_slug_sql}' AND release_channel='${homepage_release_channel_sql}' ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST LIMIT 1;" || true)"
                 SEED_ID="$(printf '%s' "$SEED_ID" | tr -d '\r')"
                 NEW_HOME_ID="$(cat /proc/sys/kernel/random/uuid)"
                 new_home_sql="$(printf '%s' "$NEW_HOME_ID" | sed "s/'/''/g")"
@@ -5532,7 +5767,7 @@ data:
                 if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
                   seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, NULLIF(BTRIM(analytics_google_measurement_id), ''), NULLIF(BTRIM(analytics_openobserve_rum_script_url), ''), CASE WHEN analytics_openobserve_rum_config IS NULL OR jsonb_typeof(analytics_openobserve_rum_config) IS DISTINCT FROM 'object' THEN '{}'::jsonb ELSE analytics_openobserve_rum_config END, COALESCE(widget_dock_enabled, true), CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(theme_selector_dock_position) ELSE 'start' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, release_channel, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', '${homepage_release_channel_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, NULLIF(BTRIM(analytics_google_measurement_id), ''), NULLIF(BTRIM(analytics_openobserve_rum_script_url), ''), CASE WHEN analytics_openobserve_rum_config IS NULL OR jsonb_typeof(analytics_openobserve_rum_config) IS DISTINCT FROM 'object' THEN '{}'::jsonb ELSE analytics_openobserve_rum_config END, COALESCE(widget_dock_enabled, true), CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(theme_selector_dock_position) ELSE 'start' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
     
                   # Clone supported homepage blocks so the new site homepage has immediate content.
                   pb_map_file="$(mktemp)"
@@ -5552,19 +5787,19 @@ data:
                         case "$blk_collection" in
                           cms_block_rich_text)
                             copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                              "WITH ins AS (INSERT INTO directus.cms_block_rich_text (id, status, sort, body, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, body, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_rich_text WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                              "WITH ins AS (INSERT INTO directus.cms_block_rich_text (id, status, sort, body, site_key, release_channel, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, body, '${site_key_sql}', '${homepage_release_channel_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_rich_text WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                             ;;
                           cms_block_hero)
                             copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                              "WITH ins AS (INSERT INTO directus.cms_block_hero (id, status, sort, headline, subheadline, background_image, cta_label, cta_url, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, headline, subheadline, background_image, cta_label, cta_url, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_hero WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                              "WITH ins AS (INSERT INTO directus.cms_block_hero (id, status, sort, headline, subheadline, background_image, cta_label, cta_url, site_key, release_channel, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, headline, subheadline, background_image, cta_label, cta_url, '${site_key_sql}', '${homepage_release_channel_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_hero WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                             ;;
                           cms_block_module)
                             copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                              "WITH ins AS (INSERT INTO directus.cms_block_module (id, status, sort, module_provider, module_key, props_json, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, COALESCE(NULLIF(LOWER(BTRIM(COALESCE(module_provider, ''))), ''), 'radix'), module_key, COALESCE(props_json, '{}'::jsonb), '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_module WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                              "WITH ins AS (INSERT INTO directus.cms_block_module (id, status, sort, module_provider, module_key, props_json, site_key, release_channel, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, COALESCE(NULLIF(LOWER(BTRIM(COALESCE(module_provider, ''))), ''), 'radix'), module_key, COALESCE(props_json, '{}'::jsonb), '${site_key_sql}', '${homepage_release_channel_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_module WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                             ;;
                           cms_block_template_ref)
                             copied="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                              "WITH ins AS (INSERT INTO directus.cms_block_template_ref (id, status, sort, name, template_key, site_key, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, name, template_key, '${site_key_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_template_ref WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
+                              "WITH ins AS (INSERT INTO directus.cms_block_template_ref (id, status, sort, name, template_key, site_key, release_channel, page_slug, refresh_target) SELECT '${new_item_sql}', status, sort, name, template_key, '${site_key_sql}', '${homepage_release_channel_sql}', '${homepage_slug_sql}', CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM directus.cms_block_template_ref WHERE id='${src_item_sql}' RETURNING 1) SELECT COALESCE(COUNT(*),0) FROM ins;" || true)"
                             ;;
                           *)
                             echo "⚠️  skipping unsupported block collection '${blk_collection}' for site_key='${site_key}'"
@@ -5595,7 +5830,7 @@ data:
                         fi
                         printf '%s|%s\n' "$old_pb_id" "$new_pb_id" >> "${pb_map_file}"
                         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                          "SET search_path TO directus, public; INSERT INTO cms_page_blocks (id, page_id, collection, item, sort, slot, parent_block_id, site_key, page_slug, refresh_target) VALUES ('${new_pb_sql}', '${new_home_sql}', '${blk_coll_sql}', '${new_item_sql}', ${sort_sql}, '${blk_slot_sql}', NULL, '${site_key_sql}', '${homepage_slug_sql}', 'both');"
+                          "SET search_path TO directus, public; INSERT INTO cms_page_blocks (id, page_id, collection, item, sort, slot, parent_block_id, site_key, release_channel, page_slug, refresh_target) VALUES ('${new_pb_sql}', '${new_home_sql}', '${blk_coll_sql}', '${new_item_sql}', ${sort_sql}, '${blk_slot_sql}', NULL, '${site_key_sql}', '${homepage_release_channel_sql}', '${homepage_slug_sql}', 'both');"
                       done
                   if [ -s "${pb_parent_pending_file}" ]; then
                     while IFS='|' read -r new_child_pb_id old_parent_pb_id; do
@@ -5617,7 +5852,7 @@ data:
                 else
                   title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto',NULL,NULL,'{}'::jsonb,true,'top-right','vertical','start','top-right','vertical','both');"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, release_channel, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}','${homepage_release_channel_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto',NULL,NULL,'{}'::jsonb,true,'top-right','vertical','start','top-right','vertical','both');"
                   echo "✅ Created default homepage for site_key='${site_key}'"
                 fi
                 HOME_PAGE_ID="$NEW_HOME_ID"
@@ -5631,6 +5866,10 @@ data:
                SET refresh_target = CASE \
                      WHEN LOWER(COALESCE(p.refresh_target, '')) IN ('preview','prod','both') THEN LOWER(p.refresh_target) \
                      ELSE 'both' \
+                   END, \
+                   release_channel = CASE \
+                     WHEN LOWER(COALESCE(p.release_channel, '')) IN ('preview','prod') THEN LOWER(p.release_channel) \
+                     ELSE '${homepage_release_channel_sql}' \
                    END, \
                    theme_mode = CASE \
                      WHEN LOWER(COALESCE(p.theme_mode, '')) IN ('auto','light','dark') THEN LOWER(p.theme_mode) \
@@ -5661,47 +5900,53 @@ data:
                      ELSE 'vertical' \
                    END \
                WHERE p.site_key='${site_key_sql}' \
+                 AND p.release_channel='${homepage_release_channel_sql}' \
                  AND p.slug='${homepage_slug_sql}' \
-                 AND (p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target) OR p.theme_mode IS NULL OR LOWER(COALESCE(p.theme_mode, '')) NOT IN ('auto','light','dark') OR p.theme_mode <> LOWER(p.theme_mode) OR p.widget_dock_position IS NULL OR LOWER(COALESCE(p.widget_dock_position, '')) NOT IN ('top-right','top-left','bottom-right','bottom-left') OR p.widget_dock_position <> LOWER(p.widget_dock_position) OR p.widget_dock_direction IS NULL OR LOWER(COALESCE(p.widget_dock_direction, '')) NOT IN ('vertical','horizontal') OR p.widget_dock_direction <> LOWER(p.widget_dock_direction) OR p.theme_selector_dock_position IS NULL OR LOWER(COALESCE(p.theme_selector_dock_position, '')) NOT IN ('start','end') OR p.theme_selector_dock_position <> LOWER(p.theme_selector_dock_position) OR p.theme_switcher_position IS DISTINCT FROM p.widget_dock_position OR p.theme_switcher_dock_direction IS DISTINCT FROM p.widget_dock_direction); \
+                 AND (p.refresh_target IS NULL OR LOWER(COALESCE(p.refresh_target, '')) NOT IN ('preview','prod','both') OR p.refresh_target <> LOWER(p.refresh_target) OR p.release_channel IS NULL OR LOWER(COALESCE(p.release_channel, '')) NOT IN ('preview','prod') OR p.release_channel <> LOWER(p.release_channel) OR p.theme_mode IS NULL OR LOWER(COALESCE(p.theme_mode, '')) NOT IN ('auto','light','dark') OR p.theme_mode <> LOWER(p.theme_mode) OR p.widget_dock_position IS NULL OR LOWER(COALESCE(p.widget_dock_position, '')) NOT IN ('top-right','top-left','bottom-right','bottom-left') OR p.widget_dock_position <> LOWER(p.widget_dock_position) OR p.widget_dock_direction IS NULL OR LOWER(COALESCE(p.widget_dock_direction, '')) NOT IN ('vertical','horizontal') OR p.widget_dock_direction <> LOWER(p.widget_dock_direction) OR p.theme_selector_dock_position IS NULL OR LOWER(COALESCE(p.theme_selector_dock_position, '')) NOT IN ('start','end') OR p.theme_selector_dock_position <> LOWER(p.theme_selector_dock_position) OR p.theme_switcher_position IS DISTINCT FROM p.widget_dock_position OR p.theme_switcher_dock_direction IS DISTINCT FROM p.widget_dock_direction); \
                UPDATE cms_page_blocks pb \
-               SET site_key = p.site_key, page_slug = p.slug, refresh_target = p.refresh_target, slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main') \
+               SET site_key = p.site_key, release_channel = p.release_channel, page_slug = p.slug, refresh_target = p.refresh_target, slot = COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main') \
                FROM cms_pages p \
                WHERE pb.page_id = p.id \
                  AND p.site_key='${site_key_sql}' \
+                 AND p.release_channel='${homepage_release_channel_sql}' \
                  AND p.slug='${homepage_slug_sql}' \
-                 AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.page_slug IS DISTINCT FROM p.slug OR pb.refresh_target IS DISTINCT FROM p.refresh_target OR pb.slot IS DISTINCT FROM COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main')); \
+                 AND (pb.site_key IS DISTINCT FROM p.site_key OR pb.release_channel IS DISTINCT FROM p.release_channel OR pb.page_slug IS DISTINCT FROM p.slug OR pb.refresh_target IS DISTINCT FROM p.refresh_target OR pb.slot IS DISTINCT FROM COALESCE(NULLIF(LOWER(BTRIM(pb.slot)), ''), 'main')); \
                UPDATE cms_block_rich_text rt \
-               SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
+               SET site_key = pb.site_key, release_channel = pb.release_channel, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
                FROM cms_page_blocks pb \
                WHERE pb.collection = 'cms_block_rich_text' \
                  AND pb.item = rt.id::text \
                  AND pb.site_key='${site_key_sql}' \
+                 AND pb.release_channel='${homepage_release_channel_sql}' \
                  AND pb.page_slug='${homepage_slug_sql}' \
-                 AND (rt.site_key IS DISTINCT FROM pb.site_key OR rt.page_slug IS DISTINCT FROM pb.page_slug OR rt.refresh_target IS DISTINCT FROM pb.refresh_target); \
+                 AND (rt.site_key IS DISTINCT FROM pb.site_key OR rt.release_channel IS DISTINCT FROM pb.release_channel OR rt.page_slug IS DISTINCT FROM pb.page_slug OR rt.refresh_target IS DISTINCT FROM pb.refresh_target); \
                UPDATE cms_block_hero h \
-               SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
+               SET site_key = pb.site_key, release_channel = pb.release_channel, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
                FROM cms_page_blocks pb \
                WHERE pb.collection = 'cms_block_hero' \
                  AND pb.item = h.id::text \
                  AND pb.site_key='${site_key_sql}' \
+                 AND pb.release_channel='${homepage_release_channel_sql}' \
                  AND pb.page_slug='${homepage_slug_sql}' \
-                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.page_slug IS DISTINCT FROM pb.page_slug OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
+                 AND (h.site_key IS DISTINCT FROM pb.site_key OR h.release_channel IS DISTINCT FROM pb.release_channel OR h.page_slug IS DISTINCT FROM pb.page_slug OR h.refresh_target IS DISTINCT FROM pb.refresh_target); \
                UPDATE cms_block_module m \
-               SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
+               SET site_key = pb.site_key, release_channel = pb.release_channel, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
                FROM cms_page_blocks pb \
                WHERE pb.collection = 'cms_block_module' \
                  AND pb.item = m.id::text \
                  AND pb.site_key='${site_key_sql}' \
+                 AND pb.release_channel='${homepage_release_channel_sql}' \
                  AND pb.page_slug='${homepage_slug_sql}' \
-                 AND (m.site_key IS DISTINCT FROM pb.site_key OR m.page_slug IS DISTINCT FROM pb.page_slug OR m.refresh_target IS DISTINCT FROM pb.refresh_target); \
+                 AND (m.site_key IS DISTINCT FROM pb.site_key OR m.release_channel IS DISTINCT FROM pb.release_channel OR m.page_slug IS DISTINCT FROM pb.page_slug OR m.refresh_target IS DISTINCT FROM pb.refresh_target); \
                UPDATE cms_block_template_ref tr \
-               SET site_key = pb.site_key, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
+               SET site_key = pb.site_key, release_channel = pb.release_channel, page_slug = pb.page_slug, refresh_target = pb.refresh_target \
                FROM cms_page_blocks pb \
                WHERE pb.collection = 'cms_block_template_ref' \
                  AND pb.item = tr.id::text \
                  AND pb.site_key='${site_key_sql}' \
+                 AND pb.release_channel='${homepage_release_channel_sql}' \
                  AND pb.page_slug='${homepage_slug_sql}' \
-                 AND (tr.site_key IS DISTINCT FROM pb.site_key OR tr.page_slug IS DISTINCT FROM pb.page_slug OR tr.refresh_target IS DISTINCT FROM pb.refresh_target);"
+                 AND (tr.site_key IS DISTINCT FROM pb.site_key OR tr.release_channel IS DISTINCT FROM pb.release_channel OR tr.page_slug IS DISTINCT FROM pb.page_slug OR tr.refresh_target IS DISTINCT FROM pb.refresh_target);"
     
             # Set homepage layout assignment from sites.yaml if configured.
             if [ -n "${homepage_layout_template_key_sql:-}" ]; then
@@ -5710,7 +5955,7 @@ data:
               layout_exists="$(printf '%s' "$layout_exists" | tr -d '\r')"
               if [ "$layout_exists" = "1" ]; then
                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                  "SET search_path TO directus, public; UPDATE cms_pages SET layout_template_key='${homepage_layout_template_key_sql}' WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' AND (layout_template_key IS DISTINCT FROM '${homepage_layout_template_key_sql}');"
+                  "SET search_path TO directus, public; UPDATE cms_pages SET layout_template_key='${homepage_layout_template_key_sql}' WHERE site_key='${site_key_sql}' AND release_channel='${homepage_release_channel_sql}' AND slug='${homepage_slug_sql}' AND (layout_template_key IS DISTINCT FROM '${homepage_layout_template_key_sql}');"
                 echo "✅ Set homepage layout '${homepage_layout_template_key}' for site_key='${site_key}'"
               else
                 echo "⚠️  homepage layout '${homepage_layout_template_key}' not found for site_key='${site_key}' (or global); leaving page unchanged"
@@ -5724,7 +5969,7 @@ data:
               theme_exists="$(printf '%s' "$theme_exists" | tr -d '\r')"
               if [ "$theme_exists" = "1" ]; then
                 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                  "SET search_path TO directus, public; UPDATE cms_pages SET theme_package_key='${homepage_theme_package_key_sql}' WHERE site_key='${site_key_sql}' AND slug='${homepage_slug_sql}' AND (theme_package_key IS DISTINCT FROM '${homepage_theme_package_key_sql}');"
+                  "SET search_path TO directus, public; UPDATE cms_pages SET theme_package_key='${homepage_theme_package_key_sql}' WHERE site_key='${site_key_sql}' AND release_channel='${homepage_release_channel_sql}' AND slug='${homepage_slug_sql}' AND (theme_package_key IS DISTINCT FROM '${homepage_theme_package_key_sql}');"
                 echo "✅ Set homepage theme '${homepage_theme_package_key}' for site_key='${site_key}'"
               else
                 echo "⚠️  homepage theme '${homepage_theme_package_key}' not found for site_key='${site_key}' (or global published); leaving page unchanged"

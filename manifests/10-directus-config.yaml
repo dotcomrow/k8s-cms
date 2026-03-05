@@ -3639,6 +3639,9 @@ data:
     const isDirectChildRow = (row) => !asString(row?.parent_block_id);
     const BLOCKS_MANAGER_REGISTRY_KEY = '__cmsPageBlocksManagerActiveByField';
     const BLOCKS_MANAGER_REGISTRY_EVENT = 'cms-page-blocks-manager-registry-updated';
+    const PROMOTE_SOURCE_CHANNEL = 'preview';
+    const PROMOTE_TARGET_CHANNEL = 'prod';
+    const PROMOTE_TARGET_REFRESH = 'prod';
     
     const getBlocksManagerRegistry = () => {
       if (typeof window === 'undefined') return null;
@@ -3666,6 +3669,7 @@ data:
         const deleting = ref({});
         const creatingBlockType = ref('');
         const addBlockType = ref('rich_text');
+        const promoting = ref(false);
         const error = ref('');
         const info = ref('');
     
@@ -3673,6 +3677,7 @@ data:
           id: '',
           slug: '',
           site_key: '',
+          release_channel: '',
           layout_template_key: '',
         });
         const slotsByTemplateKey = ref({});
@@ -3782,6 +3787,15 @@ data:
           if (fromValues) return fromValues;
           return getPrimaryKeyFromLocation(pagesCollection.value);
         });
+        const sourcePageReleaseChannel = computed(() => {
+          const contextValue = toLower(pageContext.value?.release_channel);
+          if (contextValue) return contextValue;
+          return toLower(props.values?.release_channel);
+        });
+        const canPromoteToProd = computed(() =>
+          Boolean(pageId.value)
+          && sourcePageReleaseChannel.value === PROMOTE_SOURCE_CHANNEL
+        );
 
         const isNodeExpanded = (nodeKey, defaultOpen = true) => {
           const key = asString(nodeKey);
@@ -4077,17 +4091,18 @@ data:
     
         const loadPageContext = async () => {
           if (!pageId.value) {
-            pageContext.value = { id: '', slug: '', site_key: '', layout_template_key: '' };
+            pageContext.value = { id: '', slug: '', site_key: '', release_channel: '', layout_template_key: '' };
             return;
           }
           const response = await apiRequest('GET', `/items/${pagesCollection.value}/${encodeURIComponent(pageId.value)}`, {
-            fields: ['id', 'slug', pageSiteField.value, pageTemplateField.value].join(','),
+            fields: ['id', 'slug', pageSiteField.value, 'release_channel', pageTemplateField.value].join(','),
           });
           const row = response?.data || {};
           pageContext.value = {
             id: parseId(row?.id) || pageId.value,
             slug: asString(row?.slug),
             site_key: asString(row?.[pageSiteField.value]),
+            release_channel: asString(row?.release_channel),
             layout_template_key: asString(row?.[pageTemplateField.value]),
           };
         };
@@ -4786,6 +4801,334 @@ data:
             error.value = requestError?.message || 'Failed to create block.';
           } finally {
             creatingBlockType.value = '';
+          }
+        };
+
+        const siteScopeFilterFor = (siteKey) => {
+          const normalized = asString(siteKey);
+          if (normalized) {
+            return { site_key: { _eq: normalized } };
+          }
+          return {
+            _or: [
+              { site_key: { _null: true } },
+              { site_key: { _eq: '' } },
+            ],
+          };
+        };
+
+        const sanitizeClonePayload = (value, { blockedKeys = [], force = {} } = {}) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...force };
+          const blocked = new Set([
+            'id',
+            'date_created',
+            'date_updated',
+            'user_created',
+            'user_updated',
+            '__typename',
+            ...blockedKeys.map((entry) => asString(entry)),
+          ]);
+          const payload = {};
+          for (const [rawKey, rawValue] of Object.entries(value)) {
+            const key = asString(rawKey);
+            if (!key || blocked.has(key) || key.startsWith('$') || key.startsWith('_')) continue;
+            if (rawValue === undefined) continue;
+            payload[key] = rawValue;
+          }
+          return {
+            ...payload,
+            ...force,
+          };
+        };
+
+        const isNotFoundError = (message) => {
+          const normalized = toLower(message);
+          return normalized.includes('not found') || normalized.includes('does not exist');
+        };
+
+        const fetchPageRecord = async (targetPageId, fields = '*') => {
+          const normalizedPageId = parseId(targetPageId);
+          if (!normalizedPageId) throw new Error('Page id is required.');
+          const response = await apiRequest(
+            'GET',
+            `/items/${pagesCollection.value}/${encodeURIComponent(normalizedPageId)}`,
+            { fields },
+          );
+          return response?.data || null;
+        };
+
+        const findPageByScope = async ({ slug, siteKey, releaseChannel }) => {
+          const normalizedSlug = asString(slug);
+          const normalizedRelease = toLower(releaseChannel);
+          if (!normalizedSlug || !normalizedRelease) return null;
+          const filter = {
+            _and: [
+              { slug: { _eq: normalizedSlug } },
+              { release_channel: { _eq: normalizedRelease } },
+              siteScopeFilterFor(siteKey),
+            ],
+          };
+          const response = await apiRequest('GET', `/items/${pagesCollection.value}`, {
+            fields: 'id,slug,site_key,release_channel',
+            limit: 1,
+            sort: '-date_updated',
+            filter: JSON.stringify(filter),
+          });
+          const rows = normalizeRows(response);
+          return rows[0] || null;
+        };
+
+        const listBlocksForPage = async (targetPageId) => {
+          const normalizedPageId = parseId(targetPageId);
+          if (!normalizedPageId) return [];
+          const response = await apiRequest('GET', `/items/${pageBlocksCollection.value}`, {
+            fields: [
+              'id',
+              'collection',
+              'item',
+              'slot',
+              'sort',
+              'group_tag',
+              'parent_block_id',
+              'tree_depth',
+            ].join(','),
+            limit: -1,
+            sort: 'tree_depth,sort,id',
+            filter: JSON.stringify({ page_id: { _eq: normalizedPageId } }),
+          });
+          return normalizeRows(response);
+        };
+
+        const deletePageBlockAndContent = async (row) => {
+          const rowId = parseId(row?.id);
+          const collectionName = asString(row?.collection);
+          const itemId = parseId(row?.item);
+          if (rowId) {
+            await apiRequest(
+              'DELETE',
+              `/items/${pageBlocksCollection.value}/${encodeURIComponent(rowId)}`,
+            );
+          }
+          if (!collectionName || !itemId) return;
+          try {
+            await apiRequest(
+              'DELETE',
+              `/items/${collectionName}/${encodeURIComponent(itemId)}`,
+            );
+          } catch (error) {
+            const message = error?.message || '';
+            if (!isNotFoundError(message)) throw error;
+          }
+        };
+
+        const clearBlocksForPage = async (targetPageId) => {
+          const rows = await listBlocksForPage(targetPageId);
+          if (rows.length === 0) return 0;
+          const sortedRows = [...rows].sort((left, right) => {
+            const leftDepth = asInteger(left?.tree_depth) ?? 0;
+            const rightDepth = asInteger(right?.tree_depth) ?? 0;
+            return rightDepth - leftDepth;
+          });
+          for (const row of sortedRows) {
+            await deletePageBlockAndContent(row);
+          }
+          return rows.length;
+        };
+
+        const triggerManualProdRefresh = async ({ siteKey, slug }) => {
+          const normalizedSite = asString(siteKey);
+          const flowNameCandidates = [
+            normalizedSite ? `CMS Cache Refresh (${normalizedSite}/prod) - Manual` : '',
+            normalizedSite ? `CMS Cache Refresh (${normalizedSite}) - Manual` : '',
+          ].filter(Boolean);
+
+          for (const flowName of flowNameCandidates) {
+            const flowLookup = await apiRequest('GET', '/flows', {
+              fields: 'id,name,status',
+              limit: 1,
+              filter: JSON.stringify({ name: { _eq: flowName } }),
+            });
+            const flow = normalizeRows(flowLookup)[0];
+            const flowId = parseId(flow?.id);
+            if (!flowId) continue;
+            await apiRequest(
+              'POST',
+              `/flows/trigger/${encodeURIComponent(flowId)}`,
+              {},
+              {
+                source: 'cms-page-blocks-manager',
+                reason: 'promote-preview-to-prod',
+                site_key: normalizedSite || null,
+                slug: asString(slug) || null,
+              },
+            );
+            return true;
+          }
+          return false;
+        };
+
+        const promotePreviewToProd = async () => {
+          if (props.disabled || promoting.value || loading.value || !pageId.value) return;
+          error.value = '';
+          info.value = '';
+          promoting.value = true;
+
+          try {
+            const sourcePage = await fetchPageRecord(pageId.value, '*');
+            if (!sourcePage) throw new Error('Source page could not be loaded.');
+
+            const sourceReleaseChannel = toLower(sourcePage?.release_channel);
+            if (sourceReleaseChannel !== PROMOTE_SOURCE_CHANNEL) {
+              throw new Error('Promotions can only be run from preview pages.');
+            }
+
+            const sourceSlug = asString(sourcePage?.slug);
+            const sourceSiteKey = asString(sourcePage?.site_key);
+            if (!sourceSlug) throw new Error('Page slug is required before promoting.');
+
+            const confirmMessage = `Promote page '${sourceSlug}' (${sourceSiteKey || 'global'}) from preview to prod? This replaces the current prod version for this page.`;
+            if (typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
+              promoting.value = false;
+              return;
+            }
+
+            const existingTargetPage = await findPageByScope({
+              slug: sourceSlug,
+              siteKey: sourceSiteKey,
+              releaseChannel: PROMOTE_TARGET_CHANNEL,
+            });
+            const existingTargetPageId = parseId(existingTargetPage?.id);
+
+            const targetPagePayload = sanitizeClonePayload(sourcePage, {
+              blockedKeys: ['blocks', 'parent'],
+              force: {
+                slug: sourceSlug,
+                site_key: sourceSiteKey || null,
+                parent: null,
+                release_channel: PROMOTE_TARGET_CHANNEL,
+                refresh_target: PROMOTE_TARGET_REFRESH,
+              },
+            });
+
+            let targetPageId = '';
+            if (existingTargetPageId) {
+              const updatedTargetPage = await apiRequest(
+                'PATCH',
+                `/items/${pagesCollection.value}/${encodeURIComponent(existingTargetPageId)}`,
+                {},
+                targetPagePayload,
+              );
+              targetPageId = parseId(updatedTargetPage?.data?.id) || existingTargetPageId;
+            } else {
+              const createdTargetPage = await apiRequest(
+                'POST',
+                `/items/${pagesCollection.value}`,
+                {},
+                targetPagePayload,
+              );
+              targetPageId = parseId(createdTargetPage?.data?.id);
+            }
+            if (!targetPageId) throw new Error('Promotion failed: target prod page id is missing.');
+
+            const sourceRows = await listBlocksForPage(pageId.value);
+            await clearBlocksForPage(targetPageId);
+
+            const sortedSourceRows = [...sourceRows].sort((left, right) => {
+              const leftDepth = asInteger(left?.tree_depth) ?? 0;
+              const rightDepth = asInteger(right?.tree_depth) ?? 0;
+              if (leftDepth !== rightDepth) return leftDepth - rightDepth;
+              const leftSort = asInteger(left?.sort);
+              const rightSort = asInteger(right?.sort);
+              if (leftSort !== null && rightSort !== null && leftSort !== rightSort) return leftSort - rightSort;
+              return asString(left?.id).localeCompare(asString(right?.id));
+            });
+
+            const sourceToTargetBlockId = new Map();
+            let clonedCount = 0;
+            for (const sourceRow of sortedSourceRows) {
+              const sourceBlockId = parseId(sourceRow?.id);
+              const sourceCollection = asString(sourceRow?.collection);
+              const sourceItemId = parseId(sourceRow?.item);
+              if (!sourceBlockId || !sourceCollection || !sourceItemId) continue;
+
+              const sourceContentResponse = await apiRequest(
+                'GET',
+                `/items/${sourceCollection}/${encodeURIComponent(sourceItemId)}`,
+                { fields: '*' },
+              );
+              const sourceContent = sourceContentResponse?.data || {};
+              const targetContentPayload = sanitizeClonePayload(sourceContent, {
+                blockedKeys: ['page_id', 'parent_block_id', 'site_key', 'release_channel', 'page_slug', 'refresh_target'],
+                force: {
+                  site_key: sourceSiteKey || null,
+                  release_channel: PROMOTE_TARGET_CHANNEL,
+                  page_slug: sourceSlug,
+                  refresh_target: PROMOTE_TARGET_REFRESH,
+                },
+              });
+              const createdContent = await apiRequest(
+                'POST',
+                `/items/${sourceCollection}`,
+                {},
+                targetContentPayload,
+              );
+              const targetContentId = parseId(createdContent?.data?.id);
+              if (!targetContentId) {
+                throw new Error(`Promotion failed: created content id missing for ${sourceCollection}.`);
+              }
+
+              const sourceParentId = parseId(sourceRow?.parent_block_id);
+              let targetParentId = null;
+              if (sourceParentId) {
+                targetParentId = sourceToTargetBlockId.get(sourceParentId) || null;
+                if (!targetParentId) {
+                  throw new Error(`Promotion failed: could not resolve parent mapping for block ${sourceBlockId}.`);
+                }
+              }
+
+              const targetBlockPayload = {
+                page_id: targetPageId,
+                collection: sourceCollection,
+                item: targetContentId,
+                slot: asString(sourceRow?.slot) || 'main',
+                group_tag: asString(sourceRow?.group_tag) || null,
+                parent_block_id: targetParentId,
+                site_key: sourceSiteKey || null,
+                release_channel: PROMOTE_TARGET_CHANNEL,
+                page_slug: sourceSlug,
+                refresh_target: PROMOTE_TARGET_REFRESH,
+              };
+              const sourceSort = asInteger(sourceRow?.sort);
+              if (sourceSort !== null) {
+                targetBlockPayload.sort = sourceSort;
+              }
+
+              const createdBlock = await apiRequest(
+                'POST',
+                `/items/${pageBlocksCollection.value}`,
+                {},
+                targetBlockPayload,
+              );
+              const targetBlockId = parseId(createdBlock?.data?.id);
+              if (!targetBlockId) {
+                throw new Error(`Promotion failed: created block id missing for source block ${sourceBlockId}.`);
+              }
+              sourceToTargetBlockId.set(sourceBlockId, targetBlockId);
+              clonedCount += 1;
+            }
+
+            const refreshTriggered = await triggerManualProdRefresh({
+              siteKey: sourceSiteKey,
+              slug: sourceSlug,
+            });
+            info.value = refreshTriggered
+              ? `Promotion complete: copied ${clonedCount} block${clonedCount === 1 ? '' : 's'} to prod and triggered prod cache refresh.`
+              : `Promotion complete: copied ${clonedCount} block${clonedCount === 1 ? '' : 's'} to prod. Manual prod cache refresh flow was not found.`;
+            await refreshAll();
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to promote preview content to prod.';
+          } finally {
+            promoting.value = false;
           }
         };
 
@@ -5518,6 +5861,12 @@ data:
                       primary: true,
                       onClick: () => { void createPageBlockWithContent(addBlockType.value); },
                     }),
+                    renderButtonControl({
+                      label: promoting.value ? 'Promoting...' : 'Promote -> Prod',
+                      disabled: !canPromoteToProd.value || promoting.value || loading.value || !!creatingBlockType.value,
+                      primary: false,
+                      onClick: () => { void promotePreviewToProd(); },
+                    }),
                   ]),
                 ]),
               ],
@@ -5526,7 +5875,7 @@ data:
 
           if (pageId.value) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${visibleCount}/${blocks.value.length}`)
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Channel ${pageContext.value.release_channel || '(unset)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${visibleCount}/${blocks.value.length}`)
             );
           } else {
             children.push(

@@ -18,6 +18,7 @@ data:
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
         homepage_slug: home
+        homepage_release_channel: preview
         homepage_layout_template_key: spa-default
         homepage_theme_package_key: theme-clear
         client_key: cms-site-internal
@@ -159,6 +160,7 @@ data:
       # External site (Cloudflare Worker service client)
       - site_key: external
         homepage_slug: home
+        homepage_release_channel: preview
         homepage_layout_template_key: spa-default
         homepage_theme_package_key: theme-clear
         client_key: cms-site-external
