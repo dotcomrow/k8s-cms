@@ -32,7 +32,10 @@ const envSchema = z.object({
   MAX_PAGES: z.string().default("2"),     // how many pages to follow at most
   PER_PAGE: z.string().default("100"),    // items per page
 
-  GITHUB_API_BASE: z.string().default("https://api.github.com")
+  GITHUB_API_BASE: z.string().default("https://api.github.com"),
+
+  // reverse-proxy trust depth (Cloud Run should be >= 1)
+  TRUST_PROXY_HOPS: z.string().default("1")
 });
 
 const env = envSchema.parse(process.env);
@@ -387,6 +390,7 @@ async function fetchProfileBundle(token: string) {
  */
 const app = express();
 app.disable("x-powered-by");
+app.set("trust proxy", Math.max(0, Number(env.TRUST_PROXY_HOPS) || 1));
 
 app.use(
   helmet({
