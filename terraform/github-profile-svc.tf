@@ -153,6 +153,26 @@ resource "google_artifact_registry_repository" "github_profile_repo" {
   format        = "DOCKER"
   project       = google_project.infra.project_id
   description   = "Hosted repo for github-profile-service image"
+  cleanup_policy_dry_run = var.artifact_registry_cleanup_dry_run
+
+  cleanup_policies {
+    id     = "delete-all-matching-images"
+    action = "DELETE"
+    condition {
+      tag_state             = "ANY"
+      package_name_prefixes = var.artifact_registry_package_prefixes
+    }
+  }
+
+  cleanup_policies {
+    id     = "keep-recent-images"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count            = var.artifact_registry_keep_recent_count
+      package_name_prefixes = var.artifact_registry_package_prefixes
+    }
+  }
+
   depends_on = [google_project_service.project_service]
 }
 
@@ -168,60 +188,81 @@ resource "null_resource" "image_sync_complete" {
 
 resource "null_resource" "ghcr_to_gcp_image_sync" {
   provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+
     environment = {
-      GHCR_USER    = var.GITHUB_ORG
-      GHCR_PAT     = var.GHCR_PAT
-      PROJECT_ID   = google_project.infra.project_id
-      REGION       = var.region
-      IMAGE_NAME   = "github-profile-service"
-      TAG          = local.image_tag
+      GHCR_USER               = var.GITHUB_ORG
+      GHCR_PAT                = var.GHCR_PAT
+      PROJECT_ID              = google_project.infra.project_id
+      REGION                  = var.region
+      IMAGE_NAME              = "github-profile-service"
+      TAG                     = local.image_tag
     }
 
     command = <<-EOT
-      #!/bin/bash
-      set -e
+      set -euo pipefail
 
-      export CLOUDSDK_CONFIG="$(pwd)/.gcloud"
-      export DOCKER_CONFIG="$(pwd)/.docker"
-      mkdir -p "$CLOUDSDK_CONFIG" "$DOCKER_CONFIG"
+      run_low_prio() {
+        if command -v ionice >/dev/null 2>&1 && command -v nice >/dev/null 2>&1; then
+          ionice -c2 -n7 nice -n10 "$@"
+        elif command -v nice >/dev/null 2>&1; then
+          nice -n10 "$@"
+        else
+          "$@"
+        fi
+      }
 
-      # Install gcloud CLI
-      curl -sS -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz
-      tar -xf google-cloud-cli-linux-x86_64.tar.gz
-      export PATH="$(pwd)/google-cloud-sdk/bin:$PATH"
+      if ! command -v gcloud >/dev/null 2>&1; then
+        echo "gcloud is required but not installed."
+        echo "Install on this Proxmox host via proxmox-infra-ops Corekit:"
+        echo "  ./corekit.sh install gcloud-cli"
+        exit 1
+      fi
 
-      # Authenticate to GCP
-      printf "%s" "$GOOGLE_CREDENTIALS" > key.json
-      gcloud auth activate-service-account --key-file=key.json
+      if ! command -v docker >/dev/null 2>&1; then
+        echo "docker is required but not installed."
+        exit 1
+      fi
+
+      export CLOUDSDK_CONFIG="$(mktemp -d)"
+      export DOCKER_CONFIG="$(mktemp -d)"
+      KEY_FILE="$(mktemp)"
+      GHCR_IMAGE=""
+      REPO_PATH=""
+      cleanup() {
+        docker logout ghcr.io >/dev/null 2>&1 || true
+        docker logout "https://$REGION-docker.pkg.dev" >/dev/null 2>&1 || true
+        if [ -n "$GHCR_IMAGE" ] && [ -n "$REPO_PATH" ] && [ -n "$${TAG:-}" ]; then
+          docker image rm -f "$GHCR_IMAGE" "$REPO_PATH:$TAG" >/dev/null 2>&1 || true
+        fi
+        rm -rf "$CLOUDSDK_CONFIG" "$DOCKER_CONFIG" "$KEY_FILE"
+      }
+      trap cleanup EXIT
+
+      : "$${GOOGLE_CREDENTIALS:?GOOGLE_CREDENTIALS is required}"
+      printf "%s" "$GOOGLE_CREDENTIALS" > "$KEY_FILE"
+      gcloud auth activate-service-account --key-file="$KEY_FILE"
       gcloud config set project "$PROJECT_ID"
-      echo "$(gcloud auth print-access-token)" | docker login -u oauth2accesstoken --password-stdin "https://$REGION-docker.pkg.dev"
-      gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+      gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://$REGION-docker.pkg.dev"
 
-      # Authenticate to GHCR
       echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-      # Validate vars
       if [ -z "$TAG" ] || [ -z "$IMAGE_NAME" ] || [ -z "$GHCR_USER" ]; then
-        echo "❌ One or more required variables are empty: TAG=$TAG, IMAGE_NAME=$IMAGE_NAME, GHCR_USER=$GHCR_USER"
+        echo "One or more required variables are empty: TAG=$TAG, IMAGE_NAME=$IMAGE_NAME, GHCR_USER=$GHCR_USER"
         exit 1
       fi
 
       GHCR_IMAGE="ghcr.io/$GHCR_USER/$IMAGE_NAME:$TAG"
       REPO_PATH="$REGION-docker.pkg.dev/$PROJECT_ID/$IMAGE_NAME/$IMAGE_NAME"
 
-      echo "📦 Pulling from GHCR: $GHCR_IMAGE"
-      docker pull "$GHCR_IMAGE"
+      echo "Pulling from GHCR: $GHCR_IMAGE"
+      run_low_prio docker pull "$GHCR_IMAGE"
 
-      echo "🧹 Cleaning up existing images in Artifact Registry..."
-      for digest in $(gcloud artifacts docker images list "$REPO_PATH" --format="get(digest)" || true); do
-        gcloud artifacts docker images delete "$REPO_PATH@$digest" --quiet --delete-tags || true
-      done
-
-      echo "🚀 Tagging and pushing image to GCP Artifact Registry: $REPO_PATH:$TAG"
+      echo "Tagging and pushing image to Artifact Registry: $REPO_PATH:$TAG"
       docker tag "$GHCR_IMAGE" "$REPO_PATH:$TAG"
-      docker push "$REPO_PATH:$TAG"
+      run_low_prio docker push "$REPO_PATH:$TAG"
 
-      echo "✅ GHCR image successfully pushed to GCP with tag $TAG"
+      echo "GHCR image pushed to Artifact Registry with tag $TAG"
     EOT
   }
 
@@ -237,4 +278,3 @@ resource "null_resource" "ghcr_to_gcp_image_sync" {
     create_before_destroy = true
   }
 }
-

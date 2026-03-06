@@ -63,3 +63,21 @@ variable "api_key" {
   description = "API key for the GitHub profile service"
   type        = string
 }
+
+variable "artifact_registry_cleanup_dry_run" {
+  description = "If true, Artifact Registry cleanup policies run in dry-run mode (no deletions)."
+  type        = bool
+  default     = false
+}
+
+variable "artifact_registry_keep_recent_count" {
+  description = "Number of most recent image versions to always keep."
+  type        = number
+  default     = 3
+}
+
+variable "artifact_registry_package_prefixes" {
+  description = "Artifact Registry package prefixes targeted by cleanup policies."
+  type        = list(string)
+  default     = ["github-profile-service"]
+}
