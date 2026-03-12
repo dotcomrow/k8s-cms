@@ -200,8 +200,8 @@ data:
     }
 
     DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DEFAULT_TIMEOUT_SECONDS", "20"))
-    DEFAULT_MAX_BYTES = int(os.environ.get("DEFAULT_MAX_BYTES", "10485760"))
-    MAX_BYTES_HARD_LIMIT = int(os.environ.get("MAX_BYTES_HARD_LIMIT", "26214400"))
+    DEFAULT_MAX_BYTES = int(os.environ.get("DEFAULT_MAX_BYTES", "52428800"))
+    MAX_BYTES_HARD_LIMIT = int(os.environ.get("MAX_BYTES_HARD_LIMIT", "104857600"))
     CONNECT_TIMEOUT_SECONDS = float(os.environ.get("CONNECT_TIMEOUT_SECONDS", "5"))
     FOLLOW_REDIRECTS = os.environ.get("FOLLOW_REDIRECTS", "true").lower() in ("1", "true", "yes", "on")
     USER_AGENT = os.environ.get("IMAGE_ACTION_USER_AGENT", "directus-image-action/1.0")
@@ -611,9 +611,9 @@ spec:
             - name: DEFAULT_TIMEOUT_SECONDS
               value: "20"
             - name: DEFAULT_MAX_BYTES
-              value: "10485760"
+              value: "52428800"
             - name: MAX_BYTES_HARD_LIMIT
-              value: "26214400"
+              value: "104857600"
             - name: CONNECT_TIMEOUT_SECONDS
               value: "5"
             - name: FOLLOW_REDIRECTS
