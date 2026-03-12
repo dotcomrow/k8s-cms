@@ -79,6 +79,21 @@ data:
               schema:
                 type: string
                 format: uuid
+            - in: query
+              name: max_bytes
+              required: false
+              schema:
+                type: integer
+                minimum: 1
+              description: Optional per-request payload cap in bytes (cannot exceed MAX_BYTES_HARD_LIMIT).
+            - in: query
+              name: timeout_seconds
+              required: false
+              schema:
+                type: number
+                minimum: 1
+                maximum: 120
+              description: Optional per-request timeout in seconds.
           responses:
             "200":
               description: Raw image bytes
@@ -444,7 +459,7 @@ data:
               continue
             body.extend(chunk)
             if len(body) > max_bytes:
-              raise HTTPException(status_code=413, detail="image payload exceeds max_bytes")
+              raise HTTPException(status_code=413, detail=f"image payload exceeds max_bytes ({max_bytes})")
 
           response_meta = {
             "content-type": content_type,
@@ -511,14 +526,34 @@ data:
       if not _uuid_re.match(asset_id):
         raise HTTPException(status_code=400, detail="asset_id must be a UUID")
       query: Dict[str, str] = {}
+      requested_max_bytes = DEFAULT_MAX_BYTES
+      requested_timeout_seconds = DEFAULT_TIMEOUT_SECONDS
       for key, values in request.query_params.multi_items():
+        normalized_key = (key or "").strip().lower()
+        raw_value = str(values).strip()
+        if normalized_key == "max_bytes":
+          try:
+            requested_max_bytes = int(raw_value)
+          except Exception:
+            raise HTTPException(status_code=400, detail="max_bytes must be an integer")
+          if requested_max_bytes < 1:
+            raise HTTPException(status_code=400, detail="max_bytes must be greater than 0")
+          continue
+        if normalized_key == "timeout_seconds":
+          try:
+            requested_timeout_seconds = float(raw_value)
+          except Exception:
+            raise HTTPException(status_code=400, detail="timeout_seconds must be a number")
+          if requested_timeout_seconds < 1 or requested_timeout_seconds > 120:
+            raise HTTPException(status_code=400, detail="timeout_seconds must be between 1 and 120")
+          continue
         if key and values is not None:
           query[key] = values
       source = _append_query(
         f"{DIRECTUS_ASSET_BASE_URL}{_normalize_asset_path(DIRECTUS_ASSET_PATH)}/{urllib.parse.quote(asset_id)}",
         query,
       )
-      body, meta = await _fetch_image_bytes(source, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_BYTES)
+      body, meta = await _fetch_image_bytes(source, requested_timeout_seconds, requested_max_bytes)
       headers: Dict[str, str] = {}
       if meta.get("etag"):
         headers["etag"] = meta["etag"]
