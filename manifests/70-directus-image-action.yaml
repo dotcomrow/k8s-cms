@@ -205,6 +205,25 @@ data:
     CONNECT_TIMEOUT_SECONDS = float(os.environ.get("CONNECT_TIMEOUT_SECONDS", "5"))
     FOLLOW_REDIRECTS = os.environ.get("FOLLOW_REDIRECTS", "true").lower() in ("1", "true", "yes", "on")
     USER_AGENT = os.environ.get("IMAGE_ACTION_USER_AGENT", "directus-image-action/1.0")
+    ALLOW_ANY_CONTENT_TYPES = os.environ.get("ALLOW_ANY_CONTENT_TYPES", "false").lower() in (
+      "1",
+      "true",
+      "yes",
+      "on",
+    )
+    ALLOWED_CONTENT_TYPE_PREFIXES = tuple(
+      entry.strip().lower()
+      for entry in os.environ.get(
+        "ALLOWED_CONTENT_TYPE_PREFIXES",
+        "image/,video/,audio/,application/octet-stream",
+      ).split(",")
+      if entry.strip()
+    )
+    ALLOWED_CONTENT_TYPES = {
+      entry.strip().lower()
+      for entry in os.environ.get("ALLOWED_CONTENT_TYPES", "").split(",")
+      if entry.strip()
+    }
 
     _uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -361,6 +380,19 @@ data:
       new_query = urllib.parse.urlencode(existing, doseq=True)
       return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
+    def _is_allowed_content_type(content_type: str) -> bool:
+      normalized = (content_type or "").split(";")[0].strip().lower()
+      if not normalized:
+        return False
+      if ALLOW_ANY_CONTENT_TYPES:
+        return True
+      if normalized in ALLOWED_CONTENT_TYPES:
+        return True
+      for prefix in ALLOWED_CONTENT_TYPE_PREFIXES:
+        if prefix and normalized.startswith(prefix):
+          return True
+      return False
+
     def _source_url_from_input(payload: FetchImageInput) -> str:
       if payload.asset_id:
         asset_path = _normalize_asset_path(DIRECTUS_ASSET_PATH)
@@ -379,7 +411,7 @@ data:
         raise HTTPException(status_code=400, detail="image URL host is not allowed")
 
       headers = {
-        "accept": "image/*,application/octet-stream;q=0.8",
+        "accept": "image/*,video/*,audio/*,application/octet-stream;q=0.8,*/*;q=0.2",
         "user-agent": USER_AGENT,
       }
 
@@ -403,7 +435,7 @@ data:
               detail=f"image upstream returned HTTP {resp.status_code}",
             )
           content_type = (resp.headers.get("content-type") or "application/octet-stream").split(";")[0].strip().lower()
-          if not (content_type.startswith("image/") or content_type == "application/octet-stream"):
+          if not _is_allowed_content_type(content_type):
             raise HTTPException(status_code=415, detail=f"unsupported content type: {content_type}")
 
           body = bytearray()
@@ -586,6 +618,12 @@ spec:
               value: "5"
             - name: FOLLOW_REDIRECTS
               value: "true"
+            - name: ALLOW_ANY_CONTENT_TYPES
+              value: "false"
+            - name: ALLOWED_CONTENT_TYPE_PREFIXES
+              value: "image/,video/,audio/,application/octet-stream"
+            - name: ALLOWED_CONTENT_TYPES
+              value: ""
             - name: IMAGE_ACTION_USER_AGENT
               value: "directus-image-action/1.0"
           command: ["/bin/sh","-c"]
