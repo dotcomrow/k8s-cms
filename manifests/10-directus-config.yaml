@@ -567,6 +567,8 @@ data:
       return asString(value);
     };
     
+    const toLower = (value) => asString(value).toLowerCase();
+    
     const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     
     const getPrimaryKeyFromLocation = (collectionName) => {
@@ -607,7 +609,22 @@ data:
       }
       return typeof value === 'object' ? value : {};
     };
-
+    
+    const asInteger = (value, fallback = null) => {
+      const parsed = Number.parseInt(asString(value), 10);
+      if (Number.isFinite(parsed)) return parsed;
+      return fallback;
+    };
+    
+    const asBoolean = (value, fallback = false) => {
+      if (typeof value === 'boolean') return value;
+      const normalized = asString(value).toLowerCase();
+      if (!normalized) return fallback;
+      if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+      if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+      return fallback;
+    };
+    
     const normalizeProviderList = (value) => {
       if (Array.isArray(value)) {
         return Array.from(
@@ -646,7 +663,7 @@ data:
         const loadError = ref('');
         const choices = ref([]);
         const missingContext = ref('');
-        
+    
         const resolvedOptions = computed(() => parseOptions(props.options));
         const fieldKey = computed(() => asString(props.field).toLowerCase());
         const collectionKey = computed(() => asString(props.collection).toLowerCase());
@@ -711,6 +728,16 @@ data:
           if (dynamicModuleProviders.value.length > 0) return dynamicModuleProviders.value;
           return staticModuleProviders.value;
         });
+        const moduleRegistryEnabled = computed(() => asBoolean(resolvedOptions.value?.module_registry_enabled, false));
+        const moduleRegistryUrl = computed(() => asString(resolvedOptions.value?.module_registry_url).replace(/\/+$/g, ''));
+        const moduleRegistryPath = computed(() => asString(resolvedOptions.value?.module_registry_path) || '/api/modules');
+        const moduleRegistryChannelOption = computed(() => toLower(resolvedOptions.value?.module_registry_channel || 'auto'));
+        const moduleRegistryChannelField = computed(() => asString(resolvedOptions.value?.module_registry_channel_field) || 'release_channel');
+        const moduleRegistryLimit = computed(() => {
+          const configured = asInteger(resolvedOptions.value?.module_registry_limit, 250);
+          if (!configured || configured < 1) return 250;
+          return Math.min(configured, 1000);
+        });
         const includeGlobal = computed(() => {
           const v = resolvedOptions.value?.include_global;
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
@@ -750,27 +777,65 @@ data:
           if (overrideValue) return overrideValue;
           return parseId(props.values?.[parentIdField.value]);
         };
-        
+    
         const apiGet = async (path, params = {}) => {
           const url = new URL(path, window.location.origin);
           Object.entries(params).forEach(([key, value]) => {
             if (value === null || value === undefined) return;
             url.searchParams.set(key, String(value));
           });
-        
+    
           const response = await fetch(url.toString(), {
             method: 'GET',
             credentials: 'same-origin',
             headers: { Accept: 'application/json' },
           });
-        
+    
           const payload = await response.json().catch(() => ({}));
           if (!response.ok) {
             const message = payload?.errors?.[0]?.message || `Request failed (${response.status})`;
             throw new Error(message);
           }
-        
+    
           return payload;
+        };
+    
+        const externalApiGet = async (baseUrl, path, params = {}) => {
+          const prefix = asString(baseUrl).replace(/\/+$/g, '');
+          const suffix = asString(path);
+          const normalizedPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
+          const url = new URL(`${prefix}${normalizedPath}`);
+          Object.entries(params).forEach(([key, value]) => {
+            if (value === null || value === undefined) return;
+            url.searchParams.set(key, String(value));
+          });
+    
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort('registry_timeout'), 9000);
+          try {
+            const response = await fetch(url.toString(), {
+              method: 'GET',
+              credentials: 'omit',
+              headers: { Accept: 'application/json' },
+              signal: controller.signal,
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              const message = payload?.error || payload?.errors?.[0]?.message || `Request failed (${response.status})`;
+              throw new Error(message);
+            }
+            return payload;
+          } finally {
+            clearTimeout(timeout);
+          }
+        };
+    
+        const resolveRegistryChannel = () => {
+          const explicit = moduleRegistryChannelOption.value;
+          if (explicit === 'preview' || explicit === 'prod' || explicit === 'all') return explicit;
+          const inferred = toLower(props.values?.[moduleRegistryChannelField.value] ?? props.values?.release_channel);
+          if (inferred === 'preview' || inferred === 'prod') return inferred;
+          return 'all';
         };
     
         const buildScopedFilter = (siteKey) => {
@@ -833,30 +898,85 @@ data:
         };
     
         const loadModuleChoices = async () => {
-          const siteKey = asString(props.values?.[pageSiteField.value]);
           const providers = effectiveModuleProviders.value;
+          let registryError = null;
+          let cmsModulesError = null;
+          let registryChoices = [];
+          if (moduleRegistryEnabled.value && moduleRegistryUrl.value) {
+            try {
+              const registryResponse = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
+                channel: resolveRegistryChannel(),
+                limit: moduleRegistryLimit.value,
+              });
+              const registryRows = Array.isArray(registryResponse?.items)
+                ? registryResponse.items
+                : Array.isArray(registryResponse?.data?.items)
+                  ? registryResponse.data.items
+                  : [];
+              registryChoices = uniqueChoices(
+                registryRows
+                  .filter((row) => {
+                    const moduleKey = asString(row?.module_key);
+                    if (!moduleKey) return false;
+                    if (providers.length === 0) return true;
+                    const provider = toLower(row?.provider);
+                    return providers.includes(provider);
+                  })
+                  .map((row) => {
+                    const moduleKey = asString(row?.module_key);
+                    const provider = asString(row?.provider);
+                    const version = asString(row?.latest_version_preview || row?.latest_version_prod);
+                    const extra = [provider, version].filter(Boolean).join(' | ');
+                    return {
+                      value: moduleKey,
+                      text: extra ? `${moduleKey} (${extra})` : moduleKey,
+                    };
+                  }),
+              );
+            } catch (error) {
+              registryError = error;
+            }
+          }
+
+          const siteKey = asString(props.values?.[pageSiteField.value]);
           const providerClause = providers.length === 1
             ? { provider: { _eq: providers[0] } }
             : (providers.length > 1 ? { provider: { _in: providers } } : null);
-          const filter = {
-            _and: [
-              { status: { _eq: 'published' } },
-              buildScopedFilter(siteKey),
-              ...(providerClause ? [providerClause] : []),
-            ],
-          };
-          const response = await apiGet(`/items/${modulesCollection.value}`, {
-            fields: [moduleValueField.value, moduleLabelField.value, 'provider', 'site_key', 'status'].join(','),
-            limit: -1,
-            sort: moduleValueField.value,
-            filter: JSON.stringify(filter),
-          });
-          return uniqueChoices(
-            normalizeRows(response).map((row) => ({
-              value: row?.[moduleValueField.value],
-              text: row?.[moduleLabelField.value] || row?.[moduleValueField.value],
-            }))
-          );
+          let cmsModuleChoices = [];
+          try {
+            const filter = {
+              _and: [
+                { status: { _eq: 'published' } },
+                buildScopedFilter(siteKey),
+                ...(providerClause ? [providerClause] : []),
+              ],
+            };
+            const response = await apiGet(`/items/${modulesCollection.value}`, {
+              fields: [moduleValueField.value, moduleLabelField.value, 'provider', 'site_key', 'status'].join(','),
+              limit: -1,
+              sort: moduleValueField.value,
+              filter: JSON.stringify(filter),
+            });
+            cmsModuleChoices = uniqueChoices(
+              normalizeRows(response).map((row) => ({
+                value: row?.[moduleValueField.value],
+                text: row?.[moduleLabelField.value] || row?.[moduleValueField.value],
+              }))
+            );
+          } catch (error) {
+            cmsModulesError = error;
+          }
+
+          const mergedChoices = uniqueChoices([
+            ...cmsModuleChoices,
+            ...registryChoices,
+          ]);
+          if (mergedChoices.length > 0) {
+            return mergedChoices;
+          }
+          if (cmsModulesError) throw cmsModulesError;
+          if (registryError) throw registryError;
+          return mergedChoices;
         };
     
         const resolvePageContext = async () => {
@@ -1609,6 +1729,60 @@ data:
           schema: { default_value: 'cms_theme_packages' },
         },
         {
+          field: 'module_registry_enabled',
+          name: 'Use Module Registry API',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: false },
+        },
+        {
+          field: 'module_registry_url',
+          name: 'Module Registry Base URL',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
+        },
+        {
+          field: 'module_registry_path',
+          name: 'Module Registry List Path',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '/api/modules' },
+        },
+        {
+          field: 'module_registry_channel',
+          name: 'Module Registry Channel',
+          type: 'string',
+          meta: {
+            width: 'half',
+            interface: 'select-dropdown',
+            options: {
+              allowNone: false,
+              choices: [
+                { text: 'Auto (from release_channel)', value: 'auto' },
+                { text: 'Preview', value: 'preview' },
+                { text: 'Prod', value: 'prod' },
+                { text: 'All', value: 'all' },
+              ],
+            },
+          },
+          schema: { default_value: 'auto' },
+        },
+        {
+          field: 'module_registry_channel_field',
+          name: 'Channel Source Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'release_channel' },
+        },
+        {
+          field: 'module_registry_limit',
+          name: 'Module Registry List Limit',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 250 },
+        },
+        {
           field: 'modules_collection',
           name: 'Modules Collection',
           type: 'string',
@@ -2082,7 +2256,6 @@ data:
         { field: 'limit', name: 'Library Limit', type: 'integer', meta: { width: 'half', interface: 'input' }, schema: { default_value: 40 } },
       ],
     });
-
   cms-module-props-editor.package.json: |
     {
       "name": "directus-extension-cms-module-props-editor",
@@ -2098,22 +2271,33 @@ data:
   cms-module-props-editor.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
     import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
-
+    
     const asString = (value) => {
       if (value === null || value === undefined) return '';
       return String(value).trim();
     };
-
+    
     const asInputString = (value) => {
       if (value === null || value === undefined) return '';
       return String(value);
     };
-
+    
     const asInteger = (value, fallback) => {
       const parsed = Number.parseInt(asString(value), 10);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
     };
-
+    
+    const asBoolean = (value, fallback = false) => {
+      if (typeof value === 'boolean') return value;
+      const normalized = asString(value).toLowerCase();
+      if (!normalized) return fallback;
+      if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+      if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+      return fallback;
+    };
+    
+    const toLower = (value) => asString(value).toLowerCase();
+    
     const parseJsonLike = (value, fallback) => {
       if (value === null || value === undefined) return fallback;
       if (typeof value === 'string') {
@@ -2125,19 +2309,19 @@ data:
       }
       return value;
     };
-
+    
     const normalizeObject = (value) => {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
       return value;
     };
-
+    
     const normalizeRows = (response) => {
       const payload = response?.data;
       if (Array.isArray(payload?.data)) return payload.data;
       if (Array.isArray(payload)) return payload;
       return [];
     };
-
+    
     const parseId = (value) => {
       if (value && typeof value === 'object') {
         if ('id' in value) return asString(value.id);
@@ -2145,7 +2329,7 @@ data:
       }
       return asString(value);
     };
-
+    
     const parseOptions = (value) => {
       if (!value) return {};
       if (typeof value === 'string') {
@@ -2158,7 +2342,7 @@ data:
       }
       return typeof value === 'object' ? value : {};
     };
-
+    
     const normalizeProviderList = (value) => {
       if (Array.isArray(value)) {
         return Array.from(
@@ -2180,9 +2364,9 @@ data:
         ),
       );
     };
-
+    
     const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
+    
     const getPrimaryKeyFromLocation = (collectionName) => {
       if (typeof window === 'undefined') return '';
       const targetCollection = asString(collectionName);
@@ -2195,7 +2379,7 @@ data:
       const candidates = ['primaryKey', 'pk', 'item', 'id'].map((key) => asString(query.get(key)));
       return candidates.find((value) => Boolean(value)) || '';
     };
-
+    
     const InterfaceComponent = defineComponent({
       name: 'CmsModulePropsEditor',
       props: {
@@ -2230,7 +2414,7 @@ data:
         const assetPickerUploading = ref(false);
         const assetUploadInput = ref(null);
         const propertyDraftValues = ref({});
-
+    
         const resolvedOptions = computed(() => parseOptions(props.options));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
         const moduleKeyField = computed(() => asString(resolvedOptions.value?.module_key_field) || 'module_key');
@@ -2252,6 +2436,16 @@ data:
           const v = resolvedOptions.value?.include_global;
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
           return v !== false;
+        });
+        const moduleRegistryEnabled = computed(() => asBoolean(resolvedOptions.value?.module_registry_enabled, false));
+        const moduleRegistryUrl = computed(() => asString(resolvedOptions.value?.module_registry_url).replace(/\/+$/g, ''));
+        const moduleRegistryPath = computed(() => asString(resolvedOptions.value?.module_registry_path) || '/api/modules');
+        const moduleRegistryChannelOption = computed(() => toLower(resolvedOptions.value?.module_registry_channel || 'auto'));
+        const moduleRegistryChannelField = computed(() => asString(resolvedOptions.value?.module_registry_channel_field) || 'release_channel');
+        const moduleRegistryLimit = computed(() => {
+          const configured = asInteger(resolvedOptions.value?.module_registry_limit, 250);
+          if (!configured || configured < 1) return 250;
+          return Math.min(configured, 1000);
         });
         const showJsonFallback = computed(() => {
           const v = resolvedOptions.value?.show_json_fallback;
@@ -2287,21 +2481,21 @@ data:
           const configured = asString(resolvedOptions.value?.asset_field_pattern);
           return configured || '(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)';
         });
-
+    
         const resolveRecordContext = () => {
           const explicitCollection = asString(props.collection);
           const contentCollection = asString(props.values?.collection);
-
+    
           // In M2A drawers, interface may mount on cms_page_blocks with content in (collection,item).
           const isEmbeddedContent =
             contentCollection &&
             contentCollection !== explicitCollection &&
             /^cms_block_/i.test(contentCollection);
-
+    
           const recordCollection = isEmbeddedContent
             ? contentCollection
             : (explicitCollection || 'cms_block_module');
-
+    
           let recordId = isEmbeddedContent
             ? parseId(props.values?.item)
             : (
@@ -2309,14 +2503,14 @@ data:
               || parseId(props.values?.id)
               || parseId(props.values?.item)
             );
-
+    
           if (!recordId) {
             recordId = getPrimaryKeyFromLocation(recordCollection);
           }
-
+    
           return { recordCollection, recordId };
         };
-
+    
         const moduleKeyFromValues = computed(() =>
           asString(
             props.values?.[moduleKeyField.value]
@@ -2334,9 +2528,9 @@ data:
         );
         const recordCollectionKey = computed(() => asString(props.collection).toLowerCase());
         const resolveRecordId = () => asString(resolveRecordContext().recordId);
-
+    
         const incomingProps = computed(() => normalizeObject(parseJsonLike(props.value, {})));
-
+    
         watch(
           () => JSON.stringify(incomingProps.value),
           () => {
@@ -2347,7 +2541,7 @@ data:
           },
           { immediate: true }
         );
-
+    
         watch(
           () => moduleKey.value,
           (nextValue, previousValue) => {
@@ -2363,7 +2557,7 @@ data:
             }
           }
         );
-
+    
         watch(
           () => moduleKeyFromValues.value,
           (nextValue) => {
@@ -2373,20 +2567,20 @@ data:
             }
           },
         );
-
+    
         const apiGet = async (path, params = {}) => {
           const url = new URL(path, window.location.origin);
           Object.entries(params).forEach(([key, value]) => {
             if (value === null || value === undefined) return;
             url.searchParams.set(key, String(value));
           });
-
+    
           const response = await fetch(url.toString(), {
             method: 'GET',
             credentials: 'same-origin',
             headers: { Accept: 'application/json' },
           });
-
+    
           const payload = await response.json().catch(() => ({}));
           if (!response.ok) {
             const message = payload?.errors?.[0]?.message || `Request failed (${response.status})`;
@@ -2394,7 +2588,37 @@ data:
           }
           return payload;
         };
-
+    
+        const externalApiGet = async (baseUrl, path, params = {}) => {
+          const prefix = asString(baseUrl).replace(/\/+$/g, '');
+          const suffix = asString(path);
+          const normalizedPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
+          const url = new URL(`${prefix}${normalizedPath}`);
+          Object.entries(params).forEach(([key, value]) => {
+            if (value === null || value === undefined || value === '') return;
+            url.searchParams.set(key, String(value));
+          });
+    
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort('registry_timeout'), 9000);
+          try {
+            const response = await fetch(url.toString(), {
+              method: 'GET',
+              credentials: 'omit',
+              headers: { Accept: 'application/json' },
+              signal: controller.signal,
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              const message = payload?.error || payload?.errors?.[0]?.message || `Request failed (${response.status})`;
+              throw new Error(message);
+            }
+            return payload;
+          } finally {
+            clearTimeout(timeout);
+          }
+        };
+    
         const loadRecordFallbackValues = async () => {
           const { recordCollection, recordId } = resolveRecordContext();
           if (!recordCollection || !recordId) {
@@ -2403,12 +2627,12 @@ data:
             recordSiteKey.value = '';
             return;
           }
-
+    
           try {
             let rowCollection = recordCollection;
             let rowId = recordId;
             let inheritedSiteKey = '';
-
+    
             if (asString(recordCollection).toLowerCase() === 'cms_page_blocks') {
               const blockResponse = await apiGet(`/items/${recordCollection}/${encodeURIComponent(recordId)}`, {
                 fields: 'collection,item,site_key',
@@ -2422,7 +2646,7 @@ data:
                 rowId = contentItemId;
               }
             }
-
+    
             const response = await apiGet(`/items/${rowCollection}/${encodeURIComponent(rowId)}`, {
               fields: [moduleKeyField.value, moduleProviderField.value, pageSiteField.value, 'site_key'].join(','),
             });
@@ -2430,7 +2654,7 @@ data:
             const loadedModuleKey = asString(row?.[moduleKeyField.value] ?? row?.module_key);
             const loadedModuleProvider = asString(row?.[moduleProviderField.value] ?? row?.module_provider);
             const loadedSiteKey = asString(row?.[pageSiteField.value] ?? row?.site_key ?? inheritedSiteKey);
-
+    
             recordModuleKey.value = loadedModuleKey;
             recordModuleProvider.value = loadedModuleProvider;
             if (loadedSiteKey) {
@@ -2443,15 +2667,15 @@ data:
             recordSiteKey.value = '';
           }
         };
-
+    
         const isAssetLikeProperty = (propKey, schema) => {
           const key = asString(propKey).toLowerCase();
           if (!key) return false;
-
+    
           if (assetPickerKeys.value.includes(key)) {
             return true;
           }
-
+    
           const schemaFormat = asString(schema?.format).toLowerCase();
           const schemaType = asString(schema?.type).toLowerCase();
           if (schemaFormat === 'image' || schemaFormat === 'asset-url') {
@@ -2460,12 +2684,82 @@ data:
           if (schemaType === 'string' && schemaFormat === 'uri') {
             return /(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon)/i.test(key);
           }
-
+    
           try {
             return new RegExp(assetFieldPattern.value, 'i').test(key);
           } catch {
             return /(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon)/i.test(key);
           }
+        };
+
+        const normalizeMediaTypeValue = (value) => {
+          const normalized = toLower(value);
+          if (['auto', 'image', 'video', 'audio', 'file'].includes(normalized)) return normalized;
+          return '';
+        };
+
+        const inferMediaTypeFromMime = (mimeType) => {
+          const normalized = toLower(mimeType);
+          if (!normalized) return '';
+          if (normalized.startsWith('image/')) return 'image';
+          if (normalized.startsWith('video/')) return 'video';
+          if (normalized.startsWith('audio/')) return 'audio';
+          return 'file';
+        };
+
+        const inferMediaTypeFromUrl = (urlValue) => {
+          const raw = asString(urlValue);
+          if (!raw) return '';
+          const normalized = raw.split('?')[0].split('#')[0].toLowerCase();
+          const extension = normalized.includes('.') ? normalized.slice(normalized.lastIndexOf('.') + 1) : '';
+          if (!extension) return '';
+          if (['avif', 'bmp', 'gif', 'heic', 'heif', 'ico', 'jpeg', 'jpg', 'png', 'svg', 'tif', 'tiff', 'webp'].includes(extension)) return 'image';
+          if (['3gp', 'avi', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'ogv', 'webm'].includes(extension)) return 'video';
+          if (['aac', 'flac', 'm4a', 'mp3', 'oga', 'ogg', 'opus', 'wav', 'weba'].includes(extension)) return 'audio';
+          return 'file';
+        };
+
+        const findMediaTypePropertyKey = () => {
+          const properties = schemaProperties.value || {};
+          const entries = Object.entries(properties);
+          for (const [propKey, propSchema] of entries) {
+            const schema = normalizeObject(propSchema);
+            const enumValues = Array.isArray(schema?.enum)
+              ? schema.enum.map((entry) => normalizeMediaTypeValue(entry)).filter(Boolean)
+              : [];
+            const hasMediaEnum =
+              enumValues.includes('auto')
+              && enumValues.includes('image')
+              && enumValues.includes('video')
+              && enumValues.includes('audio')
+              && enumValues.includes('file');
+            if (hasMediaEnum) return asString(propKey);
+          }
+          return '';
+        };
+
+        const maybeApplyAutoMediaType = (nextProps, changedKey, changedValue, options = {}) => {
+          const mediaTypeKey = findMediaTypePropertyKey();
+          if (!mediaTypeKey || mediaTypeKey === changedKey) return;
+
+          const normalizedChangedKey = toLower(changedKey);
+          if (!['mediaurl', 'media_url'].includes(normalizedChangedKey)) return;
+
+          const shouldInfer = options?.inferMediaType === true;
+          if (!shouldInfer) return;
+
+          const valueText = asString(changedValue);
+          if (!valueText) {
+            nextProps[mediaTypeKey] = 'auto';
+            return;
+          }
+
+          const inferredFromMime = inferMediaTypeFromMime(options?.mimeType);
+          const inferredFromUrl = inferMediaTypeFromUrl(options?.sourceUrl || valueText);
+          const inferred = inferredFromMime || inferredFromUrl;
+          if (!inferred) return;
+
+          nextProps[mediaTypeKey] = inferred;
         };
 
         const resolveAssetUrlFromId = (id) => {
@@ -2475,7 +2769,7 @@ data:
           if (!assetStoreAbsolute.value) return relative;
           return assetBaseUrl.value ? `${assetBaseUrl.value}${relative}` : relative;
         };
-
+    
         const loadAssetPickerFiles = async () => {
           assetPickerLoading.value = true;
           assetPickerError.value = '';
@@ -2494,7 +2788,7 @@ data:
             assetPickerLoading.value = false;
           }
         };
-
+    
         const toggleAssetPicker = async (propKey) => {
           const key = asString(propKey);
           if (!key) return;
@@ -2506,29 +2800,33 @@ data:
           assetPickerQuery.value = '';
           await loadAssetPickerFiles();
         };
-
+    
         const chooseAsset = (propKey, row) => {
           const key = asString(propKey);
           if (!key) return;
           const url = resolveAssetUrlFromId(row?.id);
           if (!url) return;
-          setPropertyValue(key, url);
+          setPropertyValue(key, url, {
+            inferMediaType: true,
+            mimeType: asString(row?.type),
+            sourceUrl: url,
+          });
           assetPickerField.value = '';
         };
-
+    
         const openAssetUploadChooser = (propKey) => {
           const input = assetUploadInput.value;
           if (!input || props.disabled || loading.value) return;
           input.dataset.field = asString(propKey);
           input.click();
         };
-
+    
         const onAssetUploadChange = async (event) => {
           const input = event?.target;
           const file = input?.files?.[0];
           const propKey = asString(input?.dataset?.field || assetPickerField.value);
           if (!file || !propKey) return;
-
+    
           assetPickerUploading.value = true;
           assetPickerError.value = '';
           try {
@@ -2549,7 +2847,12 @@ data:
             if (!fileId) {
               throw new Error('Upload succeeded but no file id was returned.');
             }
-            setPropertyValue(propKey, resolveAssetUrlFromId(fileId));
+            const resolvedUrl = resolveAssetUrlFromId(fileId);
+            setPropertyValue(propKey, resolvedUrl, {
+              inferMediaType: true,
+              mimeType: asString(payload?.data?.type) || asString(file?.type),
+              sourceUrl: resolvedUrl,
+            });
             assetPickerField.value = propKey;
             await loadAssetPickerFiles();
           } catch (error) {
@@ -2562,7 +2865,7 @@ data:
             }
           }
         };
-
+    
         const buildScopedFilter = (site) => {
           if (!includeGlobal.value && site) {
             return { site_key: { _eq: site } };
@@ -2577,46 +2880,239 @@ data:
           }
           return { site_key: { _empty: true } };
         };
-
+    
+        const normalizeRegistryRows = (response) => {
+          if (Array.isArray(response?.items)) return response.items;
+          if (Array.isArray(response?.modules)) return response.modules;
+          if (Array.isArray(response?.data?.items)) return response.data.items;
+          if (Array.isArray(response?.data?.modules)) return response.data.modules;
+          if (Array.isArray(response?.data)) return response.data;
+          if (Array.isArray(response)) return response;
+          return [];
+        };
+    
+        const pickFirstNonEmptyString = (...values) => {
+          for (const value of values) {
+            const candidate = asString(value);
+            if (candidate) return candidate;
+          }
+          return '';
+        };
+    
+        const pickFirstObject = (...values) => {
+          for (const value of values) {
+            const parsed = normalizeObject(parseJsonLike(value, {}));
+            if (Object.keys(parsed).length > 0) return parsed;
+          }
+          return {};
+        };
+    
+        const resolveRegistryChannel = () => {
+          const explicit = moduleRegistryChannelOption.value;
+          if (explicit === 'preview' || explicit === 'prod' || explicit === 'all') return explicit;
+    
+          const inferred = toLower(
+            props.values?.[moduleRegistryChannelField.value]
+            ?? props.values?.release_channel
+          );
+          if (inferred === 'preview' || inferred === 'prod') return inferred;
+          return 'all';
+        };
+    
+        const normalizeRegistryModuleDefinition = (row, fallbackModuleKey = '') => {
+          const manifest = normalizeObject(parseJsonLike(row?.manifest, {}));
+          const latestManifest = normalizeObject(parseJsonLike(row?.latest_manifest, {}));
+          const versionManifest = normalizeObject(parseJsonLike(row?.latest_version_manifest, {}));
+          const latestVersion = normalizeObject(parseJsonLike(row?.latest_version, {}));
+          const latestVersionPreview = normalizeObject(parseJsonLike(row?.latest_version_preview, {}));
+          const latestVersionProd = normalizeObject(parseJsonLike(row?.latest_version_prod, {}));
+    
+          const normalizedModuleKey = pickFirstNonEmptyString(
+            row?.[moduleKeyField.value],
+            row?.module_key,
+            row?.moduleKey,
+            row?.key,
+            fallbackModuleKey,
+          );
+          if (!normalizedModuleKey) return null;
+    
+          const normalizedProvider = pickFirstNonEmptyString(
+            row?.[moduleProviderField.value],
+            row?.module_provider,
+            row?.provider,
+            manifest?.provider,
+            latestManifest?.provider,
+            versionManifest?.provider,
+          );
+    
+          const normalizedSchema = pickFirstObject(
+            row?.[propsSchemaField.value],
+            row?.props_schema,
+            row?.propsSchema,
+            row?.schema,
+            row?.config_schema,
+            row?.configSchema,
+            manifest?.[propsSchemaField.value],
+            manifest?.props_schema,
+            manifest?.propsSchema,
+            manifest?.schema,
+            manifest?.config_schema,
+            manifest?.configSchema,
+            latestManifest?.[propsSchemaField.value],
+            latestManifest?.props_schema,
+            latestManifest?.propsSchema,
+            latestManifest?.schema,
+            versionManifest?.[propsSchemaField.value],
+            versionManifest?.props_schema,
+            versionManifest?.propsSchema,
+            versionManifest?.schema,
+            latestVersion?.[propsSchemaField.value],
+            latestVersion?.props_schema,
+            latestVersion?.propsSchema,
+            latestVersion?.schema,
+            latestVersionPreview?.[propsSchemaField.value],
+            latestVersionPreview?.props_schema,
+            latestVersionPreview?.propsSchema,
+            latestVersionPreview?.schema,
+            latestVersionProd?.[propsSchemaField.value],
+            latestVersionProd?.props_schema,
+            latestVersionProd?.propsSchema,
+            latestVersionProd?.schema,
+          );
+    
+          const normalizedDefaults = pickFirstObject(
+            row?.[defaultPropsField.value],
+            row?.default_props,
+            row?.defaultProps,
+            row?.defaults,
+            row?.props_defaults,
+            manifest?.[defaultPropsField.value],
+            manifest?.default_props,
+            manifest?.defaultProps,
+            manifest?.defaults,
+            manifest?.props_defaults,
+            latestManifest?.[defaultPropsField.value],
+            latestManifest?.default_props,
+            latestManifest?.defaultProps,
+            latestManifest?.defaults,
+            versionManifest?.[defaultPropsField.value],
+            versionManifest?.default_props,
+            versionManifest?.defaultProps,
+            versionManifest?.defaults,
+            latestVersion?.[defaultPropsField.value],
+            latestVersion?.default_props,
+            latestVersion?.defaultProps,
+            latestVersion?.defaults,
+            latestVersionPreview?.[defaultPropsField.value],
+            latestVersionPreview?.default_props,
+            latestVersionPreview?.defaultProps,
+            latestVersionPreview?.defaults,
+            latestVersionProd?.[defaultPropsField.value],
+            latestVersionProd?.default_props,
+            latestVersionProd?.defaultProps,
+            latestVersionProd?.defaults,
+          );
+    
+          const normalizedName = pickFirstNonEmptyString(
+            row?.name,
+            row?.display_name,
+            row?.title,
+            manifest?.name,
+            latestManifest?.name,
+            normalizedModuleKey,
+          );
+    
+          const normalizedDescription = pickFirstNonEmptyString(
+            row?.description,
+            row?.summary,
+            manifest?.description,
+            latestManifest?.description,
+          );
+    
+          return {
+            id: pickFirstNonEmptyString(row?.id, `${normalizedModuleKey}:registry`),
+            name: normalizedName,
+            description: normalizedDescription,
+            provider: normalizedProvider,
+            [moduleKeyField.value]: normalizedModuleKey,
+            [moduleProviderField.value]: normalizedProvider,
+            site_key: pickFirstNonEmptyString(row?.site_key, manifest?.site_key),
+            status: 'published',
+            [propsSchemaField.value]: normalizedSchema,
+            [defaultPropsField.value]: normalizedDefaults,
+            date_updated: pickFirstNonEmptyString(
+              row?.date_updated,
+              row?.updated_at,
+              row?.published_at,
+              row?.last_published_at,
+            ),
+            date_created: pickFirstNonEmptyString(
+              row?.date_created,
+              row?.created_at,
+              row?.published_at,
+            ),
+          };
+        };
+    
+        const fetchModuleDefinitionFromRegistry = async (key, effectiveSiteKey) => {
+          const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
+            module_key: key,
+            channel: resolveRegistryChannel(),
+            limit: moduleRegistryLimit.value,
+          });
+    
+          const rows = normalizeRegistryRows(response)
+            .map((row) => normalizeRegistryModuleDefinition(row, key))
+            .filter((row) => row && asString(row?.[moduleKeyField.value]) === key)
+            .filter((row) => {
+              if (effectiveModuleProviders.value.length === 0) return true;
+              const provider = toLower(row?.provider ?? row?.[moduleProviderField.value]);
+              return provider && effectiveModuleProviders.value.includes(provider);
+            });
+    
+          if (rows.length === 0) return null;
+          return selectPreferredModuleDefinition(rows, effectiveSiteKey);
+        };
+    
         const countSchemaPropertyKeys = (schemaCandidate) => {
           const parsedSchema = normalizeObject(parseJsonLike(schemaCandidate, {}));
           const properties = normalizeObject(parsedSchema?.properties);
           return Object.keys(properties).length;
         };
-
+    
         const toEpochMs = (value) => {
           const raw = asString(value);
           if (!raw) return 0;
           const parsed = Date.parse(raw);
           return Number.isFinite(parsed) ? parsed : 0;
         };
-
+    
         const selectPreferredModuleDefinition = (rows, effectiveSiteKey) => {
           const targetSiteKey = asString(effectiveSiteKey);
           if (!Array.isArray(rows) || rows.length === 0) return null;
-
+    
           const compareRows = (left, right) => {
             const leftSite = asString(left?.site_key);
             const rightSite = asString(right?.site_key);
-
+    
             const leftScopeRank = targetSiteKey && leftSite === targetSiteKey ? 0 : leftSite ? 2 : 1;
             const rightScopeRank = targetSiteKey && rightSite === targetSiteKey ? 0 : rightSite ? 2 : 1;
             if (leftScopeRank !== rightScopeRank) return leftScopeRank - rightScopeRank;
-
+    
             const leftSchemaRank = countSchemaPropertyKeys(left?.[propsSchemaField.value]) > 0 ? 0 : 1;
             const rightSchemaRank = countSchemaPropertyKeys(right?.[propsSchemaField.value]) > 0 ? 0 : 1;
             if (leftSchemaRank !== rightSchemaRank) return leftSchemaRank - rightSchemaRank;
-
+    
             const leftUpdated = Math.max(toEpochMs(left?.date_updated), toEpochMs(left?.date_created));
             const rightUpdated = Math.max(toEpochMs(right?.date_updated), toEpochMs(right?.date_created));
             if (leftUpdated !== rightUpdated) return rightUpdated - leftUpdated;
-
+    
             return asString(left?.id).localeCompare(asString(right?.id));
           };
-
+    
           return [...rows].sort(compareRows)[0] || rows[0];
         };
-
+    
         const fetchModuleDefinition = async () => {
           let key = moduleKey.value;
           if (!key) {
@@ -2628,7 +3124,7 @@ data:
             loadError.value = 'Select a module before configuring props.';
             return;
           }
-
+    
           let effectiveSiteKey = siteKey.value;
           if (!effectiveSiteKey) {
             const pageId = getPrimaryKeyFromLocation(pageCollection.value);
@@ -2646,7 +3142,27 @@ data:
           if (!effectiveSiteKey) {
             effectiveSiteKey = asString(recordSiteKey.value);
           }
-
+    
+          let registryError = null;
+          if (moduleRegistryEnabled.value && moduleRegistryUrl.value) {
+            try {
+              const registryDefinition = await fetchModuleDefinitionFromRegistry(key, effectiveSiteKey);
+              if (registryDefinition) {
+                moduleDefinition.value = registryDefinition;
+                loadError.value = '';
+                const resolvedModuleKey = asString(registryDefinition?.[moduleKeyField.value]) || key;
+                if (pendingModuleSwitchKey.value && pendingModuleSwitchKey.value === resolvedModuleKey) {
+                  pendingModuleDefaults.value = normalizeObject(parseJsonLike(registryDefinition?.[defaultPropsField.value], {}));
+                  applyPendingDefaultsForModuleKey.value = resolvedModuleKey;
+                  pendingModuleSwitchKey.value = '';
+                }
+                return;
+              }
+            } catch (error) {
+              registryError = error;
+            }
+          }
+    
           const filter = {
             _and: [
               { [moduleKeyField.value]: { _eq: key } },
@@ -2665,26 +3181,29 @@ data:
             sort: '-date_updated,-date_created,site_key,id',
             filter: JSON.stringify(filter),
           });
-
+    
           const rows = normalizeRows(response);
           if (rows.length === 0) {
             moduleDefinition.value = null;
-            loadError.value = effectiveModuleProviders.value.length > 0
+            const fallbackMessage = effectiveModuleProviders.value.length > 0
               ? `No published module definition found for "${key}" with provider "${effectiveModuleProviders.value.join(',')}".`
               : `No published module definition found for "${key}".`;
+            loadError.value = registryError
+              ? `${fallbackMessage} Module registry lookup failed: ${registryError?.message || 'unknown error'}.`
+              : fallbackMessage;
             return;
           }
-
+    
           const preferred = selectPreferredModuleDefinition(rows, effectiveSiteKey);
           if (!preferred) {
             moduleDefinition.value = null;
             loadError.value = `No usable module definition found for "${key}".`;
             return;
           }
-
+    
           moduleDefinition.value = preferred;
           loadError.value = '';
-
+    
           const resolvedModuleKey = asString(preferred?.[moduleKeyField.value]) || key;
           if (pendingModuleSwitchKey.value && pendingModuleSwitchKey.value === resolvedModuleKey) {
             pendingModuleDefaults.value = normalizeObject(parseJsonLike(preferred?.[defaultPropsField.value], {}));
@@ -2692,7 +3211,7 @@ data:
             pendingModuleSwitchKey.value = '';
           }
         };
-
+    
         watch(
           () => JSON.stringify({
             moduleKey: moduleKey.value,
@@ -2704,6 +3223,11 @@ data:
             moduleKeyField: moduleKeyField.value,
             propsSchemaField: propsSchemaField.value,
             defaultPropsField: defaultPropsField.value,
+            moduleRegistryEnabled: moduleRegistryEnabled.value,
+            moduleRegistryUrl: moduleRegistryUrl.value,
+            moduleRegistryPath: moduleRegistryPath.value,
+            moduleRegistryChannel: resolveRegistryChannel(),
+            moduleRegistryLimit: moduleRegistryLimit.value,
             collection: asString(props.collection),
             recordId: resolveRecordId(),
             blockCollection: asString(props.values?.collection),
@@ -2723,7 +3247,7 @@ data:
           },
           { immediate: true }
         );
-
+    
         const defaultProps = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[defaultPropsField.value], {})));
         const resolvedSchema = computed(() => {
           const parsedSchema = normalizeObject(parseJsonLike(moduleDefinition.value?.[propsSchemaField.value], {}));
@@ -2731,7 +3255,7 @@ data:
           if (Object.keys(parsedProperties).length > 0) {
             return parsedSchema;
           }
-
+    
           const inferredProperties = {};
           for (const [key, rawValue] of Object.entries(defaultProps.value || {})) {
             const propKey = asString(key);
@@ -2751,11 +3275,11 @@ data:
               title: propKey,
             };
           }
-
+    
           if (Object.keys(inferredProperties).length === 0) {
             return parsedSchema;
           }
-
+    
           return {
             ...parsedSchema,
             type: 'object',
@@ -2778,14 +3302,14 @@ data:
           return new Set(required.map((value) => asString(value)));
         });
         const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
-
+    
         const emitProps = (nextProps) => {
           const normalized = normalizeObject(nextProps);
           localProps.value = { ...normalized };
           jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
           emit('input', localProps.value);
         };
-
+    
         const applyJsonEditorValue = () => {
           if (!jsonEditorValue.value) {
             emitProps({});
@@ -2798,7 +3322,7 @@ data:
             schemaError.value = 'Invalid JSON in advanced editor.';
           }
         };
-
+    
         const formatJsonEditorValue = () => {
           if (!jsonEditorValue.value) {
             jsonEditorValue.value = '{}';
@@ -2815,7 +3339,7 @@ data:
             schemaError.value = 'Invalid JSON in advanced editor.';
           }
         };
-
+    
         watch(
           () => applyPendingDefaultsForModuleKey.value,
           (nextModuleKey) => {
@@ -2827,21 +3351,21 @@ data:
             schemaError.value = '';
           }
         );
-
+    
         const onModuleSelectorEvent = (event) => {
           const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
           const eventMode = asString(detail.mode).toLowerCase();
           const eventField = asString(detail.field).toLowerCase();
           if (eventMode !== 'module') return;
           if (eventField && eventField !== moduleKeyField.value.toLowerCase()) return;
-
+    
           const eventCollection = asString(detail.collection).toLowerCase();
           if (eventCollection && recordCollectionKey.value && eventCollection !== recordCollectionKey.value) return;
-
+    
           const eventRecordId = asString(detail.recordId);
           const currentRecordId = resolveRecordId();
           if (eventRecordId && currentRecordId && eventRecordId !== currentRecordId) return;
-
+    
           const nextKey = asString(detail.value);
           if (!nextKey) return;
           if (nextKey !== moduleKey.value) {
@@ -2849,24 +3373,25 @@ data:
             moduleKeyOverride.value = nextKey;
           }
         };
-
+    
         onMounted(() => {
           if (typeof window === 'undefined') return;
           window.addEventListener('cms-content-model-select-change', onModuleSelectorEvent);
         });
-
+    
         onBeforeUnmount(() => {
           if (typeof window === 'undefined') return;
           window.removeEventListener('cms-content-model-select-change', onModuleSelectorEvent);
         });
-
-        const setPropertyValue = (key, value) => {
+    
+        const setPropertyValue = (key, value, options = {}) => {
           const next = { ...mergedProps.value };
           if (value === undefined || value === null || value === '') {
             delete next[key];
           } else {
             next[key] = value;
           }
+          maybeApplyAutoMediaType(next, key, value, options);
           if (Object.prototype.hasOwnProperty.call(propertyDraftValues.value, key)) {
             const nextDrafts = { ...propertyDraftValues.value };
             delete nextDrafts[key];
@@ -2874,7 +3399,7 @@ data:
           }
           emitProps(next);
         };
-
+    
         const renderPropertyEditor = (propKey, propSchema) => {
           const schema = normalizeObject(propSchema);
           const title = asString(schema.title) || propKey;
@@ -2885,21 +3410,21 @@ data:
           const enumValues = Array.isArray(schema.enum) ? schema.enum.map((entry) => asString(entry)).filter(Boolean) : [];
           const inputId = `cms-module-prop-${propKey}`;
           const disabled = props.disabled || loading.value;
-
+    
           const resolvedInput = resolveComponent('v-input');
           const resolvedSelect = resolveComponent('v-select');
           const resolvedTextarea = resolveComponent('v-textarea');
           const resolvedCheckbox = resolveComponent('v-checkbox');
           const resolvedButton = resolveComponent('v-button');
           const resolvedNotice = resolveComponent('v-notice');
-
+    
           const hasInput = typeof resolvedInput !== 'string';
           const hasSelect = typeof resolvedSelect !== 'string';
           const hasTextarea = typeof resolvedTextarea !== 'string';
           const hasCheckbox = typeof resolvedCheckbox !== 'string';
           const hasButton = typeof resolvedButton !== 'string';
           const hasNotice = typeof resolvedNotice !== 'string';
-
+    
           const renderInputControl = ({ id, modelValue, onUpdate, type: inputType = 'text', placeholder = '', onBlur = null, onKeydown = null, style = {} }) => {
             if (hasInput) {
               return h(resolvedInput, {
@@ -2926,7 +3451,7 @@ data:
               onKeydown,
             });
           };
-
+    
           const renderTextareaControl = ({ id, modelValue, rows = 4, placeholder = '', onUpdate = null, onBlur = null, style = {} }) => {
             if (hasTextarea) {
               return h(resolvedTextarea, {
@@ -2952,7 +3477,7 @@ data:
               onBlur,
             });
           };
-
+    
           const renderSelectControl = ({ id, modelValue, items, placeholder = '' }) => {
             if (hasSelect) {
               return h(resolvedSelect, {
@@ -2979,7 +3504,7 @@ data:
               ],
             );
           };
-
+    
           const renderCheckboxControl = ({ id, modelValue }) => {
             if (hasCheckbox) {
               return h(resolvedCheckbox, {
@@ -2997,7 +3522,7 @@ data:
               onChange: (event) => setPropertyValue(propKey, Boolean(event?.target?.checked)),
             });
           };
-
+    
           const renderButtonControl = ({ label, onClick, disabled: buttonDisabled = false, primary = false, style = {}, children = null }) => {
             if (hasButton) {
               return h(
@@ -3014,7 +3539,7 @@ data:
             }
             return h('button', { type: 'button', disabled: buttonDisabled, onClick, style }, children || label);
           };
-
+    
           const renderErrorNotice = (message) => {
             if (!message) return null;
             if (hasNotice) {
@@ -3022,9 +3547,9 @@ data:
             }
             return h('p', { style: { margin: 0, color: 'var(--theme--danger)' } }, message);
           };
-
+    
           let control = null;
-
+    
           if (enumValues.length > 0) {
             const items = enumValues.map((entry) => ({ text: entry, value: entry }));
             control = renderSelectControl({
@@ -3060,7 +3585,7 @@ data:
             const draftValue = existingDraft === null
               ? (value === undefined ? '' : JSON.stringify(value, null, 2))
               : asInputString(existingDraft);
-
+    
             control = renderTextareaControl({
               id: inputId,
               rows: 4,
@@ -3095,7 +3620,7 @@ data:
             const showImagePreview =
               schemaFormat === 'image' ||
               /(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero)/i.test(propKey);
-
+    
             const pickerButtons = supportsAssetPicker
               ? h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' } }, [
                   renderButtonControl({
@@ -3115,7 +3640,7 @@ data:
                   }),
                 ])
               : null;
-
+    
             const pickerPanel = supportsAssetPicker && isPickerOpen
               ? h('section', {
                   style: {
@@ -3173,7 +3698,7 @@ data:
                             textTransform: 'uppercase',
                           },
                         }, rowType.split('/')[0] || 'file');
-
+    
                     const rowChildren = h('span', {
                       style: {
                         display: 'inline-flex',
@@ -3184,7 +3709,7 @@ data:
                         textTransform: 'none',
                       },
                     }, [previewNode, h('span', rowLabel)]);
-
+    
                     return renderButtonControl({
                       label: rowLabel,
                       disabled: disabled,
@@ -3200,7 +3725,7 @@ data:
                   }),
                 ])
               : null;
-
+    
             control = h('div', { style: { display: 'grid', gap: '4px' } }, [
               renderInputControl({
                 id: inputId,
@@ -3241,7 +3766,7 @@ data:
               pickerPanel,
             ]);
           }
-
+    
           return h('div', { class: 'cms-module-props-editor__field', key: propKey }, [
             h('label', { for: inputId, class: 'cms-module-props-editor__label' }, [
               title,
@@ -3251,7 +3776,7 @@ data:
             control,
           ]);
         };
-
+    
         return () => {
           const definition = moduleDefinition.value;
           const hasSchemaProperties = Object.keys(schemaProperties.value).length > 0;
@@ -3265,7 +3790,7 @@ data:
           );
           const definitionTitle = asString(definition?.name) || moduleKey.value || 'Module';
           const definitionDescription = asString(definition?.description);
-
+    
           const children = [
             h('div', { class: 'cms-module-props-editor__header' }, [
               h('strong', `Module: ${definitionTitle}`),
@@ -3278,7 +3803,7 @@ data:
             loadError.value ? h('p', { class: 'cms-module-props-editor__error' }, loadError.value) : null,
             schemaError.value ? h('p', { class: 'cms-module-props-editor__error' }, schemaError.value) : null,
           ];
-
+    
           if (hasInlineProperties) {
             children.push(
               h(
@@ -3292,7 +3817,7 @@ data:
               h('p', { class: 'cms-module-props-editor__hint' }, 'No property schema defined for this module. Use JSON fallback.')
             );
           }
-
+    
           if (showJsonFallback.value && hasComplexProperties) {
             children.push(
               h(
@@ -3302,7 +3827,7 @@ data:
               )
             );
           }
-
+    
           if (showJsonFallback.value) {
             const resolvedCodeEditor = resolveComponent('v-input-code');
             const resolvedTextarea = resolveComponent('v-textarea');
@@ -3311,7 +3836,7 @@ data:
             const hasTextarea = typeof resolvedTextarea !== 'string';
             const hasButton = typeof resolvedButton !== 'string';
             const jsonPlaceholder = '{\n  "key": "value"\n}';
-
+    
             let jsonControl = null;
             if (hasCodeEditor) {
               jsonControl = h(resolvedCodeEditor, {
@@ -3367,7 +3892,7 @@ data:
                 onBlur: applyJsonEditorValue,
               });
             }
-
+    
             children.push(
               h('section', { class: 'cms-module-props-editor__json' }, [
                 h('div', { class: 'cms-module-props-editor__json-header', style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } }, [
@@ -3403,7 +3928,7 @@ data:
               ])
             );
           }
-
+    
           children.push(
             h('input', {
               ref: assetUploadInput,
@@ -3413,12 +3938,12 @@ data:
               onChange: onAssetUploadChange,
             })
           );
-
+    
           return h('div', { class: 'cms-module-props-editor' }, children);
         };
       },
     });
-
+    
     export default defineInterface({
       id: 'cms-module-props-editor',
       name: 'CMS Module Props Editor',
@@ -3485,6 +4010,60 @@ data:
           schema: { default_value: 'site_key' },
         },
         {
+          field: 'module_registry_enabled',
+          name: 'Use Module Registry API',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: false },
+        },
+        {
+          field: 'module_registry_url',
+          name: 'Module Registry Base URL',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
+        },
+        {
+          field: 'module_registry_path',
+          name: 'Module Registry List Path',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '/api/modules' },
+        },
+        {
+          field: 'module_registry_channel',
+          name: 'Module Registry Channel',
+          type: 'string',
+          meta: {
+            width: 'half',
+            interface: 'select-dropdown',
+            options: {
+              allowNone: false,
+              choices: [
+                { text: 'Auto (from page release channel)', value: 'auto' },
+                { text: 'Preview', value: 'preview' },
+                { text: 'Prod', value: 'prod' },
+                { text: 'All', value: 'all' },
+              ],
+            },
+          },
+          schema: { default_value: 'auto' },
+        },
+        {
+          field: 'module_registry_channel_field',
+          name: 'Channel Source Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'release_channel' },
+        },
+        {
+          field: 'module_registry_limit',
+          name: 'Module Registry List Limit',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 250 },
+        },
+        {
           field: 'include_global',
           name: 'Include Global (site_key null)',
           type: 'boolean',
@@ -3542,6 +4121,7 @@ data:
         },
       ],
     });
+    
   cms-page-blocks-manager.package.json: |
     {
       "name": "directus-extension-cms-page-blocks-manager",
@@ -3566,6 +4146,15 @@ data:
     const asInteger = (value) => {
       const parsed = Number.parseInt(asString(value), 10);
       return Number.isFinite(parsed) ? parsed : null;
+    };
+    
+    const asBoolean = (value, fallback = false) => {
+      if (typeof value === 'boolean') return value;
+      const normalized = asString(value).toLowerCase();
+      if (!normalized) return fallback;
+      if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+      if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+      return fallback;
     };
     
     const parseOptions = (value) => {
@@ -3607,7 +4196,7 @@ data:
       }
       return result.sort((a, b) => a.localeCompare(b));
     };
-
+    
     const collectionDisplayName = (collection) => {
       const normalized = toLower(collection);
       if (!normalized) return 'Block';
@@ -3651,7 +4240,7 @@ data:
       }
       return window[BLOCKS_MANAGER_REGISTRY_KEY];
     };
-
+    
     const InterfaceComponent = defineComponent({
       name: 'CmsPageBlocksManager',
       props: {
@@ -3682,6 +4271,7 @@ data:
         });
         const slotsByTemplateKey = ref({});
         const blocks = ref([]);
+        const moduleRegistryModules = ref([]);
         const drafts = ref({});
         const selectedContext = ref('__page');
         const expandedNodes = ref({ __root: true });
@@ -3702,7 +4292,7 @@ data:
         const drawerSavedByInput = ref(false);
         const drawerPendingPatch = ref({});
         let drawerRefreshTimer = null;
-
+    
         const instanceToken = `mgr-${Math.random().toString(36).slice(2)}-${Date.now()}`;
         const instanceSignature = computed(() => `${asString(props.collection) || 'unknown'}:${asString(props.field) || 'unknown'}`);
         const resolvedDrawerItem = resolveComponent('DrawerItem');
@@ -3744,6 +4334,15 @@ data:
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const moduleRegistryEnabled = computed(() => asBoolean(resolvedOptions.value?.module_registry_enabled, false));
+        const moduleRegistryUrl = computed(() => asString(resolvedOptions.value?.module_registry_url).replace(/\/+$/g, ''));
+        const moduleRegistryPath = computed(() => asString(resolvedOptions.value?.module_registry_path) || '/api/modules');
+        const moduleRegistryChannelOption = computed(() => toLower(resolvedOptions.value?.module_registry_channel || 'auto'));
+        const moduleRegistryLimit = computed(() => {
+          const configured = asInteger(resolvedOptions.value?.module_registry_limit);
+          if (!configured || configured < 1) return 250;
+          return Math.min(configured, 1000);
+        });
         const addBlockTypeChoices = [
           { text: 'Rich Text', value: 'rich_text' },
           { text: 'Hero', value: 'hero' },
@@ -3796,7 +4395,7 @@ data:
           Boolean(pageId.value)
           && sourcePageReleaseChannel.value === PROMOTE_SOURCE_CHANNEL
         );
-
+    
         const isNodeExpanded = (nodeKey, defaultOpen = true) => {
           const key = asString(nodeKey);
           if (!key) return Boolean(defaultOpen);
@@ -3804,7 +4403,7 @@ data:
           if (typeof current === 'boolean') return current;
           return Boolean(defaultOpen);
         };
-
+    
         const setNodeExpanded = (nodeKey, nextOpen) => {
           const key = asString(nodeKey);
           if (!key) return;
@@ -3813,11 +4412,11 @@ data:
             [key]: Boolean(nextOpen),
           };
         };
-
+    
         const toggleNodeExpanded = (nodeKey, defaultOpen = true) => {
           setNodeExpanded(nodeKey, !isNodeExpanded(nodeKey, defaultOpen));
         };
-
+    
         const expandCollapseAllNodes = (expanded) => {
           const next = { __root: Boolean(expanded) };
           for (const row of blocks.value) {
@@ -3838,9 +4437,9 @@ data:
           groupBy.value = asString(resolvedOptions.value?.default_group_by) || 'template';
           selectedContext.value = PAGE_CONTEXT_ID;
         };
-
+    
         const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
+    
         const isTransientSchemaMismatchMessage = (message) => {
           const normalized = toLower(message);
           return (
@@ -3857,10 +4456,10 @@ data:
             if (value === null || value === undefined || value === '') return;
             url.searchParams.set(key, String(value));
           });
-
+    
           const upperMethod = toLower(method) === 'get' ? 'GET' : method;
           const maxAttempts = upperMethod === 'GET' ? 5 : 1;
-
+    
           for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
             try {
               const response = await fetch(url.toString(), {
@@ -3873,7 +4472,7 @@ data:
                 },
                 ...(body ? { body: JSON.stringify(body) } : {}),
               });
-
+    
               const payload = await response.json().catch(() => ({}));
               if (!response.ok) {
                 const message = payload?.errors?.[0]?.message || `${upperMethod} failed (${response.status})`;
@@ -3901,10 +4500,43 @@ data:
               throw error;
             }
           }
-
+    
           throw new Error(`${upperMethod} failed after retries.`);
         };
-
+    
+        const externalApiGet = async (baseUrl, path, params = {}) => {
+          const prefix = asString(baseUrl).replace(/\/+$/g, '');
+          const suffix = asString(path);
+          const normalizedPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
+          const url = new URL(`${prefix}${normalizedPath}`);
+          Object.entries(params).forEach(([key, value]) => {
+            if (value === null || value === undefined || value === '') return;
+            url.searchParams.set(key, String(value));
+          });
+    
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort('registry_timeout'), 10000);
+          try {
+            const response = await fetch(url.toString(), {
+              method: 'GET',
+              credentials: 'omit',
+              cache: 'no-store',
+              headers: {
+                Accept: 'application/json',
+              },
+              signal: controller.signal,
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              const message = payload?.error || payload?.errors?.[0]?.message || `GET failed (${response.status})`;
+              throw new Error(message);
+            }
+            return payload;
+          } finally {
+            clearTimeout(timeout);
+          }
+        };
+    
         const toStableObject = (value) => {
           if (Array.isArray(value)) {
             return value.map((entry) => toStableObject(entry));
@@ -3916,7 +4548,7 @@ data:
           }
           return output;
         };
-
+    
         const toSnapshotHash = (value) => {
           try {
             return JSON.stringify(toStableObject(value ?? null));
@@ -3924,7 +4556,7 @@ data:
             return '';
           }
         };
-
+    
         const unwrapDrawerPayload = (value) => {
           if (!value || typeof value !== 'object') return {};
           const candidateKeys = ['edits', 'values', 'data', 'item'];
@@ -3936,11 +4568,11 @@ data:
           }
           return value;
         };
-
+    
         const sanitizeDrawerPatchPayload = (value) => {
           const source = unwrapDrawerPayload(value);
           if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
-
+    
           const blockedKeys = new Set([
             'id',
             'date_created',
@@ -3957,7 +4589,7 @@ data:
           }
           return payload;
         };
-
+    
         const fetchDrawerSnapshotHash = async (collectionName, primaryKey) => {
           const collection = asString(collectionName);
           const rowId = parseId(primaryKey);
@@ -3973,14 +4605,14 @@ data:
             return '';
           }
         };
-
+    
         const captureDrawerSnapshot = async (collectionName, primaryKey, sessionToken) => {
           const snapshot = await fetchDrawerSnapshotHash(collectionName, primaryKey);
           if (sessionToken !== drawerSessionKey.value) return '';
           drawerSnapshotHash.value = snapshot;
           return snapshot;
         };
-
+    
     
         const normalizeBlockRow = (row) => {
           const groupTag = asString(row?.group_tag);
@@ -4051,7 +4683,7 @@ data:
           }
           drafts.value = next;
         };
-
+    
         const buildRelationManagerValue = () => {
           const rows = [];
           for (const row of blocks.value) {
@@ -4059,29 +4691,29 @@ data:
             const collectionName = asString(row?.collection);
             const itemId = parseId(row?.item);
             if (!rowId && (!collectionName || !itemId)) continue;
-
+    
             const nextRow = {};
             if (rowId) nextRow.id = rowId;
             if (collectionName) nextRow.collection = collectionName;
             if (itemId) nextRow.item = itemId;
-
+    
             const slot = asString(row?.slot);
             if (slot) nextRow.slot = slot;
-
+    
             const sortValue = asInteger(row?.sort);
             if (sortValue !== null) nextRow.sort = sortValue;
-
+    
             const parentId = parseId(row?.parent_block_id);
             if (parentId) nextRow.parent_block_id = parentId;
-
+    
             const groupTag = asString(row?.group_tag);
             if (groupTag) nextRow.group_tag = groupTag;
-
+    
             rows.push(nextRow);
           }
           return rows;
         };
-
+    
         const markPageDirtyFromDrawerEdits = () => {
           if (props.disabled) return;
           // Emit a canonical relation payload so Directus marks the parent form as dirty.
@@ -4107,6 +4739,45 @@ data:
           };
         };
     
+        const resolveModuleRegistryChannel = () => {
+          const configured = moduleRegistryChannelOption.value;
+          if (configured === 'preview' || configured === 'prod' || configured === 'all') return configured;
+          const pageReleaseChannel = toLower(pageContext.value?.release_channel);
+          if (pageReleaseChannel === 'preview' || pageReleaseChannel === 'prod') return pageReleaseChannel;
+          return 'all';
+        };
+    
+        const loadModuleRegistryModules = async () => {
+          if (!moduleRegistryEnabled.value || !moduleRegistryUrl.value) {
+            moduleRegistryModules.value = [];
+            return;
+          }
+    
+          try {
+            const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
+              channel: resolveModuleRegistryChannel(),
+              limit: moduleRegistryLimit.value,
+            });
+            const rows = Array.isArray(response?.items)
+              ? response.items
+              : Array.isArray(response?.data?.items)
+                ? response.data.items
+                : [];
+            moduleRegistryModules.value = rows
+              .map((row) => ({
+                module_key: asString(row?.module_key),
+                provider: toLower(row?.provider),
+                latest_version_preview: asString(row?.latest_version_preview),
+                latest_version_prod: asString(row?.latest_version_prod),
+              }))
+              .filter((row) => Boolean(row.module_key));
+          } catch (registryError) {
+            moduleRegistryModules.value = [];
+            // Keep UX functional via cms_modules fallback.
+            console.warn('cms-page-blocks-manager: module registry fetch failed; using cms_modules fallback', registryError);
+          }
+        };
+    
         const templateSlotsFor = (templateKey) => {
           const normalizedTemplateKey = asString(templateKey);
           if (!normalizedTemplateKey) return ['main'];
@@ -4114,14 +4785,14 @@ data:
           if (!Array.isArray(fromCache) || fromCache.length === 0) return ['main'];
           return fromCache;
         };
-
+    
         const loadSlotsForTemplate = async (templateKey) => {
           const normalizedTemplateKey = asString(templateKey);
           if (!normalizedTemplateKey) return ['main'];
           if (Array.isArray(slotsByTemplateKey.value[normalizedTemplateKey]) && slotsByTemplateKey.value[normalizedTemplateKey].length > 0) {
             return slotsByTemplateKey.value[normalizedTemplateKey];
           }
-
+    
           const siteKey = asString(pageContext.value.site_key);
           const filter = {
             _and: [
@@ -4136,14 +4807,14 @@ data:
                 : { site_key: { _empty: true } },
             ],
           };
-
+    
           const response = await apiRequest('GET', `/items/${layoutSlotsCollection.value}`, {
             fields: 'slot_key',
             limit: -1,
             sort: 'slot_key',
             filter: JSON.stringify(filter),
           });
-
+    
           const values = uniqueNonEmpty(normalizeRows(response).map((row) => row?.slot_key));
           const resolvedValues = values.length > 0 ? values : ['main'];
           slotsByTemplateKey.value = {
@@ -4152,7 +4823,7 @@ data:
           };
           return resolvedValues;
         };
-
+    
         const preloadSlotsForKnownTemplates = async () => {
           const candidates = uniqueNonEmpty([
             asString(pageContext.value.layout_template_key),
@@ -4207,6 +4878,7 @@ data:
           info.value = '';
           try {
             await loadPageContext();
+            await loadModuleRegistryModules();
             await loadBlocks();
             await preloadSlotsForKnownTemplates();
           } catch (requestError) {
@@ -4269,9 +4941,9 @@ data:
           else delete next[rowId];
           saving.value = next;
         };
-
+    
         const isDeleting = (rowId) => Boolean(deleting.value[rowId]);
-
+    
         const markDeleting = (rowId, active) => {
           const next = { ...deleting.value };
           if (active) next[rowId] = true;
@@ -4335,12 +5007,12 @@ data:
           const nextCollection = asString(collectionName);
           const nextPrimaryKey = parseId(primaryKey);
           if (!nextCollection || !nextPrimaryKey) return;
-
+    
           if (!hasDrawerItem) {
             error.value = 'Drawer editor is unavailable. Cannot open editor in-page.';
             return;
           }
-
+    
           if (drawerRefreshTimer) {
             clearTimeout(drawerRefreshTimer);
             drawerRefreshTimer = null;
@@ -4355,7 +5027,7 @@ data:
           drawerActive.value = true;
           void captureDrawerSnapshot(nextCollection, nextPrimaryKey, nextSession);
         };
-
+    
         const detectDrawerSnapshotChange = async (collectionName, primaryKey, beforeSnapshot, sessionToken) => {
           const delays = [0, 220, 420, 760, 1200];
           let latestSnapshot = '';
@@ -4371,12 +5043,12 @@ data:
           }
           return { changed: false, latestSnapshot };
         };
-
+    
         const handleDrawerActive = async (nextActive) => {
           const shouldBeActive = Boolean(nextActive);
           drawerActive.value = shouldBeActive;
           if (shouldBeActive) return;
-
+    
           const closingCollection = asString(drawerCollection.value);
           const closingPrimaryKey = parseId(drawerPrimaryKey.value);
           const closingSession = drawerSessionKey.value;
@@ -4403,7 +5075,7 @@ data:
           }
           drawerSavedByInput.value = false;
           drawerPendingPatch.value = {};
-
+    
           // Avoid immediate refresh/unmount races with DrawerItem save handling.
           if (drawerRefreshTimer) {
             clearTimeout(drawerRefreshTimer);
@@ -4417,7 +5089,7 @@ data:
             }
           }, 1200);
         };
-
+    
         const handleDrawerInput = async (edits) => {
           const collection = asString(drawerCollection.value);
           const primaryKey = parseId(drawerPrimaryKey.value);
@@ -4426,7 +5098,7 @@ data:
           const sanitizedPatch = sanitizeDrawerPatchPayload(edits);
           if (Object.keys(sanitizedPatch).length === 0) return;
           drawerPendingPatch.value = sanitizedPatch;
-
+    
           try {
             const response = await apiRequest(
               'PATCH',
@@ -4434,11 +5106,11 @@ data:
               {},
               sanitizedPatch,
             );
-
+    
             const updatedRow = response?.data || null;
             drawerSavedByInput.value = true;
             drawerPendingPatch.value = {};
-
+    
             if (collection === asString(pageBlocksCollection.value) && updatedRow) {
               const normalizedUpdated = normalizeBlockRow(updatedRow);
               blocks.value = blocks.value.map((candidate) => (
@@ -4450,30 +5122,30 @@ data:
                 group_tag: normalizedUpdated.group_tag,
               });
             }
-
+    
             const nextSnapshot = updatedRow ? toSnapshotHash(updatedRow) : '';
             if (nextSnapshot) {
               drawerSnapshotHash.value = nextSnapshot;
             } else {
               void captureDrawerSnapshot(collection, primaryKey, drawerSessionKey.value);
             }
-
+    
             markPageDirtyFromDrawerEdits();
             info.value = 'Saved drawer edits. Save the page to publish and trigger refresh.';
           } catch (requestError) {
             error.value = requestError?.message || 'Failed to persist drawer edits.';
           }
         };
-
+    
         const openBlockRow = (row) => {
           openDrawerItem(pageBlocksCollection.value, row?.id);
         };
-
+    
         const openContentItem = (row) => {
           if (!row.collection || !row.item) return;
           openDrawerItem(row.collection, row.item);
         };
-
+    
         const resolveDrawerFields = (collectionName) => {
           const key = asString(collectionName).toLowerCase();
           if (!key) return ['*'];
@@ -4494,11 +5166,11 @@ data:
           }
           return ['*'];
         };
-
+    
         const drawerFields = computed(() =>
           resolveDrawerFields(drawerCollection.value || pageBlocksCollection.value)
         );
-
+    
         const collectDescendantRowIds = (rootRowId) => {
           const rootId = parseId(rootRowId);
           if (!rootId) return [];
@@ -4511,7 +5183,7 @@ data:
             if (!childrenByParentId.has(parentId)) childrenByParentId.set(parentId, []);
             childrenByParentId.get(parentId).push(rowId);
           }
-
+    
           const ordered = [];
           const stack = [rootId];
           const seen = new Set();
@@ -4527,12 +5199,12 @@ data:
           }
           return ordered;
         };
-
+    
         const deleteBlockRow = async (row) => {
           if (props.disabled) return;
           const rowId = parseId(row?.id);
           if (!rowId || isDeleting(rowId) || isSaving(rowId)) return;
-
+    
           const subtreeIds = collectDescendantRowIds(rowId);
           if (subtreeIds.length === 0) return;
           const subtreeCount = subtreeIds.length;
@@ -4541,11 +5213,11 @@ data:
             ? `Delete this block and ${subtreeCount - 1} nested block(s)?`
             : 'Delete this block?';
           if (typeof window !== 'undefined' && !window.confirm(confirmMessage)) return;
-
+    
           markDeleting(rowId, true);
           error.value = '';
           info.value = '';
-
+    
           try {
             const rowById = new Map(blocks.value.map((candidate) => [parseId(candidate?.id), candidate]));
             const deletionOrder = [...subtreeIds].sort((left, right) => {
@@ -4553,30 +5225,30 @@ data:
               const rightDepth = asInteger(rowById.get(right)?.tree_depth) ?? 0;
               return rightDepth - leftDepth;
             });
-
+    
             for (const targetId of deletionOrder) {
               await apiRequest(
                 'DELETE',
                 `/items/${pageBlocksCollection.value}/${encodeURIComponent(targetId)}`,
               );
             }
-
+    
             const deleted = new Set(subtreeIds);
             blocks.value = blocks.value.filter((candidate) => !deleted.has(parseId(candidate?.id)));
-
+    
             const nextDrafts = { ...drafts.value };
             for (const deletedId of deleted) {
               delete nextDrafts[deletedId];
             }
             drafts.value = nextDrafts;
-
+    
             if (
               asString(drawerCollection.value) === asString(pageBlocksCollection.value)
               && deleted.has(parseId(drawerPrimaryKey.value))
             ) {
               drawerActive.value = false;
             }
-
+    
             emit('input', buildRelationManagerValue());
             info.value = `Deleted ${subtreeCount} block${subtreeCount === 1 ? '' : 's'}. Save the page to publish and trigger refresh.`;
             await refreshAll();
@@ -4598,13 +5270,13 @@ data:
               }
             : { site_key: { _empty: true } };
         };
-
+    
         const inferParentBlockIdForContext = () => {
           const contextId = asString(activeContext.value?.value) || PAGE_CONTEXT_ID;
           if (contextId === PAGE_CONTEXT_ID) return '';
           return parseTemplateContextId(contextId);
         };
-
+    
         const inferDefaultSlotForContext = async () => {
           const templateKey = asString(activeContext.value?.template_key);
           if (templateKey) {
@@ -4617,7 +5289,7 @@ data:
           }
           return 'main';
         };
-
+    
         const inferNextSortForContext = () => {
           const parentBlockId = inferParentBlockIdForContext();
           const siblingSorts = blocks.value
@@ -4631,7 +5303,7 @@ data:
           if (siblingSorts.length === 0) return 10;
           return Math.max(...siblingSorts) + 10;
         };
-
+    
         const resolveDefaultPublishedModuleKey = async (preferredModuleKey = '', providerFilter = []) => {
           const preferred = asString(preferredModuleKey);
           const normalizedProviders = Array.from(
@@ -4641,6 +5313,25 @@ data:
                 .filter(Boolean),
             ),
           );
+    
+          if (moduleRegistryEnabled.value && moduleRegistryUrl.value) {
+            if (!Array.isArray(moduleRegistryModules.value) || moduleRegistryModules.value.length === 0) {
+              await loadModuleRegistryModules();
+            }
+            const registryRows = Array.isArray(moduleRegistryModules.value) ? moduleRegistryModules.value : [];
+            const matchingRegistryRows = registryRows.filter((row) => {
+              if (!row?.module_key) return false;
+              if (preferred && row.module_key !== preferred) return false;
+              if (normalizedProviders.length > 0) {
+                return normalizedProviders.includes(toLower(row.provider));
+              }
+              return true;
+            });
+            if (matchingRegistryRows.length > 0) {
+              return asString(matchingRegistryRows[0]?.module_key);
+            }
+          }
+    
           const providerClause = normalizedProviders.length === 1
             ? { provider: { _eq: normalizedProviders[0] } }
             : (normalizedProviders.length > 1 ? { provider: { _in: normalizedProviders } } : null);
@@ -4664,7 +5355,7 @@ data:
           const siteSpecific = rows.find((row) => asString(row?.site_key) === siteKey);
           return asString(siteSpecific?.module_key || rows[0]?.module_key);
         };
-
+    
         const resolveDefaultPublishedTemplateKey = async (preferredTemplateKey = '') => {
           const preferred = asString(preferredTemplateKey);
           const filter = {
@@ -4686,19 +5377,19 @@ data:
           const siteSpecific = rows.find((row) => asString(row?.site_key) === siteKey);
           return asString(siteSpecific?.template_key || rows[0]?.template_key);
         };
-
+    
         const createPageBlockWithContent = async (type) => {
           if (props.disabled || !pageId.value || creatingBlockType.value) return;
           creatingBlockType.value = asString(type);
           error.value = '';
           info.value = '';
-
+    
           try {
             let contentCollection = '';
             let contentPayload = {};
             let preferredEditorCollection = '';
             let preferredEditorId = '';
-
+    
             if (type === 'rich_text') {
               contentCollection = 'cms_block_rich_text';
               contentPayload = {
@@ -4765,13 +5456,13 @@ data:
             } else {
               throw new Error(`Unsupported block type: ${type}`);
             }
-
+    
             const createdContent = await apiRequest('POST', `/items/${contentCollection}`, {}, contentPayload);
             const contentId = parseId(createdContent?.data?.id);
             if (!contentId) {
               throw new Error('Block content created but id was missing.');
             }
-
+    
             const parentBlockId = inferParentBlockIdForContext();
             const defaultSlot = await inferDefaultSlotForContext();
             const blockPayload = {
@@ -4782,16 +5473,16 @@ data:
               sort: inferNextSortForContext(),
               parent_block_id: parentBlockId || null,
             };
-
+    
             const createdLink = await apiRequest('POST', `/items/${pageBlocksCollection.value}`, {}, blockPayload);
             const linkId = parseId(createdLink?.data?.id);
-
+    
             info.value = `Created ${collectionDisplayName(contentCollection)} block.`;
             await refreshAll();
-
+    
             preferredEditorCollection = contentCollection;
             preferredEditorId = contentId;
-
+    
             if (preferredEditorCollection && preferredEditorId) {
               openDrawerItem(preferredEditorCollection, preferredEditorId);
             } else if (linkId) {
@@ -4803,7 +5494,7 @@ data:
             creatingBlockType.value = '';
           }
         };
-
+    
         const siteScopeFilterFor = (siteKey) => {
           const normalized = asString(siteKey);
           if (normalized) {
@@ -4816,7 +5507,7 @@ data:
             ],
           };
         };
-
+    
         const sanitizeClonePayload = (value, { blockedKeys = [], force = {} } = {}) => {
           if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...force };
           const blocked = new Set([
@@ -4840,12 +5531,12 @@ data:
             ...force,
           };
         };
-
+    
         const isNotFoundError = (message) => {
           const normalized = toLower(message);
           return normalized.includes('not found') || normalized.includes('does not exist');
         };
-
+    
         const fetchPageRecord = async (targetPageId, fields = '*') => {
           const normalizedPageId = parseId(targetPageId);
           if (!normalizedPageId) throw new Error('Page id is required.');
@@ -4856,7 +5547,7 @@ data:
           );
           return response?.data || null;
         };
-
+    
         const findPageByScope = async ({ slug, siteKey, releaseChannel }) => {
           const normalizedSlug = asString(slug);
           const normalizedRelease = toLower(releaseChannel);
@@ -4877,7 +5568,7 @@ data:
           const rows = normalizeRows(response);
           return rows[0] || null;
         };
-
+    
         const listBlocksForPage = async (targetPageId) => {
           const normalizedPageId = parseId(targetPageId);
           if (!normalizedPageId) return [];
@@ -4898,7 +5589,7 @@ data:
           });
           return normalizeRows(response);
         };
-
+    
         const deletePageBlockAndContent = async (row) => {
           const rowId = parseId(row?.id);
           const collectionName = asString(row?.collection);
@@ -4920,7 +5611,7 @@ data:
             if (!isNotFoundError(message)) throw error;
           }
         };
-
+    
         const clearBlocksForPage = async (targetPageId) => {
           const rows = await listBlocksForPage(targetPageId);
           if (rows.length === 0) return 0;
@@ -4934,14 +5625,14 @@ data:
           }
           return rows.length;
         };
-
+    
         const triggerManualProdRefresh = async ({ siteKey, slug }) => {
           const normalizedSite = asString(siteKey);
           const flowNameCandidates = [
             normalizedSite ? `CMS Cache Refresh (${normalizedSite}/prod) - Manual` : '',
             normalizedSite ? `CMS Cache Refresh (${normalizedSite}) - Manual` : '',
           ].filter(Boolean);
-
+    
           for (const flowName of flowNameCandidates) {
             const flowLookup = await apiRequest('GET', '/flows', {
               fields: 'id,name,status',
@@ -4966,39 +5657,39 @@ data:
           }
           return false;
         };
-
+    
         const promotePreviewToProd = async () => {
           if (props.disabled || promoting.value || loading.value || !pageId.value) return;
           error.value = '';
           info.value = '';
           promoting.value = true;
-
+    
           try {
             const sourcePage = await fetchPageRecord(pageId.value, '*');
             if (!sourcePage) throw new Error('Source page could not be loaded.');
-
+    
             const sourceReleaseChannel = toLower(sourcePage?.release_channel);
             if (sourceReleaseChannel !== PROMOTE_SOURCE_CHANNEL) {
               throw new Error('Promotions can only be run from preview pages.');
             }
-
+    
             const sourceSlug = asString(sourcePage?.slug);
             const sourceSiteKey = asString(sourcePage?.site_key);
             if (!sourceSlug) throw new Error('Page slug is required before promoting.');
-
+    
             const confirmMessage = `Promote page '${sourceSlug}' (${sourceSiteKey || 'global'}) from preview to prod? This replaces the current prod version for this page.`;
             if (typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
               promoting.value = false;
               return;
             }
-
+    
             const existingTargetPage = await findPageByScope({
               slug: sourceSlug,
               siteKey: sourceSiteKey,
               releaseChannel: PROMOTE_TARGET_CHANNEL,
             });
             const existingTargetPageId = parseId(existingTargetPage?.id);
-
+    
             const targetPagePayload = sanitizeClonePayload(sourcePage, {
               blockedKeys: ['blocks', 'parent'],
               force: {
@@ -5009,7 +5700,7 @@ data:
                 refresh_target: PROMOTE_TARGET_REFRESH,
               },
             });
-
+    
             let targetPageId = '';
             if (existingTargetPageId) {
               const updatedTargetPage = await apiRequest(
@@ -5029,10 +5720,10 @@ data:
               targetPageId = parseId(createdTargetPage?.data?.id);
             }
             if (!targetPageId) throw new Error('Promotion failed: target prod page id is missing.');
-
+    
             const sourceRows = await listBlocksForPage(pageId.value);
             await clearBlocksForPage(targetPageId);
-
+    
             const sortedSourceRows = [...sourceRows].sort((left, right) => {
               const leftDepth = asInteger(left?.tree_depth) ?? 0;
               const rightDepth = asInteger(right?.tree_depth) ?? 0;
@@ -5042,7 +5733,7 @@ data:
               if (leftSort !== null && rightSort !== null && leftSort !== rightSort) return leftSort - rightSort;
               return asString(left?.id).localeCompare(asString(right?.id));
             });
-
+    
             const sourceToTargetBlockId = new Map();
             let clonedCount = 0;
             for (const sourceRow of sortedSourceRows) {
@@ -5050,7 +5741,7 @@ data:
               const sourceCollection = asString(sourceRow?.collection);
               const sourceItemId = parseId(sourceRow?.item);
               if (!sourceBlockId || !sourceCollection || !sourceItemId) continue;
-
+    
               const sourceContentResponse = await apiRequest(
                 'GET',
                 `/items/${sourceCollection}/${encodeURIComponent(sourceItemId)}`,
@@ -5076,7 +5767,7 @@ data:
               if (!targetContentId) {
                 throw new Error(`Promotion failed: created content id missing for ${sourceCollection}.`);
               }
-
+    
               const sourceParentId = parseId(sourceRow?.parent_block_id);
               let targetParentId = null;
               if (sourceParentId) {
@@ -5085,7 +5776,7 @@ data:
                   throw new Error(`Promotion failed: could not resolve parent mapping for block ${sourceBlockId}.`);
                 }
               }
-
+    
               const targetBlockPayload = {
                 page_id: targetPageId,
                 collection: sourceCollection,
@@ -5102,7 +5793,7 @@ data:
               if (sourceSort !== null) {
                 targetBlockPayload.sort = sourceSort;
               }
-
+    
               const createdBlock = await apiRequest(
                 'POST',
                 `/items/${pageBlocksCollection.value}`,
@@ -5116,7 +5807,7 @@ data:
               sourceToTargetBlockId.set(sourceBlockId, targetBlockId);
               clonedCount += 1;
             }
-
+    
             const refreshTriggered = await triggerManualProdRefresh({
               siteKey: sourceSiteKey,
               slug: sourceSlug,
@@ -5131,7 +5822,7 @@ data:
             promoting.value = false;
           }
         };
-
+    
         const contextChoices = computed(() => {
           const choices = [{
             value: PAGE_CONTEXT_ID,
@@ -5141,7 +5832,7 @@ data:
             scope: 'page',
           }];
           const seen = new Set([PAGE_CONTEXT_ID]);
-
+    
           for (const row of blocks.value) {
             const templateKey = asString(row.template_group_key);
             if (!templateKey || templateKey === 'page-root') continue;
@@ -5157,10 +5848,10 @@ data:
               scope: asString(row.template_scope) || 'template',
             });
           }
-
+    
           return choices;
         });
-
+    
         const activeContext = computed(() => {
           const match = contextChoices.value.find((item) => item.value === selectedContext.value);
           if (match) return match;
@@ -5172,7 +5863,7 @@ data:
             scope: 'page',
           };
         });
-
+    
         const rowInSelectedContext = (row) => {
           const contextId = asString(activeContext.value?.value) || PAGE_CONTEXT_ID;
           if (contextId === PAGE_CONTEXT_ID) {
@@ -5182,7 +5873,7 @@ data:
           if (!templateBlockId) return false;
           return asString(row._context_id) === contextId;
         };
-
+    
         const isDirectChildForContext = (row) => {
           const contextId = asString(activeContext.value?.value) || PAGE_CONTEXT_ID;
           if (contextId === PAGE_CONTEXT_ID) return isDirectChildRow(row);
@@ -5190,16 +5881,16 @@ data:
           if (!templateBlockId) return false;
           return parseId(row.parent_block_id) === templateBlockId;
         };
-
+    
         const contextBlocks = computed(() => blocks.value.filter((row) => rowInSelectedContext(row)));
         const contextTemplateKey = computed(() => asString(activeContext.value?.template_key));
         const contextTemplateSlots = computed(() => templateSlotsFor(contextTemplateKey.value));
-
+    
         const collectionChoices = computed(() => uniqueNonEmpty(contextBlocks.value.map((row) => row.collection)));
         const slotChoices = computed(() => uniqueNonEmpty([...contextTemplateSlots.value, ...contextBlocks.value.map((row) => row.slot)]));
         const scopeChoices = computed(() => uniqueNonEmpty(contextBlocks.value.map((row) => row.template_scope)));
         const groupTagChoices = computed(() => uniqueNonEmpty(contextBlocks.value.map((row) => row.group_tag)));
-
+    
         const filteredBlocks = computed(() => {
           const needle = toLower(searchText.value);
           return contextBlocks.value.filter((row) => {
@@ -5272,7 +5963,7 @@ data:
         watch(instanceSignature, () => {
           claimPrimaryInstance();
         });
-
+    
         watch(
           () => contextChoices.value.map((item) => item.value).join('|'),
           () => {
@@ -5283,7 +5974,7 @@ data:
           },
           { immediate: true }
         );
-
+    
         watch(
           () => blocks.value.map((row) => asString(row?.id)).filter(Boolean).join('|'),
           () => {
@@ -5362,13 +6053,13 @@ data:
             if (leftCollection !== rightCollection) return leftCollection.localeCompare(rightCollection);
             return asString(left?.id).localeCompare(asString(right?.id));
           };
-
+    
           const blockById = new Map();
           for (const row of blocks.value) {
             if (!row?.id) continue;
             blockById.set(asString(row.id), row);
           }
-
+    
           const searchNeedle = toLower(searchText.value);
           const visibleRowIds = new Set();
           if (searchNeedle) {
@@ -5386,11 +6077,11 @@ data:
               }
             }
           }
-
+    
           const rowsForTree = searchNeedle
             ? blocks.value.filter((row) => visibleRowIds.has(asString(row?.id)))
             : blocks.value;
-
+    
           const childrenByParent = new Map();
           const pushChild = (parentKey, row) => {
             if (!childrenByParent.has(parentKey)) childrenByParent.set(parentKey, []);
@@ -5411,7 +6102,7 @@ data:
           }
           const rootRows = childrenByParent.get('__root') || [];
           const visibleCount = rowsForTree.length;
-
+    
           const styles = {
             root: {
               display: 'flex',
@@ -5644,7 +6335,7 @@ data:
               label
             );
           };
-
+    
           const renderIconControl = ({ icon, fallbackIcon = '•', label, onClick, disabled = false, danger = false }) => {
             if (hasButton) {
               return h(
@@ -5782,7 +6473,7 @@ data:
                     }),
                     renderIconControl({
                       icon: 'delete',
-                      fallbackIcon: '🗑',
+                      fallbackIcon: 'DEL',
                       label: isDeleting(rowId) ? 'Deleting block...' : 'Delete block',
                       disabled: !rowId || rowBusy,
                       danger: true,
@@ -5809,7 +6500,7 @@ data:
           const rootExpanded = isNodeExpanded('__root', true);
           const selectedAddTypeLabel = addBlockTypeChoices.find((item) => item.value === addBlockType.value)?.text || 'Block';
           const creatingAddTypeLabel = addBlockTypeChoices.find((item) => item.value === creatingBlockType.value)?.text || 'Block';
-
+    
           const children = [
             renderCard({
               className: 'cms-page-blocks-manager__toolbar-card',
@@ -5872,7 +6563,7 @@ data:
               ],
             }),
           ];
-
+    
           if (pageId.value) {
             children.push(
               h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Channel ${pageContext.value.release_channel || '(unset)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${visibleCount}/${blocks.value.length}`)
@@ -5897,7 +6588,7 @@ data:
                 : h('p', { class: 'cms-page-blocks-manager__hint' }, info.value)
             );
           }
-
+    
           if (!loading.value && rootRows.length === 0) {
             children.push(
               h(
@@ -5909,7 +6600,7 @@ data:
               )
             );
           }
-
+    
           if (pageId.value && rootRows.length > 0) {
             children.push(
               h('div', { class: 'cms-page-blocks-manager__tree-viewport-frame', style: styles.treeViewportFrame }, [
@@ -5938,7 +6629,7 @@ data:
               ])
             );
           }
-
+    
           if (hasDrawerItem) {
             children.push(
               h(resolvedDrawerItem, {
@@ -5967,7 +6658,7 @@ data:
               })
             );
           }
-
+    
           return h('div', { class: 'cms-page-blocks-manager', style: styles.root }, children);
         };
       },
@@ -6031,6 +6722,53 @@ data:
           type: 'string',
           meta: { width: 'half', interface: 'input' },
           schema: { default_value: 'site_key' },
+        },
+        {
+          field: 'module_registry_enabled',
+          name: 'Use Module Registry API',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: false },
+        },
+        {
+          field: 'module_registry_url',
+          name: 'Module Registry Base URL',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
+        },
+        {
+          field: 'module_registry_path',
+          name: 'Module Registry List Path',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '/api/modules' },
+        },
+        {
+          field: 'module_registry_channel',
+          name: 'Module Registry Channel',
+          type: 'string',
+          meta: {
+            width: 'half',
+            interface: 'select-dropdown',
+            options: {
+              allowNone: false,
+              choices: [
+                { text: 'Auto (from page release channel)', value: 'auto' },
+                { text: 'Preview', value: 'preview' },
+                { text: 'Prod', value: 'prod' },
+                { text: 'All', value: 'all' }
+              ]
+            }
+          },
+          schema: { default_value: 'auto' },
+        },
+        {
+          field: 'module_registry_limit',
+          name: 'Module Registry List Limit',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 250 },
         },
         {
           field: 'default_group_by',
