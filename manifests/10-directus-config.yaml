@@ -186,6 +186,8 @@ kind: ConfigMap
 metadata:
   name: directus-extensions-seed
   namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-options: ServerSideApply=true
 data:
   github-profile-sync.package.json: |
     {
