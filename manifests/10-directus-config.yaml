@@ -35,6 +35,10 @@ data:
   CORS_ENABLED: "true"
   CORS_ORIGIN: "true"
   ASSETS_CACHE_TTL: "30d"
+  # MFE module registry (used by Directus custom interfaces for module selection/props schemas)
+  DIRECTUS_MODULE_REGISTRY_URL: ""
+  DIRECTUS_MODULE_REGISTRY_PATH: "/api/modules"
+  DIRECTUS_MODULE_REGISTRY_CACHE_TTL_MS: "180000"
   # --- GitHub OAuth (Directus reads these envs) ---
   AUTH_GITHUB_DRIVER: "oauth2"
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
@@ -738,6 +742,11 @@ data:
           if (!configured || configured < 1) return 250;
           return Math.min(configured, 1000);
         });
+        const moduleRegistryCacheTtlMs = computed(() => {
+          const configured = asInteger(resolvedOptions.value?.module_registry_cache_ttl_ms, 180000);
+          if (!configured || configured < 1000) return 180000;
+          return Math.min(configured, 3600000);
+        });
         const includeGlobal = computed(() => {
           const v = resolvedOptions.value?.include_global;
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
@@ -800,7 +809,46 @@ data:
           return payload;
         };
     
-        const externalApiGet = async (baseUrl, path, params = {}) => {
+        const readRegistryCache = (cacheKey, cacheTtlMs) => {
+          if (!cacheKey) return null;
+          const now = Date.now();
+          const memoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+          const memoryEntry = memoryStore[cacheKey];
+          if (memoryEntry && Number(memoryEntry.expiresAt || 0) > now && memoryEntry.payload) {
+            return memoryEntry.payload;
+          }
+          try {
+            const raw = window.localStorage.getItem(`cms:module-registry:${cacheKey}`);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (Number(parsed?.expiresAt || 0) <= now || !parsed?.payload) {
+              window.localStorage.removeItem(`cms:module-registry:${cacheKey}`);
+              return null;
+            }
+            const nextMemoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+            nextMemoryStore[cacheKey] = parsed;
+            window.__cmsModuleRegistryResponseCache = nextMemoryStore;
+            return parsed.payload;
+          } catch {
+            return null;
+          }
+        };
+
+        const writeRegistryCache = (cacheKey, cacheTtlMs, payload) => {
+          if (!cacheKey || !payload) return;
+          const expiresAt = Date.now() + cacheTtlMs;
+          const entry = { expiresAt, payload };
+          const memoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+          memoryStore[cacheKey] = entry;
+          window.__cmsModuleRegistryResponseCache = memoryStore;
+          try {
+            window.localStorage.setItem(`cms:module-registry:${cacheKey}`, JSON.stringify(entry));
+          } catch {
+            // Ignore storage quota/permission issues; memory cache remains available.
+          }
+        };
+
+        const externalApiGet = async (baseUrl, path, params = {}, cacheConfig = {}) => {
           const prefix = asString(baseUrl).replace(/\/+$/g, '');
           const suffix = asString(path);
           const normalizedPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
@@ -809,7 +857,12 @@ data:
             if (value === null || value === undefined) return;
             url.searchParams.set(key, String(value));
           });
-    
+
+          const cacheKey = asString(cacheConfig?.cacheKey);
+          const cacheTtlMs = asInteger(cacheConfig?.cacheTtlMs, moduleRegistryCacheTtlMs.value);
+          const cached = readRegistryCache(cacheKey, cacheTtlMs);
+          if (cached) return cached;
+
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort('registry_timeout'), 9000);
           try {
@@ -824,6 +877,7 @@ data:
               const message = payload?.error || payload?.errors?.[0]?.message || `Request failed (${response.status})`;
               throw new Error(message);
             }
+            writeRegistryCache(cacheKey, cacheTtlMs, payload);
             return payload;
           } finally {
             clearTimeout(timeout);
@@ -907,6 +961,9 @@ data:
               const registryResponse = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
                 channel: resolveRegistryChannel(),
                 limit: moduleRegistryLimit.value,
+              }, {
+                cacheKey: `module-list:${moduleRegistryUrl.value}:${moduleRegistryPath.value}:${resolveRegistryChannel()}:${moduleRegistryLimit.value}`,
+                cacheTtlMs: moduleRegistryCacheTtlMs.value,
               });
               const registryRows = Array.isArray(registryResponse?.items)
                 ? registryResponse.items
@@ -1783,6 +1840,13 @@ data:
           schema: { default_value: 250 },
         },
         {
+          field: 'module_registry_cache_ttl_ms',
+          name: 'Module Registry Cache TTL (ms)',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 180000 },
+        },
+        {
           field: 'modules_collection',
           name: 'Modules Collection',
           type: 'string',
@@ -2314,6 +2378,18 @@ data:
       if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
       return value;
     };
+
+    const cloneJsonValue = (value) => {
+      if (Array.isArray(value)) return value.map((entry) => cloneJsonValue(entry));
+      if (value && typeof value === 'object') {
+        const output = {};
+        for (const [key, entry] of Object.entries(value)) {
+          output[key] = cloneJsonValue(entry);
+        }
+        return output;
+      }
+      return value;
+    };
     
     const normalizeRows = (response) => {
       const payload = response?.data;
@@ -2446,6 +2522,11 @@ data:
           const configured = asInteger(resolvedOptions.value?.module_registry_limit, 250);
           if (!configured || configured < 1) return 250;
           return Math.min(configured, 1000);
+        });
+        const moduleRegistryCacheTtlMs = computed(() => {
+          const configured = asInteger(resolvedOptions.value?.module_registry_cache_ttl_ms, 180000);
+          if (!configured || configured < 1000) return 180000;
+          return Math.min(configured, 3600000);
         });
         const showJsonFallback = computed(() => {
           const v = resolvedOptions.value?.show_json_fallback;
@@ -2589,7 +2670,46 @@ data:
           return payload;
         };
     
-        const externalApiGet = async (baseUrl, path, params = {}) => {
+        const readRegistryCache = (cacheKey) => {
+          if (!cacheKey || typeof window === 'undefined') return null;
+          const now = Date.now();
+          const memoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+          const memoryEntry = memoryStore[cacheKey];
+          if (memoryEntry && Number(memoryEntry.expiresAt || 0) > now && memoryEntry.payload) {
+            return memoryEntry.payload;
+          }
+          try {
+            const raw = window.localStorage.getItem(`cms:module-registry:${cacheKey}`);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (Number(parsed?.expiresAt || 0) <= now || !parsed?.payload) {
+              window.localStorage.removeItem(`cms:module-registry:${cacheKey}`);
+              return null;
+            }
+            const nextMemoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+            nextMemoryStore[cacheKey] = parsed;
+            window.__cmsModuleRegistryResponseCache = nextMemoryStore;
+            return parsed.payload;
+          } catch {
+            return null;
+          }
+        };
+
+        const writeRegistryCache = (cacheKey, cacheTtlMs, payload) => {
+          if (!cacheKey || !payload || typeof window === 'undefined') return;
+          const expiresAt = Date.now() + cacheTtlMs;
+          const entry = { expiresAt, payload };
+          const memoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+          memoryStore[cacheKey] = entry;
+          window.__cmsModuleRegistryResponseCache = memoryStore;
+          try {
+            window.localStorage.setItem(`cms:module-registry:${cacheKey}`, JSON.stringify(entry));
+          } catch {
+            // Ignore storage quota/permission issues; memory cache remains available.
+          }
+        };
+
+        const externalApiGet = async (baseUrl, path, params = {}, cacheConfig = {}) => {
           const prefix = asString(baseUrl).replace(/\/+$/g, '');
           const suffix = asString(path);
           const normalizedPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
@@ -2598,7 +2718,12 @@ data:
             if (value === null || value === undefined || value === '') return;
             url.searchParams.set(key, String(value));
           });
-    
+
+          const cacheKey = asString(cacheConfig?.cacheKey);
+          const cacheTtlMs = asInteger(cacheConfig?.cacheTtlMs, moduleRegistryCacheTtlMs.value);
+          const cached = readRegistryCache(cacheKey);
+          if (cached) return cached;
+
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort('registry_timeout'), 9000);
           try {
@@ -2613,6 +2738,7 @@ data:
               const message = payload?.error || payload?.errors?.[0]?.message || `Request failed (${response.status})`;
               throw new Error(message);
             }
+            writeRegistryCache(cacheKey, cacheTtlMs, payload);
             return payload;
           } finally {
             clearTimeout(timeout);
@@ -2919,159 +3045,161 @@ data:
           return 'all';
         };
     
-        const normalizeRegistryModuleDefinition = (row, fallbackModuleKey = '') => {
-          const manifest = normalizeObject(parseJsonLike(row?.manifest, {}));
-          const latestManifest = normalizeObject(parseJsonLike(row?.latest_manifest, {}));
-          const versionManifest = normalizeObject(parseJsonLike(row?.latest_version_manifest, {}));
-          const latestVersion = normalizeObject(parseJsonLike(row?.latest_version, {}));
-          const latestVersionPreview = normalizeObject(parseJsonLike(row?.latest_version_preview, {}));
-          const latestVersionProd = normalizeObject(parseJsonLike(row?.latest_version_prod, {}));
-    
+        const buildModuleRegistryDetailPath = (moduleKeyValue) => {
+          const key = asString(moduleKeyValue);
+          if (!key) return asString(moduleRegistryPath.value) || '/api/modules';
+          const listPath = asString(moduleRegistryPath.value) || '/api/modules';
+          const normalizedListPath = listPath.endsWith('/') ? listPath.slice(0, -1) : listPath;
+          return `${normalizedListPath}/${encodeURIComponent(key)}`;
+        };
+
+        const pickRegistryVersionForChannel = (detail) => {
+          const detailPayload = normalizeObject(parseJsonLike(detail, {}));
+          const versions = Array.isArray(detailPayload?.versions) ? detailPayload.versions : [];
+          const latestPreview = normalizeObject(parseJsonLike(detailPayload?.latest_preview, {}));
+          const latestProd = normalizeObject(parseJsonLike(detailPayload?.latest_prod, {}));
+          const firstVersion = normalizeObject(parseJsonLike(versions[0], {}));
+          const channel = resolveRegistryChannel();
+          if (channel === 'preview') return latestPreview?.module_version ? latestPreview : (latestProd?.module_version ? latestProd : firstVersion);
+          if (channel === 'prod') return latestProd?.module_version ? latestProd : (latestPreview?.module_version ? latestPreview : firstVersion);
+          return latestPreview?.module_version
+            ? latestPreview
+            : (latestProd?.module_version ? latestProd : firstVersion);
+        };
+
+        const normalizeRegistryModuleDefinition = (detail, fallbackModuleKey = '') => {
+          const detailPayload = normalizeObject(parseJsonLike(detail, {}));
+          const moduleSummary = normalizeObject(parseJsonLike(detailPayload?.module, {}));
+          const selectedVersion = pickRegistryVersionForChannel(detailPayload);
+          const selectedDefinition = normalizeObject(parseJsonLike(selectedVersion?.definition, {}));
+          const selectedSeed = normalizeObject(parseJsonLike(selectedVersion?.seed, {}));
+          const selectedDefinitionIo = normalizeObject(parseJsonLike(selectedDefinition?.io, {}));
+
           const normalizedModuleKey = pickFirstNonEmptyString(
-            row?.[moduleKeyField.value],
-            row?.module_key,
-            row?.moduleKey,
-            row?.key,
+            moduleSummary?.module_key,
+            selectedVersion?.module_key,
+            selectedDefinition?.module_key,
+            selectedSeed?.module_key,
             fallbackModuleKey,
           );
           if (!normalizedModuleKey) return null;
-    
+
           const normalizedProvider = pickFirstNonEmptyString(
-            row?.[moduleProviderField.value],
-            row?.module_provider,
-            row?.provider,
-            manifest?.provider,
-            latestManifest?.provider,
-            versionManifest?.provider,
+            moduleSummary?.provider,
+            selectedVersion?.provider,
+            selectedSeed?.provider,
+            selectedDefinition?.provider,
           );
-    
+
           const normalizedSchema = pickFirstObject(
-            row?.[propsSchemaField.value],
-            row?.props_schema,
-            row?.propsSchema,
-            row?.schema,
-            row?.config_schema,
-            row?.configSchema,
-            manifest?.[propsSchemaField.value],
-            manifest?.props_schema,
-            manifest?.propsSchema,
-            manifest?.schema,
-            manifest?.config_schema,
-            manifest?.configSchema,
-            latestManifest?.[propsSchemaField.value],
-            latestManifest?.props_schema,
-            latestManifest?.propsSchema,
-            latestManifest?.schema,
-            versionManifest?.[propsSchemaField.value],
-            versionManifest?.props_schema,
-            versionManifest?.propsSchema,
-            versionManifest?.schema,
-            latestVersion?.[propsSchemaField.value],
-            latestVersion?.props_schema,
-            latestVersion?.propsSchema,
-            latestVersion?.schema,
-            latestVersionPreview?.[propsSchemaField.value],
-            latestVersionPreview?.props_schema,
-            latestVersionPreview?.propsSchema,
-            latestVersionPreview?.schema,
-            latestVersionProd?.[propsSchemaField.value],
-            latestVersionProd?.props_schema,
-            latestVersionProd?.propsSchema,
-            latestVersionProd?.schema,
+            selectedVersion?.[propsSchemaField.value],
+            selectedVersion?.props_schema,
+            selectedVersion?.propsSchema,
+            selectedVersion?.schema,
+            selectedVersion?.config_schema,
+            selectedVersion?.configSchema,
+            selectedSeed?.[propsSchemaField.value],
+            selectedSeed?.props_schema,
+            selectedSeed?.propsSchema,
+            selectedSeed?.schema,
+            selectedSeed?.config_schema,
+            selectedSeed?.configSchema,
+            selectedDefinition?.[propsSchemaField.value],
+            selectedDefinition?.props_schema,
+            selectedDefinition?.propsSchema,
+            selectedDefinition?.schema,
+            selectedDefinition?.config_schema,
+            selectedDefinition?.configSchema,
+            selectedDefinitionIo?.[propsSchemaField.value],
+            selectedDefinitionIo?.props_schema,
+            selectedDefinitionIo?.propsSchema,
+            selectedDefinitionIo?.schema,
+            moduleSummary?.[propsSchemaField.value],
+            moduleSummary?.props_schema,
+            moduleSummary?.propsSchema,
+            moduleSummary?.schema,
           );
-    
+
           const normalizedDefaults = pickFirstObject(
-            row?.[defaultPropsField.value],
-            row?.default_props,
-            row?.defaultProps,
-            row?.defaults,
-            row?.props_defaults,
-            manifest?.[defaultPropsField.value],
-            manifest?.default_props,
-            manifest?.defaultProps,
-            manifest?.defaults,
-            manifest?.props_defaults,
-            latestManifest?.[defaultPropsField.value],
-            latestManifest?.default_props,
-            latestManifest?.defaultProps,
-            latestManifest?.defaults,
-            versionManifest?.[defaultPropsField.value],
-            versionManifest?.default_props,
-            versionManifest?.defaultProps,
-            versionManifest?.defaults,
-            latestVersion?.[defaultPropsField.value],
-            latestVersion?.default_props,
-            latestVersion?.defaultProps,
-            latestVersion?.defaults,
-            latestVersionPreview?.[defaultPropsField.value],
-            latestVersionPreview?.default_props,
-            latestVersionPreview?.defaultProps,
-            latestVersionPreview?.defaults,
-            latestVersionProd?.[defaultPropsField.value],
-            latestVersionProd?.default_props,
-            latestVersionProd?.defaultProps,
-            latestVersionProd?.defaults,
+            selectedVersion?.[defaultPropsField.value],
+            selectedVersion?.default_props,
+            selectedVersion?.defaultProps,
+            selectedVersion?.defaults,
+            selectedVersion?.props_defaults,
+            selectedSeed?.[defaultPropsField.value],
+            selectedSeed?.default_props,
+            selectedSeed?.defaultProps,
+            selectedSeed?.defaults,
+            selectedSeed?.props_defaults,
+            selectedDefinition?.[defaultPropsField.value],
+            selectedDefinition?.default_props,
+            selectedDefinition?.defaultProps,
+            selectedDefinition?.defaults,
+            selectedDefinition?.props_defaults,
+            moduleSummary?.[defaultPropsField.value],
+            moduleSummary?.default_props,
+            moduleSummary?.defaultProps,
           );
-    
+
           const normalizedName = pickFirstNonEmptyString(
-            row?.name,
-            row?.display_name,
-            row?.title,
-            manifest?.name,
-            latestManifest?.name,
+            selectedSeed?.name,
+            selectedDefinition?.display_name,
+            selectedDefinition?.name,
+            moduleSummary?.display_name,
+            moduleSummary?.name,
             normalizedModuleKey,
           );
-    
+
           const normalizedDescription = pickFirstNonEmptyString(
-            row?.description,
-            row?.summary,
-            manifest?.description,
-            latestManifest?.description,
+            selectedSeed?.description,
+            selectedDefinition?.description,
+            moduleSummary?.description,
+            moduleSummary?.summary,
           );
-    
+
           return {
-            id: pickFirstNonEmptyString(row?.id, `${normalizedModuleKey}:registry`),
+            id: pickFirstNonEmptyString(selectedVersion?.module_version, moduleSummary?.module_key, `${normalizedModuleKey}:registry`),
             name: normalizedName,
             description: normalizedDescription,
             provider: normalizedProvider,
             [moduleKeyField.value]: normalizedModuleKey,
             [moduleProviderField.value]: normalizedProvider,
-            site_key: pickFirstNonEmptyString(row?.site_key, manifest?.site_key),
+            site_key: pickFirstNonEmptyString(
+              selectedSeed?.site_key,
+              selectedDefinition?.site_key,
+              moduleSummary?.site_key,
+            ),
             status: 'published',
             [propsSchemaField.value]: normalizedSchema,
             [defaultPropsField.value]: normalizedDefaults,
             date_updated: pickFirstNonEmptyString(
-              row?.date_updated,
-              row?.updated_at,
-              row?.published_at,
-              row?.last_published_at,
+              selectedVersion?.updated_at,
+              selectedVersion?.published_at,
+              moduleSummary?.updated_at,
             ),
             date_created: pickFirstNonEmptyString(
-              row?.date_created,
-              row?.created_at,
-              row?.published_at,
+              selectedVersion?.created_at,
+              selectedVersion?.published_at,
             ),
           };
         };
-    
+
         const fetchModuleDefinitionFromRegistry = async (key, effectiveSiteKey) => {
-          const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
-            module_key: key,
-            channel: resolveRegistryChannel(),
-            limit: moduleRegistryLimit.value,
+          const detailPath = buildModuleRegistryDetailPath(key);
+          const response = await externalApiGet(moduleRegistryUrl.value, detailPath, {}, {
+            cacheKey: `module-detail:${moduleRegistryUrl.value}:${detailPath}:${resolveRegistryChannel()}`,
+            cacheTtlMs: moduleRegistryCacheTtlMs.value,
           });
-    
-          const rows = normalizeRegistryRows(response)
-            .map((row) => normalizeRegistryModuleDefinition(row, key))
-            .filter((row) => row && asString(row?.[moduleKeyField.value]) === key)
-            .filter((row) => {
-              if (effectiveModuleProviders.value.length === 0) return true;
-              const provider = toLower(row?.provider ?? row?.[moduleProviderField.value]);
-              return provider && effectiveModuleProviders.value.includes(provider);
-            });
-    
-          if (rows.length === 0) return null;
-          return selectPreferredModuleDefinition(rows, effectiveSiteKey);
+
+          const normalized = normalizeRegistryModuleDefinition(response, key);
+          if (!normalized) return null;
+          if (effectiveModuleProviders.value.length > 0) {
+            const provider = toLower(normalized?.provider ?? normalized?.[moduleProviderField.value]);
+            if (!provider || !effectiveModuleProviders.value.includes(provider)) {
+              return null;
+            }
+          }
+          return selectPreferredModuleDefinition([normalized], effectiveSiteKey);
         };
     
         const countSchemaPropertyKeys = (schemaCandidate) => {
@@ -3578,6 +3706,243 @@ data:
                 setPropertyValue(propKey, Number.isFinite(parsed) ? parsed : undefined);
               },
             });
+          } else if (type === 'object' && Object.keys(normalizeObject(schema?.properties)).length > 0) {
+            const getNestedValue = (source, pathSegments) => {
+              let cursor = source;
+              for (const segment of pathSegments) {
+                if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined;
+                cursor = cursor[segment];
+              }
+              return cursor;
+            };
+
+            const setNestedValue = (source, pathSegments, nextValue) => {
+              if (!Array.isArray(pathSegments) || pathSegments.length === 0) return source;
+              const output = cloneJsonValue(source);
+              let cursor = output;
+              for (let index = 0; index < pathSegments.length - 1; index += 1) {
+                const segment = pathSegments[index];
+                const existing = cursor?.[segment];
+                if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+                  cursor[segment] = {};
+                }
+                cursor = cursor[segment];
+              }
+              const leafKey = pathSegments[pathSegments.length - 1];
+              if (nextValue === undefined || nextValue === null || nextValue === '') {
+                delete cursor[leafKey];
+              } else {
+                cursor[leafKey] = nextValue;
+              }
+              return output;
+            };
+
+            const pruneEmptyObjects = (valueToPrune) => {
+              if (Array.isArray(valueToPrune)) {
+                return valueToPrune.map((entry) => pruneEmptyObjects(entry));
+              }
+              if (!valueToPrune || typeof valueToPrune !== 'object') return valueToPrune;
+              const output = {};
+              for (const [entryKey, entryValue] of Object.entries(valueToPrune)) {
+                const nextValue = pruneEmptyObjects(entryValue);
+                if (
+                  nextValue === undefined
+                  || nextValue === null
+                  || nextValue === ''
+                  || (typeof nextValue === 'object' && !Array.isArray(nextValue) && Object.keys(nextValue).length === 0)
+                ) {
+                  continue;
+                }
+                output[entryKey] = nextValue;
+              }
+              return output;
+            };
+
+            const clearDraftValue = (draftKey) => {
+              if (!Object.prototype.hasOwnProperty.call(propertyDraftValues.value, draftKey)) return;
+              const nextDrafts = { ...propertyDraftValues.value };
+              delete nextDrafts[draftKey];
+              propertyDraftValues.value = nextDrafts;
+            };
+
+            const applyNestedValue = (pathSegments, nextValue) => {
+              const currentRoot = normalizeObject(mergedProps.value?.[propKey]);
+              const withUpdate = setNestedValue(currentRoot, pathSegments, nextValue);
+              const pruned = pruneEmptyObjects(withUpdate);
+              const draftKey = `${propKey}.${pathSegments.join('.')}`;
+              clearDraftValue(draftKey);
+              if (Object.keys(pruned).length === 0) {
+                setPropertyValue(propKey, undefined);
+              } else {
+                setPropertyValue(propKey, pruned);
+              }
+            };
+
+            const renderNestedField = (pathSegments, fieldSchema, requiredSet, depth = 0) => {
+              const nestedSchema = normalizeObject(fieldSchema);
+              const nestedType = asString(nestedSchema?.type).toLowerCase();
+              const enumItems = Array.isArray(nestedSchema?.enum)
+                ? nestedSchema.enum.map((entry) => asString(entry)).filter(Boolean)
+                : [];
+              const fieldKey = asString(pathSegments[pathSegments.length - 1]);
+              const fieldValue = getNestedValue(normalizeObject(mergedProps.value?.[propKey]), pathSegments);
+              const fieldId = `${inputId}-${pathSegments.join('-')}`;
+              const fieldTitle = asString(nestedSchema?.title) || fieldKey;
+              const fieldDescription = asString(nestedSchema?.description);
+              const isFieldRequired = requiredSet.has(fieldKey);
+              const nestedProperties = normalizeObject(nestedSchema?.properties);
+
+              let nestedControl = null;
+              if (enumItems.length > 0) {
+                const selectChoices = enumItems.map((entry) => ({ text: entry, value: entry }));
+                if (hasSelect) {
+                  nestedControl = h(resolvedSelect, {
+                    id: fieldId,
+                    modelValue: asInputString(fieldValue) || null,
+                    items: selectChoices,
+                    placeholder: `Select ${fieldTitle}`,
+                    disabled,
+                    showDeselect: true,
+                    'onUpdate:modelValue': (nextValue) => applyNestedValue(pathSegments, asInputString(nextValue)),
+                  });
+                } else {
+                  nestedControl = h(
+                    'select',
+                    {
+                      id: fieldId,
+                      disabled,
+                      value: asInputString(fieldValue),
+                      onChange: (event) => applyNestedValue(pathSegments, asInputString(event?.target?.value)),
+                    },
+                    [
+                      h('option', { value: '' }, `Select ${fieldTitle}`),
+                      ...selectChoices.map((entry) => h('option', { value: entry.value }, entry.text)),
+                    ],
+                  );
+                }
+              } else if (nestedType === 'boolean') {
+                if (hasCheckbox) {
+                  nestedControl = h(resolvedCheckbox, {
+                    id: fieldId,
+                    modelValue: Boolean(fieldValue),
+                    disabled,
+                    'onUpdate:modelValue': (nextValue) => applyNestedValue(pathSegments, Boolean(nextValue)),
+                  });
+                } else {
+                  nestedControl = h('input', {
+                    id: fieldId,
+                    type: 'checkbox',
+                    disabled,
+                    checked: Boolean(fieldValue),
+                    onChange: (event) => applyNestedValue(pathSegments, Boolean(event?.target?.checked)),
+                  });
+                }
+              } else if (nestedType === 'number' || nestedType === 'integer') {
+                nestedControl = renderInputControl({
+                  id: fieldId,
+                  type: 'number',
+                  modelValue: asInputString(fieldValue),
+                  onUpdate: (rawValue) => {
+                    const raw = asString(rawValue);
+                    if (!raw) {
+                      applyNestedValue(pathSegments, undefined);
+                      return;
+                    }
+                    const parsed = nestedType === 'integer' ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+                    applyNestedValue(pathSegments, Number.isFinite(parsed) ? parsed : undefined);
+                  },
+                });
+              } else if (nestedType === 'object' && Object.keys(nestedProperties).length > 0) {
+                const nestedRequired = new Set(
+                  (Array.isArray(nestedSchema?.required) ? nestedSchema.required : []).map((entry) => asString(entry))
+                );
+                const nestedFields = Object.entries(nestedProperties).map(([childKey, childSchema]) =>
+                  renderNestedField([...pathSegments, childKey], childSchema, nestedRequired, depth + 1)
+                );
+                nestedControl = h('section', {
+                  style: {
+                    border: '1px solid var(--theme--border-subdued)',
+                    borderRadius: '8px',
+                    padding: '10px',
+                    background: 'var(--theme--background-subdued)',
+                    display: 'grid',
+                    gap: '10px',
+                  },
+                }, nestedFields);
+              } else if (nestedType === 'array' || nestedType === 'object') {
+                const draftKey = `${propKey}.${pathSegments.join('.')}`;
+                const existingDraft = Object.prototype.hasOwnProperty.call(propertyDraftValues.value, draftKey)
+                  ? propertyDraftValues.value[draftKey]
+                  : null;
+                const draftValue = existingDraft === null
+                  ? (fieldValue === undefined ? '' : JSON.stringify(fieldValue, null, 2))
+                  : asInputString(existingDraft);
+                nestedControl = renderTextareaControl({
+                  id: fieldId,
+                  rows: 4,
+                  modelValue: draftValue,
+                  onUpdate: (nextValue) => {
+                    propertyDraftValues.value = {
+                      ...propertyDraftValues.value,
+                      [draftKey]: asInputString(nextValue),
+                    };
+                  },
+                  onBlur: (event) => {
+                    const raw = asString(event?.target?.value ?? propertyDraftValues.value[draftKey]);
+                    if (!raw) {
+                      applyNestedValue(pathSegments, undefined);
+                      schemaError.value = '';
+                      return;
+                    }
+                    try {
+                      const parsed = JSON.parse(raw);
+                      applyNestedValue(pathSegments, parsed);
+                      schemaError.value = '';
+                    } catch {
+                      schemaError.value = `Invalid JSON for ${fieldTitle}.`;
+                    }
+                  },
+                });
+              } else {
+                nestedControl = renderInputControl({
+                  id: fieldId,
+                  type: 'text',
+                  modelValue: asInputString(fieldValue),
+                  onUpdate: (nextValue) => applyNestedValue(pathSegments, asInputString(nextValue)),
+                });
+              }
+
+              return h('div', {
+                class: 'cms-module-props-editor__field',
+                key: `${propKey}.${pathSegments.join('.')}`,
+                style: depth > 0 ? { paddingLeft: '4px' } : {},
+              }, [
+                h('label', { for: fieldId, class: 'cms-module-props-editor__label' }, [
+                  fieldTitle,
+                  isFieldRequired ? h('span', { class: 'cms-module-props-editor__required' }, ' *') : null,
+                ]),
+                fieldDescription ? h('p', { class: 'cms-module-props-editor__hint' }, fieldDescription) : null,
+                nestedControl,
+              ]);
+            };
+
+            const requiredKeys = new Set(
+              (Array.isArray(schema?.required) ? schema.required : []).map((entry) => asString(entry))
+            );
+            const nestedFields = Object.entries(normalizeObject(schema?.properties)).map(([childKey, childSchema]) =>
+              renderNestedField([childKey], childSchema, requiredKeys)
+            );
+
+            control = h('section', {
+              style: {
+                border: '1px solid var(--theme--border-subdued)',
+                borderRadius: '8px',
+                padding: '10px',
+                background: 'var(--theme--background-subdued)',
+                display: 'grid',
+                gap: '10px',
+              },
+            }, nestedFields);
           } else if (type === 'array' || type === 'object') {
             const existingDraft = Object.prototype.hasOwnProperty.call(propertyDraftValues.value, propKey)
               ? propertyDraftValues.value[propKey]
@@ -3814,7 +4179,7 @@ data:
             );
           } else if (!loading.value && !loadError.value && !hasComplexProperties) {
             children.push(
-              h('p', { class: 'cms-module-props-editor__hint' }, 'No property schema defined for this module. Use JSON fallback.')
+              h('p', { class: 'cms-module-props-editor__hint' }, 'No property schema is published for this module. Publish props_schema/default_props in the module catalog to enable form fields.')
             );
           }
     
@@ -4062,6 +4427,13 @@ data:
           type: 'integer',
           meta: { width: 'half', interface: 'input' },
           schema: { default_value: 250 },
+        },
+        {
+          field: 'module_registry_cache_ttl_ms',
+          name: 'Module Registry Cache TTL (ms)',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 180000 },
         },
         {
           field: 'include_global',
@@ -4343,6 +4715,11 @@ data:
           if (!configured || configured < 1) return 250;
           return Math.min(configured, 1000);
         });
+        const moduleRegistryCacheTtlMs = computed(() => {
+          const configured = asInteger(resolvedOptions.value?.module_registry_cache_ttl_ms, 180000);
+          if (!configured || configured < 1000) return 180000;
+          return Math.min(configured, 3600000);
+        });
         const addBlockTypeChoices = [
           { text: 'Rich Text', value: 'rich_text' },
           { text: 'Hero', value: 'hero' },
@@ -4504,7 +4881,46 @@ data:
           throw new Error(`${upperMethod} failed after retries.`);
         };
     
-        const externalApiGet = async (baseUrl, path, params = {}) => {
+        const readRegistryCache = (cacheKey) => {
+          if (!cacheKey || typeof window === 'undefined') return null;
+          const now = Date.now();
+          const memoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+          const memoryEntry = memoryStore[cacheKey];
+          if (memoryEntry && Number(memoryEntry.expiresAt || 0) > now && memoryEntry.payload) {
+            return memoryEntry.payload;
+          }
+          try {
+            const raw = window.localStorage.getItem(`cms:module-registry:${cacheKey}`);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (Number(parsed?.expiresAt || 0) <= now || !parsed?.payload) {
+              window.localStorage.removeItem(`cms:module-registry:${cacheKey}`);
+              return null;
+            }
+            const nextMemoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+            nextMemoryStore[cacheKey] = parsed;
+            window.__cmsModuleRegistryResponseCache = nextMemoryStore;
+            return parsed.payload;
+          } catch {
+            return null;
+          }
+        };
+
+        const writeRegistryCache = (cacheKey, cacheTtlMs, payload) => {
+          if (!cacheKey || !payload || typeof window === 'undefined') return;
+          const expiresAt = Date.now() + cacheTtlMs;
+          const entry = { expiresAt, payload };
+          const memoryStore = window.__cmsModuleRegistryResponseCache ?? {};
+          memoryStore[cacheKey] = entry;
+          window.__cmsModuleRegistryResponseCache = memoryStore;
+          try {
+            window.localStorage.setItem(`cms:module-registry:${cacheKey}`, JSON.stringify(entry));
+          } catch {
+            // Ignore storage quota/permission issues; memory cache remains available.
+          }
+        };
+
+        const externalApiGet = async (baseUrl, path, params = {}, cacheConfig = {}) => {
           const prefix = asString(baseUrl).replace(/\/+$/g, '');
           const suffix = asString(path);
           const normalizedPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
@@ -4513,7 +4929,12 @@ data:
             if (value === null || value === undefined || value === '') return;
             url.searchParams.set(key, String(value));
           });
-    
+
+          const cacheKey = asString(cacheConfig?.cacheKey);
+          const cacheTtlMs = asInteger(cacheConfig?.cacheTtlMs, moduleRegistryCacheTtlMs.value);
+          const cached = readRegistryCache(cacheKey);
+          if (cached) return cached;
+
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort('registry_timeout'), 10000);
           try {
@@ -4531,6 +4952,7 @@ data:
               const message = payload?.error || payload?.errors?.[0]?.message || `GET failed (${response.status})`;
               throw new Error(message);
             }
+            writeRegistryCache(cacheKey, cacheTtlMs, payload);
             return payload;
           } finally {
             clearTimeout(timeout);
@@ -4757,6 +5179,9 @@ data:
             const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
               channel: resolveModuleRegistryChannel(),
               limit: moduleRegistryLimit.value,
+            }, {
+              cacheKey: `module-list:${moduleRegistryUrl.value}:${moduleRegistryPath.value}:${resolveModuleRegistryChannel()}:${moduleRegistryLimit.value}`,
+              cacheTtlMs: moduleRegistryCacheTtlMs.value,
             });
             const rows = Array.isArray(response?.items)
               ? response.items

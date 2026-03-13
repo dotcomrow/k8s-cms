@@ -3251,15 +3251,46 @@ data:
         '{mode:"slot",templates_collection:"cms_layout_templates",slots_collection:"cms_layout_template_slots",pages_collection:"cms_pages",page_id_field:"page_id",page_template_field:"layout_template_key",page_site_field:"site_key",slot_value_field:"slot_key",slot_label_field:"slot_label",include_global:true,choices:$choices}')"
       slot_display_options_json="$(jq -nc --argjson choices "${slot_choices_json}" '{choices:$choices}')"
       module_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices,allowNone:false}')"
+      module_registry_url_raw="${DIRECTUS_MODULE_REGISTRY_URL:-}"
+      module_registry_url="$(printf '%s' "${module_registry_url_raw}" | tr -d '\r')"
+      module_registry_path_raw="${DIRECTUS_MODULE_REGISTRY_PATH:-/api/modules}"
+      module_registry_path="$(printf '%s' "${module_registry_path_raw}" | tr -d '\r')"
+      if [ -z "${module_registry_path:-}" ] || [ "${module_registry_path}" = "null" ]; then
+        module_registry_path="/api/modules"
+      fi
+      module_registry_cache_ttl_ms_raw="${DIRECTUS_MODULE_REGISTRY_CACHE_TTL_MS:-180000}"
+      module_registry_cache_ttl_ms="$(printf '%s' "${module_registry_cache_ttl_ms_raw}" | tr -dc '0-9')"
+      if [ -z "${module_registry_cache_ttl_ms:-}" ] || [ "${module_registry_cache_ttl_ms}" -lt 1000 ]; then
+        module_registry_cache_ttl_ms=180000
+      fi
+      if [ "${module_registry_cache_ttl_ms}" -gt 3600000 ]; then
+        module_registry_cache_ttl_ms=3600000
+      fi
+      module_registry_enabled_json='false'
+      if [ -n "${module_registry_url:-}" ] && [ "${module_registry_url}" != "null" ]; then
+        module_registry_enabled_json='true'
+      fi
       module_interface_options_json="$(jq -nc --argjson choices "${module_choices_json}" \
-        '{mode:"module",modules_collection:"cms_modules",pages_collection:"cms_pages",module_value_field:"module_key",module_label_field:"name",module_provider_field:"module_provider",page_site_field:"site_key",include_global:true,choices:$choices}')"
+        --arg registry_url "${module_registry_url}" \
+        --arg registry_path "${module_registry_path}" \
+        --argjson registry_enabled "${module_registry_enabled_json}" \
+        --argjson registry_cache_ttl_ms "${module_registry_cache_ttl_ms}" \
+        '{mode:"module",modules_collection:"cms_modules",pages_collection:"cms_pages",module_value_field:"module_key",module_label_field:"name",module_provider_field:"module_provider",page_site_field:"site_key",include_global:true,module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_channel_field:"release_channel",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,choices:$choices}')"
       module_display_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices}')"
       module_props_interface_options_json="$(jq -nc \
-        '{modules_collection:"cms_modules",module_key_field:"module_key",module_provider_field:"module_provider",props_schema_field:"props_schema",default_props_field:"default_props",pages_collection:"cms_pages",page_site_field:"site_key",include_global:true,show_json_fallback:false,asset_field_pattern:"(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero|media|video|audio|animation|lottie|file|document)",asset_base_url:"",asset_path:"/assets",asset_store_absolute:true,asset_picker_limit:40,asset_picker_accept:"*/*"}')"
+        --arg registry_url "${module_registry_url}" \
+        --arg registry_path "${module_registry_path}" \
+        --argjson registry_enabled "${module_registry_enabled_json}" \
+        --argjson registry_cache_ttl_ms "${module_registry_cache_ttl_ms}" \
+        '{modules_collection:"cms_modules",module_key_field:"module_key",module_provider_field:"module_provider",props_schema_field:"props_schema",default_props_field:"default_props",pages_collection:"cms_pages",page_site_field:"site_key",include_global:true,module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_channel_field:"release_channel",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,show_json_fallback:false,asset_field_pattern:"(image|icon|logo|avatar|thumbnail|sprite|background|poster|favicon|hero|media|video|audio|animation|lottie|file|document)",asset_base_url:"",asset_path:"/assets",asset_store_absolute:true,asset_picker_limit:40,asset_picker_accept:"*/*"}')"
       parent_block_interface_options_json="$(jq -nc \
         '{mode:"parent",page_blocks_collection:"cms_page_blocks",template_refs_collection:"cms_block_template_ref",pages_collection:"cms_pages",page_id_field:"page_id",page_site_field:"site_key",page_slug_field:"page_slug",item_id_field:"id",parent_id_field:"parent_block_id"}')"
       page_blocks_manager_interface_options_json="$(jq -nc \
-        '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",default_group_by:"template",default_hierarchy:"direct_children",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
+        --arg registry_url "${module_registry_url}" \
+        --arg registry_path "${module_registry_path}" \
+        --argjson registry_enabled "${module_registry_enabled_json}" \
+        --argjson registry_cache_ttl_ms "${module_registry_cache_ttl_ms}" \
+        '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,default_group_by:"template",default_hierarchy:"direct_children",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
 
       site_key_note="Required: site scope for this page (for example external or internal)."
       slug_note="Required: page route slug within site + channel (for SPA home use 'home')."

@@ -307,6 +307,12 @@ spec:
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
           - name: DB_DATABASE
             valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+          - name: DIRECTUS_MODULE_REGISTRY_URL
+            valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_MODULE_REGISTRY_URL } }
+          - name: DIRECTUS_MODULE_REGISTRY_PATH
+            valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_MODULE_REGISTRY_PATH } }
+          - name: DIRECTUS_MODULE_REGISTRY_CACHE_TTL_MS
+            valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_MODULE_REGISTRY_CACHE_TTL_MS } }
           - name: DIRECTUS_POSTSCHEMA_STATE_DIR
             value: "/postschema-state"
           - name: DIRECTUS_FLOW_API_TOKEN_VAULT_PATH
