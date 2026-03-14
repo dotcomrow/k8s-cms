@@ -3218,12 +3218,6 @@ data:
 
           const normalized = normalizeRegistryModuleDefinition(response, key);
           if (!normalized) return null;
-          if (effectiveModuleProviders.value.length > 0) {
-            const provider = toLower(normalized?.provider ?? normalized?.[moduleProviderField.value]);
-            if (!provider || !effectiveModuleProviders.value.includes(provider)) {
-              return null;
-            }
-          }
           return selectPreferredModuleDefinition([normalized], effectiveSiteKey);
         };
     
@@ -3334,8 +3328,24 @@ data:
             sort: '-date_updated,-date_created,site_key,id',
             filter: JSON.stringify(filter),
           });
-    
-          const rows = normalizeRows(response);
+
+          let rows = normalizeRows(response);
+          if (rows.length === 0 && effectiveModuleProviders.value.length > 0) {
+            const providerAgnosticFilter = {
+              _and: [
+                { [moduleKeyField.value]: { _eq: key } },
+                { status: { _eq: 'published' } },
+                buildScopedFilter(effectiveSiteKey),
+              ],
+            };
+            const providerAgnosticResponse = await apiGet(`/items/${modulesCollection.value}`, {
+              fields: ['id', moduleKeyField.value, 'provider', 'name', 'description', 'site_key', propsSchemaField.value, defaultPropsField.value, 'date_created', 'date_updated'].join(','),
+              limit: -1,
+              sort: '-date_updated,-date_created,site_key,id',
+              filter: JSON.stringify(providerAgnosticFilter),
+            });
+            rows = normalizeRows(providerAgnosticResponse);
+          }
           if (rows.length === 0) {
             moduleDefinition.value = null;
             const fallbackMessage = effectiveModuleProviders.value.length > 0
