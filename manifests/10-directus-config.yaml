@@ -2363,6 +2363,7 @@ data:
     };
     
     const toLower = (value) => asString(value).toLowerCase();
+    const DEFAULT_MODULE_REGISTRY_URL = 'https://cloudflare-mfe-module-registry-service.suncoast.systems';
     
     const parseJsonLike = (value, fallback) => {
       if (value === null || value === undefined) return fallback;
@@ -2495,8 +2496,19 @@ data:
         const mfeRegistryModuleRows = ref([]);
         const mfeRegistryDetailByKey = ref({});
         const mfeRegistryLoadError = ref('');
-    
-        const resolvedOptions = computed(() => parseOptions(props.options));
+        const fallbackFieldOptions = ref({});
+
+        const normalizeInterfaceOptions = (value) => {
+          const parsed = parseOptions(value);
+          const nested = parseOptions(parsed?.options);
+          return { ...nested, ...parsed };
+        };
+
+        const directOptions = computed(() => normalizeInterfaceOptions(props.options));
+        const resolvedOptions = computed(() => ({
+          ...fallbackFieldOptions.value,
+          ...directOptions.value,
+        }));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
         const moduleKeyField = computed(() => asString(resolvedOptions.value?.module_key_field) || 'module_key');
         const moduleProviderField = computed(() => asString(resolvedOptions.value?.module_provider_field) || 'module_provider');
@@ -2518,19 +2530,35 @@ data:
           if (typeof v === 'string') return v.toLowerCase() !== 'false';
           return v !== false;
         });
-        const moduleRegistryEnabled = computed(() => asBoolean(resolvedOptions.value?.module_registry_enabled, false));
-        const moduleRegistryUrl = computed(() => asString(resolvedOptions.value?.module_registry_url).replace(/\/+$/g, ''));
+        const moduleRegistryUrl = computed(() =>
+          asString(
+            resolvedOptions.value?.module_registry_url
+            ?? resolvedOptions.value?.moduleRegistryUrl
+            ?? DEFAULT_MODULE_REGISTRY_URL
+          ).replace(/\/+$/g, '')
+        );
         const moduleRegistryHasUrl = computed(() => Boolean(moduleRegistryUrl.value));
-        const moduleRegistryPath = computed(() => asString(resolvedOptions.value?.module_registry_path) || '/api/modules');
-        const moduleRegistryChannelOption = computed(() => toLower(resolvedOptions.value?.module_registry_channel || 'auto'));
-        const moduleRegistryChannelField = computed(() => asString(resolvedOptions.value?.module_registry_channel_field) || 'release_channel');
+        const moduleRegistryEnabled = computed(() => {
+          const explicit = resolvedOptions.value?.module_registry_enabled ?? resolvedOptions.value?.moduleRegistryEnabled;
+          if (explicit === null || explicit === undefined || asString(explicit) === '') return moduleRegistryHasUrl.value;
+          return asBoolean(explicit, moduleRegistryHasUrl.value);
+        });
+        const moduleRegistryPath = computed(() =>
+          asString(resolvedOptions.value?.module_registry_path ?? resolvedOptions.value?.moduleRegistryPath) || '/api/modules'
+        );
+        const moduleRegistryChannelOption = computed(() =>
+          toLower(resolvedOptions.value?.module_registry_channel ?? resolvedOptions.value?.moduleRegistryChannel ?? 'auto')
+        );
+        const moduleRegistryChannelField = computed(() =>
+          asString(resolvedOptions.value?.module_registry_channel_field ?? resolvedOptions.value?.moduleRegistryChannelField) || 'release_channel'
+        );
         const moduleRegistryLimit = computed(() => {
-          const configured = asInteger(resolvedOptions.value?.module_registry_limit, 250);
+          const configured = asInteger(resolvedOptions.value?.module_registry_limit ?? resolvedOptions.value?.moduleRegistryLimit, 250);
           if (!configured || configured < 1) return 250;
           return Math.min(configured, 1000);
         });
         const moduleRegistryCacheTtlMs = computed(() => {
-          const configured = asInteger(resolvedOptions.value?.module_registry_cache_ttl_ms, 180000);
+          const configured = asInteger(resolvedOptions.value?.module_registry_cache_ttl_ms ?? resolvedOptions.value?.moduleRegistryCacheTtlMs, 180000);
           if (!configured || configured < 1000) return 180000;
           return Math.min(configured, 3600000);
         });
@@ -2674,6 +2702,69 @@ data:
           }
           return payload;
         };
+
+        const loadFallbackFieldOptions = async () => {
+          const directRegistryUrl = asString(directOptions.value?.module_registry_url ?? directOptions.value?.moduleRegistryUrl);
+          if (directRegistryUrl) {
+            fallbackFieldOptions.value = {};
+            return;
+          }
+
+          const requestedField = asString(props.field) || 'props_json';
+          const { recordCollection } = resolveRecordContext();
+          const candidatePairs = [
+            [asString(props.collection), requestedField],
+            [asString(recordCollection), requestedField],
+            ['cms_block_module', 'props_json'],
+          ];
+          const candidates = [];
+          const seen = new Set();
+          for (const [collectionName, fieldName] of candidatePairs) {
+            const collectionValue = asString(collectionName);
+            const fieldValue = asString(fieldName);
+            if (!collectionValue || !fieldValue) continue;
+            const key = `${collectionValue}:${fieldValue}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            candidates.push([collectionValue, fieldValue]);
+          }
+
+          let merged = {};
+          for (const [collectionName, fieldName] of candidates) {
+            try {
+              const response = await apiGet(`/fields/${encodeURIComponent(collectionName)}/${encodeURIComponent(fieldName)}`);
+              const data = normalizeObject(parseJsonLike(response?.data, {}));
+              const meta = normalizeObject(parseJsonLike(data?.meta, {}));
+              const options = normalizeInterfaceOptions(
+                meta?.options
+                ?? data?.options
+                ?? response?.meta?.options
+                ?? response?.options
+              );
+              if (Object.keys(options).length === 0) continue;
+              merged = { ...merged, ...options };
+              const candidateRegistryUrl = asString(options?.module_registry_url ?? options?.moduleRegistryUrl);
+              if (candidateRegistryUrl) break;
+            } catch {
+              // Continue trying other candidates when field metadata is inaccessible in this context.
+            }
+          }
+
+          fallbackFieldOptions.value = merged;
+        };
+
+        watch(
+          () => JSON.stringify({
+            collection: asString(props.collection),
+            field: asString(props.field),
+            recordCollection: asString(resolveRecordContext().recordCollection),
+            hasDirectRegistryUrl: Boolean(asString(directOptions.value?.module_registry_url ?? directOptions.value?.moduleRegistryUrl)),
+          }),
+          async () => {
+            await loadFallbackFieldOptions();
+          },
+          { immediate: true }
+        );
     
         const readRegistryCache = (cacheKey) => {
           if (!cacheKey || typeof window === 'undefined') return null;
@@ -4008,7 +4099,7 @@ data:
             && !canUseRegistryBackedMfeSelect
             && !moduleRegistryUrl.value
           )
-            ? 'Module registry selections are disabled. Configure DIRECTUS_MODULE_REGISTRY_URL to enable constrained options.'
+            ? 'Module registry selections are unavailable in this field context. Ensure cms_block_module.props_json interface options include module_registry_url.'
             : '';
 
           if (canUseRegistryBackedMfeSelect && isRegistryKeyProp) {
@@ -4746,7 +4837,7 @@ data:
           name: 'Module Registry Base URL',
           type: 'string',
           meta: { width: 'half', interface: 'input' },
-          schema: { default_value: '' },
+          schema: { default_value: 'https://cloudflare-mfe-module-registry-service.suncoast.systems' },
         },
         {
           field: 'module_registry_path',
