@@ -3790,7 +3790,16 @@ data:
           const eventMode = asString(detail.mode).toLowerCase();
           const eventField = asString(detail.field).toLowerCase();
           if (eventMode !== 'module') return;
-          if (eventField && eventField !== moduleKeyField.value.toLowerCase()) return;
+          const normalizedModuleKeyField = moduleKeyField.value.toLowerCase();
+          const isModuleFieldEvent = (
+            !eventField
+            || eventField === normalizedModuleKeyField
+            || eventField === 'module_key'
+            || eventField.endsWith(`.${normalizedModuleKeyField}`)
+            || eventField.endsWith('.module_key')
+            || eventField.includes(':module_key')
+          );
+          if (!isModuleFieldEvent) return;
     
           const eventCollection = asString(detail.collection).toLowerCase();
           const { recordCollection, recordId } = resolveRecordContext();
