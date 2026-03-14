@@ -36,7 +36,7 @@ data:
   CORS_ORIGIN: "true"
   ASSETS_CACHE_TTL: "30d"
   # MFE module registry (used by Directus custom interfaces for module selection/props schemas)
-  DIRECTUS_MODULE_REGISTRY_URL: ""
+  DIRECTUS_MODULE_REGISTRY_URL: "https://cloudflare-mfe-module-registry-service.suncoast.systems"
   DIRECTUS_MODULE_REGISTRY_PATH: "/api/modules"
   DIRECTUS_MODULE_REGISTRY_CACHE_TTL_MS: "180000"
   # --- GitHub OAuth (Directus reads these envs) ---
