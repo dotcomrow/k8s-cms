@@ -2613,7 +2613,6 @@ data:
             ?? recordSiteKey.value
           )
         );
-        const recordCollectionKey = computed(() => asString(props.collection).toLowerCase());
         const resolveRecordId = () => asString(resolveRecordContext().recordId);
     
         const incomingProps = computed(() => normalizeObject(parseJsonLike(props.value, {})));
@@ -3745,10 +3744,12 @@ data:
           if (eventField && eventField !== moduleKeyField.value.toLowerCase()) return;
     
           const eventCollection = asString(detail.collection).toLowerCase();
-          if (eventCollection && recordCollectionKey.value && eventCollection !== recordCollectionKey.value) return;
+          const { recordCollection, recordId } = resolveRecordContext();
+          const currentCollection = asString(recordCollection).toLowerCase();
+          if (eventCollection && currentCollection && eventCollection !== currentCollection) return;
     
           const eventRecordId = asString(detail.recordId);
-          const currentRecordId = resolveRecordId();
+          const currentRecordId = asString(recordId || resolveRecordId());
           if (eventRecordId && currentRecordId && eventRecordId !== currentRecordId) return;
     
           const nextKey = asString(detail.value);
