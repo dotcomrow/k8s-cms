@@ -2492,6 +2492,9 @@ data:
         const assetPickerUploading = ref(false);
         const assetUploadInput = ref(null);
         const propertyDraftValues = ref({});
+        const mfeRegistryModuleRows = ref([]);
+        const mfeRegistryDetailByKey = ref({});
+        const mfeRegistryLoadError = ref('');
     
         const resolvedOptions = computed(() => parseOptions(props.options));
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
@@ -2517,6 +2520,7 @@ data:
         });
         const moduleRegistryEnabled = computed(() => asBoolean(resolvedOptions.value?.module_registry_enabled, false));
         const moduleRegistryUrl = computed(() => asString(resolvedOptions.value?.module_registry_url).replace(/\/+$/g, ''));
+        const moduleRegistryHasUrl = computed(() => Boolean(moduleRegistryUrl.value));
         const moduleRegistryPath = computed(() => asString(resolvedOptions.value?.module_registry_path) || '/api/modules');
         const moduleRegistryChannelOption = computed(() => toLower(resolvedOptions.value?.module_registry_channel || 'auto'));
         const moduleRegistryChannelField = computed(() => asString(resolvedOptions.value?.module_registry_channel_field) || 'release_channel');
@@ -3055,6 +3059,25 @@ data:
           return `${normalizedListPath}/${encodeURIComponent(key)}`;
         };
 
+        const normalizeRegistryVersionRows = (detail) => {
+          const detailPayload = normalizeObject(parseJsonLike(detail, {}));
+          const versions = Array.isArray(detailPayload?.versions) ? detailPayload.versions : [];
+          return versions
+            .map((entry) => normalizeObject(parseJsonLike(entry, {})))
+            .filter((entry) => asString(entry?.module_version));
+        };
+
+        const pickRegistryVersionRowForChannel = (rows, channel) => {
+          const versionRows = Array.isArray(rows) ? rows : [];
+          if (versionRows.length === 0) return {};
+          const first = normalizeObject(parseJsonLike(versionRows[0], {}));
+          const preview = versionRows.find((row) => toLower(row?.channel) === 'preview');
+          const prod = versionRows.find((row) => toLower(row?.channel) === 'prod');
+          if (channel === 'preview') return preview || prod || first;
+          if (channel === 'prod') return prod || preview || first;
+          return preview || prod || first;
+        };
+
         const pickRegistryVersionForChannel = (detail) => {
           const detailPayload = normalizeObject(parseJsonLike(detail, {}));
           const versions = Array.isArray(detailPayload?.versions) ? detailPayload.versions : [];
@@ -3341,6 +3364,75 @@ data:
             pendingModuleSwitchKey.value = '';
           }
         };
+
+        const isMfeRemoteModuleDefinition = computed(() => {
+          const activeModuleKey = toLower(moduleKey.value);
+          const activeProvider = toLower(
+            moduleDefinition.value?.provider
+            ?? props.values?.[moduleProviderField.value]
+            ?? recordModuleProvider.value
+          );
+          const activeComponentType = toLower(moduleDefinition.value?.component_type);
+          return (
+            activeModuleKey === 'mfe-generic-remote'
+            || activeProvider === 'mfe'
+            || activeComponentType === 'mfe.remote'
+            || activeComponentType.startsWith('mfe.')
+          );
+        });
+
+        const loadMfeRegistryModuleRows = async () => {
+          if (!moduleRegistryHasUrl.value) {
+            mfeRegistryModuleRows.value = [];
+            mfeRegistryLoadError.value = '';
+            return;
+          }
+
+          try {
+            const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
+              channel: resolveRegistryChannel(),
+              limit: moduleRegistryLimit.value,
+            }, {
+              cacheKey: `mfe-props-module-list:${moduleRegistryUrl.value}:${moduleRegistryPath.value}:${resolveRegistryChannel()}:${moduleRegistryLimit.value}`,
+              cacheTtlMs: moduleRegistryCacheTtlMs.value,
+            });
+            const rows = normalizeRegistryRows(response)
+              .map((row) => normalizeObject(parseJsonLike(row, {})))
+              .filter((row) => {
+                const moduleKeyValue = asString(row?.module_key);
+                if (!moduleKeyValue) return false;
+                const provider = toLower(row?.provider);
+                const componentType = toLower(row?.component_type ?? row?.componentType);
+                const normalizedModuleKey = toLower(moduleKeyValue);
+                return (
+                  componentType.startsWith('mfe.')
+                  || provider === 'mfe'
+                  || normalizedModuleKey.startsWith('mfe-')
+                );
+              })
+              .sort((left, right) => asString(left?.module_key).localeCompare(asString(right?.module_key)));
+            mfeRegistryModuleRows.value = rows;
+            mfeRegistryLoadError.value = '';
+          } catch (error) {
+            mfeRegistryModuleRows.value = [];
+            mfeRegistryLoadError.value = error?.message || 'Unable to load module registry options.';
+          }
+        };
+
+        const ensureMfeRegistryDetail = async (registryKeyValue) => {
+          const normalizedKey = asString(registryKeyValue);
+          if (!normalizedKey || !moduleRegistryHasUrl.value) return;
+          if (mfeRegistryDetailByKey.value[normalizedKey]) return;
+          const detailPath = buildModuleRegistryDetailPath(normalizedKey);
+          const response = await externalApiGet(moduleRegistryUrl.value, detailPath, {}, {
+            cacheKey: `mfe-props-module-detail:${moduleRegistryUrl.value}:${detailPath}:${resolveRegistryChannel()}`,
+            cacheTtlMs: moduleRegistryCacheTtlMs.value,
+          });
+          mfeRegistryDetailByKey.value = {
+            ...mfeRegistryDetailByKey.value,
+            [normalizedKey]: normalizeObject(parseJsonLike(response, {})),
+          };
+        };
     
         watch(
           () => JSON.stringify({
@@ -3432,7 +3524,65 @@ data:
           return new Set(required.map((value) => asString(value)));
         });
         const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
-    
+        const selectedMfeRegistryKey = computed(() =>
+          pickFirstNonEmptyString(
+            mergedProps.value?.registryKey,
+            mergedProps.value?.registry_key,
+          )
+        );
+        const selectedMfeRegistryVersion = computed(() =>
+          pickFirstNonEmptyString(
+            mergedProps.value?.version,
+            mergedProps.value?.module_version,
+            mergedProps.value?.moduleVersion,
+          )
+        );
+        const selectedMfeRegistryDetail = computed(() =>
+          normalizeObject(parseJsonLike(mfeRegistryDetailByKey.value?.[selectedMfeRegistryKey.value], {}))
+        );
+        const mfeRegistryKeyOptions = computed(() =>
+          mfeRegistryModuleRows.value.map((row) => {
+            const moduleKeyValue = asString(row?.module_key);
+            const latestVersion = asString(row?.latest_version_preview || row?.latest_version_prod);
+            return {
+              text: latestVersion ? `${moduleKeyValue} (${latestVersion})` : moduleKeyValue,
+              value: moduleKeyValue,
+            };
+          })
+        );
+        const mfeRegistryVersionRows = computed(() => normalizeRegistryVersionRows(selectedMfeRegistryDetail.value));
+        const mfeRegistryVersionOptions = computed(() => {
+          const seen = new Set();
+          return mfeRegistryVersionRows.value
+            .map((row) => {
+              const moduleVersion = asString(row?.module_version);
+              if (!moduleVersion || seen.has(moduleVersion)) return null;
+              seen.add(moduleVersion);
+              const channelLabel = asString(row?.channel) || 'unknown';
+              return {
+                text: `${moduleVersion} (${channelLabel})`,
+                value: moduleVersion,
+              };
+            })
+            .filter(Boolean);
+        });
+        const mfeRegistryManifestOptions = computed(() => {
+          const seen = new Set();
+          return mfeRegistryVersionRows.value
+            .map((row) => {
+              const manifestUrl = asString(row?.manifest_url ?? row?.manifestUrl);
+              if (!manifestUrl || seen.has(manifestUrl)) return null;
+              seen.add(manifestUrl);
+              const moduleVersion = asString(row?.module_version) || 'unknown';
+              const channelLabel = asString(row?.channel) || 'unknown';
+              return {
+                text: `${moduleVersion} (${channelLabel})`,
+                value: manifestUrl,
+              };
+            })
+            .filter(Boolean);
+        });
+
         const emitProps = (nextProps) => {
           const normalized = normalizeObject(nextProps);
           localProps.value = { ...normalized };
@@ -3469,7 +3619,88 @@ data:
             schemaError.value = 'Invalid JSON in advanced editor.';
           }
         };
-    
+
+        watch(
+          () => JSON.stringify({
+            isMfeRemote: isMfeRemoteModuleDefinition.value,
+            moduleRegistryEnabled: moduleRegistryEnabled.value,
+            moduleRegistryUrl: moduleRegistryUrl.value,
+            moduleRegistryPath: moduleRegistryPath.value,
+            moduleRegistryChannel: resolveRegistryChannel(),
+            moduleRegistryLimit: moduleRegistryLimit.value,
+          }),
+          async () => {
+            if (!isMfeRemoteModuleDefinition.value) {
+              mfeRegistryModuleRows.value = [];
+              mfeRegistryLoadError.value = '';
+              return;
+            }
+            await loadMfeRegistryModuleRows();
+          },
+          { immediate: true }
+        );
+
+        watch(
+          () => JSON.stringify({
+            isMfeRemote: isMfeRemoteModuleDefinition.value,
+            moduleRegistryEnabled: moduleRegistryEnabled.value,
+            moduleRegistryUrl: moduleRegistryUrl.value,
+            moduleRegistryPath: moduleRegistryPath.value,
+            moduleRegistryChannel: resolveRegistryChannel(),
+            moduleRegistryKey: selectedMfeRegistryKey.value,
+            moduleRegistryVersion: selectedMfeRegistryVersion.value,
+            hasRegistryDetail: Boolean(mfeRegistryDetailByKey.value?.[selectedMfeRegistryKey.value]),
+          }),
+          async () => {
+            if (!isMfeRemoteModuleDefinition.value || !moduleRegistryHasUrl.value) {
+              return;
+            }
+
+            const registryKeyValue = selectedMfeRegistryKey.value;
+            if (!registryKeyValue) return;
+
+            try {
+              await ensureMfeRegistryDetail(registryKeyValue);
+            } catch (error) {
+              mfeRegistryLoadError.value = error?.message || 'Unable to load module registry details.';
+              return;
+            }
+
+            const versionRows = normalizeRegistryVersionRows(selectedMfeRegistryDetail.value);
+            if (!Array.isArray(versionRows) || versionRows.length === 0) return;
+
+            const channel = resolveRegistryChannel();
+            const requestedVersion = selectedMfeRegistryVersion.value;
+            const requestedRows = requestedVersion
+              ? versionRows.filter((row) => asString(row?.module_version) === requestedVersion)
+              : [];
+            const selectedRow = pickRegistryVersionRowForChannel(
+              requestedRows.length > 0 ? requestedRows : versionRows,
+              channel,
+            );
+            const selectedVersion = asString(selectedRow?.module_version);
+            const selectedManifestUrl = asString(selectedRow?.manifest_url ?? selectedRow?.manifestUrl);
+
+            const nextProps = { ...mergedProps.value };
+            let changed = false;
+
+            if (selectedVersion && asString(nextProps?.version) !== selectedVersion) {
+              nextProps.version = selectedVersion;
+              changed = true;
+            }
+            if (selectedManifestUrl && asString(nextProps?.manifestUrl) !== selectedManifestUrl) {
+              nextProps.manifestUrl = selectedManifestUrl;
+              changed = true;
+            }
+
+            if (changed) {
+              emitProps(nextProps);
+              schemaError.value = '';
+            }
+          },
+          { immediate: true }
+        );
+
         watch(
           () => applyPendingDefaultsForModuleKey.value,
           (nextModuleKey) => {
@@ -3540,6 +3771,15 @@ data:
           const enumValues = Array.isArray(schema.enum) ? schema.enum.map((entry) => asString(entry)).filter(Boolean) : [];
           const inputId = `cms-module-prop-${propKey}`;
           const disabled = props.disabled || loading.value;
+          const normalizedPropKey = toLower(propKey);
+          const isRegistryKeyProp = normalizedPropKey === 'registrykey' || normalizedPropKey === 'registry_key';
+          const isVersionProp = normalizedPropKey === 'version' || normalizedPropKey === 'module_version' || normalizedPropKey === 'moduleversion';
+          const isManifestUrlProp = normalizedPropKey === 'manifesturl' || normalizedPropKey === 'manifest_url';
+          const isRegistryBackedMfeProp = isRegistryKeyProp || isVersionProp || isManifestUrlProp;
+          const canUseRegistryBackedMfeSelect =
+            isMfeRemoteModuleDefinition.value
+            && moduleRegistryHasUrl.value
+            && isRegistryBackedMfeProp;
     
           const resolvedInput = resolveComponent('v-input');
           const resolvedSelect = resolveComponent('v-select');
@@ -3679,8 +3919,37 @@ data:
           };
     
           let control = null;
-    
-          if (enumValues.length > 0) {
+          const dynamicRegistryHint = (
+            isMfeRemoteModuleDefinition.value
+            && isRegistryBackedMfeProp
+            && !canUseRegistryBackedMfeSelect
+            && !moduleRegistryUrl.value
+          )
+            ? 'Module registry selections are disabled. Configure DIRECTUS_MODULE_REGISTRY_URL to enable constrained options.'
+            : '';
+
+          if (canUseRegistryBackedMfeSelect && isRegistryKeyProp) {
+            control = renderSelectControl({
+              id: inputId,
+              modelValue: asInputString(value),
+              items: mfeRegistryKeyOptions.value,
+              placeholder: mfeRegistryKeyOptions.value.length > 0 ? `Select ${title}` : 'No published MFE modules available',
+            });
+          } else if (canUseRegistryBackedMfeSelect && isVersionProp) {
+            control = renderSelectControl({
+              id: inputId,
+              modelValue: asInputString(value),
+              items: mfeRegistryVersionOptions.value,
+              placeholder: mfeRegistryVersionOptions.value.length > 0 ? `Select ${title}` : 'No versions available for selected module',
+            });
+          } else if (canUseRegistryBackedMfeSelect && isManifestUrlProp) {
+            control = renderSelectControl({
+              id: inputId,
+              modelValue: asInputString(value),
+              items: mfeRegistryManifestOptions.value,
+              placeholder: mfeRegistryManifestOptions.value.length > 0 ? `Select ${title}` : 'No manifest URL available for selected module',
+            });
+          } else if (enumValues.length > 0) {
             const items = enumValues.map((entry) => ({ text: entry, value: entry }));
             control = renderSelectControl({
               id: inputId,
@@ -4140,6 +4409,12 @@ data:
               isRequired ? h('span', { class: 'cms-module-props-editor__required' }, ' *') : null,
             ]),
             description ? h('p', { class: 'cms-module-props-editor__hint' }, description) : null,
+            dynamicRegistryHint
+              ? h('p', { class: 'cms-module-props-editor__hint' }, dynamicRegistryHint)
+              : null,
+            canUseRegistryBackedMfeSelect && mfeRegistryLoadError.value
+              ? h('p', { class: 'cms-module-props-editor__error' }, mfeRegistryLoadError.value)
+              : null,
             control,
           ]);
         };
