@@ -3389,28 +3389,36 @@ data:
           }
 
           try {
-            const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
-              channel: resolveRegistryChannel(),
-              limit: moduleRegistryLimit.value,
-            }, {
-              cacheKey: `mfe-props-module-list:${moduleRegistryUrl.value}:${moduleRegistryPath.value}:${resolveRegistryChannel()}:${moduleRegistryLimit.value}`,
-              cacheTtlMs: moduleRegistryCacheTtlMs.value,
-            });
-            const rows = normalizeRegistryRows(response)
-              .map((row) => normalizeObject(parseJsonLike(row, {})))
-              .filter((row) => {
-                const moduleKeyValue = asString(row?.module_key);
-                if (!moduleKeyValue) return false;
-                const provider = toLower(row?.provider);
-                const componentType = toLower(row?.component_type ?? row?.componentType);
-                const normalizedModuleKey = toLower(moduleKeyValue);
-                return (
-                  componentType.startsWith('mfe.')
-                  || provider === 'mfe'
-                  || normalizedModuleKey.startsWith('mfe-')
-                );
-              })
-              .sort((left, right) => asString(left?.module_key).localeCompare(asString(right?.module_key)));
+            const fetchRowsForChannel = async (channel) => {
+              const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
+                channel,
+                limit: moduleRegistryLimit.value,
+              }, {
+                cacheKey: `mfe-props-module-list:${moduleRegistryUrl.value}:${moduleRegistryPath.value}:${channel}:${moduleRegistryLimit.value}`,
+                cacheTtlMs: moduleRegistryCacheTtlMs.value,
+              });
+              return normalizeRegistryRows(response)
+                .map((row) => normalizeObject(parseJsonLike(row, {})))
+                .filter((row) => {
+                  const moduleKeyValue = asString(row?.module_key);
+                  if (!moduleKeyValue) return false;
+                  const provider = toLower(row?.provider);
+                  const componentType = toLower(row?.component_type ?? row?.componentType);
+                  const normalizedModuleKey = toLower(moduleKeyValue);
+                  return (
+                    componentType.startsWith('mfe.')
+                    || provider === 'mfe'
+                    || normalizedModuleKey.startsWith('mfe-')
+                  );
+                })
+                .sort((left, right) => asString(left?.module_key).localeCompare(asString(right?.module_key)));
+            };
+
+            const activeChannel = resolveRegistryChannel();
+            let rows = await fetchRowsForChannel(activeChannel);
+            if (rows.length === 0 && activeChannel !== 'all') {
+              rows = await fetchRowsForChannel('all');
+            }
             mfeRegistryModuleRows.value = rows;
             mfeRegistryLoadError.value = '';
           } catch (error) {
@@ -3509,6 +3517,10 @@ data:
           };
         });
         const schemaProperties = computed(() => normalizeObject(resolvedSchema.value?.properties));
+        const hasMfeRegistrySchemaShape = computed(() => {
+          const normalizedKeys = Object.keys(schemaProperties.value || {}).map((key) => toLower(key));
+          return normalizedKeys.includes('registrykey') || normalizedKeys.includes('registry_key');
+        });
         const isComplexPropertySchema = (schemaValue) => {
           const schema = normalizeObject(schemaValue);
           const type = asString(schema?.type).toLowerCase();
@@ -3623,6 +3635,7 @@ data:
         watch(
           () => JSON.stringify({
             isMfeRemote: isMfeRemoteModuleDefinition.value,
+            hasMfeRegistrySchemaShape: hasMfeRegistrySchemaShape.value,
             moduleRegistryEnabled: moduleRegistryEnabled.value,
             moduleRegistryUrl: moduleRegistryUrl.value,
             moduleRegistryPath: moduleRegistryPath.value,
@@ -3630,7 +3643,7 @@ data:
             moduleRegistryLimit: moduleRegistryLimit.value,
           }),
           async () => {
-            if (!isMfeRemoteModuleDefinition.value) {
+            if (!hasMfeRegistrySchemaShape.value) {
               mfeRegistryModuleRows.value = [];
               mfeRegistryLoadError.value = '';
               return;
@@ -3643,6 +3656,7 @@ data:
         watch(
           () => JSON.stringify({
             isMfeRemote: isMfeRemoteModuleDefinition.value,
+            hasMfeRegistrySchemaShape: hasMfeRegistrySchemaShape.value,
             moduleRegistryEnabled: moduleRegistryEnabled.value,
             moduleRegistryUrl: moduleRegistryUrl.value,
             moduleRegistryPath: moduleRegistryPath.value,
@@ -3652,7 +3666,7 @@ data:
             hasRegistryDetail: Boolean(mfeRegistryDetailByKey.value?.[selectedMfeRegistryKey.value]),
           }),
           async () => {
-            if (!isMfeRemoteModuleDefinition.value || !moduleRegistryHasUrl.value) {
+            if (!hasMfeRegistrySchemaShape.value || !moduleRegistryHasUrl.value) {
               return;
             }
 
@@ -3777,7 +3791,7 @@ data:
           const isManifestUrlProp = normalizedPropKey === 'manifesturl' || normalizedPropKey === 'manifest_url';
           const isRegistryBackedMfeProp = isRegistryKeyProp || isVersionProp || isManifestUrlProp;
           const canUseRegistryBackedMfeSelect =
-            isMfeRemoteModuleDefinition.value
+            hasMfeRegistrySchemaShape.value
             && moduleRegistryHasUrl.value
             && isRegistryBackedMfeProp;
     
@@ -3920,7 +3934,7 @@ data:
     
           let control = null;
           const dynamicRegistryHint = (
-            isMfeRemoteModuleDefinition.value
+            hasMfeRegistrySchemaShape.value
             && isRegistryBackedMfeProp
             && !canUseRegistryBackedMfeSelect
             && !moduleRegistryUrl.value
