@@ -3488,6 +3488,27 @@ data:
         );
     
         const defaultProps = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[defaultPropsField.value], {})));
+        const shouldUseMfeFallbackSchema = computed(() => {
+          const activeModuleKey = toLower(
+            moduleKey.value
+            || props.values?.[moduleKeyField.value]
+            || props.values?.module_key
+          );
+          const activeProvider = toLower(
+            moduleDefinition.value?.provider
+            ?? props.values?.[moduleProviderField.value]
+            ?? props.values?.module_provider
+            ?? recordModuleProvider.value
+          );
+          const activeComponentType = toLower(moduleDefinition.value?.component_type);
+          return (
+            activeModuleKey === 'mfe-generic-remote'
+            || activeModuleKey.startsWith('mfe-')
+            || activeProvider === 'mfe'
+            || activeComponentType === 'mfe.remote'
+            || activeComponentType.startsWith('mfe.')
+          );
+        });
         const resolvedSchema = computed(() => {
           const parsedSchema = normalizeObject(parseJsonLike(moduleDefinition.value?.[propsSchemaField.value], {}));
           const parsedProperties = normalizeObject(parsedSchema?.properties);
@@ -3514,15 +3535,43 @@ data:
               title: propKey,
             };
           }
+
+          const ensureMfeFallbackProperties = () => {
+            inferredProperties.registryKey = inferredProperties.registryKey || { type: 'string', title: 'Registry Key' };
+            inferredProperties.version = inferredProperties.version || { type: 'string', title: 'Version' };
+            inferredProperties.manifestUrl = inferredProperties.manifestUrl || { type: 'string', title: 'Manifest URL' };
+            inferredProperties.entryExport = inferredProperties.entryExport || { type: 'string', title: 'Entry Export' };
+            inferredProperties.mountStrategy = inferredProperties.mountStrategy || {
+              type: 'string',
+              title: 'Mount Strategy',
+              enum: ['module', 'iframe'],
+            };
+            inferredProperties.sandbox = inferredProperties.sandbox || { type: 'boolean', title: 'Sandbox' };
+            inferredProperties.preload = inferredProperties.preload || { type: 'boolean', title: 'Preload' };
+          };
+
+          if (shouldUseMfeFallbackSchema.value) {
+            const inferredKeys = Object.keys(inferredProperties).map((entry) => toLower(entry));
+            const hasRegistryShape = inferredKeys.includes('registrykey') || inferredKeys.includes('registry_key');
+            if (!hasRegistryShape) {
+              ensureMfeFallbackProperties();
+            }
+          }
     
           if (Object.keys(inferredProperties).length === 0) {
             return parsedSchema;
           }
-    
+
+          const required = Array.isArray(parsedSchema?.required) ? parsedSchema.required.map((value) => asString(value)).filter(Boolean) : [];
+          if (shouldUseMfeFallbackSchema.value && !required.includes('registryKey')) {
+            required.push('registryKey');
+          }
+
           return {
             ...parsedSchema,
             type: 'object',
             properties: inferredProperties,
+            required,
           };
         });
         const schemaProperties = computed(() => normalizeObject(resolvedSchema.value?.properties));
