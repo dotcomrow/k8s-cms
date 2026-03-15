@@ -2390,12 +2390,60 @@ data:
       sandbox: 'Enable sandbox safeguards for remote module execution.',
       routebase: 'Optional route prefix provided to the module.',
       async: 'Configure async request/response transport settings.',
+      mode: 'Choose the async transport mode.',
       asyncmode: 'Choose the async mode used by the shell for this module.',
       requestchannel: 'Channel/topic used for outbound async requests.',
       responsechannel: 'Channel/topic used for inbound async responses.',
       correlationidpath: 'JSON path used to correlate async responses with requests.',
       input: 'Optional runtime input defaults for this module.',
       ui: 'Configure module-specific UI props from the selected MFE specification.',
+    });
+    const MFE_SECTION_DEFINITIONS = Object.freeze([
+      {
+        id: 'selection',
+        title: 'Module Selection',
+        description: 'Choose which published MFE module and version to load. Manifest URL is auto-derived from your selection.',
+      },
+      {
+        id: 'runtime',
+        title: 'Runtime Settings',
+        description: 'Host shell controls for mounting and loading this MFE in Directus.',
+      },
+      {
+        id: 'async',
+        title: 'Async Transport',
+        description: 'Configure request/response channel wiring for async interactions when async mode is enabled.',
+      },
+      {
+        id: 'ui',
+        title: 'MFE UI Configuration',
+        description: 'Fields below come from the selected MFE module specification.',
+      },
+      {
+        id: 'input',
+        title: 'Input Defaults',
+        description: 'Optional initial input payload for the MFE runtime.',
+      },
+      {
+        id: 'other',
+        title: 'Additional Settings',
+        description: 'Additional module properties not covered by the standard groups.',
+      },
+    ]);
+    const MFE_SECTION_BY_FIELD = Object.freeze({
+      registrykey: 'selection',
+      modulekey: 'selection',
+      version: 'selection',
+      moduleversion: 'selection',
+      manifesturl: 'selection',
+      entryexport: 'runtime',
+      mountstrategy: 'runtime',
+      preload: 'runtime',
+      sandbox: 'runtime',
+      routebase: 'runtime',
+      async: 'async',
+      input: 'input',
+      ui: 'ui',
     });
     
     const parseJsonLike = (value, fallback) => {
@@ -4829,13 +4877,60 @@ data:
           ];
     
           if (hasInlineProperties) {
-            children.push(
-              h(
-                'div',
-                { class: 'cms-module-props-editor__fields' },
-                inlinePropertyEntries.map(([propKey, propSchema]) => renderPropertyEditor(propKey, propSchema))
-              )
-            );
+            if (isMfeRemoteModuleDefinition.value) {
+              const sectionBuckets = MFE_SECTION_DEFINITIONS.map((section) => ({
+                ...section,
+                entries: [],
+              }));
+              const sectionMap = new Map(sectionBuckets.map((section) => [section.id, section]));
+              const fallbackSection = sectionMap.get('other');
+
+              inlinePropertyEntries.forEach(([propKey, propSchema]) => {
+                const sectionId = MFE_SECTION_BY_FIELD[normalizeFieldToken(propKey)] || 'other';
+                const bucket = sectionMap.get(sectionId) || fallbackSection;
+                if (!bucket) return;
+                bucket.entries.push([propKey, propSchema]);
+              });
+
+              const visibleSections = sectionBuckets.filter((section) => section.entries.length > 0);
+              children.push(
+                h(
+                  'div',
+                  { class: 'cms-module-props-editor__sections', style: { display: 'grid', gap: '14px' } },
+                  visibleSections.map((section, index) =>
+                    h(
+                      'section',
+                      {
+                        key: `mfe-section-${section.id}`,
+                        style: {
+                          paddingTop: index === 0 ? '0' : '12px',
+                          borderTop: index === 0 ? 'none' : '1px solid var(--theme--border-subdued)',
+                        },
+                      },
+                      [
+                        h('div', { style: { marginBottom: '8px' } }, [
+                          h('strong', { style: { display: 'block', fontSize: '13px', lineHeight: '1.3' } }, section.title),
+                          h('p', { class: 'cms-module-props-editor__hint', style: { margin: '4px 0 0 0' } }, section.description),
+                        ]),
+                        h(
+                          'div',
+                          { class: 'cms-module-props-editor__fields' },
+                          section.entries.map(([propKey, propSchema]) => renderPropertyEditor(propKey, propSchema))
+                        ),
+                      ]
+                    )
+                  )
+                )
+              );
+            } else {
+              children.push(
+                h(
+                  'div',
+                  { class: 'cms-module-props-editor__fields' },
+                  inlinePropertyEntries.map(([propKey, propSchema]) => renderPropertyEditor(propKey, propSchema))
+                )
+              );
+            }
           } else if (!loading.value && !loadError.value && !hasComplexProperties) {
             children.push(
               h('p', { class: 'cms-module-props-editor__hint' }, 'No property schema is published for this module. Publish props_schema/default_props in the module catalog to enable form fields.')
