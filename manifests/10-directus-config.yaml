@@ -2531,10 +2531,10 @@ data:
           return v !== false;
         });
         const moduleRegistryUrl = computed(() =>
-          asString(
-            resolvedOptions.value?.module_registry_url
-            ?? resolvedOptions.value?.moduleRegistryUrl
-            ?? DEFAULT_MODULE_REGISTRY_URL
+          pickFirstNonEmptyString(
+            resolvedOptions.value?.module_registry_url,
+            resolvedOptions.value?.moduleRegistryUrl,
+            DEFAULT_MODULE_REGISTRY_URL,
           ).replace(/\/+$/g, '')
         );
         const moduleRegistryHasUrl = computed(() => Boolean(moduleRegistryUrl.value));
@@ -2544,7 +2544,11 @@ data:
           return asBoolean(explicit, moduleRegistryHasUrl.value);
         });
         const moduleRegistryPath = computed(() =>
-          asString(resolvedOptions.value?.module_registry_path ?? resolvedOptions.value?.moduleRegistryPath) || '/api/modules'
+          pickFirstNonEmptyString(
+            resolvedOptions.value?.module_registry_path,
+            resolvedOptions.value?.moduleRegistryPath,
+            '/api/modules',
+          )
         );
         const moduleRegistryChannelOption = computed(() =>
           toLower(resolvedOptions.value?.module_registry_channel ?? resolvedOptions.value?.moduleRegistryChannel ?? 'auto')
@@ -3484,7 +3488,7 @@ data:
         const loadMfeRegistryModuleRows = async () => {
           if (!moduleRegistryHasUrl.value) {
             mfeRegistryModuleRows.value = [];
-            mfeRegistryLoadError.value = '';
+            mfeRegistryLoadError.value = 'Module registry URL is not configured for this interface context.';
             return;
           }
 
@@ -3952,7 +3956,6 @@ data:
           const isRegistryBackedMfeProp = isRegistryKeyProp || isVersionProp || isManifestUrlProp;
           const canUseRegistryBackedMfeSelect =
             hasMfeRegistrySchemaShape.value
-            && moduleRegistryHasUrl.value
             && isRegistryBackedMfeProp;
     
           const resolvedInput = resolveComponent('v-input');
@@ -4097,7 +4100,7 @@ data:
             hasMfeRegistrySchemaShape.value
             && isRegistryBackedMfeProp
             && !canUseRegistryBackedMfeSelect
-            && !moduleRegistryUrl.value
+            && !moduleRegistryHasUrl.value
           )
             ? 'Module registry selections are unavailable in this field context. Ensure cms_block_module.props_json interface options include module_registry_url.'
             : '';

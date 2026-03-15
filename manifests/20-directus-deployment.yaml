@@ -24,7 +24,7 @@ spec:
         app: directus
       annotations:
         reloader.stakater.com/auto: "true"
-        directus.suncoast.systems/extensions-seed-revision: "2026-03-05.2"
+        directus.suncoast.systems/extensions-seed-revision: "2026-03-14.1"
     spec:
       serviceAccountName: directus
       volumes:
