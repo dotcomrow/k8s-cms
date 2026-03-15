@@ -2364,6 +2364,39 @@ data:
     
     const toLower = (value) => asString(value).toLowerCase();
     const DEFAULT_MODULE_REGISTRY_URL = 'https://cloudflare-mfe-module-registry-service.suncoast.systems';
+    const normalizeFieldToken = (value) => asString(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const MFE_PROP_PRIORITY = Object.freeze({
+      registrykey: 0,
+      modulekey: 0,
+      version: 1,
+      moduleversion: 1,
+      manifesturl: 2,
+      entryexport: 3,
+      mountstrategy: 4,
+      preload: 5,
+      sandbox: 6,
+      routebase: 7,
+      async: 8,
+      input: 9,
+      ui: 10,
+    });
+    const FIELD_HELP_FALLBACKS = Object.freeze({
+      registrykey: 'Required. Select a published module key from the registry.',
+      version: 'Select a published version for the selected module.',
+      manifesturl: 'Manifest URL for the selected module version. Usually auto-filled from the registry.',
+      entryexport: 'Export name called by the host when mounting this module (for example "mount").',
+      mountstrategy: 'Choose how the host mounts this module.',
+      preload: 'Enable to preload remote assets before initial render.',
+      sandbox: 'Enable sandbox safeguards for remote module execution.',
+      routebase: 'Optional route prefix provided to the module.',
+      async: 'Configure async request/response transport settings.',
+      asyncmode: 'Choose the async mode used by the shell for this module.',
+      requestchannel: 'Channel/topic used for outbound async requests.',
+      responsechannel: 'Channel/topic used for inbound async responses.',
+      correlationidpath: 'JSON path used to correlate async responses with requests.',
+      input: 'Optional runtime input defaults for this module.',
+      ui: 'Configure module-specific UI props from the selected MFE specification.',
+    });
     
     const parseJsonLike = (value, fallback) => {
       if (value === null || value === undefined) return fallback;
@@ -3674,6 +3707,38 @@ data:
           const normalizedKeys = Object.keys(schemaProperties.value || {}).map((key) => toLower(key));
           return normalizedKeys.includes('registrykey') || normalizedKeys.includes('registry_key');
         });
+        const getMfePropPriority = (fieldName) => {
+          const token = normalizeFieldToken(fieldName);
+          const rank = MFE_PROP_PRIORITY[token];
+          return Number.isInteger(rank) ? rank : 1000;
+        };
+        const resolveFieldHelpText = (schemaValue, fieldPath, required = false) => {
+          const schema = normalizeObject(schemaValue);
+          const explicitHelp = pickFirstNonEmptyString(
+            schema?.description,
+            schema?.help,
+            schema?.help_text,
+            schema?.helpText,
+            schema?.hint,
+            schema?.x_help,
+            schema?.xHelp,
+            schema?.['x-help'],
+            schema?.['x-ui-help'],
+            schema?.['x_hint'],
+            schema?.['x-directus-hint'],
+          );
+          if (explicitHelp) return explicitHelp;
+
+          const normalizedPath = normalizeFieldToken(fieldPath);
+          const pathHint = FIELD_HELP_FALLBACKS[normalizedPath];
+          if (pathHint) return pathHint;
+
+          const leafName = asString(fieldPath).split('.').pop();
+          const leafHint = FIELD_HELP_FALLBACKS[normalizeFieldToken(leafName)];
+          if (leafHint) return leafHint;
+
+          return required ? 'Required.' : 'Optional.';
+        };
         const isComplexPropertySchema = (schemaValue) => {
           const schema = normalizeObject(schemaValue);
           const type = asString(schema?.type).toLowerCase();
@@ -3687,6 +3752,25 @@ data:
         const schemaRequiredSet = computed(() => {
           const required = Array.isArray(resolvedSchema.value?.required) ? resolvedSchema.value.required : [];
           return new Set(required.map((value) => asString(value)));
+        });
+        const effectiveShowJsonFallback = computed(() =>
+          showJsonFallback.value && !isMfeRemoteModuleDefinition.value
+        );
+        const orderedSchemaPropertyEntries = computed(() => {
+          const entries = Object.entries(schemaProperties.value || {});
+          if (!isMfeRemoteModuleDefinition.value) return entries;
+          return entries
+            .map(([propKey, propSchema], index) => ({
+              propKey,
+              propSchema,
+              index,
+              priority: getMfePropPriority(propKey),
+            }))
+            .sort((left, right) => {
+              if (left.priority !== right.priority) return left.priority - right.priority;
+              return left.index - right.index;
+            })
+            .map(({ propKey, propSchema }) => [propKey, propSchema]);
         });
         const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
         const selectedMfeRegistryKey = computed(() =>
@@ -3705,6 +3789,103 @@ data:
         const selectedMfeRegistryDetail = computed(() =>
           normalizeObject(parseJsonLike(mfeRegistryDetailByKey.value?.[selectedMfeRegistryKey.value], {}))
         );
+        const selectedMfeRegistryVersionRow = computed(() => {
+          const versionRows = normalizeRegistryVersionRows(selectedMfeRegistryDetail.value);
+          if (versionRows.length === 0) return {};
+          const requestedVersion = asString(selectedMfeRegistryVersion.value);
+          if (requestedVersion) {
+            const exact = versionRows.find((row) => asString(row?.module_version) === requestedVersion);
+            if (exact) return normalizeObject(parseJsonLike(exact, {}));
+          }
+          return normalizeObject(parseJsonLike(pickRegistryVersionRowForChannel(versionRows, resolveRegistryChannel()), {}));
+        });
+        const selectedMfeRegistrySpecSchema = computed(() => {
+          const detail = normalizeObject(parseJsonLike(selectedMfeRegistryDetail.value, {}));
+          const version = normalizeObject(parseJsonLike(selectedMfeRegistryVersionRow.value, {}));
+          const versionSeed = normalizeObject(parseJsonLike(version?.seed ?? version?.seed_ref, {}));
+          const versionDefinition = normalizeObject(parseJsonLike(version?.definition ?? version?.definition_ref, {}));
+          const versionDefinitionIo = normalizeObject(parseJsonLike(versionDefinition?.io, {}));
+          const detailSeed = normalizeObject(parseJsonLike(detail?.seed ?? detail?.seed_ref, {}));
+          const detailDefinition = normalizeObject(parseJsonLike(detail?.definition ?? detail?.definition_ref, {}));
+          const detailDefinitionIo = normalizeObject(parseJsonLike(detailDefinition?.io, {}));
+          return pickFirstObject(
+            version?.props_schema,
+            version?.propsSchema,
+            version?.schema,
+            version?.config_schema,
+            version?.configSchema,
+            versionSeed?.props_schema,
+            versionSeed?.propsSchema,
+            versionSeed?.schema,
+            versionDefinition?.props_schema,
+            versionDefinition?.propsSchema,
+            versionDefinition?.schema,
+            versionDefinitionIo?.props_schema,
+            versionDefinitionIo?.propsSchema,
+            versionDefinitionIo?.schema,
+            detailSeed?.props_schema,
+            detailSeed?.propsSchema,
+            detailSeed?.schema,
+            detailDefinition?.props_schema,
+            detailDefinition?.propsSchema,
+            detailDefinition?.schema,
+            detailDefinitionIo?.props_schema,
+            detailDefinitionIo?.propsSchema,
+            detailDefinitionIo?.schema,
+          );
+        });
+        const selectedMfeRegistrySpecDefaults = computed(() => {
+          const detail = normalizeObject(parseJsonLike(selectedMfeRegistryDetail.value, {}));
+          const version = normalizeObject(parseJsonLike(selectedMfeRegistryVersionRow.value, {}));
+          const versionSeed = normalizeObject(parseJsonLike(version?.seed ?? version?.seed_ref, {}));
+          const versionDefinition = normalizeObject(parseJsonLike(version?.definition ?? version?.definition_ref, {}));
+          const detailSeed = normalizeObject(parseJsonLike(detail?.seed ?? detail?.seed_ref, {}));
+          const detailDefinition = normalizeObject(parseJsonLike(detail?.definition ?? detail?.definition_ref, {}));
+          return pickFirstObject(
+            version?.default_props,
+            version?.defaultProps,
+            version?.defaults,
+            version?.props_defaults,
+            versionSeed?.default_props,
+            versionSeed?.defaultProps,
+            versionSeed?.defaults,
+            versionSeed?.props_defaults,
+            versionDefinition?.default_props,
+            versionDefinition?.defaultProps,
+            versionDefinition?.defaults,
+            versionDefinition?.props_defaults,
+            detailSeed?.default_props,
+            detailSeed?.defaultProps,
+            detailSeed?.defaults,
+            detailSeed?.props_defaults,
+            detailDefinition?.default_props,
+            detailDefinition?.defaultProps,
+            detailDefinition?.defaults,
+            detailDefinition?.props_defaults,
+          );
+        });
+        const selectedMfeUiSchema = computed(() => {
+          if (!isMfeRemoteModuleDefinition.value) return {};
+          if (!selectedMfeRegistryKey.value) return {};
+          const schema = normalizeObject(parseJsonLike(selectedMfeRegistrySpecSchema.value, {}));
+          const properties = normalizeObject(schema?.properties);
+          if (Object.keys(properties).length === 0) return {};
+          const required = Array.isArray(schema?.required)
+            ? schema.required.map((entry) => asString(entry)).filter(Boolean)
+            : [];
+          return {
+            type: 'object',
+            title: 'UI Configuration',
+            description: resolveFieldHelpText(
+              schema,
+              'ui',
+              required.length > 0
+            ),
+            additionalProperties: schema?.additionalProperties === true,
+            properties,
+            required,
+          };
+        });
         const mfeRegistryKeyOptions = computed(() =>
           mfeRegistryModuleRows.value.map((row) => {
             const moduleKeyValue = asString(row?.module_key);
@@ -3859,6 +4040,18 @@ data:
               nextProps.manifestUrl = selectedManifestUrl;
               changed = true;
             }
+            const selectedUiSchemaProperties = normalizeObject(selectedMfeUiSchema.value?.properties);
+            const selectedUiDefaults = normalizeObject(parseJsonLike(selectedMfeRegistrySpecDefaults.value, {}));
+            if (
+              Object.keys(selectedUiSchemaProperties).length > 0
+              && Object.keys(selectedUiDefaults).length > 0
+            ) {
+              const currentUiValue = normalizeObject(parseJsonLike(nextProps?.ui, {}));
+              if (Object.keys(currentUiValue).length === 0) {
+                nextProps.ui = { ...selectedUiDefaults };
+                changed = true;
+              }
+            }
 
             if (changed) {
               emitProps(nextProps);
@@ -3940,16 +4133,24 @@ data:
         };
     
         const renderPropertyEditor = (propKey, propSchema) => {
-          const schema = normalizeObject(propSchema);
+          const normalizedPropKey = toLower(propKey);
+          const normalizedPropToken = normalizeFieldToken(propKey);
+          const hasSelectedMfeUiSchema = Object.keys(normalizeObject(selectedMfeUiSchema.value?.properties)).length > 0;
+          const schema = normalizeObject(
+            isMfeRemoteModuleDefinition.value
+            && normalizedPropToken === 'ui'
+            && hasSelectedMfeUiSchema
+              ? selectedMfeUiSchema.value
+              : propSchema
+          );
+          const isRequired = schemaRequiredSet.value.has(propKey);
           const title = asString(schema.title) || propKey;
-          const description = asString(schema.description);
+          const description = resolveFieldHelpText(schema, propKey, isRequired);
           const value = mergedProps.value[propKey];
           const type = asString(schema.type).toLowerCase();
-          const isRequired = schemaRequiredSet.value.has(propKey);
           const enumValues = Array.isArray(schema.enum) ? schema.enum.map((entry) => asString(entry)).filter(Boolean) : [];
           const inputId = `cms-module-prop-${propKey}`;
           const disabled = props.disabled || loading.value;
-          const normalizedPropKey = toLower(propKey);
           const isRegistryKeyProp = normalizedPropKey === 'registrykey' || normalizedPropKey === 'registry_key';
           const isVersionProp = normalizedPropKey === 'version' || normalizedPropKey === 'module_version' || normalizedPropKey === 'moduleversion';
           const isManifestUrlProp = normalizedPropKey === 'manifesturl' || normalizedPropKey === 'manifest_url';
@@ -4236,8 +4437,12 @@ data:
               const fieldValue = getNestedValue(normalizeObject(mergedProps.value?.[propKey]), pathSegments);
               const fieldId = `${inputId}-${pathSegments.join('-')}`;
               const fieldTitle = asString(nestedSchema?.title) || fieldKey;
-              const fieldDescription = asString(nestedSchema?.description);
               const isFieldRequired = requiredSet.has(fieldKey);
+              const fieldDescription = resolveFieldHelpText(
+                nestedSchema,
+                `${propKey}.${pathSegments.join('.')}`,
+                isFieldRequired
+              );
               const nestedProperties = normalizeObject(nestedSchema?.properties);
 
               let nestedControl = null;
@@ -4599,12 +4804,12 @@ data:
         return () => {
           const definition = moduleDefinition.value;
           const hasSchemaProperties = Object.keys(schemaProperties.value).length > 0;
-          const inlinePropertyEntries = Object.entries(schemaProperties.value).filter(([, propSchema]) => {
-            if (!showJsonFallback.value) return true;
+          const inlinePropertyEntries = orderedSchemaPropertyEntries.value.filter(([, propSchema]) => {
+            if (!effectiveShowJsonFallback.value) return true;
             return !isComplexPropertySchema(propSchema);
           });
           const hasInlineProperties = inlinePropertyEntries.length > 0;
-          const hasComplexProperties = Object.values(schemaProperties.value).some((propSchema) =>
+          const hasComplexProperties = orderedSchemaPropertyEntries.value.some(([, propSchema]) =>
             isComplexPropertySchema(propSchema)
           );
           const definitionTitle = asString(definition?.name) || moduleKey.value || 'Module';
@@ -4637,7 +4842,7 @@ data:
             );
           }
     
-          if (showJsonFallback.value && hasComplexProperties) {
+          if (effectiveShowJsonFallback.value && hasComplexProperties) {
             children.push(
               h(
                 'p',
@@ -4646,8 +4851,8 @@ data:
               )
             );
           }
-    
-          if (showJsonFallback.value) {
+
+          if (effectiveShowJsonFallback.value) {
             const resolvedCodeEditor = resolveComponent('v-input-code');
             const resolvedTextarea = resolveComponent('v-textarea');
             const resolvedButton = resolveComponent('v-button');
