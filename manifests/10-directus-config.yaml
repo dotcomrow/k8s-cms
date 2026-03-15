@@ -2445,6 +2445,23 @@ data:
       input: 'input',
       ui: 'ui',
     });
+    const MFE_UI_SCHEMA_EXCLUDED_TOKENS = Object.freeze(
+      new Set([
+        'registrykey',
+        'modulekey',
+        'version',
+        'moduleversion',
+        'manifesturl',
+        'entryexport',
+        'mountstrategy',
+        'preload',
+        'sandbox',
+        'routebase',
+        'async',
+        'input',
+        'ui',
+      ])
+    );
     
     const parseJsonLike = (value, fallback) => {
       if (value === null || value === undefined) return fallback;
@@ -2461,6 +2478,44 @@ data:
     const normalizeObject = (value) => {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
       return value;
+    };
+
+    const omitObjectKeysByFieldToken = (value, excludedTokens) => {
+      const source = normalizeObject(parseJsonLike(value, {}));
+      const result = {};
+      const exclusions = excludedTokens instanceof Set ? excludedTokens : new Set();
+      for (const [key, entry] of Object.entries(source)) {
+        if (exclusions.has(normalizeFieldToken(key))) continue;
+        result[key] = entry;
+      }
+      return result;
+    };
+
+    const isShellAsyncPlaceholder = (value) => {
+      const asyncValue = normalizeObject(parseJsonLike(value, {}));
+      if (Object.keys(asyncValue).length === 0) return true;
+
+      const mode = toLower(asyncValue?.mode);
+      const requestChannel = asString(asyncValue?.requestChannel ?? asyncValue?.request_channel);
+      const responseChannel = asString(asyncValue?.responseChannel ?? asyncValue?.response_channel);
+      const correlationIdPath = asString(asyncValue?.correlationIdPath ?? asyncValue?.correlation_id_path);
+      const normalizedCorrelationPath = correlationIdPath.toLowerCase();
+
+      const hasExtraKeys = Object.keys(asyncValue).some((key) => {
+        const token = normalizeFieldToken(key);
+        return (
+          token !== 'mode'
+          && token !== 'requestchannel'
+          && token !== 'responsechannel'
+          && token !== 'correlationidpath'
+        );
+      });
+      if (hasExtraKeys) return false;
+
+      const hasActiveMode = Boolean(mode) && mode !== 'none';
+      const hasChannelRouting = Boolean(requestChannel || responseChannel);
+      const hasCustomCorrelation = Boolean(correlationIdPath) && normalizedCorrelationPath !== 'requestid';
+      return !hasActiveMode && !hasChannelRouting && !hasCustomCorrelation;
     };
 
     const cloneJsonValue = (value) => {
@@ -3916,10 +3971,15 @@ data:
           if (!isMfeRemoteModuleDefinition.value) return {};
           if (!selectedMfeRegistryKey.value) return {};
           const schema = normalizeObject(parseJsonLike(selectedMfeRegistrySpecSchema.value, {}));
-          const properties = normalizeObject(schema?.properties);
+          const allProperties = normalizeObject(schema?.properties);
+          const properties = omitObjectKeysByFieldToken(allProperties, MFE_UI_SCHEMA_EXCLUDED_TOKENS);
           if (Object.keys(properties).length === 0) return {};
+          const propertyTokens = new Set(Object.keys(properties).map((key) => normalizeFieldToken(key)));
           const required = Array.isArray(schema?.required)
-            ? schema.required.map((entry) => asString(entry)).filter(Boolean)
+            ? schema.required
+              .map((entry) => asString(entry))
+              .filter(Boolean)
+              .filter((entry) => propertyTokens.has(normalizeFieldToken(entry)))
             : [];
           return {
             type: 'object',
@@ -4089,7 +4149,19 @@ data:
               changed = true;
             }
             const selectedUiSchemaProperties = normalizeObject(selectedMfeUiSchema.value?.properties);
-            const selectedUiDefaults = normalizeObject(parseJsonLike(selectedMfeRegistrySpecDefaults.value, {}));
+            const selectedSpecDefaults = normalizeObject(parseJsonLike(selectedMfeRegistrySpecDefaults.value, {}));
+            const selectedUiDefaults = omitObjectKeysByFieldToken(
+              selectedSpecDefaults,
+              MFE_UI_SCHEMA_EXCLUDED_TOKENS,
+            );
+            const selectedAsyncDefaults = normalizeObject(parseJsonLike(selectedSpecDefaults?.async, {}));
+            if (Object.keys(selectedAsyncDefaults).length > 0) {
+              const currentAsyncValue = normalizeObject(parseJsonLike(nextProps?.async, {}));
+              if (isShellAsyncPlaceholder(currentAsyncValue)) {
+                nextProps.async = { ...selectedAsyncDefaults };
+                changed = true;
+              }
+            }
             if (
               Object.keys(selectedUiSchemaProperties).length > 0
               && Object.keys(selectedUiDefaults).length > 0
