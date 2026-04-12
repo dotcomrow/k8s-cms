@@ -272,6 +272,44 @@ data:
     }
     trap '_reconcile_mark_failed "$?"' EXIT
 
+    # On fresh/empty databases, Directus core tables do not exist until
+    # the main container runs `database install`. Unblock that startup path
+    # by publishing db-ready early, then wait here for core tables.
+    _directus_core_tables_ready() {
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT CASE WHEN to_regclass('directus.directus_users') IS NOT NULL THEN 1 ELSE 0 END;" 2>/dev/null || true
+    }
+
+    _core_ready="$(_directus_core_tables_ready | tr -d '\r')"
+    if [ "${_core_ready:-0}" != "1" ]; then
+      DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS_RAW="${DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS:-900}"
+      DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS="$(printf '%s' "${DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS_RAW}" | tr -dc '0-9')"
+      if [ -z "${DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS:-}" ] || [ "${DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS}" -lt 30 ]; then
+        DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS=900
+      fi
+      DIRECTUS_POSTSCHEMA_CORE_WAIT_INTERVAL_SECONDS=5
+
+      echo "⏳ directus_users not found yet; signaling db-ready and waiting for Directus bootstrap tables..."
+      touch "${POSTSCHEMA_DB_READY_FILE}" >/dev/null 2>&1 || true
+
+      _waited=0
+      while [ "${_waited}" -lt "${DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS}" ]; do
+        _core_ready="$(_directus_core_tables_ready | tr -d '\r')"
+        if [ "${_core_ready:-0}" = "1" ]; then
+          echo "✅ Detected Directus core tables; continuing postschema reconcile."
+          break
+        fi
+        sleep "${DIRECTUS_POSTSCHEMA_CORE_WAIT_INTERVAL_SECONDS}"
+        _waited=$((_waited + DIRECTUS_POSTSCHEMA_CORE_WAIT_INTERVAL_SECONDS))
+      done
+
+      _core_ready="$(_directus_core_tables_ready | tr -d '\r')"
+      if [ "${_core_ready:-0}" != "1" ]; then
+        echo "❌ Timed out waiting ${DIRECTUS_POSTSCHEMA_CORE_WAIT_SECONDS}s for Directus core tables."
+        exit 1
+      fi
+    fi
+
     # 2) Check sentinel; skip schema patch if already applied
     PATCH_KEY="github_profile_cols_v1"
     SKIP_PATCH="0"
