@@ -71,6 +71,10 @@ data:
         exit 1
       fi
     fi
+
+    # Publish DB-ready marker whenever bootstrap is confirmed, including when
+    # directus_migrations already exists before this script starts.
+    touch "${POSTSCHEMA_DB_READY_FILE}" >/dev/null 2>&1 || true
     
     # 1) Ensure schema_patch_log exists (no heredocs)
     echo "🔎 Ensuring patch ledger table…"
