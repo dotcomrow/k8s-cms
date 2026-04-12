@@ -509,59 +509,70 @@ data:
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
        DO \$\$ \
+       DECLARE \
+         _has_cms_pages BOOLEAN := to_regclass('directus.cms_pages') IS NOT NULL; \
+         _has_cms_page_blocks BOOLEAN := to_regclass('directus.cms_page_blocks') IS NOT NULL; \
        BEGIN \
-         IF EXISTS ( \
-           SELECT 1 \
-           FROM pg_constraint \
-           WHERE conname IN ('cms_pages_slug_unique', 'demo_pages_slug_unique') \
-             AND conrelid = 'directus.cms_pages'::regclass \
-         ) THEN \
-           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_pages_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
-             ALTER TABLE cms_pages DROP CONSTRAINT cms_pages_slug_unique; \
+         IF _has_cms_pages THEN \
+           IF EXISTS ( \
+             SELECT 1 \
+             FROM pg_constraint \
+             WHERE conname IN ('cms_pages_slug_unique', 'demo_pages_slug_unique') \
+               AND conrelid = to_regclass('directus.cms_pages') \
+           ) THEN \
+             IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_pages_slug_unique' AND conrelid=to_regclass('directus.cms_pages')) THEN \
+               ALTER TABLE cms_pages DROP CONSTRAINT cms_pages_slug_unique; \
+             END IF; \
+             IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_pages_slug_unique' AND conrelid=to_regclass('directus.cms_pages')) THEN \
+               ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_slug_unique; \
+             END IF; \
            END IF; \
-           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_pages_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
-             ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_slug_unique; \
+           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_pages_site_slug_unique' AND conrelid=to_regclass('directus.cms_pages')) THEN \
+             ALTER TABLE cms_pages DROP CONSTRAINT cms_pages_site_slug_unique; \
            END IF; \
-         END IF; \
-         IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_pages_site_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
-           ALTER TABLE cms_pages DROP CONSTRAINT cms_pages_site_slug_unique; \
-         END IF; \
-         IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_pages_site_slug_unique' AND conrelid='directus.cms_pages'::regclass) THEN \
-           ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_site_slug_unique; \
-         END IF; \
-         IF NOT EXISTS ( \
-           SELECT 1 \
-           FROM pg_constraint \
-           WHERE conname = 'cms_pages_site_channel_slug_unique' \
-             AND conrelid = 'directus.cms_pages'::regclass \
-         ) THEN \
+           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_pages_site_slug_unique' AND conrelid=to_regclass('directus.cms_pages')) THEN \
+             ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_site_slug_unique; \
+           END IF; \
            IF NOT EXISTS ( \
              SELECT 1 \
-             FROM cms_pages \
-             GROUP BY site_key, release_channel, slug \
-             HAVING COUNT(*) > 1 \
+             FROM pg_constraint \
+             WHERE conname = 'cms_pages_site_channel_slug_unique' \
+               AND conrelid = to_regclass('directus.cms_pages') \
            ) THEN \
-             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_site_channel_slug_unique UNIQUE (site_key, release_channel, slug); \
-           ELSE \
-             RAISE NOTICE 'Skipping cms_pages_site_channel_slug_unique due to duplicate (site_key,release_channel,slug) rows'; \
+             IF NOT EXISTS ( \
+               SELECT 1 \
+               FROM cms_pages \
+               GROUP BY site_key, release_channel, slug \
+               HAVING COUNT(*) > 1 \
+             ) THEN \
+               ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_site_channel_slug_unique UNIQUE (site_key, release_channel, slug); \
+             ELSE \
+               RAISE NOTICE 'Skipping cms_pages_site_channel_slug_unique due to duplicate (site_key,release_channel,slug) rows'; \
+             END IF; \
            END IF; \
+         ELSE \
+           RAISE NOTICE 'Skipping cms_pages slug constraints (table directus.cms_pages not found yet)'; \
          END IF; \
-         IF NOT EXISTS ( \
-           SELECT 1 \
-           FROM pg_constraint \
-           WHERE conname IN ('cms_page_blocks_collection_item_unique', 'demo_page_blocks_collection_item_unique') \
-             AND conrelid = 'directus.cms_page_blocks'::regclass \
-         ) THEN \
+         IF _has_cms_page_blocks THEN \
            IF NOT EXISTS ( \
              SELECT 1 \
-             FROM cms_page_blocks \
-             GROUP BY collection, item \
-             HAVING COUNT(*) > 1 \
+             FROM pg_constraint \
+             WHERE conname IN ('cms_page_blocks_collection_item_unique', 'demo_page_blocks_collection_item_unique') \
+               AND conrelid = to_regclass('directus.cms_page_blocks') \
            ) THEN \
-             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_collection_item_unique UNIQUE (collection, item); \
-           ELSE \
-             RAISE NOTICE 'Skipping cms_page_blocks_collection_item_unique due to duplicate (collection,item) rows'; \
+             IF NOT EXISTS ( \
+               SELECT 1 \
+               FROM cms_page_blocks \
+               GROUP BY collection, item \
+               HAVING COUNT(*) > 1 \
+             ) THEN \
+               ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_collection_item_unique UNIQUE (collection, item); \
+             ELSE \
+               RAISE NOTICE 'Skipping cms_page_blocks_collection_item_unique due to duplicate (collection,item) rows'; \
+             END IF; \
            END IF; \
+         ELSE \
+           RAISE NOTICE 'Skipping cms_page_blocks unique constraints (table directus.cms_page_blocks not found yet)'; \
          END IF; \
        END \
        \$\$;"
@@ -1114,46 +1125,46 @@ data:
         IF to_regclass('directus.cms_pages') IS NOT NULL THEN
           ALTER TABLE cms_pages ALTER COLUMN refresh_target DROP DEFAULT;
           ALTER TABLE cms_pages ALTER COLUMN refresh_target SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_refresh_target_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_refresh_target_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
           ALTER TABLE cms_pages ALTER COLUMN release_channel SET DEFAULT 'preview';
           ALTER TABLE cms_pages ALTER COLUMN release_channel SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_release_channel_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_release_channel_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
           ALTER TABLE cms_pages ALTER COLUMN theme_mode SET DEFAULT 'auto';
           ALTER TABLE cms_pages ALTER COLUMN theme_mode SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_mode_check CHECK (theme_mode IN ('auto','light','dark'));
           END IF;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_enabled SET DEFAULT true;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_enabled SET NOT NULL;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_position SET DEFAULT 'top-right';
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_position SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_widget_dock_position_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_widget_dock_position_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_widget_dock_position_check CHECK (widget_dock_position IN ('top-right','top-left','bottom-right','bottom-left'));
           END IF;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_direction SET DEFAULT 'vertical';
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_direction SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_widget_dock_direction_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_widget_dock_direction_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_widget_dock_direction_check CHECK (widget_dock_direction IN ('vertical','horizontal'));
           END IF;
           ALTER TABLE cms_pages ALTER COLUMN theme_selector_dock_position SET DEFAULT 'start';
           ALTER TABLE cms_pages ALTER COLUMN theme_selector_dock_position SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_selector_dock_position_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_selector_dock_position_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_selector_dock_position_check CHECK (theme_selector_dock_position IN ('start','end'));
           END IF;
           ALTER TABLE cms_pages ALTER COLUMN analytics_openobserve_rum_config SET DEFAULT '{}'::jsonb;
           ALTER TABLE cms_pages ALTER COLUMN analytics_openobserve_rum_config SET NOT NULL;
           ALTER TABLE cms_pages ALTER COLUMN theme_switcher_position SET DEFAULT 'top-right';
           ALTER TABLE cms_pages ALTER COLUMN theme_switcher_position SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_switcher_position_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_switcher_position_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_switcher_position_check CHECK (theme_switcher_position IN ('top-right','top-left','bottom-right','bottom-left'));
           END IF;
           ALTER TABLE cms_pages ALTER COLUMN theme_switcher_dock_direction SET DEFAULT 'vertical';
           ALTER TABLE cms_pages ALTER COLUMN theme_switcher_dock_direction SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_switcher_dock_direction_check' AND conrelid = 'directus.cms_pages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_switcher_dock_direction_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_switcher_dock_direction_check CHECK (theme_switcher_dock_direction IN ('vertical','horizontal'));
           END IF;
         END IF;
@@ -1176,13 +1187,13 @@ data:
           ALTER TABLE cms_page_blocks ALTER COLUMN template_ancestor_template_keys SET NOT NULL;
           ALTER TABLE cms_page_blocks ALTER COLUMN tree_path SET DEFAULT '';
           ALTER TABLE cms_page_blocks ALTER COLUMN tree_path SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_refresh_target_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_refresh_target_check' AND conrelid = to_regclass('directus.cms_page_blocks')) THEN
             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_release_channel_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_release_channel_check' AND conrelid = to_regclass('directus.cms_page_blocks')) THEN
             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_template_scope_check' AND conrelid = 'directus.cms_page_blocks'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_page_blocks_template_scope_check' AND conrelid = to_regclass('directus.cms_page_blocks')) THEN
             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_template_scope_check CHECK (template_scope IN ('page','template'));
           END IF;
         END IF;
@@ -1191,10 +1202,10 @@ data:
           ALTER TABLE cms_block_rich_text ALTER COLUMN refresh_target SET NOT NULL;
           ALTER TABLE cms_block_rich_text ALTER COLUMN release_channel SET DEFAULT 'preview';
           ALTER TABLE cms_block_rich_text ALTER COLUMN release_channel SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_refresh_target_check' AND conrelid = 'directus.cms_block_rich_text'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_refresh_target_check' AND conrelid = to_regclass('directus.cms_block_rich_text')) THEN
             ALTER TABLE cms_block_rich_text ADD CONSTRAINT cms_block_rich_text_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_release_channel_check' AND conrelid = 'directus.cms_block_rich_text'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_rich_text_release_channel_check' AND conrelid = to_regclass('directus.cms_block_rich_text')) THEN
             ALTER TABLE cms_block_rich_text ADD CONSTRAINT cms_block_rich_text_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
@@ -1203,10 +1214,10 @@ data:
           ALTER TABLE cms_block_hero ALTER COLUMN refresh_target SET NOT NULL;
           ALTER TABLE cms_block_hero ALTER COLUMN release_channel SET DEFAULT 'preview';
           ALTER TABLE cms_block_hero ALTER COLUMN release_channel SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_refresh_target_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_refresh_target_check' AND conrelid = to_regclass('directus.cms_block_hero')) THEN
             ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_release_channel_check' AND conrelid = 'directus.cms_block_hero'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_hero_release_channel_check' AND conrelid = to_regclass('directus.cms_block_hero')) THEN
             ALTER TABLE cms_block_hero ADD CONSTRAINT cms_block_hero_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
@@ -1217,10 +1228,10 @@ data:
           ALTER TABLE cms_block_module ALTER COLUMN refresh_target SET NOT NULL;
           ALTER TABLE cms_block_module ALTER COLUMN release_channel SET DEFAULT 'preview';
           ALTER TABLE cms_block_module ALTER COLUMN release_channel SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_refresh_target_check' AND conrelid = 'directus.cms_block_module'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_refresh_target_check' AND conrelid = to_regclass('directus.cms_block_module')) THEN
             ALTER TABLE cms_block_module ADD CONSTRAINT cms_block_module_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_release_channel_check' AND conrelid = 'directus.cms_block_module'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_module_release_channel_check' AND conrelid = to_regclass('directus.cms_block_module')) THEN
             ALTER TABLE cms_block_module ADD CONSTRAINT cms_block_module_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
@@ -1229,38 +1240,38 @@ data:
           ALTER TABLE cms_block_template_ref ALTER COLUMN refresh_target SET NOT NULL;
           ALTER TABLE cms_block_template_ref ALTER COLUMN release_channel SET DEFAULT 'preview';
           ALTER TABLE cms_block_template_ref ALTER COLUMN release_channel SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_template_ref_refresh_target_check' AND conrelid = 'directus.cms_block_template_ref'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_template_ref_refresh_target_check' AND conrelid = to_regclass('directus.cms_block_template_ref')) THEN
             ALTER TABLE cms_block_template_ref ADD CONSTRAINT cms_block_template_ref_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_template_ref_release_channel_check' AND conrelid = 'directus.cms_block_template_ref'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_block_template_ref_release_channel_check' AND conrelid = to_regclass('directus.cms_block_template_ref')) THEN
             ALTER TABLE cms_block_template_ref ADD CONSTRAINT cms_block_template_ref_release_channel_check CHECK (release_channel IN ('preview','prod'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_layout_templates') IS NOT NULL THEN
           ALTER TABLE cms_layout_templates ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_layout_templates ALTER COLUMN refresh_target SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_layout_templates_refresh_target_check' AND conrelid = 'directus.cms_layout_templates'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_layout_templates_refresh_target_check' AND conrelid = to_regclass('directus.cms_layout_templates')) THEN
             ALTER TABLE cms_layout_templates ADD CONSTRAINT cms_layout_templates_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN
           ALTER TABLE cms_layout_template_slots ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_layout_template_slots ALTER COLUMN refresh_target SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_layout_template_slots_refresh_target_check' AND conrelid = 'directus.cms_layout_template_slots'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_layout_template_slots_refresh_target_check' AND conrelid = to_regclass('directus.cms_layout_template_slots')) THEN
             ALTER TABLE cms_layout_template_slots ADD CONSTRAINT cms_layout_template_slots_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_modules') IS NOT NULL THEN
           ALTER TABLE cms_modules ALTER COLUMN refresh_target SET DEFAULT 'both';
           ALTER TABLE cms_modules ALTER COLUMN refresh_target SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_modules_refresh_target_check' AND conrelid = 'directus.cms_modules'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_modules_refresh_target_check' AND conrelid = to_regclass('directus.cms_modules')) THEN
             ALTER TABLE cms_modules ADD CONSTRAINT cms_modules_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
         IF to_regclass('directus.cms_theme_packages') IS NOT NULL THEN
           ALTER TABLE cms_theme_packages ALTER COLUMN refresh_target DROP DEFAULT;
           ALTER TABLE cms_theme_packages ALTER COLUMN refresh_target SET NOT NULL;
-          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_theme_packages_refresh_target_check' AND conrelid = 'directus.cms_theme_packages'::regclass) THEN
+          IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_theme_packages_refresh_target_check' AND conrelid = to_regclass('directus.cms_theme_packages')) THEN
             ALTER TABLE cms_theme_packages ADD CONSTRAINT cms_theme_packages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
           END IF;
         END IF;
@@ -1774,12 +1785,12 @@ data:
            SELECT 1 \
            FROM pg_constraint \
            WHERE conname IN ('cms_layout_templates_template_key_unique', 'demo_layout_templates_template_key_unique') \
-             AND conrelid = 'directus.cms_layout_templates'::regclass \
+             AND conrelid = to_regclass('directus.cms_layout_templates') \
          ) THEN \
-           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_layout_templates_template_key_unique' AND conrelid='directus.cms_layout_templates'::regclass) THEN \
+           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_layout_templates_template_key_unique' AND conrelid=to_regclass('directus.cms_layout_templates')) THEN \
              ALTER TABLE cms_layout_templates DROP CONSTRAINT cms_layout_templates_template_key_unique; \
            END IF; \
-           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_layout_templates_template_key_unique' AND conrelid='directus.cms_layout_templates'::regclass) THEN \
+           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_layout_templates_template_key_unique' AND conrelid=to_regclass('directus.cms_layout_templates')) THEN \
              ALTER TABLE cms_layout_templates DROP CONSTRAINT demo_layout_templates_template_key_unique; \
            END IF; \
          END IF; \
