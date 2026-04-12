@@ -34,6 +34,43 @@ data:
     fi
     
     export PGPASSWORD="$DB_PASS"
+
+    # On fresh installs, let the Directus container seed/migrate system tables first.
+    # Avoid mutating DB metadata before directus_migrations exists.
+    _directus_bootstrap_ready() {
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT CASE WHEN to_regclass('directus.directus_migrations') IS NOT NULL THEN 1 ELSE 0 END;" 2>/dev/null || true
+    }
+
+    _bootstrap_ready="$(_directus_bootstrap_ready | tr -d '\r')"
+    if [ "${_bootstrap_ready:-0}" != "1" ]; then
+      DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS_RAW="${DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS:-1200}"
+      DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS="$(printf '%s' "${DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS_RAW}" | tr -dc '0-9')"
+      if [ -z "${DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS:-}" ] || [ "${DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS}" -lt 60 ]; then
+        DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS=1200
+      fi
+      DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_INTERVAL_SECONDS=5
+
+      echo "⏳ directus_migrations not found yet; signaling db-ready and waiting for Directus bootstrap..."
+      touch "${POSTSCHEMA_DB_READY_FILE}" >/dev/null 2>&1 || true
+
+      _bootstrap_waited=0
+      while [ "${_bootstrap_waited}" -lt "${DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS}" ]; do
+        _bootstrap_ready="$(_directus_bootstrap_ready | tr -d '\r')"
+        if [ "${_bootstrap_ready:-0}" = "1" ]; then
+          echo "✅ Detected directus_migrations; starting postschema reconcile."
+          break
+        fi
+        sleep "${DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_INTERVAL_SECONDS}"
+        _bootstrap_waited=$((_bootstrap_waited + DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_INTERVAL_SECONDS))
+      done
+
+      _bootstrap_ready="$(_directus_bootstrap_ready | tr -d '\r')"
+      if [ "${_bootstrap_ready:-0}" != "1" ]; then
+        echo "❌ Timed out waiting ${DIRECTUS_POSTSCHEMA_BOOTSTRAP_WAIT_SECONDS}s for Directus bootstrap (directus_migrations)."
+        exit 1
+      fi
+    fi
     
     # 1) Ensure schema_patch_log exists (no heredocs)
     echo "🔎 Ensuring patch ledger table…"

@@ -320,7 +320,7 @@ spec:
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/openapi/admin"
           - name: DIRECTUS_POSTSCHEMA_RECONCILE_VERSION
-            value: "2026-04-11.3"
+            value: "2026-04-11.4"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
             value: "false"
         volumeMounts:
@@ -413,6 +413,95 @@ spec:
             # Ensure Directus uses the intended schema/search_path for all CLI calls
             export DB_SEARCH_PATH="${DB_SCHEMA:-directus},public"
 
+            _reset_partial_directus_install_if_needed() {
+              RESET_PARTIAL_INSTALL_RAW="${DIRECTUS_RESET_PARTIAL_INSTALL:-true}"
+              case "$(printf '%s' "${RESET_PARTIAL_INSTALL_RAW}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes|on) RESET_PARTIAL_INSTALL="true" ;;
+                *) RESET_PARTIAL_INSTALL="false" ;;
+              esac
+
+              if [ "${RESET_PARTIAL_INSTALL}" != "true" ]; then
+                echo "ℹ️ Skipping partial Directus install reset check (DIRECTUS_RESET_PARTIAL_INSTALL=false)."
+                return 0
+              fi
+
+              node - <<'NODE'
+            const fs = require("fs");
+            const path = require("path");
+
+            const pnpmRoot = "/directus/node_modules/.pnpm";
+            const knexEntry = fs
+              .readdirSync(pnpmRoot)
+              .find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex")));
+
+            if (!knexEntry) {
+              console.error("knex not found");
+              process.exit(1);
+            }
+
+            const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex"));
+            const schema = process.env.DB_SCHEMA || "directus";
+            const db = knex({
+              client: "pg",
+              connection: {
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT || 5432),
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD,
+                database: process.env.DB_DATABASE
+              }
+            });
+
+            async function run() {
+              const migrationsTable = await db("information_schema.tables")
+                .where({ table_schema: schema, table_name: "directus_migrations" })
+                .first();
+
+              if (migrationsTable) {
+                console.log("directus_migrations table present; no partial-install reset needed.");
+                return;
+              }
+
+              const collectionsTable = await db("information_schema.tables")
+                .where({ table_schema: schema, table_name: "directus_collections" })
+                .first();
+
+              if (!collectionsTable) {
+                console.log("No Directus system tables detected yet; no partial-install reset needed.");
+                return;
+              }
+
+              const directusTables = await db("information_schema.tables")
+                .where({ table_schema: schema })
+                .where("table_name", "like", "directus_%")
+                .orderBy("table_name")
+                .select("table_name");
+
+              const cmsTables = await db("information_schema.tables")
+                .where({ table_schema: schema })
+                .where("table_name", "like", "cms_%")
+                .orderBy("table_name")
+                .select("table_name");
+
+              console.log(
+                `Detected partial Directus install (directus_collections exists without directus_migrations). ` +
+                  `Resetting schema "${schema}". directus tables=${directusTables.length}, cms tables=${cmsTables.length}`
+              );
+
+              await db.raw(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+              await db.raw(`CREATE SCHEMA "${schema}"`);
+              console.log(`Schema "${schema}" reset complete.`);
+            }
+
+            run()
+              .catch((error) => {
+                console.error(error);
+                process.exit(1);
+              })
+              .finally(() => db.destroy());
+            NODE
+            }
+
             # Increase OAuth2 userinfo timeout for cold-starting profile proxy
             if [ -n "${AUTH_GITHUB_CLIENT_HTTP__TIMEOUT:-}" ]; then
               printf '%s\n' \
@@ -428,6 +517,7 @@ spec:
             fi
 
             echo "🔄 Initializing Directus database..."
+            _reset_partial_directus_install_if_needed
             echo "📦 Running database install (idempotent)..."
             if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install >/tmp/install.log 2>&1; then
               echo "✅ Database installation completed successfully"
@@ -1020,6 +1110,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
         - name: DB_SCHEMA
           valueFrom: { configMapKeyRef: { name: directus-config, key: DB_SCHEMA } }
+        - name: DIRECTUS_RESET_PARTIAL_INSTALL
+          value: "true"
         - name: DB_POOL__MIN
           valueFrom: { configMapKeyRef: { name: directus-config, key: DB_POOL__MIN } }
         - name: DB_POOL__MAX
