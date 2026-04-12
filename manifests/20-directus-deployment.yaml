@@ -555,8 +555,19 @@ spec:
               node -e 'const fs = require("fs"); const path = require("path"); const pnpmRoot = "/directus/node_modules/.pnpm"; const knexEntry = fs.readdirSync(pnpmRoot).find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex"))); if (!knexEntry) { console.error("knex not found"); process.exit(1); } const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex")); const schema = process.env.DB_SCHEMA || "directus"; const db = knex({ client: "pg", connection: { host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE } }); const run = async () => { const migrationsTable = await db("information_schema.tables").where({ table_schema: schema, table_name: "directus_migrations" }).first(); if (!migrationsTable) return; const existing = await db("directus_migrations").withSchema(schema).where({ version: process.env.MIGRATION_VERSION }).first(); if (existing) return; const projectOwnerCol = await db("information_schema.columns").where({ table_schema: schema, table_name: "directus_settings", column_name: "project_owner" }).first(); if (!projectOwnerCol) return; const migrationCols = await db("information_schema.columns").select("column_name").where({ table_schema: schema, table_name: "directus_migrations" }); const insert = { version: process.env.MIGRATION_VERSION, name: process.env.MIGRATION_NAME }; if (migrationCols.some((col) => col.column_name === "timestamp")) { insert.timestamp = new Date().toISOString(); } await db("directus_migrations").withSchema(schema).insert(insert).onConflict("version").ignore(); console.log("Marked Add Project Owner migration as applied."); }; run().finally(() => db.destroy());'
             }
 
+            _ensure_public_registration_migration_recorded() {
+              MIGRATION_VERSION="20240422A"
+              MIGRATION_NAME="Public Registration"
+              export MIGRATION_VERSION MIGRATION_NAME
+
+              node -e 'const fs = require("fs"); const path = require("path"); const pnpmRoot = "/directus/node_modules/.pnpm"; const knexEntry = fs.readdirSync(pnpmRoot).find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex"))); if (!knexEntry) { console.error("knex not found"); process.exit(1); } const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex")); const schema = process.env.DB_SCHEMA || "directus"; const db = knex({ client: "pg", connection: { host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE } }); const run = async () => { const migrationsTable = await db("information_schema.tables").where({ table_schema: schema, table_name: "directus_migrations" }).first(); if (!migrationsTable) return; const existing = await db("directus_migrations").withSchema(schema).where({ version: process.env.MIGRATION_VERSION }).first(); if (existing) return; const requiredCols = ["public_registration", "public_registration_verify_email", "public_registration_role", "public_registration_email_filter"]; const presentCols = await db("information_schema.columns").where({ table_schema: schema, table_name: "directus_settings" }).whereIn("column_name", requiredCols).select("column_name"); if (presentCols.length !== requiredCols.length) return; const migrationCols = await db("information_schema.columns").select("column_name").where({ table_schema: schema, table_name: "directus_migrations" }); const insert = { version: process.env.MIGRATION_VERSION, name: process.env.MIGRATION_NAME }; if (migrationCols.some((col) => col.column_name === "timestamp")) { insert.timestamp = new Date().toISOString(); } await db("directus_migrations").withSchema(schema).insert(insert).onConflict("version").ignore(); console.log("Marked Public Registration migration as applied."); }; run().finally(() => db.destroy());'
+            }
+
             if ! _ensure_project_owner_migration_recorded; then
               echo "⚠️ Failed to reconcile Add Project Owner migration state; continuing..."
+            fi
+            if ! _ensure_public_registration_migration_recorded; then
+              echo "⚠️ Failed to reconcile Public Registration migration state; continuing..."
             fi
 
             _ensure_settings_row() {
@@ -585,13 +596,20 @@ spec:
               cat /tmp/migrate.log
               echo "✅ Migrations completed successfully"
             else
-              # Check if it's the known schema cache issue in Add Project Owner migration
-              if grep -q "Cannot read properties of undefined.*primary\|Add Project Owner\|project_owner.*already exists" /tmp/migrate.log; then
-                echo "⚠️ Known issue in 'Add Project Owner' migration detected"
+              # Recover from known partial-ledger states where schema already has the columns.
+              if grep -q "Cannot read properties of undefined.*primary\|Add Project Owner\|project_owner.*already exists\|Public Registration\|public_registration.*already exists" /tmp/migrate.log; then
+                echo "⚠️ Recoverable migration state detected; reconciling migration ledger and retrying."
+                _ensure_public_registration_migration_recorded || true
                 _ensure_project_owner_migration_recorded || true
-                echo "⚠️ This is a non-critical schema cache issue - continuing with deployment"
-                cat /tmp/migrate.log
-                echo "✅ Migrations completed with known warnings"
+                if node cli.js database migrate:latest >/tmp/migrate-retry.log 2>&1; then
+                  cat /tmp/migrate-retry.log
+                  echo "✅ Migrations completed successfully after ledger reconciliation"
+                else
+                  echo "❌ Critical migration failure after ledger reconciliation retry"
+                  cat /tmp/migrate.log
+                  cat /tmp/migrate-retry.log
+                  exit 1
+                fi
               else
                 echo "❌ Critical migration failure"
                 cat /tmp/migrate.log
