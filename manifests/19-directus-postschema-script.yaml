@@ -579,11 +579,19 @@ data:
 
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
-       CREATE INDEX IF NOT EXISTS cms_page_blocks_page_parent_idx ON cms_page_blocks (page_id, parent_block_id); \
-       CREATE INDEX IF NOT EXISTS cms_page_blocks_scope_idx ON cms_page_blocks (page_id, template_scope, template_group_key); \
-       CREATE INDEX IF NOT EXISTS cms_page_blocks_template_root_idx ON cms_page_blocks (page_id, template_root_block_id); \
-       CREATE INDEX IF NOT EXISTS cms_page_blocks_template_nearest_idx ON cms_page_blocks (page_id, template_nearest_block_id); \
-       CREATE INDEX IF NOT EXISTS cms_page_blocks_group_tag_idx ON cms_page_blocks (page_id, group_tag);"
+       DO \$\$ \
+       BEGIN \
+         IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN \
+           CREATE INDEX IF NOT EXISTS cms_page_blocks_page_parent_idx ON cms_page_blocks (page_id, parent_block_id); \
+           CREATE INDEX IF NOT EXISTS cms_page_blocks_scope_idx ON cms_page_blocks (page_id, template_scope, template_group_key); \
+           CREATE INDEX IF NOT EXISTS cms_page_blocks_template_root_idx ON cms_page_blocks (page_id, template_root_block_id); \
+           CREATE INDEX IF NOT EXISTS cms_page_blocks_template_nearest_idx ON cms_page_blocks (page_id, template_nearest_block_id); \
+           CREATE INDEX IF NOT EXISTS cms_page_blocks_group_tag_idx ON cms_page_blocks (page_id, group_tag); \
+         ELSE \
+           RAISE NOTICE 'Skipping cms_page_blocks indexes (table directus.cms_page_blocks not found yet)'; \
+         END IF; \
+       END \
+       \$\$;"
     
     # Keep derived site metadata on junction/content rows aligned to the page they belong to.
     echo "🔄 Syncing site/page metadata onto blocks..."
