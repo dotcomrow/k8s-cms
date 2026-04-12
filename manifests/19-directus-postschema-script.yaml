@@ -5843,6 +5843,10 @@ data:
           done
         fi
     
+        CMS_PAGES_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT CASE WHEN to_regclass('directus.cms_pages') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+        CMS_PAGES_TABLE_EXISTS="$(printf '%s' "${CMS_PAGES_TABLE_EXISTS:-0}" | tr -d '\r')"
+
         printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
           site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
           homepage_slug="$(printf '%s' "$site" | jq -r '.homepage_slug // "home"')"
@@ -5880,7 +5884,7 @@ data:
 
           # Ensure each site has a homepage row keyed by (site_key, release_channel, homepage_slug).
           # If absent, claim an unscoped page first; otherwise clone page metadata from any existing slug match.
-          if [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ]; then
+          if [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ] && [ "${CMS_PAGES_TABLE_EXISTS:-0}" = "1" ]; then
             site_key_sql="$(printf '%s' "$site_key" | sed "s/'/''/g")"
             homepage_slug_sql="$(printf '%s' "$homepage_slug" | sed "s/'/''/g")"
             homepage_release_channel_sql="$(printf '%s' "$homepage_release_channel" | sed "s/'/''/g")"
@@ -6130,6 +6134,8 @@ data:
                 echo "⚠️  homepage theme '${homepage_theme_package_key}' not found for site_key='${site_key}' (or global published); leaving page unchanged"
               fi
             fi
+          elif [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ]; then
+            echo "ℹ️ cms_pages table not found; skipping homepage provisioning for site_key='${site_key}'."
           fi
     
           # Ensure a per-client Directus service-user token exists in Vault.
