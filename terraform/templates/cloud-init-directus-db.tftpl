@@ -1,0 +1,156 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - postgresql
+  - postgresql-contrib
+
+write_files:
+  - path: /usr/local/sbin/bootstrap-directus-postgres.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      DB_NAME=$(cat <<'EOF_DB_NAME'
+      ${db_name}
+      EOF_DB_NAME
+      )
+      DB_USER=$(cat <<'EOF_DB_USER'
+      ${directus_db_user}
+      EOF_DB_USER
+      )
+      DB_PASS=$(cat <<'EOF_DB_PASS'
+      ${directus_db_password}
+      EOF_DB_PASS
+      )
+      ENABLE_DB_SSH_TUNNEL=$(cat <<'EOF_ENABLE_DB_SSH_TUNNEL'
+      ${enable_db_ssh_tunnel}
+      EOF_ENABLE_DB_SSH_TUNNEL
+      )
+      DB_TUNNEL_USER=$(cat <<'EOF_DB_TUNNEL_USER'
+      ${db_tunnel_user}
+      EOF_DB_TUNNEL_USER
+      )
+      DB_TUNNEL_PUBLIC_KEY=$(cat <<'EOF_DB_TUNNEL_PUBLIC_KEY'
+      ${db_tunnel_public_key}
+      EOF_DB_TUNNEL_PUBLIC_KEY
+      )
+
+      DB_NAME="$(printf '%s' "${DB_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DB_USER="$(printf '%s' "${DB_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DB_PASS="$(printf '%s' "${DB_PASS}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      ENABLE_DB_SSH_TUNNEL="$(printf '%s' "${ENABLE_DB_SSH_TUNNEL}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+      DB_TUNNEL_USER="$(printf '%s' "${DB_TUNNEL_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DB_TUNNEL_PUBLIC_KEY="$(printf '%s' "${DB_TUNNEL_PUBLIC_KEY}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+      if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
+        echo "Directus DB bootstrap values are missing."
+        exit 1
+      fi
+
+      pg_major="$(psql --version | awk '{print $3}' | cut -d. -f1)"
+      pg_conf_dir="/etc/postgresql/$pg_major/main"
+      pg_conf="$pg_conf_dir/postgresql.conf"
+      pg_hba="$pg_conf_dir/pg_hba.conf"
+
+      sed -ri "s|^#?listen_addresses\s*=.*|listen_addresses = '${postgres_listen_addresses}'|" "$pg_conf"
+      sed -ri "s|^#?password_encryption\s*=.*|password_encryption = 'scram-sha-256'|" "$pg_conf"
+
+      cat > /tmp/directus-pg-hba-rules.txt <<'EOF_PG_HBA'
+      ${pg_hba_rules}
+      EOF_PG_HBA
+
+      while IFS= read -r raw_rule; do
+        rule="$(printf '%s' "$raw_rule" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [ -z "$rule" ] && continue
+        if ! grep -Fqx "$rule" "$pg_hba"; then
+          echo "$rule" >> "$pg_hba"
+        fi
+      done < /tmp/directus-pg-hba-rules.txt
+      rm -f /tmp/directus-pg-hba-rules.txt
+
+      if [ "$ENABLE_DB_SSH_TUNNEL" = "true" ]; then
+        if [ -z "$DB_TUNNEL_PUBLIC_KEY" ]; then
+          echo "DB tunnel enabled but public key is missing."
+          exit 1
+        fi
+
+        id -u "$DB_TUNNEL_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$DB_TUNNEL_USER"
+        passwd -l "$DB_TUNNEL_USER" >/dev/null 2>&1 || true
+
+        install -d -m 700 -o "$DB_TUNNEL_USER" -g "$DB_TUNNEL_USER" "/home/$DB_TUNNEL_USER/.ssh"
+        printf '%s\n' "$DB_TUNNEL_PUBLIC_KEY" > "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
+        chown "$DB_TUNNEL_USER:$DB_TUNNEL_USER" "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
+        chmod 600 "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
+
+        cat > /etc/ssh/sshd_config.d/directus-db-tunnel.conf <<EOF_SSHD
+      Match User ${DB_TUNNEL_USER}
+        PasswordAuthentication no
+        PubkeyAuthentication yes
+        AuthenticationMethods publickey
+        AllowTcpForwarding yes
+        PermitOpen 127.0.0.1:5432
+        X11Forwarding no
+        AllowAgentForwarding no
+        PermitTTY no
+      EOF_SSHD
+
+        systemctl restart ssh || systemctl restart sshd
+      fi
+
+      systemctl enable postgresql
+      systemctl restart postgresql
+
+      sudo -u postgres psql \
+        -v ON_ERROR_STOP=1 \
+        -v directus_db_name="$DB_NAME" \
+        -v directus_db_user="$DB_USER" \
+        -v directus_db_password="$DB_PASS" \
+        <<'SQL'
+      DO $do$
+      DECLARE
+        v_db_name text := :'directus_db_name';
+        v_db_user text := :'directus_db_user';
+        v_db_password text := :'directus_db_password';
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_db_user) THEN
+          EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', v_db_user, v_db_password);
+        ELSE
+          EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', v_db_user, v_db_password);
+        END IF;
+
+        IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = v_db_name) THEN
+          EXECUTE format('CREATE DATABASE %I OWNER %I', v_db_name, v_db_user);
+        END IF;
+
+        EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', v_db_name, v_db_user);
+      END
+      $do$;
+      SQL
+
+      sudo -u postgres psql \
+        -v ON_ERROR_STOP=1 \
+        -d "$DB_NAME" \
+        -v directus_db_user="$DB_USER" \
+        <<'SQL'
+      DO $do$
+      DECLARE
+        v_db_user text := :'directus_db_user';
+      BEGIN
+        EXECUTE format('CREATE SCHEMA IF NOT EXISTS directus AUTHORIZATION %I', v_db_user);
+        EXECUTE format('ALTER ROLE %I SET search_path = directus, public', v_db_user);
+        EXECUTE format('GRANT USAGE, CREATE ON SCHEMA directus TO %I', v_db_user);
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA directus TO %I', v_db_user);
+        EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA directus TO %I', v_db_user);
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA directus GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', v_db_user);
+        EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA directus GRANT USAGE, SELECT ON SEQUENCES TO %I', v_db_user);
+      END
+      $do$;
+      SQL
+
+      echo "Directus PostgreSQL bootstrap complete."
+
+runcmd:
+  - [bash, /usr/local/sbin/bootstrap-directus-postgres.sh]

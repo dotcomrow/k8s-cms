@@ -166,26 +166,54 @@ spec:
 
               VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
               VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
+              KV_CREDS_URL="${VAULT_ADDR}/v1/secret/data/directus/db"
+              ROOT_CREDS_URL="${VAULT_ADDR}/v1/secret/data"
 
-              echo "🔐 Fetching DB static creds for directus-app from Vault…"
-              CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
+              echo "🔐 Fetching DB credentials from Vault…"
+              DB_HOST_OVERRIDE=""
+              DB_PORT_OVERRIDE=""
+              DB_DATABASE_OVERRIDE=""
               DB_USER=""
               DB_PASS=""
               i=0
               while [ "$i" -lt 40 ]; do
-                CODE="$(curl -sS -o /tmp/creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "$CREDS_URL" || true)"
+                CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
                 if [ "$CODE" = "200" ]; then
-                  DB_USER="$(jq -r '.data.username // empty' /tmp/creds.json)"
-                  DB_PASS="$(jq -r '.data.password // empty' /tmp/creds.json)"
+                  DB_USER="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/creds.json)"
+                  DB_PASS="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/creds.json)"
+                  DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/creds.json)"
+                  DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/creds.json)"
+                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/creds.json)"
                   if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
+                    echo "  .. using secret/data/directus/db"
                     break
                   fi
-                else
+                elif [ "$CODE" != "404" ]; then
                   ERR="$(jq -r '.errors[0] // empty' /tmp/creds.json 2>/dev/null || true)"
                   if [ -n "$ERR" ]; then
                     echo "  .. Vault returned HTTP $CODE: $ERR"
                   else
                     echo "  .. Vault returned HTTP $CODE"
+                  fi
+                fi
+
+                ROOT_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/root-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${ROOT_CREDS_URL}" || true)"
+                if [ "$ROOT_CODE" = "200" ]; then
+                  DB_USER="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/root-creds.json)"
+                  DB_PASS="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/root-creds.json)"
+                  DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/root-creds.json)"
+                  DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/root-creds.json)"
+                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/root-creds.json)"
+                  if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
+                    echo "  .. using secret/data (directus_db_* fields)"
+                    break
+                  fi
+                elif [ "$ROOT_CODE" != "404" ]; then
+                  ERR="$(jq -r '.errors[0] // empty' /tmp/root-creds.json 2>/dev/null || true)"
+                  if [ -n "$ERR" ]; then
+                    echo "  .. Vault returned HTTP $ROOT_CODE from secret/data: $ERR"
+                  else
+                    echo "  .. Vault returned HTTP $ROOT_CODE from secret/data"
                   fi
                 fi
                 i=$((i + 1))
@@ -195,6 +223,10 @@ spec:
               if [ -z "$DB_USER" ] || [ -z "$DB_PASS" ] || [ "$DB_USER" = "null" ] || [ "$DB_PASS" = "null" ]; then
                 echo "❌ Failed to fetch DB creds from Vault"; exit 1
               fi
+
+              if [ -n "$DB_HOST_OVERRIDE" ]; then DB_HOST="$DB_HOST_OVERRIDE"; fi
+              if [ -n "$DB_PORT_OVERRIDE" ]; then DB_PORT="$DB_PORT_OVERRIDE"; fi
+              if [ -n "$DB_DATABASE_OVERRIDE" ]; then DB_DATABASE="$DB_DATABASE_OVERRIDE"; fi
 
               export PGPASSWORD="$DB_PASS"
               echo "🔧 Checking and truncating directus tables if they exist…"
@@ -237,9 +269,12 @@ spec:
           command: ["/bin/sh","-lc"]
           args:
             - |
-              echo "Waiting for Job(s) with prefix 'directus-yugabyte-config' in vault namespace to complete..."
-
-              TARGET_PREFIX="directus-yugabyte-config"
+              TARGET_PREFIX="${DIRECTUS_DB_CONFIG_JOB_PREFIX:-}"
+              if [ -z "${TARGET_PREFIX}" ]; then
+                echo "ℹ️ DIRECTUS_DB_CONFIG_JOB_PREFIX is empty; skipping DB config job wait."
+                exit 0
+              fi
+              echo "Waiting for Job(s) with prefix '${TARGET_PREFIX}' in vault namespace to complete..."
               MAX_MISSES=24 # ~2 minutes at 5s intervals
               MISSES=0
 
@@ -274,6 +309,172 @@ spec:
                 echo "  └─ still waiting…"
                 sleep 5
               done
+        - name: wait-for-directus-db
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              set -eu
+
+              apk add --no-cache curl jq postgresql15-client openssh-client >/dev/null
+
+              VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+              VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
+              KV_CREDS_URL="${VAULT_ADDR}/v1/secret/data/directus/db"
+              ROOT_CREDS_URL="${VAULT_ADDR}/v1/secret/data"
+
+              DIRECTUS_DB_WAIT_TIMEOUT_SECONDS_RAW="${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS:-1800}"
+              DIRECTUS_DB_WAIT_TIMEOUT_SECONDS="$(printf '%s' "${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS_RAW}" | tr -dc '0-9')"
+              if [ -z "${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS:-}" ] || [ "${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS}" -lt 60 ]; then
+                DIRECTUS_DB_WAIT_TIMEOUT_SECONDS=1800
+              fi
+              DIRECTUS_DB_WAIT_INTERVAL_SECONDS=5
+
+              echo "⏳ Waiting for Directus DB readiness (host, auth, and query checks)..."
+
+              _waited=0
+              while [ "${_waited}" -lt "${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS}" ]; do
+                DB_HOST_EFFECTIVE="${DB_HOST}"
+                DB_PORT_EFFECTIVE="${DB_PORT}"
+                DB_DATABASE_EFFECTIVE="${DB_DATABASE}"
+                DB_USER_EFFECTIVE=""
+                DB_PASS_EFFECTIVE=""
+                DB_HOST_OVERRIDE=""
+                DB_PORT_OVERRIDE=""
+                DB_DATABASE_OVERRIDE=""
+                DB_TUNNEL_ENABLED_RAW="false"
+                DB_TUNNEL_HOST=""
+                DB_TUNNEL_PORT=""
+                DB_TUNNEL_USER=""
+                DB_TUNNEL_LOCAL_PORT=""
+                DB_TUNNEL_REMOTE_PORT=""
+                DB_TUNNEL_PRIVATE_KEY_B64=""
+                DB_TUNNEL_ENABLED="false"
+                TUNNEL_PID=""
+
+                CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
+                if [ "${CODE}" = "200" ]; then
+                  DB_USER_EFFECTIVE="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/db-creds.json)"
+                  DB_PASS_EFFECTIVE="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/db-creds.json)"
+                  DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/db-creds.json)"
+                  DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/db-creds.json)"
+                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/db-creds.json)"
+                  DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.ssh_tunnel_enabled // "false"' /tmp/db-creds.json)"
+                  DB_TUNNEL_HOST="$(jq -r '.data.data.ssh_tunnel_host // .data.data.host // empty' /tmp/db-creds.json)"
+                  DB_TUNNEL_PORT="$(jq -r '.data.data.ssh_tunnel_port // "22"' /tmp/db-creds.json)"
+                  DB_TUNNEL_USER="$(jq -r '.data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-creds.json)"
+                  DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.ssh_tunnel_local_port // "15432"' /tmp/db-creds.json)"
+                  DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-creds.json)"
+                  DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.ssh_private_key_b64 // empty' /tmp/db-creds.json)"
+                fi
+
+                if [ -z "${DB_USER_EFFECTIVE}" ] || [ -z "${DB_PASS_EFFECTIVE}" ] || [ "${DB_USER_EFFECTIVE}" = "null" ] || [ "${DB_PASS_EFFECTIVE}" = "null" ]; then
+                  ROOT_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-root-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${ROOT_CREDS_URL}" || true)"
+                  if [ "${ROOT_CODE}" = "200" ]; then
+                    DB_USER_EFFECTIVE="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/db-root-creds.json)"
+                    DB_PASS_EFFECTIVE="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/db-root-creds.json)"
+                    DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/db-root-creds.json)"
+                    DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/db-root-creds.json)"
+                    DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/db-root-creds.json)"
+                    DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.directus_db_ssh_tunnel_enabled // .data.data.ssh_tunnel_enabled // "false"' /tmp/db-root-creds.json)"
+                    DB_TUNNEL_HOST="$(jq -r '.data.data.directus_db_ssh_tunnel_host // .data.data.ssh_tunnel_host // .data.data.directus_db_host // .data.data.host // empty' /tmp/db-root-creds.json)"
+                    DB_TUNNEL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_port // .data.data.ssh_tunnel_port // "22"' /tmp/db-root-creds.json)"
+                    DB_TUNNEL_USER="$(jq -r '.data.data.directus_db_ssh_tunnel_user // .data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-root-creds.json)"
+                    DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_local_port // .data.data.ssh_tunnel_local_port // "15432"' /tmp/db-root-creds.json)"
+                    DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_remote_port // .data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-root-creds.json)"
+                    DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-root-creds.json)"
+                  fi
+                fi
+
+                if [ -n "${DB_HOST_OVERRIDE}" ] && [ "${DB_HOST_OVERRIDE}" != "null" ]; then DB_HOST_EFFECTIVE="${DB_HOST_OVERRIDE}"; fi
+                if [ -n "${DB_PORT_OVERRIDE}" ] && [ "${DB_PORT_OVERRIDE}" != "null" ]; then DB_PORT_EFFECTIVE="${DB_PORT_OVERRIDE}"; fi
+                if [ -n "${DB_DATABASE_OVERRIDE}" ] && [ "${DB_DATABASE_OVERRIDE}" != "null" ]; then DB_DATABASE_EFFECTIVE="${DB_DATABASE_OVERRIDE}"; fi
+
+                case "$(printf '%s' "${DB_TUNNEL_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]')" in
+                  1|true|yes|on) DB_TUNNEL_ENABLED="true" ;;
+                  *) DB_TUNNEL_ENABLED="false" ;;
+                esac
+
+                if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
+                  if [ -n "${DB_TUNNEL_PRIVATE_KEY_B64}" ] && [ -n "${DB_TUNNEL_HOST}" ] && [ -n "${DB_TUNNEL_USER}" ] && [ -n "${DB_TUNNEL_PORT}" ] && [ -n "${DB_TUNNEL_LOCAL_PORT}" ] && [ -n "${DB_TUNNEL_REMOTE_PORT}" ]; then
+                    KEY_FILE="/tmp/directus-db-tunnel.key"
+                    if printf '%s' "${DB_TUNNEL_PRIVATE_KEY_B64}" | base64 --decode > "${KEY_FILE}" 2>/dev/null; then
+                      true
+                    elif printf '%s' "${DB_TUNNEL_PRIVATE_KEY_B64}" | base64 -d > "${KEY_FILE}" 2>/dev/null; then
+                      true
+                    else
+                      printf '%s' "${DB_TUNNEL_PRIVATE_KEY_B64}" | base64 -D > "${KEY_FILE}"
+                    fi
+                    chmod 600 "${KEY_FILE}"
+                    KNOWN_HOSTS_FILE="/tmp/directus-db-tunnel-known_hosts"
+                    touch "${KNOWN_HOSTS_FILE}"
+
+                    ssh \
+                      -N \
+                      -i "${KEY_FILE}" \
+                      -o ExitOnForwardFailure=yes \
+                      -o StrictHostKeyChecking=accept-new \
+                      -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+                      -o ServerAliveInterval=30 \
+                      -o ServerAliveCountMax=3 \
+                      -p "${DB_TUNNEL_PORT}" \
+                      -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
+                      "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" >/tmp/directus-db-ready-tunnel.log 2>/tmp/directus-db-ready.err &
+                    TUNNEL_PID="$!"
+                    sleep 2
+                    DB_HOST_EFFECTIVE="127.0.0.1"
+                    DB_PORT_EFFECTIVE="${DB_TUNNEL_LOCAL_PORT}"
+                  fi
+                fi
+
+                if [ -n "${DB_USER_EFFECTIVE}" ] && [ -n "${DB_PASS_EFFECTIVE}" ] && [ "${DB_USER_EFFECTIVE}" != "null" ] && [ "${DB_PASS_EFFECTIVE}" != "null" ]; then
+                  CHECK_OUTPUT="$(PGPASSWORD="${DB_PASS_EFFECTIVE}" PGCONNECT_TIMEOUT=5 psql -h "${DB_HOST_EFFECTIVE}" -p "${DB_PORT_EFFECTIVE}" -U "${DB_USER_EFFECTIVE}" -d "${DB_DATABASE_EFFECTIVE}" -Atc "SELECT current_user || '|' || current_database();" 2>/tmp/directus-db-ready.err || true)"
+                  AUTH_USER="$(printf '%s' "${CHECK_OUTPUT}" | cut -d'|' -f1 | tr -d '\r')"
+                  AUTH_DB="$(printf '%s' "${CHECK_OUTPUT}" | cut -d'|' -f2 | tr -d '\r')"
+
+                  if [ "${AUTH_USER}" = "${DB_USER_EFFECTIVE}" ] && [ "${AUTH_DB}" = "${DB_DATABASE_EFFECTIVE}" ]; then
+                    echo "✅ Directus DB is ready (host=${DB_HOST_EFFECTIVE} port=${DB_PORT_EFFECTIVE} db=${AUTH_DB} user=${AUTH_USER})"
+                    if [ -n "${TUNNEL_PID}" ]; then
+                      kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
+                      wait "${TUNNEL_PID}" 2>/dev/null || true
+                    fi
+                    exit 0
+                  fi
+                fi
+
+                if [ -n "${TUNNEL_PID}" ]; then
+                  kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
+                  wait "${TUNNEL_PID}" 2>/dev/null || true
+                fi
+
+                ERR_MSG="$(tail -n1 /tmp/directus-db-ready.err 2>/dev/null || true)"
+                if [ -n "${ERR_MSG}" ]; then
+                  echo "  .. waiting for DB/auth (${_waited}s elapsed): ${ERR_MSG}"
+                else
+                  echo "  .. waiting for DB/auth (${_waited}s elapsed)"
+                fi
+
+                sleep "${DIRECTUS_DB_WAIT_INTERVAL_SECONDS}"
+                _waited=$((_waited + DIRECTUS_DB_WAIT_INTERVAL_SECONDS))
+              done
+
+              echo "❌ Timed out after ${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS}s waiting for Directus DB readiness."
+              exit 1
+          env:
+            - name: DB_HOST
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_HOST } }
+            - name: DB_PORT
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
+            - name: DB_DATABASE
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+          volumeMounts:
+            - name: vault-root-token
+              mountPath: /vault-token
+              readOnly: true
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
         - name: wait-for-redis
           image: redis:7-alpine
           command: ["/bin/sh", "-c"]
@@ -320,7 +521,7 @@ spec:
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/openapi/admin"
           - name: DIRECTUS_POSTSCHEMA_RECONCILE_VERSION
-            value: "2026-04-12.1"
+            value: "2026-04-12.2"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
             value: "false"
         volumeMounts:
@@ -357,6 +558,81 @@ spec:
           mountPath: /vault-secrets
         - name: vault-templates
           mountPath: /vault-templates
+      - name: directus-db-tunnel
+        image: alpine:3.20
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-lc"]
+        args:
+          - |
+            set -eu
+            apk add --no-cache openssh-client >/dev/null
+
+            while [ ! -f /vault-secrets/db-creds.env ]; do
+              echo "⏳ Waiting for /vault-secrets/db-creds.env..."
+              sleep 2
+            done
+
+            # shellcheck disable=SC1091
+            . /vault-secrets/db-creds.env
+
+            DB_TUNNEL_ENABLED_RAW="${DB_TUNNEL_ENABLED:-false}"
+            case "$(printf '%s' "${DB_TUNNEL_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on) DB_TUNNEL_ENABLED="true" ;;
+              *) DB_TUNNEL_ENABLED="false" ;;
+            esac
+
+            if [ "${DB_TUNNEL_ENABLED}" != "true" ]; then
+              echo "ℹ️ DB tunnel disabled by Vault DB secret; idling."
+              tail -f /dev/null
+            fi
+
+            DB_TUNNEL_HOST="${DB_TUNNEL_HOST:-}"
+            DB_TUNNEL_PORT="${DB_TUNNEL_PORT:-22}"
+            DB_TUNNEL_USER="${DB_TUNNEL_USER:-directus_tunnel}"
+            DB_TUNNEL_LOCAL_PORT="${DB_TUNNEL_LOCAL_PORT:-15432}"
+            DB_TUNNEL_REMOTE_PORT="${DB_TUNNEL_REMOTE_PORT:-5432}"
+            DB_TUNNEL_SSH_PRIVATE_KEY_B64="${DB_TUNNEL_SSH_PRIVATE_KEY_B64:-}"
+
+            if [ -z "${DB_TUNNEL_HOST}" ] || [ -z "${DB_TUNNEL_SSH_PRIVATE_KEY_B64}" ]; then
+              echo "❌ DB tunnel enabled but DB_TUNNEL_HOST or DB_TUNNEL_SSH_PRIVATE_KEY_B64 is missing."
+              exit 1
+            fi
+
+            mkdir -p /tmp/directus-db-tunnel
+            KEY_FILE="/tmp/directus-db-tunnel/id_ed25519"
+            KNOWN_HOSTS_FILE="/tmp/directus-db-tunnel/known_hosts"
+            if printf '%s' "${DB_TUNNEL_SSH_PRIVATE_KEY_B64}" | base64 --decode > "${KEY_FILE}" 2>/dev/null; then
+              true
+            elif printf '%s' "${DB_TUNNEL_SSH_PRIVATE_KEY_B64}" | base64 -d > "${KEY_FILE}" 2>/dev/null; then
+              true
+            else
+              printf '%s' "${DB_TUNNEL_SSH_PRIVATE_KEY_B64}" | base64 -D > "${KEY_FILE}"
+            fi
+            chmod 600 "${KEY_FILE}"
+            touch "${KNOWN_HOSTS_FILE}"
+
+            echo "🔒 Starting DB SSH tunnel ${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}:${DB_TUNNEL_PORT} -> 127.0.0.1:${DB_TUNNEL_REMOTE_PORT} (local ${DB_TUNNEL_LOCAL_PORT})"
+            while true; do
+              ssh \
+                -N \
+                -i "${KEY_FILE}" \
+                -o ExitOnForwardFailure=yes \
+                -o StrictHostKeyChecking=accept-new \
+                -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+                -o ServerAliveInterval=30 \
+                -o ServerAliveCountMax=3 \
+                -p "${DB_TUNNEL_PORT}" \
+                -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
+                "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" || true
+              echo "⚠️ DB SSH tunnel disconnected; retrying in 3s..."
+              sleep 3
+            done
+        volumeMounts:
+          - name: vault-secrets
+            mountPath: /vault-secrets
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
       - name: directus
         image: directus/directus:11
         command: ["/bin/sh", "-c"]
@@ -536,14 +812,59 @@ spec:
 
             echo "🔄 Initializing Directus database..."
             _reset_partial_directus_install_if_needed
-            echo "📦 Running database install (idempotent)..."
-            if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install >/tmp/install.log 2>&1; then
-              echo "✅ Database installation completed successfully"
+            _directus_db_installed() {
+              node - <<'NODE'
+            const fs = require("fs");
+            const path = require("path");
+
+            const pnpmRoot = "/directus/node_modules/.pnpm";
+            const knexEntry = fs
+              .readdirSync(pnpmRoot)
+              .find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex")));
+
+            if (!knexEntry) {
+              console.error("knex not found");
+              process.exit(2);
+            }
+
+            const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex"));
+            const schema = process.env.DB_SCHEMA || "directus";
+            const db = knex({
+              client: "pg",
+              connection: {
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT || 5432),
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD,
+                database: process.env.DB_DATABASE
+              }
+            });
+
+            const run = async () => {
+              const row = await db("information_schema.tables")
+                .where({ table_schema: schema, table_name: "directus_migrations" })
+                .first();
+              process.stdout.write(row ? "1" : "0");
+            };
+
+            run()
+              .catch(() => process.stdout.write("0"))
+              .finally(() => db.destroy());
+            NODE
+            }
+
+            if [ "$(_directus_db_installed 2>/dev/null || echo 0)" = "1" ]; then
+              echo "✅ Existing Directus database detected; skipping install."
             else
-              if grep -q "Database is already installed" /tmp/install.log; then
-                echo "✅ Database already installed, proceeding..."
+              echo "📦 Running database install (idempotent)..."
+              if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install >/tmp/install.log 2>&1; then
+                echo "✅ Database installation completed successfully"
               else
-                echo "❌ Database installation failed"; cat /tmp/install.log; exit 1
+                if grep -q "Database is already installed" /tmp/install.log; then
+                  echo "✅ Database already installed, proceeding..."
+                else
+                  echo "❌ Database installation failed"; cat /tmp/install.log; exit 1
+                fi
               fi
             fi
 

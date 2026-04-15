@@ -1,4 +1,4 @@
-name: "GCP Infra Deploy"
+name: "Infra Deploy"
 
 on:
     push:

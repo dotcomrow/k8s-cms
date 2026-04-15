@@ -1,0 +1,197 @@
+variable "oci_tenancy_ocid" {
+  description = "OCI tenancy OCID."
+  type        = string
+}
+
+variable "oci_user_ocid" {
+  description = "OCI user OCID."
+  type        = string
+}
+
+variable "oci_fingerprint" {
+  description = "Fingerprint for the OCI API key."
+  type        = string
+}
+
+variable "oci_private_key" {
+  description = "OCI API private key PEM contents. Store as a sensitive Terraform variable."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(trimspace(var.oci_private_key)) > 0
+    error_message = "oci_private_key must not be empty."
+  }
+}
+
+variable "oci_region" {
+  description = "OCI region, for example us-phoenix-1."
+  type        = string
+}
+
+variable "oci_compartment_ocid" {
+  description = "Compartment OCID where network and instance will be created."
+  type        = string
+}
+
+variable "db_instance_name" {
+  description = "Display name for the Oracle VM hosting PostgreSQL."
+  type        = string
+  default     = "directus-postgres"
+}
+
+variable "db_shape" {
+  description = "Instance shape. E4 Flex supports low-cost burstable baseline."
+  type        = string
+  default     = "VM.Standard.E4.Flex"
+}
+
+variable "db_ocpus" {
+  description = "OCPU count for the shape."
+  type        = number
+  default     = 1
+}
+
+variable "db_memory_gbs" {
+  description = "RAM in GB for the shape. 2 GB is a practical minimum for small Postgres usage."
+  type        = number
+  default     = 2
+}
+
+variable "db_baseline_utilization" {
+  description = "Burst baseline utilization for Flex instances."
+  type        = string
+  default     = "BASELINE_1_8"
+
+  validation {
+    condition = contains([
+      "BASELINE_1_8",
+      "BASELINE_1_2",
+      "BASELINE_1_1",
+    ], var.db_baseline_utilization)
+    error_message = "db_baseline_utilization must be BASELINE_1_8, BASELINE_1_2, or BASELINE_1_1."
+  }
+}
+
+variable "db_boot_volume_size_gb" {
+  description = "Boot volume size in GB."
+  type        = number
+  default     = 50
+}
+
+variable "assign_public_ip" {
+  description = "Assign a public IP to the VM."
+  type        = bool
+  default     = true
+}
+
+variable "db_allowed_cidrs" {
+  description = "CIDRs allowed to connect to PostgreSQL on 5432."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+
+  validation {
+    condition     = var.enable_db_ssh_tunnel || length(var.db_allowed_cidrs) > 0
+    error_message = "db_allowed_cidrs must include at least one CIDR when enable_db_ssh_tunnel=false."
+  }
+}
+
+variable "enable_db_ssh_tunnel" {
+  description = "When true, lock PostgreSQL to localhost and require SSH local-port forwarding from Directus."
+  type        = bool
+  default     = true
+}
+
+variable "db_tunnel_user" {
+  description = "SSH user for the Directus DB tunnel."
+  type        = string
+  default     = "directus_tunnel"
+}
+
+variable "db_tunnel_local_port" {
+  description = "Local forwarded DB port used inside the Directus pod."
+  type        = number
+  default     = 15432
+
+  validation {
+    condition     = var.db_tunnel_local_port >= 1025 && var.db_tunnel_local_port <= 65535
+    error_message = "db_tunnel_local_port must be between 1025 and 65535."
+  }
+}
+
+variable "ssh_allowed_cidrs" {
+  description = "CIDRs allowed to SSH to the VM."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "ssh_authorized_keys" {
+  description = "SSH public keys to inject into the instance metadata."
+  type        = list(string)
+  default     = []
+}
+
+variable "db_name" {
+  description = "Directus database name."
+  type        = string
+  default     = "directus"
+}
+
+variable "directus_db_user" {
+  description = "Directus database username."
+  type        = string
+  default     = "directus_app"
+}
+
+variable "directus_db_password" {
+  description = "Directus database password. Keep constant between platform rebuilds."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(trimspace(var.directus_db_password)) >= 16
+    error_message = "directus_db_password must be at least 16 characters."
+  }
+}
+
+variable "prevent_destroy" {
+  description = "Protect VM from accidental terraform destroy."
+  type        = bool
+  default     = true
+}
+
+variable "vcn_cidr" {
+  description = "VCN CIDR."
+  type        = string
+  default     = "10.42.0.0/16"
+}
+
+variable "subnet_cidr" {
+  description = "Subnet CIDR."
+  type        = string
+  default     = "10.42.0.0/24"
+}
+
+variable "vcn_dns_label" {
+  description = "DNS label for the VCN."
+  type        = string
+  default     = "directusdb"
+}
+
+variable "subnet_dns_label" {
+  description = "DNS label for the subnet."
+  type        = string
+  default     = "dbsubnet"
+}
+
+variable "instance_hostname_label" {
+  description = "Hostname label for the VM VNIC."
+  type        = string
+  default     = "directusdb"
+}
+
+variable "db_image_ocid" {
+  description = "Optional explicit image OCID override."
+  type        = string
+  default     = null
+}
