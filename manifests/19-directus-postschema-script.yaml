@@ -161,6 +161,10 @@ data:
     if [ -z "${DB_USER:-}" ] || [ -z "${DB_PASS:-}" ] || [ "${DB_USER}" = "null" ] || [ "${DB_PASS}" = "null" ]; then
       echo "❌ Failed to fetch DB creds from Vault"; exit 1
     fi
+    if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" = "true" ] && { [ -z "${DB_HOST_OVERRIDE}" ] || [ "${DB_HOST_OVERRIDE}" = "null" ]; }; then
+      echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host (or directus_db_host) is missing."
+      exit 1
+    fi
 
     if [ -n "${DB_HOST_OVERRIDE}" ]; then
       DB_HOST="${DB_HOST_OVERRIDE}"

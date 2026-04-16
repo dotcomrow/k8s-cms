@@ -335,6 +335,10 @@ spec:
                 echo "❌ Failed to resolve Directus DB credentials from Vault."
                 exit 1
               fi
+              if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" = "true" ] && { [ -z "${DB_HOST_OVERRIDE}" ] || [ "${DB_HOST_OVERRIDE}" = "null" ]; }; then
+                echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host (or directus_db_host) is missing."
+                exit 1
+              fi
 
               DB_HOST_EFFECTIVE="${DB_HOST}"
               DB_PORT_EFFECTIVE="${DB_PORT}"
@@ -834,6 +838,10 @@ spec:
                       DB_PASS_EFFECTIVE="$(jq -r '.data.password // empty' /tmp/db-legacy-creds.json)"
                     fi
                   fi
+                fi
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" = "true" ] && { [ -z "${DB_HOST_OVERRIDE}" ] || [ "${DB_HOST_OVERRIDE}" = "null" ]; }; then
+                  echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host (or directus_db_host) is missing."
+                  exit 1
                 fi
 
                 if [ -n "${DB_HOST_OVERRIDE}" ] && [ "${DB_HOST_OVERRIDE}" != "null" ]; then DB_HOST_EFFECTIVE="${DB_HOST_OVERRIDE}"; fi
