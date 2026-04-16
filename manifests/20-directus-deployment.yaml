@@ -1036,6 +1036,56 @@ spec:
                   fi
                 fi
 
+                # If SSH succeeds but DB auth fails, reconcile role password on
+                # the VM to the Vault-provided value, then retry the DB check.
+                if [ "${DB_TUNNEL_ENABLED}" = "true" ] && grep -qi "password authentication failed" "${DB_ERR_FILE}" 2>/dev/null; then
+                  DB_USER_B64="$(printf '%s' "${DB_USER_EFFECTIVE}" | base64 | tr -d '\n')"
+                  DB_PASS_B64="$(printf '%s' "${DB_PASS_EFFECTIVE}" | base64 | tr -d '\n')"
+                  DB_NAME_B64="$(printf '%s' "${DB_DATABASE_EFFECTIVE}" | base64 | tr -d '\n')"
+                  REMOTE_RECONCILE_CMD="set -eu; DB_USER=\$(printf '%s' '${DB_USER_B64}' | base64 -d); DB_PASS=\$(printf '%s' '${DB_PASS_B64}' | base64 -d); DB_NAME=\$(printf '%s' '${DB_NAME_B64}' | base64 -d); if ! command -v sudo >/dev/null 2>&1; then exit 1; fi; sudo -n -u postgres psql -v ON_ERROR_STOP=1 -v directus_db_name=\"\${DB_NAME}\" -v directus_db_user=\"\${DB_USER}\" -v directus_db_password=\"\${DB_PASS}\" -c \"DO \\\$do\\\$ DECLARE v_db_name text := :'directus_db_name'; v_db_user text := :'directus_db_user'; v_db_password text := :'directus_db_password'; BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_db_user) THEN EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', v_db_user, v_db_password); ELSE EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', v_db_user, v_db_password); END IF; IF EXISTS (SELECT 1 FROM pg_database WHERE datname = v_db_name) THEN EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', v_db_name, v_db_user); END IF; END \\\$do\\\$;\""
+                  RECONCILE_OK="false"
+                  LAST_RECONCILE_ERR=""
+                  _OLD_IFS="${IFS}"
+                  IFS=','
+                  for _reconcile_user_try in ${DB_TUNNEL_USER_CANDIDATES}; do
+                    RECONCILE_USER="$(printf '%s' "${_reconcile_user_try}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                    [ -z "${RECONCILE_USER}" ] && continue
+                    ssh \
+                      -i "${KEY_FILE}" \
+                      -o IdentitiesOnly=yes \
+                      -o BatchMode=yes \
+                      -o ConnectTimeout=10 \
+                      -o ConnectionAttempts=1 \
+                      -o StrictHostKeyChecking=accept-new \
+                      -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+                      -p "${DB_TUNNEL_PORT}" \
+                      "${RECONCILE_USER}@${DB_TUNNEL_HOST}" \
+                      "${REMOTE_RECONCILE_CMD}" >/tmp/directus-db-pass-reconcile.out 2>/tmp/directus-db-pass-reconcile.err && {
+                        RECONCILE_OK="true"
+                        DB_TUNNEL_USER="${RECONCILE_USER}"
+                        break
+                      } || true
+                    LAST_RECONCILE_ERR="$(tail -n1 /tmp/directus-db-pass-reconcile.err 2>/dev/null || true)"
+                  done
+                  IFS="${_OLD_IFS}"
+
+                  if [ "${RECONCILE_OK}" = "true" ]; then
+                    echo "  .. reconciled DB role password using SSH user ${DB_TUNNEL_USER}; retrying DB auth check."
+                    if [ -n "${TUNNEL_PID}" ]; then
+                      kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
+                      wait "${TUNNEL_PID}" 2>/dev/null || true
+                    fi
+                    sleep 1
+                    continue
+                  fi
+
+                  if [ -n "${LAST_RECONCILE_ERR}" ]; then
+                    echo "  .. password reconcile attempt failed: ${LAST_RECONCILE_ERR}"
+                  else
+                    echo "  .. password reconcile attempt failed with no detailed error."
+                  fi
+                fi
+
                 if [ -n "${TUNNEL_PID}" ]; then
                   kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
                   wait "${TUNNEL_PID}" 2>/dev/null || true
