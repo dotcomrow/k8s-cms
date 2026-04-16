@@ -57,14 +57,7 @@ spec:
             - |
               set -eu
 
-              PGHOST=yb-tserver-service.yugabyte.svc.cluster.local
-              PGPORT=5433
-              DB=directus
-              ROLE_GROUP=directus
-              ROLE_OWNER=directus_app
-              VAULTADMIN_USER=vaultadmin
-
-              apk add --no-cache postgresql15-client jq netcat-openbsd curl
+              apk add --no-cache jq curl
 
               export PATH="$PATH:/vault-bin"
               export VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
@@ -158,74 +151,13 @@ spec:
                   EXTERNAL_DB_NAME="directus"
                 fi
               fi
-              USE_EXTERNAL_DB="false"
-              if [ -n "${EXTERNAL_DB_HOST}" ] && [ -n "${EXTERNAL_DB_PORT}" ] && [ -n "${EXTERNAL_DB_NAME}" ] && [ -n "${EXTERNAL_DB_USER}" ] && [ -n "${EXTERNAL_DB_PASS}" ]; then
-                USE_EXTERNAL_DB="true"
-                echo "✅ Found external DB credentials in Vault; skipping Yugabyte bootstrap."
+              if [ -z "${EXTERNAL_DB_HOST}" ] || [ -z "${EXTERNAL_DB_PORT}" ] || [ -z "${EXTERNAL_DB_NAME}" ] || [ -z "${EXTERNAL_DB_USER}" ] || [ -z "${EXTERNAL_DB_PASS}" ]; then
+                echo "❌ Missing required external DB credentials in Vault."
+                echo "   Expected one of: secret/directus/db, secret/directus_db, or leaf secret/data/directus_db_* entries."
+                echo "   Yugabyte bootstrap is disabled."
+                exit 1
               fi
-
-              if [ "${USE_EXTERNAL_DB}" != "true" ]; then
-                until getent hosts "$PGHOST" >/dev/null 2>&1; do echo "🔄 Waiting for DNS for $PGHOST..."; sleep 3; done
-                until nc -z -w1 "$PGHOST" "$PGPORT"; do echo "⏳ Waiting for DB $PGHOST:$PGPORT..."; sleep 3; done
-                echo "✅ Yugabyte reachable"
-
-                echo "🔐 Waiting for secret/${VAULTADMIN_USER}..."
-                VAULTADMIN_PASS=""
-                while :; do
-                  OUT="$(vault kv get -format=json "secret/${VAULTADMIN_USER}" 2>/dev/null || true)"
-                  if [ -n "${OUT}" ]; then
-                    VAULTADMIN_PASS="$(printf '%s' "$OUT" | jq -r '.data.data.password // .data.data.value // empty')"
-                    [ -n "${VAULTADMIN_PASS}" ] && [ "${VAULTADMIN_PASS}" != "null" ] && break
-                  fi
-                  sleep 5
-                done
-                export PGPASSWORD="$VAULTADMIN_PASS"
-
-                while :; do
-                  DB_EXISTS="$(psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d yugabyte -tAc "SELECT 1 FROM pg_database WHERE datname='$DB'" 2>/dev/null || true)"
-                  [ "$DB_EXISTS" = "1" ] && { echo "✅ DB '$DB' exists"; break; }
-                  echo "📦 Creating DB '$DB'..."
-                  createdb -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -O "$VAULTADMIN_USER" "$DB" 2>/dev/null && { echo "✅ DB created"; break; }
-                  sleep 3
-                done
-
-                psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d yugabyte -v ON_ERROR_STOP=1 -c \
-                  "DO \$\$ \
-                   BEGIN \
-                     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_GROUP}') THEN \
-                       CREATE ROLE ${ROLE_GROUP} NOLOGIN; \
-                     END IF; \
-                     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_OWNER}') THEN \
-                       CREATE ROLE ${ROLE_OWNER} LOGIN INHERIT; \
-                     END IF; \
-                   END \
-                   \$\$; \
-                   GRANT ${ROLE_GROUP} TO ${ROLE_OWNER}; \
-                   GRANT ${ROLE_OWNER} TO ${VAULTADMIN_USER};"
-
-                psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d "$DB" -v ON_ERROR_STOP=1 -c \
-                  "CREATE SCHEMA IF NOT EXISTS directus AUTHORIZATION ${ROLE_OWNER}; \
-                   ALTER ROLE ${ROLE_OWNER} SET search_path = directus; \
-                   GRANT CONNECT ON DATABASE ${DB} TO ${ROLE_OWNER}; \
-                   GRANT USAGE, CREATE ON SCHEMA directus TO ${ROLE_GROUP}; \
-                   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA directus TO ${ROLE_GROUP}; \
-                   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA directus TO ${ROLE_GROUP}; \
-                   ALTER DEFAULT PRIVILEGES IN SCHEMA directus \
-                     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${ROLE_GROUP}; \
-                   ALTER DEFAULT PRIVILEGES IN SCHEMA directus \
-                     GRANT USAGE, SELECT ON SEQUENCES TO ${ROLE_GROUP};"
-
-                if ! vault secrets list -format=json | jq -e 'has("yugabyte-db/")' >/dev/null 2>&1; then
-                  vault secrets enable -path=yugabyte-db database
-                  echo "✅ Enabled database secrets engine"
-                fi
-
-                vault write yugabyte-db/static-roles/directus-app \
-                  db_name="yugabyte" \
-                  username="${ROLE_OWNER}" \
-                  rotation_statements="ALTER ROLE \"{{name}}\" WITH PASSWORD '{{password}}';" \
-                  rotation_period="24h"
-              fi
+              echo "✅ Found external DB credentials in Vault; Yugabyte bootstrap is disabled."
 
               vault policy write "directus" - <<'EOF'
               path "secret/data/directus_db"                    { capabilities = ["read"] }
@@ -241,7 +173,6 @@ spec:
               path "secret/data/directus_db_tunnel_user"          { capabilities = ["read"] }
               path "secret/data/directus_db_ssh_tunnel_user"      { capabilities = ["read"] }
               path "secret/data/directus_db_ssh_private_key_b64"  { capabilities = ["read"] }
-              path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
               path "secret/data/directus/gravitee"                 { capabilities = ["read"] }
@@ -274,16 +205,7 @@ spec:
                 policies="directus-ai-proxy" \
                 ttl="48h"
 
-              if [ "${USE_EXTERNAL_DB}" != "true" ]; then
-                CREDS_JSON="$(vault read -format=json yugabyte-db/static-creds/directus-app)"
-                DB_USER="$(printf '%s' "$CREDS_JSON" | jq -r .data.username)"
-                DB_PASS="$(printf '%s' "$CREDS_JSON" | jq -r .data.password)"
-                export PGPASSWORD="$DB_PASS"
-                echo "🔎 Sanity check as $DB_USER"
-                psql -h "$PGHOST" -p "$PGPORT" -U "$DB_USER" -d "$DB" -c "SELECT current_user, current_schema();"
-              else
-                echo "ℹ️ External DB secret detected; skipped Yugabyte static-creds sanity check."
-              fi
+              echo "ℹ️ Vault bootstrap complete (external DB mode). DB connectivity checks run in Directus init containers."
           volumeMounts:
             - name: root-token
               mountPath: /vault-token

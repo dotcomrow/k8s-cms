@@ -169,7 +169,6 @@ spec:
               LEAF_DB_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_user"
               LEAF_DB_SSH_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_user"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
-              LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
               case "$(printf '%s' "${DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW}" | tr '[:upper:]' '[:lower:]')" in
                 1|true|yes|on) DIRECTUS_DB_LEAF_SECRETS_ONLY="true" ;;
@@ -337,25 +336,6 @@ spec:
                   break
                 fi
 
-                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
-                  LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-legacy.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
-                  if [ "${LEGACY_CODE}" = "200" ]; then
-                    DB_USER="$(jq -r '.data.username // empty' /tmp/db-legacy.json)"
-                    DB_PASS="$(jq -r '.data.password // empty' /tmp/db-legacy.json)"
-                    DB_TUNNEL_ENABLED_RAW="false"
-                    DB_TUNNEL_HOST=""
-                    DB_TUNNEL_PORT=""
-                    DB_TUNNEL_USER=""
-                    DB_TUNNEL_LOCAL_PORT=""
-                    DB_TUNNEL_REMOTE_PORT=""
-                    DB_TUNNEL_PRIVATE_KEY_B64=""
-                    if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ] && [ "${DB_USER}" != "null" ] && [ "${DB_PASS}" != "null" ]; then
-                      DB_SOURCE="yugabyte-db/static-creds/directus-app"
-                      break
-                    fi
-                  fi
-                fi
-
                 i=$((i + 1))
                 sleep 3
               done
@@ -483,7 +463,6 @@ spec:
               LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
               LEAF_DB_SSH_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_host"
-              LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
               case "$(printf '%s' "${DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW}" | tr '[:upper:]' '[:lower:]')" in
                 1|true|yes|on) DIRECTUS_DB_LEAF_SECRETS_ONLY="true" ;;
@@ -597,24 +576,6 @@ spec:
                   break
                 fi
 
-                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
-                  LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/legacy-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
-                  if [ "$LEGACY_CODE" = "200" ]; then
-                    DB_USER="$(jq -r '.data.username // empty' /tmp/legacy-creds.json)"
-                    DB_PASS="$(jq -r '.data.password // empty' /tmp/legacy-creds.json)"
-                    if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
-                      echo "  .. using yugabyte-db/static-creds/directus-app"
-                      break
-                    fi
-                  elif [ "$LEGACY_CODE" != "404" ]; then
-                    ERR="$(jq -r '.errors[0] // empty' /tmp/legacy-creds.json 2>/dev/null || true)"
-                    if [ -n "$ERR" ]; then
-                      echo "  .. Vault returned HTTP $LEGACY_CODE from yugabyte-db/static-creds/directus-app: $ERR"
-                    else
-                      echo "  .. Vault returned HTTP $LEGACY_CODE from yugabyte-db/static-creds/directus-app"
-                    fi
-                  fi
-                fi
                 i=$((i + 1))
                 sleep 3
               done
@@ -735,7 +696,6 @@ spec:
               LEAF_DB_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_user"
               LEAF_DB_SSH_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_user"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
-              LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
               case "$(printf '%s' "${DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW}" | tr '[:upper:]' '[:lower:]')" in
                 1|true|yes|on) DIRECTUS_DB_LEAF_SECRETS_ONLY="true" ;;
@@ -897,15 +857,6 @@ spec:
                   fi
                 fi
 
-                if [ -z "${DB_USER_EFFECTIVE}" ] || [ -z "${DB_PASS_EFFECTIVE}" ] || [ "${DB_USER_EFFECTIVE}" = "null" ] || [ "${DB_PASS_EFFECTIVE}" = "null" ]; then
-                  if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
-                    LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-legacy-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
-                    if [ "${LEGACY_CODE}" = "200" ]; then
-                      DB_USER_EFFECTIVE="$(jq -r '.data.username // empty' /tmp/db-legacy-creds.json)"
-                      DB_PASS_EFFECTIVE="$(jq -r '.data.password // empty' /tmp/db-legacy-creds.json)"
-                    fi
-                  fi
-                fi
                 if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" = "true" ] && { [ -z "${DB_HOST_OVERRIDE}" ] || [ "${DB_HOST_OVERRIDE}" = "null" ]; }; then
                   echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host or secret/data/directus_db_ssh_tunnel_host (or directus_db_host) is missing."
                   exit 1
