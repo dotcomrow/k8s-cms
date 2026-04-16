@@ -26,6 +26,14 @@ data:
     VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
     KV_CREDS_URL="${VAULT_ADDR}/v1/secret/data/directus/db"
     TOPLEVEL_CREDS_URL="${VAULT_ADDR}/v1/secret/data/directus_db"
+    LEAF_DB_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_user"
+    LEAF_DB_PASSWROD_URL="${VAULT_ADDR}/v1/secret/data/directus_db_passwrod"
+    LEAF_DB_PASSWORD_URL="${VAULT_ADDR}/v1/secret/data/directus_db_password"
+    LEAF_DB_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_host"
+    LEAF_DB_PORT_URL="${VAULT_ADDR}/v1/secret/data/directus_db_port"
+    LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
+    LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
+    LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
     LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
 
     DB_HOST_OVERRIDE=""
@@ -63,6 +71,70 @@ data:
         if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ]; then
           echo "✅ Loaded Directus DB credentials from secret/data/directus_db"
         fi
+      fi
+    fi
+
+    if [ -z "${DB_USER:-}" ] || [ -z "${DB_PASS:-}" ] || [ "${DB_USER}" = "null" ] || [ "${DB_PASS}" = "null" ]; then
+      LEAF_DB_USER_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-user.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_USER_URL}" || true)"
+      LEAF_DB_PASSWROD_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-passwrod.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_PASSWROD_URL}" || true)"
+      LEAF_DB_PASSWORD_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-password.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_PASSWORD_URL}" || true)"
+      LEAF_DB_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_HOST_URL}" || true)"
+      LEAF_DB_PORT_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-port.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_PORT_URL}" || true)"
+      LEAF_DB_DATABASE_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-database.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_DATABASE_URL}" || true)"
+      LEAF_DB_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-tunnel-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_HOST_URL}" || true)"
+      LEAF_DB_SSH_PRIVATE_KEY_B64_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/directus-db-leaf-ssh-key.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_PRIVATE_KEY_B64_URL}" || true)"
+      LEAF_DB_USER=""
+      LEAF_DB_PASS=""
+      LEAF_DB_HOST=""
+      LEAF_DB_PORT=""
+      LEAF_DB_DATABASE=""
+      LEAF_DB_TUNNEL_HOST=""
+      LEAF_DB_SSH_PRIVATE_KEY_B64=""
+      if [ "${LEAF_DB_USER_CODE}" = "200" ]; then
+        LEAF_DB_USER="$(jq -r '.data.data.value // .data.data.username // .data.data.user // .data.data.directus_db_user // .data.data.directus_db_username // empty' /tmp/directus-db-leaf-user.json)"
+      fi
+      if [ "${LEAF_DB_PASSWROD_CODE}" = "200" ]; then
+        LEAF_DB_PASS="$(jq -r '.data.data.value // .data.data.password // .data.data.pass // .data.data.directus_db_password // empty' /tmp/directus-db-leaf-passwrod.json)"
+      fi
+      if [ -z "${LEAF_DB_PASS}" ] && [ "${LEAF_DB_PASSWORD_CODE}" = "200" ]; then
+        LEAF_DB_PASS="$(jq -r '.data.data.value // .data.data.password // .data.data.pass // .data.data.directus_db_password // empty' /tmp/directus-db-leaf-password.json)"
+      fi
+      if [ "${LEAF_DB_HOST_CODE}" = "200" ]; then
+        LEAF_DB_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_host // empty' /tmp/directus-db-leaf-host.json)"
+      fi
+      if [ "${LEAF_DB_PORT_CODE}" = "200" ]; then
+        LEAF_DB_PORT="$(jq -r '.data.data.value // .data.data.port // .data.data.directus_db_port // empty' /tmp/directus-db-leaf-port.json)"
+      fi
+      if [ "${LEAF_DB_DATABASE_CODE}" = "200" ]; then
+        LEAF_DB_DATABASE="$(jq -r '.data.data.value // .data.data.database // .data.data.db // .data.data.directus_db_database // empty' /tmp/directus-db-leaf-database.json)"
+      fi
+      if [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
+        LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' /tmp/directus-db-leaf-tunnel-host.json)"
+      fi
+      if [ "${LEAF_DB_SSH_PRIVATE_KEY_B64_CODE}" = "200" ]; then
+        LEAF_DB_SSH_PRIVATE_KEY_B64="$(jq -r '.data.data.value // .data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/directus-db-leaf-ssh-key.json)"
+      fi
+      if [ -n "${LEAF_DB_USER}" ] && [ -n "${LEAF_DB_PASS}" ]; then
+        DB_USER="${LEAF_DB_USER}"
+        DB_PASS="${LEAF_DB_PASS}"
+        DB_DATABASE_OVERRIDE="${LEAF_DB_DATABASE}"
+        if [ -n "${LEAF_DB_TUNNEL_HOST}" ] && [ "${LEAF_DB_TUNNEL_HOST}" != "null" ]; then
+          DB_HOST_OVERRIDE="${LEAF_DB_TUNNEL_HOST}"
+        else
+          DB_HOST_OVERRIDE="${LEAF_DB_HOST}"
+        fi
+        if [ -n "${LEAF_DB_PORT}" ] && [ "${LEAF_DB_PORT}" != "null" ]; then
+          DB_PORT_OVERRIDE="${LEAF_DB_PORT}"
+        elif [ -n "${DB_HOST_OVERRIDE}" ] && [ "${DB_HOST_OVERRIDE}" != "null" ]; then
+          DB_PORT_OVERRIDE="5432"
+        fi
+        if [ -n "${LEAF_DB_TUNNEL_HOST}" ] && [ "${LEAF_DB_TUNNEL_HOST}" != "null" ] && [ -n "${LEAF_DB_SSH_PRIVATE_KEY_B64}" ] && [ "${LEAF_DB_SSH_PRIVATE_KEY_B64}" != "null" ]; then
+          DB_TUNNEL_ENABLED_RAW="true"
+          DB_TUNNEL_LOCAL_PORT_OVERRIDE="15432"
+        else
+          DB_TUNNEL_ENABLED_RAW="false"
+        fi
+        echo "✅ Loaded Directus DB credentials from secret/data/directus_db_user + secret/data/directus_db_passwrod"
       fi
     fi
 

@@ -127,6 +127,33 @@ spec:
                 EXTERNAL_DB_USER="$(printf '%s' "${TOPLEVEL_DB_CFG}" | jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // empty' 2>/dev/null || true)"
                 EXTERNAL_DB_PASS="$(printf '%s' "${TOPLEVEL_DB_CFG}" | jq -r '.data.data.directus_db_password // .data.data.password // empty' 2>/dev/null || true)"
               fi
+              if [ -z "${EXTERNAL_DB_HOST}" ] || [ -z "${EXTERNAL_DB_PORT}" ] || [ -z "${EXTERNAL_DB_NAME}" ] || [ -z "${EXTERNAL_DB_USER}" ] || [ -z "${EXTERNAL_DB_PASS}" ]; then
+                LEAF_USER_CFG="$(vault kv get -format=json secret/directus_db_user 2>/dev/null || true)"
+                LEAF_PASSWROD_CFG="$(vault kv get -format=json secret/directus_db_passwrod 2>/dev/null || true)"
+                LEAF_PASSWORD_CFG="$(vault kv get -format=json secret/directus_db_password 2>/dev/null || true)"
+                LEAF_HOST_CFG="$(vault kv get -format=json secret/directus_db_host 2>/dev/null || true)"
+                LEAF_PORT_CFG="$(vault kv get -format=json secret/directus_db_port 2>/dev/null || true)"
+                LEAF_DATABASE_CFG="$(vault kv get -format=json secret/directus_db_database 2>/dev/null || true)"
+                LEAF_TUNNEL_HOST_CFG="$(vault kv get -format=json secret/directus_db_tunnel_host 2>/dev/null || true)"
+                EXTERNAL_DB_USER="$(printf '%s' "${LEAF_USER_CFG}" | jq -r '.data.data.value // .data.data.username // .data.data.user // .data.data.directus_db_user // .data.data.directus_db_username // empty' 2>/dev/null || true)"
+                EXTERNAL_DB_PASS="$(printf '%s' "${LEAF_PASSWROD_CFG}" | jq -r '.data.data.value // .data.data.password // .data.data.pass // .data.data.directus_db_password // empty' 2>/dev/null || true)"
+                if [ -z "${EXTERNAL_DB_PASS}" ]; then
+                  EXTERNAL_DB_PASS="$(printf '%s' "${LEAF_PASSWORD_CFG}" | jq -r '.data.data.value // .data.data.password // .data.data.pass // .data.data.directus_db_password // empty' 2>/dev/null || true)"
+                fi
+                EXTERNAL_DB_HOST="$(printf '%s' "${LEAF_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_host // empty' 2>/dev/null || true)"
+                LEAF_TUNNEL_HOST="$(printf '%s' "${LEAF_TUNNEL_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' 2>/dev/null || true)"
+                if [ -n "${LEAF_TUNNEL_HOST}" ] && [ "${LEAF_TUNNEL_HOST}" != "null" ]; then
+                  EXTERNAL_DB_HOST="${LEAF_TUNNEL_HOST}"
+                fi
+                EXTERNAL_DB_PORT="$(printf '%s' "${LEAF_PORT_CFG}" | jq -r '.data.data.value // .data.data.port // .data.data.directus_db_port // empty' 2>/dev/null || true)"
+                if [ -z "${EXTERNAL_DB_PORT}" ] && [ -n "${EXTERNAL_DB_HOST}" ]; then
+                  EXTERNAL_DB_PORT="5432"
+                fi
+                EXTERNAL_DB_NAME="$(printf '%s' "${LEAF_DATABASE_CFG}" | jq -r '.data.data.value // .data.data.database // .data.data.db // .data.data.directus_db_database // empty' 2>/dev/null || true)"
+                if [ -z "${EXTERNAL_DB_NAME}" ]; then
+                  EXTERNAL_DB_NAME="directus"
+                fi
+              fi
               USE_EXTERNAL_DB="false"
               if [ -n "${EXTERNAL_DB_HOST}" ] && [ -n "${EXTERNAL_DB_PORT}" ] && [ -n "${EXTERNAL_DB_NAME}" ] && [ -n "${EXTERNAL_DB_USER}" ] && [ -n "${EXTERNAL_DB_PASS}" ]; then
                 USE_EXTERNAL_DB="true"
@@ -199,6 +226,14 @@ spec:
               vault policy write "directus" - <<'EOF'
               path "secret/data/directus_db"                    { capabilities = ["read"] }
               path "secret/data/directus/db"                      { capabilities = ["read"] }
+              path "secret/data/directus_db_user"                 { capabilities = ["read"] }
+              path "secret/data/directus_db_passwrod"             { capabilities = ["read"] }
+              path "secret/data/directus_db_password"             { capabilities = ["read"] }
+              path "secret/data/directus_db_host"                 { capabilities = ["read"] }
+              path "secret/data/directus_db_port"                 { capabilities = ["read"] }
+              path "secret/data/directus_db_database"             { capabilities = ["read"] }
+              path "secret/data/directus_db_tunnel_host"          { capabilities = ["read"] }
+              path "secret/data/directus_db_ssh_private_key_b64"  { capabilities = ["read"] }
               path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
