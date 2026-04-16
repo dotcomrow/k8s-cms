@@ -120,12 +120,12 @@ spec:
               EXTERNAL_DB_USER="$(printf '%s' "${EXTERNAL_DB_CFG}" | jq -r '.data.data.username // empty' 2>/dev/null || true)"
               EXTERNAL_DB_PASS="$(printf '%s' "${EXTERNAL_DB_CFG}" | jq -r '.data.data.password // empty' 2>/dev/null || true)"
               if [ -z "${EXTERNAL_DB_HOST}" ] || [ -z "${EXTERNAL_DB_PORT}" ] || [ -z "${EXTERNAL_DB_NAME}" ] || [ -z "${EXTERNAL_DB_USER}" ] || [ -z "${EXTERNAL_DB_PASS}" ]; then
-                ROOT_DB_CFG="$(vault kv get -format=json secret 2>/dev/null || true)"
-                EXTERNAL_DB_HOST="$(printf '%s' "${ROOT_DB_CFG}" | jq -r '.data.data.directus_db_host // empty' 2>/dev/null || true)"
-                EXTERNAL_DB_PORT="$(printf '%s' "${ROOT_DB_CFG}" | jq -r '.data.data.directus_db_port // empty' 2>/dev/null || true)"
-                EXTERNAL_DB_NAME="$(printf '%s' "${ROOT_DB_CFG}" | jq -r '.data.data.directus_db_database // empty' 2>/dev/null || true)"
-                EXTERNAL_DB_USER="$(printf '%s' "${ROOT_DB_CFG}" | jq -r '.data.data.directus_db_username // .data.data.directus_db_user // empty' 2>/dev/null || true)"
-                EXTERNAL_DB_PASS="$(printf '%s' "${ROOT_DB_CFG}" | jq -r '.data.data.directus_db_password // empty' 2>/dev/null || true)"
+                TOPLEVEL_DB_CFG="$(vault kv get -format=json secret/directus_db 2>/dev/null || true)"
+                EXTERNAL_DB_HOST="$(printf '%s' "${TOPLEVEL_DB_CFG}" | jq -r '.data.data.directus_db_host // .data.data.host // empty' 2>/dev/null || true)"
+                EXTERNAL_DB_PORT="$(printf '%s' "${TOPLEVEL_DB_CFG}" | jq -r '.data.data.directus_db_port // .data.data.port // empty' 2>/dev/null || true)"
+                EXTERNAL_DB_NAME="$(printf '%s' "${TOPLEVEL_DB_CFG}" | jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' 2>/dev/null || true)"
+                EXTERNAL_DB_USER="$(printf '%s' "${TOPLEVEL_DB_CFG}" | jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // empty' 2>/dev/null || true)"
+                EXTERNAL_DB_PASS="$(printf '%s' "${TOPLEVEL_DB_CFG}" | jq -r '.data.data.directus_db_password // .data.data.password // empty' 2>/dev/null || true)"
               fi
               USE_EXTERNAL_DB="false"
               if [ -n "${EXTERNAL_DB_HOST}" ] && [ -n "${EXTERNAL_DB_PORT}" ] && [ -n "${EXTERNAL_DB_NAME}" ] && [ -n "${EXTERNAL_DB_USER}" ] && [ -n "${EXTERNAL_DB_PASS}" ]; then
@@ -199,7 +199,7 @@ spec:
               fi
 
               vault policy write "directus" - <<'EOF'
-              path "secret/data"                                 { capabilities = ["read"] }
+              path "secret/data/directus_db"                    { capabilities = ["read"] }
               path "secret/data/directus/db"                      { capabilities = ["read"] }
               path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }
