@@ -164,6 +164,11 @@ spec:
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
+              DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
+              case "$(printf '%s' "${DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes|on) DIRECTUS_DB_LEAF_SECRETS_ONLY="true" ;;
+                *) DIRECTUS_DB_LEAF_SECRETS_ONLY="false" ;;
+              esac
 
               _escape_env() {
                 printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -185,43 +190,47 @@ spec:
 
               i=0
               while [ "$i" -lt 40 ]; do
-                CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-kv.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
-                if [ "${CODE}" = "200" ]; then
-                  DB_USER="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/db-kv.json)"
-                  DB_PASS="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/db-kv.json)"
-                  DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/db-kv.json)"
-                  DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/db-kv.json)"
-                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/db-kv.json)"
-                  DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.ssh_tunnel_enabled // "false"' /tmp/db-kv.json)"
-                  DB_TUNNEL_HOST="$(jq -r '.data.data.ssh_tunnel_host // .data.data.host // empty' /tmp/db-kv.json)"
-                  DB_TUNNEL_PORT="$(jq -r '.data.data.ssh_tunnel_port // "22"' /tmp/db-kv.json)"
-                  DB_TUNNEL_USER="$(jq -r '.data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-kv.json)"
-                  DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.ssh_tunnel_local_port // "15432"' /tmp/db-kv.json)"
-                  DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-kv.json)"
-                  DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.ssh_private_key_b64 // empty' /tmp/db-kv.json)"
-                  if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ] && [ "${DB_USER}" != "null" ] && [ "${DB_PASS}" != "null" ]; then
-                    DB_SOURCE="secret/data/directus/db"
-                    break
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                  CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-kv.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
+                  if [ "${CODE}" = "200" ]; then
+                    DB_USER="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/db-kv.json)"
+                    DB_PASS="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/db-kv.json)"
+                    DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/db-kv.json)"
+                    DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/db-kv.json)"
+                    DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/db-kv.json)"
+                    DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.ssh_tunnel_enabled // "false"' /tmp/db-kv.json)"
+                    DB_TUNNEL_HOST="$(jq -r '.data.data.ssh_tunnel_host // .data.data.host // empty' /tmp/db-kv.json)"
+                    DB_TUNNEL_PORT="$(jq -r '.data.data.ssh_tunnel_port // "22"' /tmp/db-kv.json)"
+                    DB_TUNNEL_USER="$(jq -r '.data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-kv.json)"
+                    DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.ssh_tunnel_local_port // "15432"' /tmp/db-kv.json)"
+                    DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-kv.json)"
+                    DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.ssh_private_key_b64 // empty' /tmp/db-kv.json)"
+                    if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ] && [ "${DB_USER}" != "null" ] && [ "${DB_PASS}" != "null" ]; then
+                      DB_SOURCE="secret/data/directus/db"
+                      break
+                    fi
                   fi
                 fi
 
-                TOPLEVEL_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-top.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${TOPLEVEL_CREDS_URL}" || true)"
-                if [ "${TOPLEVEL_CODE}" = "200" ]; then
-                  DB_USER="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/db-top.json)"
-                  DB_PASS="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/db-top.json)"
-                  DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/db-top.json)"
-                  DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/db-top.json)"
-                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/db-top.json)"
-                  DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.directus_db_ssh_tunnel_enabled // .data.data.ssh_tunnel_enabled // "false"' /tmp/db-top.json)"
-                  DB_TUNNEL_HOST="$(jq -r '.data.data.directus_db_ssh_tunnel_host // .data.data.ssh_tunnel_host // .data.data.directus_db_host // .data.data.host // empty' /tmp/db-top.json)"
-                  DB_TUNNEL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_port // .data.data.ssh_tunnel_port // "22"' /tmp/db-top.json)"
-                  DB_TUNNEL_USER="$(jq -r '.data.data.directus_db_ssh_tunnel_user // .data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-top.json)"
-                  DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_local_port // .data.data.ssh_tunnel_local_port // "15432"' /tmp/db-top.json)"
-                  DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_remote_port // .data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-top.json)"
-                  DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-top.json)"
-                  if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ] && [ "${DB_USER}" != "null" ] && [ "${DB_PASS}" != "null" ]; then
-                    DB_SOURCE="secret/data/directus_db"
-                    break
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                  TOPLEVEL_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-top.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${TOPLEVEL_CREDS_URL}" || true)"
+                  if [ "${TOPLEVEL_CODE}" = "200" ]; then
+                    DB_USER="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/db-top.json)"
+                    DB_PASS="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/db-top.json)"
+                    DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/db-top.json)"
+                    DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/db-top.json)"
+                    DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/db-top.json)"
+                    DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.directus_db_ssh_tunnel_enabled // .data.data.ssh_tunnel_enabled // "false"' /tmp/db-top.json)"
+                    DB_TUNNEL_HOST="$(jq -r '.data.data.directus_db_ssh_tunnel_host // .data.data.ssh_tunnel_host // .data.data.directus_db_host // .data.data.host // empty' /tmp/db-top.json)"
+                    DB_TUNNEL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_port // .data.data.ssh_tunnel_port // "22"' /tmp/db-top.json)"
+                    DB_TUNNEL_USER="$(jq -r '.data.data.directus_db_ssh_tunnel_user // .data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-top.json)"
+                    DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_local_port // .data.data.ssh_tunnel_local_port // "15432"' /tmp/db-top.json)"
+                    DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_remote_port // .data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-top.json)"
+                    DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-top.json)"
+                    if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ] && [ "${DB_USER}" != "null" ] && [ "${DB_PASS}" != "null" ]; then
+                      DB_SOURCE="secret/data/directus_db"
+                      break
+                    fi
                   fi
                 fi
 
@@ -299,20 +308,22 @@ spec:
                   break
                 fi
 
-                LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-legacy.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
-                if [ "${LEGACY_CODE}" = "200" ]; then
-                  DB_USER="$(jq -r '.data.username // empty' /tmp/db-legacy.json)"
-                  DB_PASS="$(jq -r '.data.password // empty' /tmp/db-legacy.json)"
-                  DB_TUNNEL_ENABLED_RAW="false"
-                  DB_TUNNEL_HOST=""
-                  DB_TUNNEL_PORT=""
-                  DB_TUNNEL_USER=""
-                  DB_TUNNEL_LOCAL_PORT=""
-                  DB_TUNNEL_REMOTE_PORT=""
-                  DB_TUNNEL_PRIVATE_KEY_B64=""
-                  if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ] && [ "${DB_USER}" != "null" ] && [ "${DB_PASS}" != "null" ]; then
-                    DB_SOURCE="yugabyte-db/static-creds/directus-app"
-                    break
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                  LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-legacy.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
+                  if [ "${LEGACY_CODE}" = "200" ]; then
+                    DB_USER="$(jq -r '.data.username // empty' /tmp/db-legacy.json)"
+                    DB_PASS="$(jq -r '.data.password // empty' /tmp/db-legacy.json)"
+                    DB_TUNNEL_ENABLED_RAW="false"
+                    DB_TUNNEL_HOST=""
+                    DB_TUNNEL_PORT=""
+                    DB_TUNNEL_USER=""
+                    DB_TUNNEL_LOCAL_PORT=""
+                    DB_TUNNEL_REMOTE_PORT=""
+                    DB_TUNNEL_PRIVATE_KEY_B64=""
+                    if [ -n "${DB_USER}" ] && [ -n "${DB_PASS}" ] && [ "${DB_USER}" != "null" ] && [ "${DB_PASS}" != "null" ]; then
+                      DB_SOURCE="yugabyte-db/static-creds/directus-app"
+                      break
+                    fi
                   fi
                 fi
 
@@ -384,6 +395,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
             - name: DB_DATABASE
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+            - name: DIRECTUS_DB_LEAF_SECRETS_ONLY
+              value: "true"
           volumeMounts:
             - name: vault-root-token
               mountPath: /vault-token
@@ -426,6 +439,11 @@ spec:
               LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
+              DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
+              case "$(printf '%s' "${DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes|on) DIRECTUS_DB_LEAF_SECRETS_ONLY="true" ;;
+                *) DIRECTUS_DB_LEAF_SECRETS_ONLY="false" ;;
+              esac
 
               echo "🔐 Fetching DB credentials from Vault…"
               DB_HOST_OVERRIDE=""
@@ -435,43 +453,47 @@ spec:
               DB_PASS=""
               i=0
               while [ "$i" -lt 40 ]; do
-                CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
-                if [ "$CODE" = "200" ]; then
-                  DB_USER="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/creds.json)"
-                  DB_PASS="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/creds.json)"
-                  DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/creds.json)"
-                  DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/creds.json)"
-                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/creds.json)"
-                  if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
-                    echo "  .. using secret/data/directus/db"
-                    break
-                  fi
-                elif [ "$CODE" != "404" ]; then
-                  ERR="$(jq -r '.errors[0] // empty' /tmp/creds.json 2>/dev/null || true)"
-                  if [ -n "$ERR" ]; then
-                    echo "  .. Vault returned HTTP $CODE: $ERR"
-                  else
-                    echo "  .. Vault returned HTTP $CODE"
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                  CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
+                  if [ "$CODE" = "200" ]; then
+                    DB_USER="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/creds.json)"
+                    DB_PASS="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/creds.json)"
+                    DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/creds.json)"
+                    DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/creds.json)"
+                    DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/creds.json)"
+                    if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
+                      echo "  .. using secret/data/directus/db"
+                      break
+                    fi
+                  elif [ "$CODE" != "404" ]; then
+                    ERR="$(jq -r '.errors[0] // empty' /tmp/creds.json 2>/dev/null || true)"
+                    if [ -n "$ERR" ]; then
+                      echo "  .. Vault returned HTTP $CODE: $ERR"
+                    else
+                      echo "  .. Vault returned HTTP $CODE"
+                    fi
                   fi
                 fi
 
-                TOPLEVEL_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/top-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${TOPLEVEL_CREDS_URL}" || true)"
-                if [ "$TOPLEVEL_CODE" = "200" ]; then
-                  DB_USER="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/top-creds.json)"
-                  DB_PASS="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/top-creds.json)"
-                  DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/top-creds.json)"
-                  DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/top-creds.json)"
-                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/top-creds.json)"
-                  if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
-                    echo "  .. using secret/data/directus_db"
-                    break
-                  fi
-                elif [ "$TOPLEVEL_CODE" != "404" ]; then
-                  ERR="$(jq -r '.errors[0] // empty' /tmp/top-creds.json 2>/dev/null || true)"
-                  if [ -n "$ERR" ]; then
-                    echo "  .. Vault returned HTTP $TOPLEVEL_CODE from secret/data/directus_db: $ERR"
-                  else
-                    echo "  .. Vault returned HTTP $TOPLEVEL_CODE from secret/data/directus_db"
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                  TOPLEVEL_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/top-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${TOPLEVEL_CREDS_URL}" || true)"
+                  if [ "$TOPLEVEL_CODE" = "200" ]; then
+                    DB_USER="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/top-creds.json)"
+                    DB_PASS="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/top-creds.json)"
+                    DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/top-creds.json)"
+                    DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/top-creds.json)"
+                    DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/top-creds.json)"
+                    if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
+                      echo "  .. using secret/data/directus_db"
+                      break
+                    fi
+                  elif [ "$TOPLEVEL_CODE" != "404" ]; then
+                    ERR="$(jq -r '.errors[0] // empty' /tmp/top-creds.json 2>/dev/null || true)"
+                    if [ -n "$ERR" ]; then
+                      echo "  .. Vault returned HTTP $TOPLEVEL_CODE from secret/data/directus_db: $ERR"
+                    else
+                      echo "  .. Vault returned HTTP $TOPLEVEL_CODE from secret/data/directus_db"
+                    fi
                   fi
                 fi
 
@@ -527,20 +549,22 @@ spec:
                   break
                 fi
 
-                LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/legacy-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
-                if [ "$LEGACY_CODE" = "200" ]; then
-                  DB_USER="$(jq -r '.data.username // empty' /tmp/legacy-creds.json)"
-                  DB_PASS="$(jq -r '.data.password // empty' /tmp/legacy-creds.json)"
-                  if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
-                    echo "  .. using yugabyte-db/static-creds/directus-app"
-                    break
-                  fi
-                elif [ "$LEGACY_CODE" != "404" ]; then
-                  ERR="$(jq -r '.errors[0] // empty' /tmp/legacy-creds.json 2>/dev/null || true)"
-                  if [ -n "$ERR" ]; then
-                    echo "  .. Vault returned HTTP $LEGACY_CODE from yugabyte-db/static-creds/directus-app: $ERR"
-                  else
-                    echo "  .. Vault returned HTTP $LEGACY_CODE from yugabyte-db/static-creds/directus-app"
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                  LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/legacy-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
+                  if [ "$LEGACY_CODE" = "200" ]; then
+                    DB_USER="$(jq -r '.data.username // empty' /tmp/legacy-creds.json)"
+                    DB_PASS="$(jq -r '.data.password // empty' /tmp/legacy-creds.json)"
+                    if [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]; then
+                      echo "  .. using yugabyte-db/static-creds/directus-app"
+                      break
+                    fi
+                  elif [ "$LEGACY_CODE" != "404" ]; then
+                    ERR="$(jq -r '.errors[0] // empty' /tmp/legacy-creds.json 2>/dev/null || true)"
+                    if [ -n "$ERR" ]; then
+                      echo "  .. Vault returned HTTP $LEGACY_CODE from yugabyte-db/static-creds/directus-app: $ERR"
+                    else
+                      echo "  .. Vault returned HTTP $LEGACY_CODE from yugabyte-db/static-creds/directus-app"
+                    fi
                   fi
                 fi
                 i=$((i + 1))
@@ -584,6 +608,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
             - name: RESET_DIRECTUS_USERS_ROLES
               value: "false"
+            - name: DIRECTUS_DB_LEAF_SECRETS_ONLY
+              value: "true"
           volumeMounts:
             - name: vault-root-token
               mountPath: /vault-token
@@ -659,6 +685,11 @@ spec:
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
+              DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
+              case "$(printf '%s' "${DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes|on) DIRECTUS_DB_LEAF_SECRETS_ONLY="true" ;;
+                *) DIRECTUS_DB_LEAF_SECRETS_ONLY="false" ;;
+              esac
 
               DIRECTUS_DB_WAIT_TIMEOUT_SECONDS_RAW="${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS:-1800}"
               DIRECTUS_DB_WAIT_TIMEOUT_SECONDS="$(printf '%s' "${DIRECTUS_DB_WAIT_TIMEOUT_SECONDS_RAW}" | tr -dc '0-9')"
@@ -689,37 +720,41 @@ spec:
                 DB_TUNNEL_ENABLED="false"
                 TUNNEL_PID=""
 
-                CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
-                if [ "${CODE}" = "200" ]; then
-                  DB_USER_EFFECTIVE="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/db-creds.json)"
-                  DB_PASS_EFFECTIVE="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/db-creds.json)"
-                  DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/db-creds.json)"
-                  DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/db-creds.json)"
-                  DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/db-creds.json)"
-                  DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.ssh_tunnel_enabled // "false"' /tmp/db-creds.json)"
-                  DB_TUNNEL_HOST="$(jq -r '.data.data.ssh_tunnel_host // .data.data.host // empty' /tmp/db-creds.json)"
-                  DB_TUNNEL_PORT="$(jq -r '.data.data.ssh_tunnel_port // "22"' /tmp/db-creds.json)"
-                  DB_TUNNEL_USER="$(jq -r '.data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-creds.json)"
-                  DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.ssh_tunnel_local_port // "15432"' /tmp/db-creds.json)"
-                  DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-creds.json)"
-                  DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.ssh_private_key_b64 // empty' /tmp/db-creds.json)"
+                if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                  CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
+                  if [ "${CODE}" = "200" ]; then
+                    DB_USER_EFFECTIVE="$(jq -r '.data.data.username // .data.data.user // empty' /tmp/db-creds.json)"
+                    DB_PASS_EFFECTIVE="$(jq -r '.data.data.password // .data.data.pass // empty' /tmp/db-creds.json)"
+                    DB_HOST_OVERRIDE="$(jq -r '.data.data.host // empty' /tmp/db-creds.json)"
+                    DB_PORT_OVERRIDE="$(jq -r '.data.data.port // empty' /tmp/db-creds.json)"
+                    DB_DATABASE_OVERRIDE="$(jq -r '.data.data.database // .data.data.db // empty' /tmp/db-creds.json)"
+                    DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.ssh_tunnel_enabled // "false"' /tmp/db-creds.json)"
+                    DB_TUNNEL_HOST="$(jq -r '.data.data.ssh_tunnel_host // .data.data.host // empty' /tmp/db-creds.json)"
+                    DB_TUNNEL_PORT="$(jq -r '.data.data.ssh_tunnel_port // "22"' /tmp/db-creds.json)"
+                    DB_TUNNEL_USER="$(jq -r '.data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-creds.json)"
+                    DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.ssh_tunnel_local_port // "15432"' /tmp/db-creds.json)"
+                    DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-creds.json)"
+                    DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.ssh_private_key_b64 // empty' /tmp/db-creds.json)"
+                  fi
                 fi
 
                 if [ -z "${DB_USER_EFFECTIVE}" ] || [ -z "${DB_PASS_EFFECTIVE}" ] || [ "${DB_USER_EFFECTIVE}" = "null" ] || [ "${DB_PASS_EFFECTIVE}" = "null" ]; then
-                  TOPLEVEL_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-top-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${TOPLEVEL_CREDS_URL}" || true)"
-                  if [ "${TOPLEVEL_CODE}" = "200" ]; then
-                    DB_USER_EFFECTIVE="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/db-top-creds.json)"
-                    DB_PASS_EFFECTIVE="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/db-top-creds.json)"
-                    DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/db-top-creds.json)"
-                    DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/db-top-creds.json)"
-                    DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/db-top-creds.json)"
-                    DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.directus_db_ssh_tunnel_enabled // .data.data.ssh_tunnel_enabled // "false"' /tmp/db-top-creds.json)"
-                    DB_TUNNEL_HOST="$(jq -r '.data.data.directus_db_ssh_tunnel_host // .data.data.ssh_tunnel_host // .data.data.directus_db_host // .data.data.host // empty' /tmp/db-top-creds.json)"
-                    DB_TUNNEL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_port // .data.data.ssh_tunnel_port // "22"' /tmp/db-top-creds.json)"
-                    DB_TUNNEL_USER="$(jq -r '.data.data.directus_db_ssh_tunnel_user // .data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-top-creds.json)"
-                    DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_local_port // .data.data.ssh_tunnel_local_port // "15432"' /tmp/db-top-creds.json)"
-                    DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_remote_port // .data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-top-creds.json)"
-                    DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-top-creds.json)"
+                  if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                    TOPLEVEL_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-top-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${TOPLEVEL_CREDS_URL}" || true)"
+                    if [ "${TOPLEVEL_CODE}" = "200" ]; then
+                      DB_USER_EFFECTIVE="$(jq -r '.data.data.directus_db_username // .data.data.directus_db_user // .data.data.username // .data.data.user // empty' /tmp/db-top-creds.json)"
+                      DB_PASS_EFFECTIVE="$(jq -r '.data.data.directus_db_password // .data.data.password // .data.data.pass // empty' /tmp/db-top-creds.json)"
+                      DB_HOST_OVERRIDE="$(jq -r '.data.data.directus_db_host // .data.data.host // empty' /tmp/db-top-creds.json)"
+                      DB_PORT_OVERRIDE="$(jq -r '.data.data.directus_db_port // .data.data.port // empty' /tmp/db-top-creds.json)"
+                      DB_DATABASE_OVERRIDE="$(jq -r '.data.data.directus_db_database // .data.data.database // .data.data.db // empty' /tmp/db-top-creds.json)"
+                      DB_TUNNEL_ENABLED_RAW="$(jq -r '.data.data.directus_db_ssh_tunnel_enabled // .data.data.ssh_tunnel_enabled // "false"' /tmp/db-top-creds.json)"
+                      DB_TUNNEL_HOST="$(jq -r '.data.data.directus_db_ssh_tunnel_host // .data.data.ssh_tunnel_host // .data.data.directus_db_host // .data.data.host // empty' /tmp/db-top-creds.json)"
+                      DB_TUNNEL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_port // .data.data.ssh_tunnel_port // "22"' /tmp/db-top-creds.json)"
+                      DB_TUNNEL_USER="$(jq -r '.data.data.directus_db_ssh_tunnel_user // .data.data.ssh_tunnel_user // "directus_tunnel"' /tmp/db-top-creds.json)"
+                      DB_TUNNEL_LOCAL_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_local_port // .data.data.ssh_tunnel_local_port // "15432"' /tmp/db-top-creds.json)"
+                      DB_TUNNEL_REMOTE_PORT="$(jq -r '.data.data.directus_db_ssh_tunnel_remote_port // .data.data.ssh_tunnel_remote_port // "5432"' /tmp/db-top-creds.json)"
+                      DB_TUNNEL_PRIVATE_KEY_B64="$(jq -r '.data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-top-creds.json)"
+                    fi
                   fi
                 fi
 
@@ -792,10 +827,12 @@ spec:
                 fi
 
                 if [ -z "${DB_USER_EFFECTIVE}" ] || [ -z "${DB_PASS_EFFECTIVE}" ] || [ "${DB_USER_EFFECTIVE}" = "null" ] || [ "${DB_PASS_EFFECTIVE}" = "null" ]; then
-                  LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-legacy-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
-                  if [ "${LEGACY_CODE}" = "200" ]; then
-                    DB_USER_EFFECTIVE="$(jq -r '.data.username // empty' /tmp/db-legacy-creds.json)"
-                    DB_PASS_EFFECTIVE="$(jq -r '.data.password // empty' /tmp/db-legacy-creds.json)"
+                  if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
+                    LEGACY_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-legacy-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEGACY_CREDS_URL}" || true)"
+                    if [ "${LEGACY_CODE}" = "200" ]; then
+                      DB_USER_EFFECTIVE="$(jq -r '.data.username // empty' /tmp/db-legacy-creds.json)"
+                      DB_PASS_EFFECTIVE="$(jq -r '.data.password // empty' /tmp/db-legacy-creds.json)"
+                    fi
                   fi
                 fi
 
@@ -880,6 +917,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
             - name: DB_DATABASE
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+            - name: DIRECTUS_DB_LEAF_SECRETS_ONLY
+              value: "true"
           volumeMounts:
             - name: vault-root-token
               mountPath: /vault-token
@@ -936,6 +975,8 @@ spec:
             value: "2026-04-12.2"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
             value: "false"
+          - name: DIRECTUS_DB_LEAF_SECRETS_ONLY
+            value: "true"
         volumeMounts:
           - name: vault-root-token
             mountPath: /vault-token
