@@ -166,6 +166,8 @@ spec:
               LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
               LEAF_DB_SSH_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_host"
+              LEAF_DB_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_user"
+              LEAF_DB_SSH_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_user"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
@@ -254,6 +256,8 @@ spec:
                 LEAF_DB_DATABASE_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-database.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_DATABASE_URL}" || true)"
                 LEAF_DB_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-tunnel-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_HOST_URL}" || true)"
                 LEAF_DB_SSH_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-tunnel-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_TUNNEL_HOST_URL}" || true)"
+                LEAF_DB_TUNNEL_USER_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-tunnel-user.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_USER_URL}" || true)"
+                LEAF_DB_SSH_TUNNEL_USER_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-tunnel-user.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_TUNNEL_USER_URL}" || true)"
                 LEAF_DB_SSH_PRIVATE_KEY_B64_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-key.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_PRIVATE_KEY_B64_URL}" || true)"
                 LEAF_DB_USER=""
                 LEAF_DB_PASS=""
@@ -261,6 +265,7 @@ spec:
                 LEAF_DB_PORT=""
                 LEAF_DB_DATABASE=""
                 LEAF_DB_TUNNEL_HOST=""
+                LEAF_DB_TUNNEL_USER=""
                 LEAF_DB_SSH_PRIVATE_KEY_B64=""
                 if [ "${LEAF_DB_USER_CODE}" = "200" ]; then
                   LEAF_DB_USER="$(jq -r '.data.data.value // .data.data.username // .data.data.user // .data.data.directus_db_user // .data.data.directus_db_username // empty' /tmp/db-leaf-user.json)"
@@ -285,6 +290,11 @@ spec:
                 elif [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
                   LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-tunnel-host.json)"
                 fi
+                if [ "${LEAF_DB_SSH_TUNNEL_USER_CODE}" = "200" ]; then
+                  LEAF_DB_TUNNEL_USER="$(jq -r '.data.data.value // .data.data.user // .data.data.username // .data.data.directus_db_ssh_tunnel_user // .data.data.directus_db_tunnel_user // empty' /tmp/db-leaf-ssh-tunnel-user.json)"
+                elif [ "${LEAF_DB_TUNNEL_USER_CODE}" = "200" ]; then
+                  LEAF_DB_TUNNEL_USER="$(jq -r '.data.data.value // .data.data.user // .data.data.username // .data.data.directus_db_ssh_tunnel_user // .data.data.directus_db_tunnel_user // empty' /tmp/db-leaf-tunnel-user.json)"
+                fi
                 if [ "${LEAF_DB_SSH_PRIVATE_KEY_B64_CODE}" = "200" ]; then
                   LEAF_DB_SSH_PRIVATE_KEY_B64="$(jq -r '.data.data.value // .data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-leaf-ssh-key.json)"
                 fi
@@ -306,7 +316,11 @@ spec:
                     DB_TUNNEL_ENABLED_RAW="true"
                     DB_TUNNEL_HOST="${LEAF_DB_TUNNEL_HOST}"
                     DB_TUNNEL_PORT="22"
-                    DB_TUNNEL_USER="directus_tunnel"
+                    if [ -n "${LEAF_DB_TUNNEL_USER}" ] && [ "${LEAF_DB_TUNNEL_USER}" != "null" ]; then
+                      DB_TUNNEL_USER="${LEAF_DB_TUNNEL_USER}"
+                    else
+                      DB_TUNNEL_USER="directus_tunnel"
+                    fi
                     DB_TUNNEL_LOCAL_PORT="15432"
                     DB_TUNNEL_REMOTE_PORT="${DB_PORT_OVERRIDE:-5432}"
                     DB_TUNNEL_PRIVATE_KEY_B64="${LEAF_DB_SSH_PRIVATE_KEY_B64}"
@@ -367,6 +381,7 @@ spec:
                 1|true|yes|on) DB_TUNNEL_ENABLED="true" ;;
                 *) DB_TUNNEL_ENABLED="false" ;;
               esac
+              DB_TUNNEL_USER_CANDIDATES=""
 
               if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
                 if [ -z "${DB_TUNNEL_HOST}" ] || [ "${DB_TUNNEL_HOST}" = "null" ]; then DB_TUNNEL_HOST="${DB_HOST_EFFECTIVE}"; fi
@@ -374,6 +389,12 @@ spec:
                 if [ -z "${DB_TUNNEL_USER}" ] || [ "${DB_TUNNEL_USER}" = "null" ]; then DB_TUNNEL_USER="directus_tunnel"; fi
                 if [ -z "${DB_TUNNEL_LOCAL_PORT}" ] || [ "${DB_TUNNEL_LOCAL_PORT}" = "null" ]; then DB_TUNNEL_LOCAL_PORT="15432"; fi
                 if [ -z "${DB_TUNNEL_REMOTE_PORT}" ] || [ "${DB_TUNNEL_REMOTE_PORT}" = "null" ]; then DB_TUNNEL_REMOTE_PORT="5432"; fi
+                DB_TUNNEL_USER_CANDIDATES="${DB_TUNNEL_USER}"
+                for _fallback_user in ubuntu opc; do
+                  if [ "${_fallback_user}" != "${DB_TUNNEL_USER}" ]; then
+                    DB_TUNNEL_USER_CANDIDATES="${DB_TUNNEL_USER_CANDIDATES},${_fallback_user}"
+                  fi
+                done
                 DB_HOST_EFFECTIVE="127.0.0.1"
                 DB_PORT_EFFECTIVE="${DB_TUNNEL_LOCAL_PORT}"
               else
@@ -383,6 +404,7 @@ spec:
                 DB_TUNNEL_LOCAL_PORT=""
                 DB_TUNNEL_REMOTE_PORT=""
                 DB_TUNNEL_PRIVATE_KEY_B64=""
+                DB_TUNNEL_USER_CANDIDATES=""
               fi
 
               TMP_ENV="/vault-secrets/db-creds.env.tmp"
@@ -398,6 +420,7 @@ spec:
                   _write_env_export DB_TUNNEL_HOST "${DB_TUNNEL_HOST}"
                   _write_env_export DB_TUNNEL_PORT "${DB_TUNNEL_PORT}"
                   _write_env_export DB_TUNNEL_USER "${DB_TUNNEL_USER}"
+                  _write_env_export DB_TUNNEL_USER_CANDIDATES "${DB_TUNNEL_USER_CANDIDATES}"
                   _write_env_export DB_TUNNEL_LOCAL_PORT "${DB_TUNNEL_LOCAL_PORT}"
                   _write_env_export DB_TUNNEL_REMOTE_PORT "${DB_TUNNEL_REMOTE_PORT}"
                   _write_env_export DB_TUNNEL_SSH_PRIVATE_KEY_B64 "${DB_TUNNEL_PRIVATE_KEY_B64}"
@@ -707,6 +730,8 @@ spec:
               LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
               LEAF_DB_SSH_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_host"
+              LEAF_DB_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_user"
+              LEAF_DB_SSH_TUNNEL_USER_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_user"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
@@ -795,6 +820,8 @@ spec:
                   LEAF_DB_DATABASE_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-database-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_DATABASE_URL}" || true)"
                   LEAF_DB_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-tunnel-host-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_HOST_URL}" || true)"
                   LEAF_DB_SSH_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-tunnel-host-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_TUNNEL_HOST_URL}" || true)"
+                  LEAF_DB_TUNNEL_USER_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-tunnel-user-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_USER_URL}" || true)"
+                  LEAF_DB_SSH_TUNNEL_USER_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-tunnel-user-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_TUNNEL_USER_URL}" || true)"
                   LEAF_DB_SSH_PRIVATE_KEY_B64_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-key-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_PRIVATE_KEY_B64_URL}" || true)"
                   LEAF_DB_USER=""
                   LEAF_DB_PASS=""
@@ -802,6 +829,7 @@ spec:
                   LEAF_DB_PORT=""
                   LEAF_DB_DATABASE=""
                   LEAF_DB_TUNNEL_HOST=""
+                  LEAF_DB_TUNNEL_USER=""
                   LEAF_DB_SSH_PRIVATE_KEY_B64=""
                   if [ "${LEAF_DB_USER_CODE}" = "200" ]; then
                     LEAF_DB_USER="$(jq -r '.data.data.value // .data.data.username // .data.data.user // .data.data.directus_db_user // .data.data.directus_db_username // empty' /tmp/db-leaf-user-creds.json)"
@@ -826,6 +854,11 @@ spec:
                   elif [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
                     LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-tunnel-host-creds.json)"
                   fi
+                  if [ "${LEAF_DB_SSH_TUNNEL_USER_CODE}" = "200" ]; then
+                    LEAF_DB_TUNNEL_USER="$(jq -r '.data.data.value // .data.data.user // .data.data.username // .data.data.directus_db_ssh_tunnel_user // .data.data.directus_db_tunnel_user // empty' /tmp/db-leaf-ssh-tunnel-user-creds.json)"
+                  elif [ "${LEAF_DB_TUNNEL_USER_CODE}" = "200" ]; then
+                    LEAF_DB_TUNNEL_USER="$(jq -r '.data.data.value // .data.data.user // .data.data.username // .data.data.directus_db_ssh_tunnel_user // .data.data.directus_db_tunnel_user // empty' /tmp/db-leaf-tunnel-user-creds.json)"
+                  fi
                   if [ "${LEAF_DB_SSH_PRIVATE_KEY_B64_CODE}" = "200" ]; then
                     LEAF_DB_SSH_PRIVATE_KEY_B64="$(jq -r '.data.data.value // .data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-leaf-ssh-key-creds.json)"
                   fi
@@ -847,7 +880,11 @@ spec:
                       DB_TUNNEL_ENABLED_RAW="true"
                       DB_TUNNEL_HOST="${LEAF_DB_TUNNEL_HOST}"
                       DB_TUNNEL_PORT="22"
-                      DB_TUNNEL_USER="directus_tunnel"
+                      if [ -n "${LEAF_DB_TUNNEL_USER}" ] && [ "${LEAF_DB_TUNNEL_USER}" != "null" ]; then
+                        DB_TUNNEL_USER="${LEAF_DB_TUNNEL_USER}"
+                      else
+                        DB_TUNNEL_USER="directus_tunnel"
+                      fi
                       DB_TUNNEL_LOCAL_PORT="15432"
                       DB_TUNNEL_REMOTE_PORT="${DB_PORT_OVERRIDE:-5432}"
                       DB_TUNNEL_PRIVATE_KEY_B64="${LEAF_DB_SSH_PRIVATE_KEY_B64}"
@@ -901,50 +938,75 @@ spec:
                     chmod 600 "${KEY_FILE}"
                     KNOWN_HOSTS_FILE="/tmp/directus-db-tunnel-known_hosts"
                     touch "${KNOWN_HOSTS_FILE}"
-
-                    ssh \
-                      -N \
-                      -i "${KEY_FILE}" \
-                      -o ExitOnForwardFailure=yes \
-                      -o IdentitiesOnly=yes \
-                      -o BatchMode=yes \
-                      -o ConnectTimeout=10 \
-                      -o ConnectionAttempts=1 \
-                      -o StrictHostKeyChecking=accept-new \
-                      -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
-                      -o ServerAliveInterval=30 \
-                      -o ServerAliveCountMax=3 \
-                      -p "${DB_TUNNEL_PORT}" \
-                      -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
-                      "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" >/tmp/directus-db-ready-tunnel.log 2>"${SSH_ERR_FILE}" &
-                    TUNNEL_PID="$!"
+                    KEY_FINGERPRINT="$(ssh-keygen -lf "${KEY_FILE}" 2>/dev/null | awk '{print $2}' || true)"
+                    if [ -n "${KEY_FINGERPRINT}" ]; then
+                      echo "  .. tunnel key fingerprint: ${KEY_FINGERPRINT}"
+                    fi
                     TUNNEL_READY="false"
-                    _tunnel_waited=0
-                    while [ "${_tunnel_waited}" -lt 20 ]; do
-                      if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
-                        ERR_MSG="$(tail -n1 "${SSH_ERR_FILE}" 2>/dev/null || true)"
-                        if [ -n "${ERR_MSG}" ]; then
-                          echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel failed: ${ERR_MSG}"
-                        else
-                          echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel failed before ready"
+                    LAST_TUNNEL_ERR=""
+                    DB_TUNNEL_USER_CANDIDATES="${DB_TUNNEL_USER},ubuntu,opc"
+                    _OLD_IFS="${IFS}"
+                    IFS=','
+                    for _db_tunnel_user_try in ${DB_TUNNEL_USER_CANDIDATES}; do
+                      DB_TUNNEL_USER_TRY="$(printf '%s' "${_db_tunnel_user_try}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                      [ -z "${DB_TUNNEL_USER_TRY}" ] && continue
+                      : > "${SSH_ERR_FILE}"
+
+                      ssh \
+                        -N \
+                        -i "${KEY_FILE}" \
+                        -o ExitOnForwardFailure=yes \
+                        -o IdentitiesOnly=yes \
+                        -o BatchMode=yes \
+                        -o ConnectTimeout=10 \
+                        -o ConnectionAttempts=1 \
+                        -o StrictHostKeyChecking=accept-new \
+                        -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+                        -o ServerAliveInterval=30 \
+                        -o ServerAliveCountMax=3 \
+                        -p "${DB_TUNNEL_PORT}" \
+                        -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
+                        "${DB_TUNNEL_USER_TRY}@${DB_TUNNEL_HOST}" >/tmp/directus-db-ready-tunnel.log 2>"${SSH_ERR_FILE}" &
+                      TUNNEL_PID="$!"
+
+                      _tunnel_waited=0
+                      while [ "${_tunnel_waited}" -lt 20 ]; do
+                        if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
+                          ERR_MSG="$(tail -n1 "${SSH_ERR_FILE}" 2>/dev/null || true)"
+                          if [ -n "${ERR_MSG}" ]; then
+                            LAST_TUNNEL_ERR="${DB_TUNNEL_USER_TRY}: ${ERR_MSG}"
+                          else
+                            LAST_TUNNEL_ERR="${DB_TUNNEL_USER_TRY}: ssh tunnel failed before ready"
+                          fi
+                          break
                         fi
+                        if nc -z -w 1 127.0.0.1 "${DB_TUNNEL_LOCAL_PORT}" >/dev/null 2>&1; then
+                          TUNNEL_READY="true"
+                          DB_TUNNEL_USER="${DB_TUNNEL_USER_TRY}"
+                          break
+                        fi
+                        sleep 1
+                        _tunnel_waited=$((_tunnel_waited + 1))
+                      done
+
+                      if [ "${TUNNEL_READY}" = "true" ]; then
+                        echo "  .. tunnel auth succeeded with user ${DB_TUNNEL_USER}"
                         break
                       fi
-                      if nc -z -w 1 127.0.0.1 "${DB_TUNNEL_LOCAL_PORT}" >/dev/null 2>&1; then
-                        TUNNEL_READY="true"
-                        break
+
+                      if [ -n "${TUNNEL_PID}" ]; then
+                        kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
+                        wait "${TUNNEL_PID}" 2>/dev/null || true
                       fi
-                      sleep 1
-                      _tunnel_waited=$((_tunnel_waited + 1))
+                      TUNNEL_PID=""
                     done
+                    IFS="${_OLD_IFS}"
+
                     if [ "${TUNNEL_READY}" != "true" ]; then
-                      if kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
-                        ERR_MSG="$(tail -n1 "${SSH_ERR_FILE}" 2>/dev/null || true)"
-                        if [ -n "${ERR_MSG}" ]; then
-                          echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel not ready: ${ERR_MSG}"
-                        else
-                          echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel not ready after ${_tunnel_waited}s"
-                        fi
+                      if [ -n "${LAST_TUNNEL_ERR}" ]; then
+                        echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel not ready: ${LAST_TUNNEL_ERR}"
+                      else
+                        echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel not ready after trying users ${DB_TUNNEL_USER_CANDIDATES}"
                       fi
                       if [ -n "${TUNNEL_PID}" ]; then
                         kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
@@ -1127,6 +1189,7 @@ spec:
             DB_TUNNEL_HOST="${DB_TUNNEL_HOST:-}"
             DB_TUNNEL_PORT="${DB_TUNNEL_PORT:-22}"
             DB_TUNNEL_USER="${DB_TUNNEL_USER:-directus_tunnel}"
+            DB_TUNNEL_USER_CANDIDATES="${DB_TUNNEL_USER_CANDIDATES:-${DB_TUNNEL_USER},ubuntu,opc}"
             DB_TUNNEL_LOCAL_PORT="${DB_TUNNEL_LOCAL_PORT:-15432}"
             DB_TUNNEL_REMOTE_PORT="${DB_TUNNEL_REMOTE_PORT:-5432}"
             DB_TUNNEL_SSH_PRIVATE_KEY_B64="${DB_TUNNEL_SSH_PRIVATE_KEY_B64:-}"
@@ -1153,24 +1216,38 @@ spec:
               echo "🔑 DB tunnel key fingerprint: ${KEY_FINGERPRINT}"
             fi
 
-            echo "🔒 Starting DB SSH tunnel ${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}:${DB_TUNNEL_PORT} -> 127.0.0.1:${DB_TUNNEL_REMOTE_PORT} (local ${DB_TUNNEL_LOCAL_PORT})"
             while true; do
-              ssh \
-                -N \
-                -i "${KEY_FILE}" \
-                -o ExitOnForwardFailure=yes \
-                -o IdentitiesOnly=yes \
-                -o BatchMode=yes \
-                -o ConnectTimeout=10 \
-                -o ConnectionAttempts=1 \
-                -o StrictHostKeyChecking=accept-new \
-                -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
-                -o ServerAliveInterval=30 \
-                -o ServerAliveCountMax=3 \
-                -p "${DB_TUNNEL_PORT}" \
-                -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
-                "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" || true
-              echo "⚠️ DB SSH tunnel disconnected; retrying in 3s..."
+              _attempted_any="false"
+              _old_ifs="${IFS}"
+              IFS=','
+              for _candidate in ${DB_TUNNEL_USER_CANDIDATES}; do
+                DB_TUNNEL_USER_TRY="$(printf '%s' "${_candidate}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                [ -z "${DB_TUNNEL_USER_TRY}" ] && continue
+                _attempted_any="true"
+                echo "🔒 Starting DB SSH tunnel ${DB_TUNNEL_USER_TRY}@${DB_TUNNEL_HOST}:${DB_TUNNEL_PORT} -> 127.0.0.1:${DB_TUNNEL_REMOTE_PORT} (local ${DB_TUNNEL_LOCAL_PORT})"
+                ssh \
+                  -N \
+                  -i "${KEY_FILE}" \
+                  -o ExitOnForwardFailure=yes \
+                  -o IdentitiesOnly=yes \
+                  -o BatchMode=yes \
+                  -o ConnectTimeout=10 \
+                  -o ConnectionAttempts=1 \
+                  -o StrictHostKeyChecking=accept-new \
+                  -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+                  -o ServerAliveInterval=30 \
+                  -o ServerAliveCountMax=3 \
+                  -p "${DB_TUNNEL_PORT}" \
+                  -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
+                  "${DB_TUNNEL_USER_TRY}@${DB_TUNNEL_HOST}" || true
+                echo "⚠️ DB SSH tunnel disconnected/failed for user ${DB_TUNNEL_USER_TRY}; trying next candidate..."
+                sleep 1
+              done
+              IFS="${_old_ifs}"
+              if [ "${_attempted_any}" != "true" ]; then
+                echo "❌ No DB tunnel users configured in DB_TUNNEL_USER_CANDIDATES."
+              fi
+              echo "⚠️ DB SSH tunnel attempts exhausted; retrying in 3s..."
               sleep 3
             done
         volumeMounts:

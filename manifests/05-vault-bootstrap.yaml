@@ -238,6 +238,8 @@ spec:
               path "secret/data/directus_db_database"             { capabilities = ["read"] }
               path "secret/data/directus_db_tunnel_host"          { capabilities = ["read"] }
               path "secret/data/directus_db_ssh_tunnel_host"      { capabilities = ["read"] }
+              path "secret/data/directus_db_tunnel_user"          { capabilities = ["read"] }
+              path "secret/data/directus_db_ssh_tunnel_user"      { capabilities = ["read"] }
               path "secret/data/directus_db_ssh_private_key_b64"  { capabilities = ["read"] }
               path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }

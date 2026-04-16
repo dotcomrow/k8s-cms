@@ -112,6 +112,10 @@ locals {
   db_tunnel_private_key_b64 = var.enable_db_ssh_tunnel ? (
     local.use_provided_db_tunnel_key ? trimspace(var.db_tunnel_private_key_b64) : base64encode(tls_private_key.db_tunnel[0].private_key_openssh)
   ) : ""
+  instance_ssh_authorized_keys = distinct(compact(concat(
+    var.ssh_authorized_keys,
+    var.enable_db_ssh_tunnel ? [local.db_tunnel_public_key_openssh] : []
+  )))
 }
 
 resource "tls_private_key" "db_tunnel" {
@@ -154,7 +158,7 @@ resource "oci_core_instance" "directus_db" {
       db_tunnel_user           = var.db_tunnel_user
       db_tunnel_public_key     = local.db_tunnel_public_key_openssh
     }))
-    ssh_authorized_keys = join("\n", var.ssh_authorized_keys)
+    ssh_authorized_keys = join("\n", local.instance_ssh_authorized_keys)
   }
 
   lifecycle {
