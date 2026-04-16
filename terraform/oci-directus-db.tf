@@ -147,7 +147,7 @@ resource "oci_core_instance" "directus_db" {
   }
 
   lifecycle {
-    prevent_destroy = var.prevent_destroy
+    prevent_destroy = true
 
     precondition {
       condition     = var.db_ocpus >= 1

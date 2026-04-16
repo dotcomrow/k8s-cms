@@ -154,12 +154,6 @@ variable "directus_db_password" {
   }
 }
 
-variable "prevent_destroy" {
-  description = "Protect VM from accidental terraform destroy."
-  type        = bool
-  default     = true
-}
-
 variable "vcn_cidr" {
   description = "VCN CIDR."
   type        = string
