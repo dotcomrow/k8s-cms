@@ -1,16 +1,31 @@
 variable "oci_tenancy_ocid" {
   description = "OCI tenancy OCID."
   type        = string
+
+  validation {
+    condition     = can(regex("^ocid1\\.tenancy\\..+", trimspace(var.oci_tenancy_ocid)))
+    error_message = "oci_tenancy_ocid must be a valid tenancy OCID (ocid1.tenancy...)."
+  }
 }
 
 variable "oci_user_ocid" {
   description = "OCI user OCID."
   type        = string
+
+  validation {
+    condition     = can(regex("^ocid1\\.user\\..+", trimspace(var.oci_user_ocid)))
+    error_message = "oci_user_ocid must be a valid user OCID (ocid1.user...)."
+  }
 }
 
 variable "oci_fingerprint" {
   description = "Fingerprint for the OCI API key."
   type        = string
+
+  validation {
+    condition     = can(regex("^([0-9a-fA-F]{2}:){15}[0-9a-fA-F]{2}$", trimspace(var.oci_fingerprint)))
+    error_message = "oci_fingerprint must be in hex pair format, for example aa:bb:...:ff."
+  }
 }
 
 variable "oci_private_key" {
@@ -22,16 +37,31 @@ variable "oci_private_key" {
     condition     = length(trimspace(var.oci_private_key)) > 0
     error_message = "oci_private_key must not be empty."
   }
+
+  validation {
+    condition     = can(regex("-----BEGIN (RSA )?PRIVATE KEY-----", replace(var.oci_private_key, "\\n", "\n")))
+    error_message = "oci_private_key must contain a valid PEM private key block."
+  }
 }
 
 variable "oci_region" {
   description = "OCI region, for example us-phoenix-1."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]+$", trimspace(var.oci_region)))
+    error_message = "oci_region must look like us-phoenix-1 or us-ashburn-1."
+  }
 }
 
 variable "oci_compartment_ocid" {
   description = "Compartment OCID where network and instance will be created."
   type        = string
+
+  validation {
+    condition     = can(regex("^ocid1\\.compartment\\..+", trimspace(var.oci_compartment_ocid)))
+    error_message = "oci_compartment_ocid must be a valid compartment OCID (ocid1.compartment...)."
+  }
 }
 
 variable "db_instance_name" {
