@@ -103,6 +103,13 @@ if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
     "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" >/tmp/directus-db-smoke-tunnel.log 2>/tmp/directus-db-smoke.err &
   SSH_PID=$!
   sleep 2
+  if ! kill -0 "${SSH_PID}" >/dev/null 2>&1; then
+    echo "SSH tunnel process exited early (auth/connectivity issue)."
+    if [ -f /tmp/directus-db-smoke.err ]; then
+      tail -n 20 /tmp/directus-db-smoke.err || true
+    fi
+    exit 1
+  fi
   TEST_HOST="127.0.0.1"
   TEST_PORT="${DB_TUNNEL_LOCAL_PORT}"
   RESULT="$(run_psql "${TEST_HOST}" "${TEST_PORT}" 2>/tmp/directus-db-smoke.err || true)"

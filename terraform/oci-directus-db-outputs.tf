@@ -52,6 +52,10 @@ output "db_tunnel_private_key_b64" {
   sensitive = true
 }
 
+output "db_tunnel_public_key" {
+  value = var.enable_db_ssh_tunnel ? local.db_tunnel_public_key_openssh : null
+}
+
 output "vault_secret_directus_db" {
   value = {
     host     = local.db_host

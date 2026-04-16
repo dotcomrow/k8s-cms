@@ -79,6 +79,14 @@ The smoke test verifies:
 - PostgreSQL is reachable.
 - The configured username/password can authenticate.
 - The active user and database match the expected values.
+- In tunnel mode, SSH key auth to the tunnel user succeeds (fails fast with SSH error output if not).
+
+For key troubleshooting, compare outputs:
+
+```sh
+terraform output -raw db_tunnel_public_key
+terraform output -raw db_tunnel_private_key_b64 | base64 --decode | ssh-keygen -y -f /dev/stdin
+```
 
 ## Cost knobs
 

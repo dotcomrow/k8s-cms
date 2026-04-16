@@ -154,6 +154,11 @@ variable "db_tunnel_public_key" {
   description = "Optional OpenSSH public key for the Directus DB tunnel user. Required when db_tunnel_private_key_b64 is set."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.db_tunnel_public_key == null || trimspace(var.db_tunnel_public_key) == "" || can(regex("^ssh-(ed25519|rsa)\\s+[A-Za-z0-9+/=]+(?:\\s+.*)?$", trimspace(var.db_tunnel_public_key)))
+    error_message = "db_tunnel_public_key must be a valid OpenSSH public key line when set."
+  }
 }
 
 variable "db_tunnel_local_port" {
