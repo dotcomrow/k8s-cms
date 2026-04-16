@@ -8121,7 +8121,7 @@ spec:
     - retrans=2
   nfs:
     # Keep this dynamic from Vault to avoid manual manifest edits on VM reprovision.
-    server: "<path:secret/data/directus_db_tunnel_host#value>"
+    server: "<path:secret/data/directus_db_ssh_tunnel_host#value>"
     path: /srv/directus/uploads
 ---
 # PersistentVolumeClaim for Directus uploads/media/files (bound to OCI VM NFS export).
