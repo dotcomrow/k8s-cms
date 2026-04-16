@@ -8267,7 +8267,7 @@ spec:
   volumeName: directus-uploads-oci-vm-v4
 ---
 # Legacy uploads PV retained after VM host rotation.
-# Do not modify in place; create a new PV/PVC pair and repoint Deployment.
+# Keep server pinned to the old host so Argo never attempts immutable PV source patching.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -8286,7 +8286,7 @@ spec:
     - timeo=600
     - retrans=2
   nfs:
-    server: "<path:secret/data/directus_db_ssh_tunnel_host#value>"
+    server: "150.136.119.193"
     path: /srv/directus/uploads
 ---
 # Legacy uploads PVC retained after VM host rotation.
