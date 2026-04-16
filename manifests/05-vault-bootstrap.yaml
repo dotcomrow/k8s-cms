@@ -158,33 +158,31 @@ spec:
                   sleep 3
                 done
 
-                psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d yugabyte <<EOSQL
-                DO \$\$
-                BEGIN
-                  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_GROUP}') THEN
-                    CREATE ROLE ${ROLE_GROUP} NOLOGIN;
-                  END IF;
-                  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_OWNER}') THEN
-                    CREATE ROLE ${ROLE_OWNER} LOGIN INHERIT;
-                  END IF;
-                END
-                \$\$;
-                GRANT ${ROLE_GROUP} TO ${ROLE_OWNER};
-                GRANT ${ROLE_OWNER} TO ${VAULTADMIN_USER};
-                EOSQL
+                psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d yugabyte -v ON_ERROR_STOP=1 -c \
+                  "DO \$\$ \
+                   BEGIN \
+                     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_GROUP}') THEN \
+                       CREATE ROLE ${ROLE_GROUP} NOLOGIN; \
+                     END IF; \
+                     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${ROLE_OWNER}') THEN \
+                       CREATE ROLE ${ROLE_OWNER} LOGIN INHERIT; \
+                     END IF; \
+                   END \
+                   \$\$; \
+                   GRANT ${ROLE_GROUP} TO ${ROLE_OWNER}; \
+                   GRANT ${ROLE_OWNER} TO ${VAULTADMIN_USER};"
 
-                psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d "$DB" <<EOSQL
-                CREATE SCHEMA IF NOT EXISTS directus AUTHORIZATION ${ROLE_OWNER};
-                ALTER ROLE ${ROLE_OWNER} SET search_path = directus;
-                GRANT CONNECT ON DATABASE ${DB} TO ${ROLE_OWNER};
-                GRANT USAGE, CREATE ON SCHEMA directus TO ${ROLE_GROUP};
-                GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA directus TO ${ROLE_GROUP};
-                GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA directus TO ${ROLE_GROUP};
-                ALTER DEFAULT PRIVILEGES IN SCHEMA directus
-                  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${ROLE_GROUP};
-                ALTER DEFAULT PRIVILEGES IN SCHEMA directus
-                  GRANT USAGE, SELECT ON SEQUENCES TO ${ROLE_GROUP};
-                EOSQL
+                psql -h "$PGHOST" -p "$PGPORT" -U "$VAULTADMIN_USER" -d "$DB" -v ON_ERROR_STOP=1 -c \
+                  "CREATE SCHEMA IF NOT EXISTS directus AUTHORIZATION ${ROLE_OWNER}; \
+                   ALTER ROLE ${ROLE_OWNER} SET search_path = directus; \
+                   GRANT CONNECT ON DATABASE ${DB} TO ${ROLE_OWNER}; \
+                   GRANT USAGE, CREATE ON SCHEMA directus TO ${ROLE_GROUP}; \
+                   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA directus TO ${ROLE_GROUP}; \
+                   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA directus TO ${ROLE_GROUP}; \
+                   ALTER DEFAULT PRIVILEGES IN SCHEMA directus \
+                     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${ROLE_GROUP}; \
+                   ALTER DEFAULT PRIVILEGES IN SCHEMA directus \
+                     GRANT USAGE, SELECT ON SEQUENCES TO ${ROLE_GROUP};"
 
                 if ! vault secrets list -format=json | jq -e 'has("yugabyte-db/")' >/dev/null 2>&1; then
                   vault secrets enable -path=yugabyte-db database
