@@ -199,7 +199,8 @@ resource "oci_core_instance" "directus_db" {
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.directus_db.id
-    assign_public_ip = var.assign_public_ip
+    # Use a reserved public IP resource when enabled instead of an ephemeral IP.
+    assign_public_ip = false
     hostname_label   = var.instance_hostname_label
   }
 
@@ -256,8 +257,33 @@ resource "oci_core_instance" "directus_db" {
   }
 }
 
+data "oci_core_vnic_attachments" "directus_db" {
+  count          = var.assign_public_ip ? 1 : 0
+  compartment_id = var.oci_compartment_ocid
+  instance_id    = oci_core_instance.directus_db.id
+
+  depends_on = [oci_core_instance.directus_db]
+}
+
+data "oci_core_vnic" "directus_db_primary" {
+  count   = var.assign_public_ip ? 1 : 0
+  vnic_id = data.oci_core_vnic_attachments.directus_db[0].vnic_attachments[0].vnic_id
+}
+
+resource "oci_core_public_ip" "directus_db_reserved" {
+  count          = var.assign_public_ip ? 1 : 0
+  compartment_id = var.oci_compartment_ocid
+  display_name   = "${var.db_instance_name}-reserved-public-ip"
+  lifetime       = "RESERVED"
+  private_ip_id  = data.oci_core_vnic.directus_db_primary[0].private_ip_id
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 locals {
   db_private_ip = oci_core_instance.directus_db.private_ip
-  db_public_ip  = try(oci_core_instance.directus_db.public_ip, null)
+  db_public_ip  = var.assign_public_ip ? oci_core_public_ip.directus_db_reserved[0].ip_address : null
   db_host       = var.assign_public_ip ? local.db_public_ip : local.db_private_ip
 }

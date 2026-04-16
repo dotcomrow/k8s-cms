@@ -8307,7 +8307,7 @@ spec:
   volumeName: directus-uploads-oci-vm-v5
 ---
 # Active uploads PV on current OCI VM.
-# Keep `server` aligned with Vault secret rendered from terraform db_tunnel_host.
+# Keep server pinned; when VM host changes, create a new PV/PVC version and repoint Deployment.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -8324,7 +8324,7 @@ spec:
     - timeo=600
     - retrans=2
   nfs:
-    server: "<path:secret/data/directus_db_ssh_tunnel_host#value>"
+    server: "132.145.134.112"
     path: /srv/directus/uploads
 ---
 # Active uploads PVC bound to the current OCI VM NFS export.

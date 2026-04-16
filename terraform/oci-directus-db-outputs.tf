@@ -6,6 +6,10 @@ output "db_public_ip" {
   value = local.db_public_ip
 }
 
+output "db_reserved_public_ip_id" {
+  value = var.assign_public_ip ? oci_core_public_ip.directus_db_reserved[0].id : null
+}
+
 output "db_private_ip" {
   value = local.db_private_ip
 }
