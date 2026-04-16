@@ -57,13 +57,39 @@ write_files:
         fi
 
         id -u "$DB_TUNNEL_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$DB_TUNNEL_USER"
-        # Ensure key auth is possible even if a prior run locked the account.
-        usermod -U "$DB_TUNNEL_USER" >/dev/null 2>&1 || true
+
+        # Ubuntu often creates local users with a locked password ("L"), which
+        # can block pubkey SSH auth. Set a random local password hash so the
+        # account is considered unlocked while still requiring pubkey auth.
+        tunnel_pass_state="$(passwd -S "$DB_TUNNEL_USER" 2>/dev/null | awk '{print $2}' || true)"
+        if [ "$tunnel_pass_state" = "L" ] || [ "$tunnel_pass_state" = "NP" ] || [ -z "$tunnel_pass_state" ]; then
+          if command -v openssl >/dev/null 2>&1; then
+            random_tunnel_password="$(openssl rand -base64 48 | tr -d '\n' | cut -c1-48)"
+          else
+            random_tunnel_password="$(dd if=/dev/urandom bs=64 count=1 2>/dev/null | base64 | tr -d '\n' | cut -c1-48)"
+          fi
+          printf '%s:%s\n' "$DB_TUNNEL_USER" "$random_tunnel_password" | chpasswd
+        fi
+        chage -I -1 -m 0 -M 99999 -E -1 "$DB_TUNNEL_USER" >/dev/null 2>&1 || true
 
         install -d -m 700 -o "$DB_TUNNEL_USER" -g "$DB_TUNNEL_USER" "/home/$DB_TUNNEL_USER/.ssh"
         printf '%s\n' "$DB_TUNNEL_PUBLIC_KEY" > "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
         chown "$DB_TUNNEL_USER:$DB_TUNNEL_USER" "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
         chmod 600 "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
+
+        install -d -m 755 /etc/ssh/sshd_config.d
+        cat > /etc/ssh/sshd_config.d/90-directus-db-tunnel.conf <<EOF_SSHD
+      Match User $DB_TUNNEL_USER
+        PasswordAuthentication no
+        KbdInteractiveAuthentication no
+        PubkeyAuthentication yes
+        AuthenticationMethods publickey
+        AllowTcpForwarding yes
+        X11Forwarding no
+        PermitTTY no
+      EOF_SSHD
+
+        systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
       fi
 
       pg_major="$(psql --version | awk '{print $3}' | cut -d. -f1)"

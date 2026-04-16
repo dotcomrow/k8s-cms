@@ -88,12 +88,20 @@ if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
   fi
   chmod 600 "${KEY_FILE}"
   touch "${KNOWN_HOSTS_FILE}"
+  KEY_FINGERPRINT="$(ssh-keygen -lf "${KEY_FILE}" 2>/dev/null | awk '{print $2}' || true)"
+  if [ -n "${KEY_FINGERPRINT}" ]; then
+    echo "Tunnel key fingerprint: ${KEY_FINGERPRINT}"
+  fi
 
   echo "Running DB smoke test through SSH tunnel ${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}:${DB_TUNNEL_PORT} ..."
   ssh \
     -N \
     -i "${KEY_FILE}" \
     -o ExitOnForwardFailure=yes \
+    -o IdentitiesOnly=yes \
+    -o BatchMode=yes \
+    -o ConnectTimeout=10 \
+    -o ConnectionAttempts=1 \
     -o StrictHostKeyChecking=accept-new \
     -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
     -o ServerAliveInterval=30 \

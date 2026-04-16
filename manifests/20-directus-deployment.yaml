@@ -885,8 +885,7 @@ spec:
                     echo "❌ Tunnel mode enabled but one or more tunnel settings are missing."
                     exit 1
                   fi
-                  echo "ℹ️ DB tunnel mode enabled; skipping init-time DB connectivity check. Tunnel is established by directus-db-tunnel container after sidecars start."
-                  exit 0
+                  echo "ℹ️ DB tunnel mode enabled; performing init-time SSH tunnel and DB auth check."
                 fi
 
                 if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
@@ -907,6 +906,7 @@ spec:
                       -N \
                       -i "${KEY_FILE}" \
                       -o ExitOnForwardFailure=yes \
+                      -o IdentitiesOnly=yes \
                       -o BatchMode=yes \
                       -o ConnectTimeout=10 \
                       -o ConnectionAttempts=1 \
@@ -1148,6 +1148,10 @@ spec:
             fi
             chmod 600 "${KEY_FILE}"
             touch "${KNOWN_HOSTS_FILE}"
+            KEY_FINGERPRINT="$(ssh-keygen -lf "${KEY_FILE}" 2>/dev/null | awk '{print $2}' || true)"
+            if [ -n "${KEY_FINGERPRINT}" ]; then
+              echo "🔑 DB tunnel key fingerprint: ${KEY_FINGERPRINT}"
+            fi
 
             echo "🔒 Starting DB SSH tunnel ${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}:${DB_TUNNEL_PORT} -> 127.0.0.1:${DB_TUNNEL_REMOTE_PORT} (local ${DB_TUNNEL_LOCAL_PORT})"
             while true; do
@@ -1155,6 +1159,10 @@ spec:
                 -N \
                 -i "${KEY_FILE}" \
                 -o ExitOnForwardFailure=yes \
+                -o IdentitiesOnly=yes \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o ConnectionAttempts=1 \
                 -o StrictHostKeyChecking=accept-new \
                 -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
                 -o ServerAliveInterval=30 \
