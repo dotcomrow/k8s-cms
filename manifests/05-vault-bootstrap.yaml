@@ -142,9 +142,9 @@ spec:
                   EXTERNAL_DB_PASS="$(printf '%s' "${LEAF_PASSWORD_CFG}" | jq -r '.data.data.value // .data.data.password // .data.data.pass // .data.data.directus_db_password // empty' 2>/dev/null || true)"
                 fi
                 EXTERNAL_DB_HOST="$(printf '%s' "${LEAF_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_host // empty' 2>/dev/null || true)"
-                LEAF_TUNNEL_HOST="$(printf '%s' "${LEAF_TUNNEL_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' 2>/dev/null || true)"
+                LEAF_TUNNEL_HOST="$(printf '%s' "${LEAF_SSH_TUNNEL_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' 2>/dev/null || true)"
                 if [ -z "${LEAF_TUNNEL_HOST}" ] || [ "${LEAF_TUNNEL_HOST}" = "null" ]; then
-                  LEAF_TUNNEL_HOST="$(printf '%s' "${LEAF_SSH_TUNNEL_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' 2>/dev/null || true)"
+                  LEAF_TUNNEL_HOST="$(printf '%s' "${LEAF_TUNNEL_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' 2>/dev/null || true)"
                 fi
                 if [ -n "${LEAF_TUNNEL_HOST}" ] && [ "${LEAF_TUNNEL_HOST}" != "null" ]; then
                   EXTERNAL_DB_HOST="${LEAF_TUNNEL_HOST}"

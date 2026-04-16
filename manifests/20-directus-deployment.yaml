@@ -280,10 +280,10 @@ spec:
                 if [ "${LEAF_DB_DATABASE_CODE}" = "200" ]; then
                   LEAF_DB_DATABASE="$(jq -r '.data.data.value // .data.data.database // .data.data.db // .data.data.directus_db_database // empty' /tmp/db-leaf-database.json)"
                 fi
-                if [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
-                  LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' /tmp/db-leaf-tunnel-host.json)"
-                elif [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
+                if [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
                   LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-ssh-tunnel-host.json)"
+                elif [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
+                  LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-tunnel-host.json)"
                 fi
                 if [ "${LEAF_DB_SSH_PRIVATE_KEY_B64_CODE}" = "200" ]; then
                   LEAF_DB_SSH_PRIVATE_KEY_B64="$(jq -r '.data.data.value // .data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-leaf-ssh-key.json)"
@@ -549,10 +549,10 @@ spec:
                 if [ "$LEAF_DB_DATABASE_CODE" = "200" ]; then
                   LEAF_DB_DATABASE="$(jq -r '.data.data.value // .data.data.database // .data.data.db // .data.data.directus_db_database // empty' /tmp/leaf-db-database.json)"
                 fi
-                if [ "$LEAF_DB_TUNNEL_HOST_CODE" = "200" ]; then
-                  LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' /tmp/leaf-db-tunnel-host.json)"
-                elif [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
+                if [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
                   LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/leaf-db-ssh-tunnel-host.json)"
+                elif [ "$LEAF_DB_TUNNEL_HOST_CODE" = "200" ]; then
+                  LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/leaf-db-tunnel-host.json)"
                 fi
                 if [ -n "$LEAF_DB_USER" ] && [ -n "$LEAF_DB_PASS" ]; then
                   DB_USER="$LEAF_DB_USER"
@@ -821,10 +821,10 @@ spec:
                   if [ "${LEAF_DB_DATABASE_CODE}" = "200" ]; then
                     LEAF_DB_DATABASE="$(jq -r '.data.data.value // .data.data.database // .data.data.db // .data.data.directus_db_database // empty' /tmp/db-leaf-database-creds.json)"
                   fi
-                  if [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
-                    LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' /tmp/db-leaf-tunnel-host-creds.json)"
-                  elif [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
+                  if [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
                     LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-ssh-tunnel-host-creds.json)"
+                  elif [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
+                    LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-tunnel-host-creds.json)"
                   fi
                   if [ "${LEAF_DB_SSH_PRIVATE_KEY_B64_CODE}" = "200" ]; then
                     LEAF_DB_SSH_PRIVATE_KEY_B64="$(jq -r '.data.data.value // .data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-leaf-ssh-key-creds.json)"
