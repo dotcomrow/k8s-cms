@@ -138,6 +138,24 @@ variable "db_tunnel_user" {
   default     = "directus_tunnel"
 }
 
+variable "db_tunnel_private_key_b64" {
+  description = "Optional base64-encoded OpenSSH private key for the Directus DB tunnel. Set together with db_tunnel_public_key to keep tunnel credentials stable across Terraform workspace/state rebuilds."
+  type        = string
+  default     = null
+  sensitive   = true
+
+  validation {
+    condition     = var.db_tunnel_private_key_b64 == null || trimspace(var.db_tunnel_private_key_b64) == "" || can(base64decode(var.db_tunnel_private_key_b64))
+    error_message = "db_tunnel_private_key_b64 must be valid base64 when set."
+  }
+}
+
+variable "db_tunnel_public_key" {
+  description = "Optional OpenSSH public key for the Directus DB tunnel user. Required when db_tunnel_private_key_b64 is set."
+  type        = string
+  default     = null
+}
+
 variable "db_tunnel_local_port" {
   description = "Local forwarded DB port used inside the Directus pod."
   type        = number

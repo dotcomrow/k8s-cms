@@ -48,7 +48,7 @@ output "db_tunnel_local_port" {
 }
 
 output "db_tunnel_private_key_b64" {
-  value     = var.enable_db_ssh_tunnel ? base64encode(tls_private_key.db_tunnel[0].private_key_openssh) : null
+  value     = var.enable_db_ssh_tunnel ? local.db_tunnel_private_key_b64 : null
   sensitive = true
 }
 
@@ -65,7 +65,7 @@ output "vault_secret_directus_db" {
     ssh_tunnel_user       = var.db_tunnel_user
     ssh_tunnel_local_port = tostring(var.db_tunnel_local_port)
     ssh_tunnel_remote_port = "5432"
-    ssh_private_key_b64   = var.enable_db_ssh_tunnel ? base64encode(tls_private_key.db_tunnel[0].private_key_openssh) : ""
+    ssh_private_key_b64   = var.enable_db_ssh_tunnel ? local.db_tunnel_private_key_b64 : ""
   }
   sensitive = true
 }
@@ -83,7 +83,7 @@ output "vault_secret_directus_db_root" {
     directus_db_ssh_tunnel_user            = var.db_tunnel_user
     directus_db_ssh_tunnel_local_port      = tostring(var.db_tunnel_local_port)
     directus_db_ssh_tunnel_remote_port     = "5432"
-    directus_db_ssh_private_key_b64        = var.enable_db_ssh_tunnel ? base64encode(tls_private_key.db_tunnel[0].private_key_openssh) : ""
+    directus_db_ssh_private_key_b64        = var.enable_db_ssh_tunnel ? local.db_tunnel_private_key_b64 : ""
   }
   sensitive = true
 }

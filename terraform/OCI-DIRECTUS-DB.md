@@ -10,7 +10,8 @@ This stack provisions a small paid Oracle Cloud VM for PostgreSQL and bootstraps
 - Uses an automated SSH tunnel path by default (`enable_db_ssh_tunnel=true`):
   - PostgreSQL listens on localhost only.
   - No public ingress rule for 5432 is created.
-  - Terraform generates the tunnel key pair and exposes a Vault-ready secret payload.
+  - Cloud-init creates the tunnel user and installs the tunnel public key automatically.
+  - Terraform exposes a Vault-ready secret payload for Directus.
 
 ## Usage
 
@@ -34,6 +35,23 @@ terraform apply \
 Note: `db_allowed_cidrs` is used only when `enable_db_ssh_tunnel=false`.
 
 For Terraform Cloud, create a sensitive variable named `oci_private_key` and paste the full PEM key contents (including `-----BEGIN ...-----` / `-----END ...-----` lines).
+
+### Stable tunnel credentials (recommended)
+
+To keep SSH tunnel auth stable even if Terraform state/workspace changes, set both of these Terraform variables once and keep them fixed:
+
+- `db_tunnel_private_key_b64` (sensitive): base64 of the OpenSSH private key file.
+- `db_tunnel_public_key`: matching OpenSSH public key line.
+
+If both are set, Terraform uses them directly instead of generating a new keypair.
+
+Example key generation:
+
+```sh
+ssh-keygen -t ed25519 -N '' -f ./directus-db-tunnel
+base64 < ./directus-db-tunnel | tr -d '\n'
+cat ./directus-db-tunnel.pub
+```
 
 Then seed Vault for Directus.
 
@@ -78,3 +96,8 @@ The smoke test verifies:
 
 - Default model: private DB access over automated SSH tunnel (encrypted) with Postgres bound to localhost.
 - Port `22` is still required for the tunnel endpoint; lock `ssh_allowed_cidrs` down to your cluster egress IP/CIDR.
+
+## Cloud-init scope
+
+- Cloud-init fully automates PostgreSQL install/bootstrap and tunnel-user setup at VM creation time.
+- Cloud-init is first-boot initialization; it is not a continuous config-management loop.

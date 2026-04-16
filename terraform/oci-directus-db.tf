@@ -92,7 +92,11 @@ resource "oci_core_subnet" "directus_db" {
 }
 
 locals {
-  selected_image_id = coalesce(var.db_image_ocid, data.oci_core_images.ubuntu.images[0].id)
+  selected_image_id          = coalesce(var.db_image_ocid, data.oci_core_images.ubuntu.images[0].id)
+  has_db_tunnel_private_key  = var.db_tunnel_private_key_b64 != null && trimspace(var.db_tunnel_private_key_b64) != ""
+  has_db_tunnel_public_key   = var.db_tunnel_public_key != null && trimspace(var.db_tunnel_public_key) != ""
+  use_provided_db_tunnel_key = var.enable_db_ssh_tunnel && local.has_db_tunnel_private_key && local.has_db_tunnel_public_key
+
   postgres_listen_addresses = var.enable_db_ssh_tunnel ? "127.0.0.1" : "*"
   postgres_hba_rules = concat(
     [
@@ -101,10 +105,17 @@ locals {
     ],
     var.enable_db_ssh_tunnel ? [] : [for cidr in var.db_allowed_cidrs : "host all all ${cidr} scram-sha-256"]
   )
+
+  db_tunnel_public_key_openssh = var.enable_db_ssh_tunnel ? (
+    local.use_provided_db_tunnel_key ? trimspace(var.db_tunnel_public_key) : tls_private_key.db_tunnel[0].public_key_openssh
+  ) : ""
+  db_tunnel_private_key_b64 = var.enable_db_ssh_tunnel ? (
+    local.use_provided_db_tunnel_key ? trimspace(var.db_tunnel_private_key_b64) : base64encode(tls_private_key.db_tunnel[0].private_key_openssh)
+  ) : ""
 }
 
 resource "tls_private_key" "db_tunnel" {
-  count     = var.enable_db_ssh_tunnel ? 1 : 0
+  count     = var.enable_db_ssh_tunnel && !local.use_provided_db_tunnel_key ? 1 : 0
   algorithm = "ED25519"
 }
 
@@ -141,7 +152,7 @@ resource "oci_core_instance" "directus_db" {
       pg_hba_rules             = join("\n", local.postgres_hba_rules)
       enable_db_ssh_tunnel     = var.enable_db_ssh_tunnel
       db_tunnel_user           = var.db_tunnel_user
-      db_tunnel_public_key     = var.enable_db_ssh_tunnel ? tls_private_key.db_tunnel[0].public_key_openssh : ""
+      db_tunnel_public_key     = local.db_tunnel_public_key_openssh
     }))
     ssh_authorized_keys = join("\n", var.ssh_authorized_keys)
   }
@@ -157,6 +168,14 @@ resource "oci_core_instance" "directus_db" {
     precondition {
       condition     = var.db_memory_gbs >= 1
       error_message = "Set db_memory_gbs >= 1."
+    }
+
+    precondition {
+      condition = !var.enable_db_ssh_tunnel || (
+        (local.has_db_tunnel_private_key && local.has_db_tunnel_public_key) ||
+        (!local.has_db_tunnel_private_key && !local.has_db_tunnel_public_key)
+      )
+      error_message = "When enable_db_ssh_tunnel=true, set both db_tunnel_private_key_b64 and db_tunnel_public_key together, or leave both unset to auto-generate."
     }
   }
 }
