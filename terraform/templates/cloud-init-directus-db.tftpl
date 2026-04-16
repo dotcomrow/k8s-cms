@@ -189,6 +189,7 @@ write_files:
           printf '\nOPTIONS=\"-w\"\n' >> /etc/default/rpcbind
         fi
 
+        install -d -m 0755 /etc/exports.d
         cat > /etc/exports.d/directus-uploads.exports <<'EOF_DIRECTUS_NFS_EXPORTS'
       ${directus_uploads_nfs_exports}
       EOF_DIRECTUS_NFS_EXPORTS
