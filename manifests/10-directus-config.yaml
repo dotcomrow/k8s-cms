@@ -8102,12 +8102,51 @@ data:
     export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
 ---
-# PersistentVolumeClaim for Directus uploads
+# PersistentVolume for Directus uploads/media/files on the OCI VM.
+# Keep `server` aligned with `terraform output -raw db_host`.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: directus-uploads-oci-vm
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - timeo=600
+    - retrans=2
+  nfs:
+    server: 150.136.95.124
+    path: /srv/directus/uploads
+---
+# PersistentVolumeClaim for Directus uploads/media/files (bound to OCI VM NFS export).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: directus-uploads-remote-vm
+  namespace: directus
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: ""
+  volumeName: directus-uploads-oci-vm
+---
+# Legacy uploads PVC kept for rollback/migration safety.
+# Directus no longer writes here.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: directus-uploads
   namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   accessModes:
     - ReadWriteOnce

@@ -106,7 +106,7 @@ variable "db_baseline_utilization" {
 variable "db_boot_volume_size_gb" {
   description = "Boot volume size in GB."
   type        = number
-  default     = 50
+  default     = 500
 }
 
 variable "assign_public_ip" {
@@ -176,6 +176,41 @@ variable "ssh_allowed_cidrs" {
   description = "CIDRs allowed to SSH to the VM."
   type        = list(string)
   default     = ["0.0.0.0/0"]
+}
+
+variable "enable_directus_uploads_nfs" {
+  description = "When true, cloud-init configures an NFS export on the OCI VM for Directus uploads/media files."
+  type        = bool
+  default     = true
+}
+
+variable "directus_uploads_nfs_allowed_cidrs" {
+  description = "CIDRs allowed to mount the Directus uploads NFS export (TCP 2049)."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+
+  validation {
+    condition     = !var.enable_directus_uploads_nfs || length(var.directus_uploads_nfs_allowed_cidrs) > 0
+    error_message = "directus_uploads_nfs_allowed_cidrs must include at least one CIDR when enable_directus_uploads_nfs=true."
+  }
+}
+
+variable "directus_uploads_export_path" {
+  description = "Filesystem path on the OCI VM exported over NFS for Directus uploads/media."
+  type        = string
+  default     = "/srv/directus/uploads"
+}
+
+variable "directus_uploads_nfs_anon_uid" {
+  description = "UID used for all NFS writes (all_squash) to keep ownership predictable."
+  type        = number
+  default     = 1000
+}
+
+variable "directus_uploads_nfs_anon_gid" {
+  description = "GID used for all NFS writes (all_squash) to keep ownership predictable."
+  type        = number
+  default     = 1000
 }
 
 variable "ssh_authorized_keys" {

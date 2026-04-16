@@ -78,6 +78,18 @@ resource "oci_core_security_list" "directus_db" {
       }
     }
   }
+
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_directus_uploads_nfs ? var.directus_uploads_nfs_allowed_cidrs : []
+    content {
+      protocol = "6"
+      source   = ingress_security_rules.value
+      tcp_options {
+        min = 2049
+        max = 2049
+      }
+    }
+  }
 }
 
 resource "oci_core_subnet" "directus_db" {
@@ -116,6 +128,11 @@ locals {
     var.ssh_authorized_keys,
     var.enable_db_ssh_tunnel ? [local.db_tunnel_public_key_openssh] : []
   )))
+
+  directus_uploads_nfs_exports = var.enable_directus_uploads_nfs ? join("\n      ", [
+    for cidr in var.directus_uploads_nfs_allowed_cidrs :
+    "${var.directus_uploads_export_path} ${cidr}(rw,sync,no_subtree_check,all_squash,anonuid=${var.directus_uploads_nfs_anon_uid},anongid=${var.directus_uploads_nfs_anon_gid})"
+  ]) : ""
 }
 
 resource "tls_private_key" "db_tunnel" {
@@ -158,6 +175,11 @@ resource "oci_core_instance" "directus_db" {
       enable_db_ssh_tunnel     = var.enable_db_ssh_tunnel
       db_tunnel_user           = var.db_tunnel_user
       db_tunnel_public_key     = local.db_tunnel_public_key_openssh
+      enable_directus_uploads_nfs = var.enable_directus_uploads_nfs
+      directus_uploads_export_path = var.directus_uploads_export_path
+      directus_uploads_nfs_anon_uid = tostring(var.directus_uploads_nfs_anon_uid)
+      directus_uploads_nfs_anon_gid = tostring(var.directus_uploads_nfs_anon_gid)
+      directus_uploads_nfs_exports = local.directus_uploads_nfs_exports
     }))
     ssh_authorized_keys = join("\n", local.instance_ssh_authorized_keys)
   }

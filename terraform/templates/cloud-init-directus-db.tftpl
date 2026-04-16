@@ -4,6 +4,7 @@ package_upgrade: false
 packages:
   - postgresql
   - postgresql-contrib
+  - nfs-kernel-server
 
 write_files:
   - path: /usr/local/sbin/bootstrap-directus-postgres.sh
@@ -37,6 +38,22 @@ write_files:
       ${db_tunnel_public_key}
       EOF_DB_TUNNEL_PUBLIC_KEY
       )
+      ENABLE_DIRECTUS_UPLOADS_NFS=$(cat <<'EOF_ENABLE_DIRECTUS_UPLOADS_NFS'
+      ${enable_directus_uploads_nfs}
+      EOF_ENABLE_DIRECTUS_UPLOADS_NFS
+      )
+      DIRECTUS_UPLOADS_EXPORT_PATH=$(cat <<'EOF_DIRECTUS_UPLOADS_EXPORT_PATH'
+      ${directus_uploads_export_path}
+      EOF_DIRECTUS_UPLOADS_EXPORT_PATH
+      )
+      DIRECTUS_UPLOADS_NFS_ANON_UID=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_ANON_UID'
+      ${directus_uploads_nfs_anon_uid}
+      EOF_DIRECTUS_UPLOADS_NFS_ANON_UID
+      )
+      DIRECTUS_UPLOADS_NFS_ANON_GID=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_ANON_GID'
+      ${directus_uploads_nfs_anon_gid}
+      EOF_DIRECTUS_UPLOADS_NFS_ANON_GID
+      )
 
       DB_NAME="$(printf '%s' "$${DB_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       DB_USER="$(printf '%s' "$${DB_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -44,6 +61,10 @@ write_files:
       ENABLE_DB_SSH_TUNNEL="$(printf '%s' "$${ENABLE_DB_SSH_TUNNEL}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
       DB_TUNNEL_USER="$(printf '%s' "$${DB_TUNNEL_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       DB_TUNNEL_PUBLIC_KEY="$(printf '%s' "$${DB_TUNNEL_PUBLIC_KEY}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      ENABLE_DIRECTUS_UPLOADS_NFS="$(printf '%s' "$${ENABLE_DIRECTUS_UPLOADS_NFS}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+      DIRECTUS_UPLOADS_EXPORT_PATH="$(printf '%s' "$${DIRECTUS_UPLOADS_EXPORT_PATH}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DIRECTUS_UPLOADS_NFS_ANON_UID="$(printf '%s' "$${DIRECTUS_UPLOADS_NFS_ANON_UID}" | tr -dc '0-9')"
+      DIRECTUS_UPLOADS_NFS_ANON_GID="$(printf '%s' "$${DIRECTUS_UPLOADS_NFS_ANON_GID}" | tr -dc '0-9')"
 
       if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
         echo "Directus DB bootstrap values are missing."
@@ -90,6 +111,30 @@ write_files:
       EOF_SSHD
 
         systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
+      fi
+
+      if [ "$ENABLE_DIRECTUS_UPLOADS_NFS" = "true" ]; then
+        if [ -z "$DIRECTUS_UPLOADS_EXPORT_PATH" ]; then
+          echo "Directus uploads NFS export path is missing."
+          exit 1
+        fi
+        if [ -z "$DIRECTUS_UPLOADS_NFS_ANON_UID" ]; then
+          DIRECTUS_UPLOADS_NFS_ANON_UID="1000"
+        fi
+        if [ -z "$DIRECTUS_UPLOADS_NFS_ANON_GID" ]; then
+          DIRECTUS_UPLOADS_NFS_ANON_GID="1000"
+        fi
+
+        install -d -m 0775 "$DIRECTUS_UPLOADS_EXPORT_PATH"
+        chown "$DIRECTUS_UPLOADS_NFS_ANON_UID:$DIRECTUS_UPLOADS_NFS_ANON_GID" "$DIRECTUS_UPLOADS_EXPORT_PATH"
+
+        cat > /etc/exports.d/directus-uploads.exports <<'EOF_DIRECTUS_NFS_EXPORTS'
+      ${directus_uploads_nfs_exports}
+      EOF_DIRECTUS_NFS_EXPORTS
+        sed -i "s/anonuid=[0-9][0-9]*/anonuid=$DIRECTUS_UPLOADS_NFS_ANON_UID/g; s/anongid=[0-9][0-9]*/anongid=$DIRECTUS_UPLOADS_NFS_ANON_GID/g" /etc/exports.d/directus-uploads.exports
+        exportfs -ra
+        systemctl enable nfs-kernel-server >/dev/null 2>&1 || true
+        systemctl restart nfs-kernel-server
       fi
 
       pg_major="$(psql --version | awk '{print $3}' | cut -d. -f1)"

@@ -22,6 +22,18 @@ output "db_name" {
   value = var.db_name
 }
 
+output "directus_uploads_nfs_enabled" {
+  value = var.enable_directus_uploads_nfs
+}
+
+output "directus_uploads_nfs_host" {
+  value = local.db_host
+}
+
+output "directus_uploads_nfs_path" {
+  value = var.directus_uploads_export_path
+}
+
 output "directus_db_user" {
   value     = var.directus_db_user
   sensitive = true
