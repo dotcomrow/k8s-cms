@@ -8266,12 +8266,52 @@ spec:
   storageClassName: ""
   volumeName: directus-uploads-oci-vm-v4
 ---
+# Legacy uploads PV retained after VM host rotation.
+# Do not modify in place; create a new PV/PVC pair and repoint Deployment.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: directus-uploads-oci-vm-v5
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - timeo=600
+    - retrans=2
+  nfs:
+    server: "<path:secret/data/directus_db_ssh_tunnel_host#value>"
+    path: /srv/directus/uploads
+---
+# Legacy uploads PVC retained after VM host rotation.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: directus-uploads-remote-vm-v5
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 500Gi
+  storageClassName: ""
+  volumeName: directus-uploads-oci-vm-v5
+---
 # Active uploads PV on current OCI VM.
 # Keep `server` aligned with Vault secret rendered from terraform db_tunnel_host.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: directus-uploads-oci-vm-v5
+  name: directus-uploads-oci-vm-v6
 spec:
   capacity:
     storage: 500Gi
@@ -8291,7 +8331,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: directus-uploads-remote-vm-v5
+  name: directus-uploads-remote-vm-v6
   namespace: directus
 spec:
   accessModes:
@@ -8300,7 +8340,7 @@ spec:
     requests:
       storage: 500Gi
   storageClassName: ""
-  volumeName: directus-uploads-oci-vm-v5
+  volumeName: directus-uploads-oci-vm-v6
 ---
 # Legacy uploads PVC kept for rollback/migration safety.
 # Directus no longer writes here.
