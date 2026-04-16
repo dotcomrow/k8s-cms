@@ -153,7 +153,8 @@ resource "oci_core_instance" "directus_db" {
       directus_db_user         = var.directus_db_user
       directus_db_password     = var.directus_db_password
       postgres_listen_addresses = local.postgres_listen_addresses
-      pg_hba_rules             = join("\n", local.postgres_hba_rules)
+      # Keep each injected pg_hba rule indented inside cloud-init's script block.
+      pg_hba_rules             = join("\n      ", local.postgres_hba_rules)
       enable_db_ssh_tunnel     = var.enable_db_ssh_tunnel
       db_tunnel_user           = var.db_tunnel_user
       db_tunnel_public_key     = local.db_tunnel_public_key_openssh
