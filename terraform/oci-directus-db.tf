@@ -176,7 +176,7 @@ locals {
 
   directus_uploads_nfs_exports = var.enable_directus_uploads_nfs ? join("\n      ", [
     for cidr in var.directus_uploads_nfs_allowed_cidrs :
-    "${var.directus_uploads_export_path} ${cidr}(rw,sync,no_subtree_check,all_squash,anonuid=${var.directus_uploads_nfs_anon_uid},anongid=${var.directus_uploads_nfs_anon_gid})"
+    "${var.directus_uploads_export_path} ${cidr}(rw,sync,insecure,no_subtree_check,all_squash,anonuid=${var.directus_uploads_nfs_anon_uid},anongid=${var.directus_uploads_nfs_anon_gid})"
   ]) : ""
 }
 

@@ -8346,12 +8346,14 @@ spec:
   storageClassName: ""
   volumeName: directus-uploads-oci-vm-v6
 ---
-# Active uploads PV on current OCI VM.
-# Keep server pinned; when VM host changes, create a new PV/PVC version and repoint Deployment.
+# Legacy uploads PV retained after VM host rotation.
+# Keep server pinned to avoid immutable PV source patch failures.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: directus-uploads-oci-vm-v7
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   capacity:
     storage: 500Gi
@@ -8367,12 +8369,14 @@ spec:
     server: "157.151.150.61"
     path: /srv/directus/uploads
 ---
-# Active uploads PVC bound to the current OCI VM NFS export.
+# Legacy uploads PVC retained after VM host rotation.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: directus-uploads-remote-vm-v7
   namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   accessModes:
     - ReadWriteMany
@@ -8381,6 +8385,43 @@ spec:
       storage: 500Gi
   storageClassName: ""
   volumeName: directus-uploads-oci-vm-v7
+---
+# Active uploads PV on current OCI VM.
+# Use NFSv3 mount path for Kubernetes nodes to avoid NFSv4 export access denial.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: directus-uploads-oci-vm-v8
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - nfsvers=3
+    - proto=tcp
+    - hard
+    - timeo=600
+    - retrans=2
+  nfs:
+    server: "157.151.150.61"
+    path: /srv/directus/uploads
+---
+# Active uploads PVC bound to the current OCI VM NFS export.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: directus-uploads-remote-vm-v8
+  namespace: directus
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 500Gi
+  storageClassName: ""
+  volumeName: directus-uploads-oci-vm-v8
 ---
 # Legacy uploads PVC kept for rollback/migration safety.
 # Directus no longer writes here.
