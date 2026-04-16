@@ -112,6 +112,8 @@ terraform output -raw db_tunnel_private_key_b64 | base64 --decode | ssh-keygen -
 - For uploads on NFS, Terraform now opens the required OCI ingress rules automatically:
   - Always: `2049/tcp` and `2049/udp`.
   - If `directus_uploads_nfs_enable_v3_compat=true` (default): `111/tcp+udp` and `20048/tcp+udp`.
+- `directus_uploads_nfs_allowed_cidrs` must be valid CIDR notation (for example `64.251.17.245/32` or `0.0.0.0/0`).
+  A value like `0.0.0.0` (without `/0`) is invalid and will now fail validation.
 
 ## Cloud-init scope
 

@@ -36,7 +36,7 @@ spec:
             secretName: vault-root-token
         - name: uploads
           persistentVolumeClaim:
-            claimName: directus-uploads-remote-vm-v2
+            claimName: directus-uploads-remote-vm-v3
         - name: uploads-legacy
           persistentVolumeClaim:
             claimName: directus-uploads

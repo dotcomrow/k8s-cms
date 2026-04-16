@@ -124,6 +124,11 @@ variable "db_allowed_cidrs" {
     condition     = var.enable_db_ssh_tunnel || length(var.db_allowed_cidrs) > 0
     error_message = "db_allowed_cidrs must include at least one CIDR when enable_db_ssh_tunnel=false."
   }
+
+  validation {
+    condition     = alltrue([for cidr in var.db_allowed_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "db_allowed_cidrs entries must be valid CIDR blocks (for example 0.0.0.0/0 or 64.251.17.245/32)."
+  }
 }
 
 variable "enable_db_ssh_tunnel" {
@@ -176,6 +181,11 @@ variable "ssh_allowed_cidrs" {
   description = "CIDRs allowed to SSH to the VM."
   type        = list(string)
   default     = ["0.0.0.0/0"]
+
+  validation {
+    condition     = alltrue([for cidr in var.ssh_allowed_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "ssh_allowed_cidrs entries must be valid CIDR blocks (for example 0.0.0.0/0 or 64.251.17.245/32)."
+  }
 }
 
 variable "enable_directus_uploads_nfs" {
@@ -192,6 +202,11 @@ variable "directus_uploads_nfs_allowed_cidrs" {
   validation {
     condition     = !var.enable_directus_uploads_nfs || length(var.directus_uploads_nfs_allowed_cidrs) > 0
     error_message = "directus_uploads_nfs_allowed_cidrs must include at least one CIDR when enable_directus_uploads_nfs=true."
+  }
+
+  validation {
+    condition     = alltrue([for cidr in var.directus_uploads_nfs_allowed_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "directus_uploads_nfs_allowed_cidrs entries must be valid CIDR blocks (for example 0.0.0.0/0 or 64.251.17.245/32)."
   }
 }
 
