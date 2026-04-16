@@ -8110,7 +8110,7 @@ metadata:
   name: directus-uploads-oci-vm
 spec:
   capacity:
-    storage: 100Gi
+    storage: 500Gi
   accessModes:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
@@ -8120,7 +8120,8 @@ spec:
     - timeo=600
     - retrans=2
   nfs:
-    server: 150.136.95.124
+    # Keep this dynamic from Vault to avoid manual manifest edits on VM reprovision.
+    server: "<path:secret/data/directus_db_tunnel_host#value>"
     path: /srv/directus/uploads
 ---
 # PersistentVolumeClaim for Directus uploads/media/files (bound to OCI VM NFS export).
@@ -8134,7 +8135,7 @@ spec:
     - ReadWriteMany
   resources:
     requests:
-      storage: 100Gi
+      storage: 500Gi
   storageClassName: ""
   volumeName: directus-uploads-oci-vm
 ---

@@ -37,6 +37,9 @@ spec:
         - name: uploads
           persistentVolumeClaim:
             claimName: directus-uploads-remote-vm
+        - name: uploads-legacy
+          persistentVolumeClaim:
+            claimName: directus-uploads
         - name: vault-agent-config
           configMap:
             name: vault-agent-config-directus
@@ -116,6 +119,43 @@ spec:
           persistentVolumeClaim:
             claimName: directus-extensions
       initContainers:
+        - name: migrate-legacy-uploads
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              set -eu
+
+              SRC_DIR="/legacy-uploads"
+              DST_DIR="/directus/uploads"
+              SENTINEL="${DST_DIR}/.legacy_uploads_migrated"
+
+              mkdir -p "${DST_DIR}"
+
+              if [ -f "${SENTINEL}" ]; then
+                echo "✅ Legacy uploads already migrated."
+                exit 0
+              fi
+
+              if [ ! -d "${SRC_DIR}" ] || [ -z "$(find "${SRC_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)" ]; then
+                echo "ℹ️ No legacy uploads detected."
+                touch "${SENTINEL}"
+                exit 0
+              fi
+
+              echo "📦 Migrating legacy uploads to remote volume..."
+              cp -a "${SRC_DIR}/." "${DST_DIR}/"
+              touch "${SENTINEL}"
+              echo "✅ Legacy uploads migration complete."
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: uploads-legacy
+              mountPath: /legacy-uploads
+            - name: uploads
+              mountPath: /directus/uploads
         - name: seed-directus-extensions
           image: alpine:3.20
           imagePullPolicy: IfNotPresent
