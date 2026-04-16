@@ -873,6 +873,15 @@ spec:
                 esac
 
                 if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
+                  if [ -z "${DB_TUNNEL_HOST}" ] || [ -z "${DB_TUNNEL_PORT}" ] || [ -z "${DB_TUNNEL_USER}" ] || [ -z "${DB_TUNNEL_LOCAL_PORT}" ] || [ -z "${DB_TUNNEL_REMOTE_PORT}" ] || [ -z "${DB_TUNNEL_PRIVATE_KEY_B64}" ]; then
+                    echo "❌ Tunnel mode enabled but one or more tunnel settings are missing."
+                    exit 1
+                  fi
+                  echo "ℹ️ DB tunnel mode enabled; skipping init-time DB connectivity check. Tunnel is established by directus-db-tunnel container after sidecars start."
+                  exit 0
+                fi
+
+                if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
                   if [ -n "${DB_TUNNEL_PRIVATE_KEY_B64}" ] && [ -n "${DB_TUNNEL_HOST}" ] && [ -n "${DB_TUNNEL_USER}" ] && [ -n "${DB_TUNNEL_PORT}" ] && [ -n "${DB_TUNNEL_LOCAL_PORT}" ] && [ -n "${DB_TUNNEL_REMOTE_PORT}" ]; then
                     KEY_FILE="/tmp/directus-db-tunnel.key"
                     if printf '%s' "${DB_TUNNEL_PRIVATE_KEY_B64}" | base64 --decode > "${KEY_FILE}" 2>/dev/null; then
