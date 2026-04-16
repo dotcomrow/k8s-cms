@@ -732,6 +732,10 @@ spec:
                 DB_TUNNEL_PRIVATE_KEY_B64=""
                 DB_TUNNEL_ENABLED="false"
                 TUNNEL_PID=""
+                SSH_ERR_FILE="/tmp/directus-db-ready-ssh.err"
+                DB_ERR_FILE="/tmp/directus-db-ready-psql.err"
+                : > "${SSH_ERR_FILE}"
+                : > "${DB_ERR_FILE}"
 
                 if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" != "true" ]; then
                   CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${KV_CREDS_URL}" || true)"
@@ -889,16 +893,27 @@ spec:
                       -o ServerAliveCountMax=3 \
                       -p "${DB_TUNNEL_PORT}" \
                       -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
-                      "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" >/tmp/directus-db-ready-tunnel.log 2>/tmp/directus-db-ready.err &
+                      "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" >/tmp/directus-db-ready-tunnel.log 2>"${SSH_ERR_FILE}" &
                     TUNNEL_PID="$!"
                     sleep 2
+                    if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
+                      ERR_MSG="$(tail -n1 "${SSH_ERR_FILE}" 2>/dev/null || true)"
+                      if [ -n "${ERR_MSG}" ]; then
+                        echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel failed: ${ERR_MSG}"
+                      else
+                        echo "  .. waiting for DB/auth (${_waited}s elapsed): ssh tunnel failed before ready"
+                      fi
+                      sleep "${DIRECTUS_DB_WAIT_INTERVAL_SECONDS}"
+                      _waited=$((_waited + DIRECTUS_DB_WAIT_INTERVAL_SECONDS))
+                      continue
+                    fi
                     DB_HOST_EFFECTIVE="127.0.0.1"
                     DB_PORT_EFFECTIVE="${DB_TUNNEL_LOCAL_PORT}"
                   fi
                 fi
 
                 if [ -n "${DB_USER_EFFECTIVE}" ] && [ -n "${DB_PASS_EFFECTIVE}" ] && [ "${DB_USER_EFFECTIVE}" != "null" ] && [ "${DB_PASS_EFFECTIVE}" != "null" ]; then
-                  CHECK_OUTPUT="$(PGPASSWORD="${DB_PASS_EFFECTIVE}" PGCONNECT_TIMEOUT=5 psql -h "${DB_HOST_EFFECTIVE}" -p "${DB_PORT_EFFECTIVE}" -U "${DB_USER_EFFECTIVE}" -d "${DB_DATABASE_EFFECTIVE}" -Atc "SELECT current_user || '|' || current_database();" 2>/tmp/directus-db-ready.err || true)"
+                  CHECK_OUTPUT="$(PGPASSWORD="${DB_PASS_EFFECTIVE}" PGCONNECT_TIMEOUT=5 psql -h "${DB_HOST_EFFECTIVE}" -p "${DB_PORT_EFFECTIVE}" -U "${DB_USER_EFFECTIVE}" -d "${DB_DATABASE_EFFECTIVE}" -Atc "SELECT current_user || '|' || current_database();" 2>"${DB_ERR_FILE}" || true)"
                   AUTH_USER="$(printf '%s' "${CHECK_OUTPUT}" | cut -d'|' -f1 | tr -d '\r')"
                   AUTH_DB="$(printf '%s' "${CHECK_OUTPUT}" | cut -d'|' -f2 | tr -d '\r')"
 
@@ -917,7 +932,10 @@ spec:
                   wait "${TUNNEL_PID}" 2>/dev/null || true
                 fi
 
-                ERR_MSG="$(tail -n1 /tmp/directus-db-ready.err 2>/dev/null || true)"
+                ERR_MSG="$(tail -n1 "${DB_ERR_FILE}" 2>/dev/null || true)"
+                if [ -z "${ERR_MSG}" ]; then
+                  ERR_MSG="$(tail -n1 "${SSH_ERR_FILE}" 2>/dev/null || true)"
+                fi
                 if [ -n "${ERR_MSG}" ]; then
                   echo "  .. waiting for DB/auth (${_waited}s elapsed): ${ERR_MSG}"
                 else

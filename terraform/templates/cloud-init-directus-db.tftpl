@@ -64,23 +64,6 @@ write_files:
         printf '%s\n' "$DB_TUNNEL_PUBLIC_KEY" > "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
         chown "$DB_TUNNEL_USER:$DB_TUNNEL_USER" "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
         chmod 600 "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
-
-        cat > /etc/ssh/sshd_config.d/directus-db-tunnel.conf <<EOF_SSHD
-      Match User $${DB_TUNNEL_USER}
-        PasswordAuthentication no
-        PubkeyAuthentication yes
-        AuthenticationMethods publickey
-        AllowTcpForwarding yes
-        PermitOpen 127.0.0.1:5432
-        X11Forwarding no
-        AllowAgentForwarding no
-        PermitTTY no
-      EOF_SSHD
-
-        if command -v sshd >/dev/null 2>&1; then
-          sshd -t
-        fi
-        systemctl restart ssh || systemctl restart sshd
       fi
 
       pg_major="$(psql --version | awk '{print $3}' | cut -d. -f1)"
