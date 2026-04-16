@@ -437,6 +437,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
             - name: DB_DATABASE
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+            - name: DB_SCHEMA
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_SCHEMA } }
             - name: DIRECTUS_DB_LEAF_SECRETS_ONLY
               value: "true"
           volumeMounts:
@@ -754,6 +756,7 @@ spec:
                 DB_HOST_EFFECTIVE="${DB_HOST}"
                 DB_PORT_EFFECTIVE="${DB_PORT}"
                 DB_DATABASE_EFFECTIVE="${DB_DATABASE}"
+                DB_SCHEMA_EFFECTIVE="${DB_SCHEMA:-directus}"
                 DB_USER_EFFECTIVE=""
                 DB_PASS_EFFECTIVE=""
                 DB_HOST_OVERRIDE=""
@@ -911,6 +914,8 @@ spec:
                 if [ -n "${DB_HOST_OVERRIDE}" ] && [ "${DB_HOST_OVERRIDE}" != "null" ]; then DB_HOST_EFFECTIVE="${DB_HOST_OVERRIDE}"; fi
                 if [ -n "${DB_PORT_OVERRIDE}" ] && [ "${DB_PORT_OVERRIDE}" != "null" ]; then DB_PORT_EFFECTIVE="${DB_PORT_OVERRIDE}"; fi
                 if [ -n "${DB_DATABASE_OVERRIDE}" ] && [ "${DB_DATABASE_OVERRIDE}" != "null" ]; then DB_DATABASE_EFFECTIVE="${DB_DATABASE_OVERRIDE}"; fi
+                if [ -z "${DB_SCHEMA_EFFECTIVE}" ] || [ "${DB_SCHEMA_EFFECTIVE}" = "null" ]; then DB_SCHEMA_EFFECTIVE="directus"; fi
+                DB_SCHEMA_SQL="$(printf '%s' "${DB_SCHEMA_EFFECTIVE}" | sed "s/'/''/g")"
 
                 case "$(printf '%s' "${DB_TUNNEL_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]')" in
                   1|true|yes|on) DB_TUNNEL_ENABLED="true" ;;
@@ -1027,22 +1032,34 @@ spec:
                   AUTH_DB="$(printf '%s' "${CHECK_OUTPUT}" | cut -d'|' -f2 | tr -d '\r')"
 
                   if [ "${AUTH_USER}" = "${DB_USER_EFFECTIVE}" ] && [ "${AUTH_DB}" = "${DB_DATABASE_EFFECTIVE}" ]; then
-                    echo "✅ Directus DB is ready (host=${DB_HOST_EFFECTIVE} port=${DB_PORT_EFFECTIVE} db=${AUTH_DB} user=${AUTH_USER})"
-                    if [ -n "${TUNNEL_PID}" ]; then
-                      kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
-                      wait "${TUNNEL_PID}" 2>/dev/null || true
+                    SCHEMA_READY="true"
+                    if [ -n "${DB_SCHEMA_EFFECTIVE}" ] && [ "${DB_SCHEMA_EFFECTIVE}" != "public" ]; then
+                      SCHEMA_CHECK_OUTPUT="$(PGPASSWORD="${DB_PASS_EFFECTIVE}" PGCONNECT_TIMEOUT=5 psql -h "${DB_HOST_EFFECTIVE}" -p "${DB_PORT_EFFECTIVE}" -U "${DB_USER_EFFECTIVE}" -d "${DB_DATABASE_EFFECTIVE}" -Atc "SELECT 1 FROM information_schema.schemata WHERE schema_name = '${DB_SCHEMA_SQL}' LIMIT 1;" 2>>"${DB_ERR_FILE}" || true)"
+                      if [ "${SCHEMA_CHECK_OUTPUT}" != "1" ]; then
+                        SCHEMA_READY="false"
+                        printf 'schema "%s" does not exist\n' "${DB_SCHEMA_EFFECTIVE}" > "${DB_ERR_FILE}"
+                      fi
                     fi
-                    exit 0
+
+                    if [ "${SCHEMA_READY}" = "true" ]; then
+                      echo "✅ Directus DB is ready (host=${DB_HOST_EFFECTIVE} port=${DB_PORT_EFFECTIVE} db=${AUTH_DB} schema=${DB_SCHEMA_EFFECTIVE} user=${AUTH_USER})"
+                      if [ -n "${TUNNEL_PID}" ]; then
+                        kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
+                        wait "${TUNNEL_PID}" 2>/dev/null || true
+                      fi
+                      exit 0
+                    fi
                   fi
                 fi
 
                 # If SSH succeeds but DB auth fails, reconcile role password on
                 # the VM to the Vault-provided value, then retry the DB check.
-                if [ "${DB_TUNNEL_ENABLED}" = "true" ] && grep -Eqi "password authentication failed|database .* does not exist" "${DB_ERR_FILE}" 2>/dev/null; then
+                if [ "${DB_TUNNEL_ENABLED}" = "true" ] && grep -Eqi "password authentication failed|database .* does not exist|schema .* does not exist" "${DB_ERR_FILE}" 2>/dev/null; then
                   DB_USER_B64="$(printf '%s' "${DB_USER_EFFECTIVE}" | base64 | tr -d '\n')"
                   DB_PASS_B64="$(printf '%s' "${DB_PASS_EFFECTIVE}" | base64 | tr -d '\n')"
                   DB_NAME_B64="$(printf '%s' "${DB_DATABASE_EFFECTIVE}" | base64 | tr -d '\n')"
-                  REMOTE_RECONCILE_CMD="set -eu; DB_USER=\$(printf '%s' '${DB_USER_B64}' | base64 -d); DB_PASS=\$(printf '%s' '${DB_PASS_B64}' | base64 -d); DB_NAME=\$(printf '%s' '${DB_NAME_B64}' | base64 -d); if ! command -v sudo >/dev/null 2>&1; then exit 1; fi; DB_USER_SQL=\$(printf '%s' \"\${DB_USER}\" | sed \"s/'/''/g\"); DB_PASS_SQL=\$(printf '%s' \"\${DB_PASS}\" | sed \"s/'/''/g\"); DB_NAME_SQL=\$(printf '%s' \"\${DB_NAME}\" | sed \"s/'/''/g\"); sudo -n -u postgres psql -v ON_ERROR_STOP=1 -c \"DO \\\$do\\\$ DECLARE v_db_user text := '\${DB_USER_SQL}'; v_db_password text := '\${DB_PASS_SQL}'; BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_db_user) THEN EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', v_db_user, v_db_password); ELSE EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', v_db_user, v_db_password); END IF; END \\\$do\\\$;\"; DB_EXISTS=\$(sudo -n -u postgres psql -Atqc \"SELECT 1 FROM pg_database WHERE datname = '\${DB_NAME_SQL}' LIMIT 1;\"); if [ \"\${DB_EXISTS}\" != \"1\" ]; then CREATE_DB_SQL=\$(sudo -n -u postgres psql -Atqc \"SELECT format('CREATE DATABASE %I OWNER %I', '\${DB_NAME_SQL}', '\${DB_USER_SQL}');\"); sudo -n -u postgres psql -v ON_ERROR_STOP=1 -c \"\${CREATE_DB_SQL}\"; fi; GRANT_SQL=\$(sudo -n -u postgres psql -Atqc \"SELECT format('GRANT CONNECT ON DATABASE %I TO %I', '\${DB_NAME_SQL}', '\${DB_USER_SQL}');\"); sudo -n -u postgres psql -v ON_ERROR_STOP=1 -c \"\${GRANT_SQL}\""
+                  DB_SCHEMA_B64="$(printf '%s' "${DB_SCHEMA_EFFECTIVE}" | base64 | tr -d '\n')"
+                  REMOTE_RECONCILE_CMD="set -eu; DB_USER=\$(printf '%s' '${DB_USER_B64}' | base64 -d); DB_PASS=\$(printf '%s' '${DB_PASS_B64}' | base64 -d); DB_NAME=\$(printf '%s' '${DB_NAME_B64}' | base64 -d); DB_SCHEMA=\$(printf '%s' '${DB_SCHEMA_B64}' | base64 -d); if ! command -v sudo >/dev/null 2>&1; then exit 1; fi; DB_USER_SQL=\$(printf '%s' \"\${DB_USER}\" | sed \"s/'/''/g\"); DB_PASS_SQL=\$(printf '%s' \"\${DB_PASS}\" | sed \"s/'/''/g\"); DB_NAME_SQL=\$(printf '%s' \"\${DB_NAME}\" | sed \"s/'/''/g\"); DB_SCHEMA_SQL=\$(printf '%s' \"\${DB_SCHEMA}\" | sed \"s/'/''/g\"); sudo -n -u postgres psql -v ON_ERROR_STOP=1 -c \"DO \\\$do\\\$ DECLARE v_db_user text := '\${DB_USER_SQL}'; v_db_password text := '\${DB_PASS_SQL}'; BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_db_user) THEN EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', v_db_user, v_db_password); ELSE EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', v_db_user, v_db_password); END IF; END \\\$do\\\$;\"; DB_EXISTS=\$(sudo -n -u postgres psql -Atqc \"SELECT 1 FROM pg_database WHERE datname = '\${DB_NAME_SQL}' LIMIT 1;\"); if [ \"\${DB_EXISTS}\" != \"1\" ]; then CREATE_DB_SQL=\$(sudo -n -u postgres psql -Atqc \"SELECT format('CREATE DATABASE %I OWNER %I', '\${DB_NAME_SQL}', '\${DB_USER_SQL}');\"); sudo -n -u postgres psql -v ON_ERROR_STOP=1 -c \"\${CREATE_DB_SQL}\"; fi; GRANT_SQL=\$(sudo -n -u postgres psql -Atqc \"SELECT format('GRANT CONNECT ON DATABASE %I TO %I', '\${DB_NAME_SQL}', '\${DB_USER_SQL}');\"); sudo -n -u postgres psql -v ON_ERROR_STOP=1 -c \"\${GRANT_SQL}\"; SCHEMA_EXISTS=\$(sudo -n -u postgres psql -d \"\${DB_NAME}\" -Atqc \"SELECT 1 FROM information_schema.schemata WHERE schema_name = '\${DB_SCHEMA_SQL}' LIMIT 1;\"); if [ \"\${SCHEMA_EXISTS}\" != \"1\" ]; then CREATE_SCHEMA_SQL=\$(sudo -n -u postgres psql -d \"\${DB_NAME}\" -Atqc \"SELECT format('CREATE SCHEMA %I AUTHORIZATION %I', '\${DB_SCHEMA_SQL}', '\${DB_USER_SQL}');\"); sudo -n -u postgres psql -d \"\${DB_NAME}\" -v ON_ERROR_STOP=1 -c \"\${CREATE_SCHEMA_SQL}\"; fi; GRANT_SCHEMA_SQL=\$(sudo -n -u postgres psql -d \"\${DB_NAME}\" -Atqc \"SELECT format('GRANT USAGE, CREATE ON SCHEMA %I TO %I', '\${DB_SCHEMA_SQL}', '\${DB_USER_SQL}');\"); sudo -n -u postgres psql -d \"\${DB_NAME}\" -v ON_ERROR_STOP=1 -c \"\${GRANT_SCHEMA_SQL}\""
                   RECONCILE_OK="false"
                   LAST_RECONCILE_ERR=""
                   RECONCILE_USER_CANDIDATES="${DB_TUNNEL_USER}"
@@ -1140,6 +1157,8 @@ spec:
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_PORT } }
             - name: DB_DATABASE
               valueFrom: { configMapKeyRef: { name: directus-config, key: DB_DATABASE } }
+            - name: DB_SCHEMA
+              valueFrom: { configMapKeyRef: { name: directus-config, key: DB_SCHEMA } }
             - name: DIRECTUS_DB_LEAF_SECRETS_ONLY
               value: "true"
           volumeMounts:
