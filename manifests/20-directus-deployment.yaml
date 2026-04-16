@@ -1530,7 +1530,7 @@ spec:
 
             echo "🔄 Initializing Directus database..."
             _reset_partial_directus_install_if_needed
-            _directus_db_installed() {
+            _directus_db_state() {
               node - <<'NODE'
             const fs = require("fs");
             const path = require("path");
@@ -1559,21 +1559,33 @@ spec:
             });
 
             const run = async () => {
+              const schemaRow = await db("information_schema.schemata")
+                .where({ schema_name: schema })
+                .first();
+
+              if (!schemaRow) {
+                process.stdout.write("schema_missing");
+                return;
+              }
+
               const row = await db("information_schema.tables")
                 .where({ table_schema: schema, table_name: "directus_migrations" })
                 .first();
-              process.stdout.write(row ? "1" : "0");
+              process.stdout.write(row ? "installed" : "not_installed");
             };
 
             run()
-              .catch(() => process.stdout.write("0"))
+              .catch(() => process.stdout.write("error"))
               .finally(() => db.destroy());
             NODE
             }
 
-            if [ "$(_directus_db_installed 2>/dev/null || echo 0)" = "1" ]; then
+            DIRECTUS_DB_STATE="$(_directus_db_state 2>/dev/null || echo error)"
+            echo "ℹ️ Directus DB state: ${DIRECTUS_DB_STATE}"
+
+            if [ "${DIRECTUS_DB_STATE}" = "installed" ]; then
               echo "✅ Existing Directus database detected; skipping install."
-            else
+            elif [ "${DIRECTUS_DB_STATE}" = "not_installed" ]; then
               echo "📦 Running database install (idempotent)..."
               if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install >/tmp/install.log 2>&1; then
                 echo "✅ Database installation completed successfully"
@@ -1584,6 +1596,13 @@ spec:
                   echo "❌ Database installation failed"; cat /tmp/install.log; exit 1
                 fi
               fi
+            elif [ "${DIRECTUS_DB_STATE}" = "schema_missing" ]; then
+              echo "❌ DB schema ${DB_SCHEMA:-directus} is missing; refusing database install on an existing DB rollout."
+              echo "❌ Ensure wait-for-directus-db schema reconciliation completed before starting Directus."
+              exit 1
+            else
+              echo "❌ Unable to determine Directus DB state (${DIRECTUS_DB_STATE}); refusing to run database install."
+              exit 1
             fi
 
             _ensure_project_owner_migration_recorded() {

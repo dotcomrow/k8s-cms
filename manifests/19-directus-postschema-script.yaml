@@ -7276,18 +7276,18 @@ data:
     echo "👤 Ensuring project owner is set..."
     if printf '%s\n' "$SETTINGS_COLS" | grep -qx "project_owner"; then
       CURRENT_OWNER="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-        "SELECT project_owner FROM directus_settings LIMIT 1;" || true)"
+        "SELECT project_owner FROM directus.directus_settings LIMIT 1;" || true)"
       if [ -z "${CURRENT_OWNER:-}" ] || [ "${CURRENT_OWNER}" = "null" ]; then
         OWNER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-          "SELECT u.id FROM directus_users u JOIN directus_roles r ON u.role = r.id WHERE r.name='Administrator' ORDER BY u.id ASC LIMIT 1;" || true)"
+          "SELECT u.id FROM directus.directus_users u JOIN directus.directus_roles r ON u.role = r.id WHERE r.name='Administrator' ORDER BY u.id ASC LIMIT 1;" || true)"
         if [ -z "${OWNER_ID:-}" ] || [ "${OWNER_ID}" = "null" ]; then
           OWNER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-            "SELECT id FROM directus_users ORDER BY id ASC LIMIT 1;" || true)"
+            "SELECT id FROM directus.directus_users ORDER BY id ASC LIMIT 1;" || true)"
         fi
         if [ -n "${OWNER_ID:-}" ] && [ "${OWNER_ID}" != "null" ]; then
           _owner_escaped="$(printf '%s' "$OWNER_ID" | sed "s/'/''/g")"
           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 \
-            -c "SET search_path TO directus, public; UPDATE directus_settings SET project_owner = '${_owner_escaped}' WHERE project_owner IS NULL;"
+            -c "UPDATE directus.directus_settings SET project_owner = '${_owner_escaped}' WHERE project_owner IS NULL;"
           echo "✅ Project owner set to ${OWNER_ID}"
         else
           echo "⚠️ No users found to set project owner."
