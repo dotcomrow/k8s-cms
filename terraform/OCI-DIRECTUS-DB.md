@@ -114,6 +114,8 @@ terraform output -raw db_tunnel_private_key_b64 | base64 --decode | ssh-keygen -
   - If `directus_uploads_nfs_enable_v3_compat=true` (default): `111/tcp+udp` and `20048/tcp+udp`.
 - `directus_uploads_nfs_allowed_cidrs` must be valid CIDR notation (for example `64.251.17.245/32` or `0.0.0.0/0`).
   A value like `0.0.0.0` (without `/0`) is invalid and will now fail validation.
+- Cloud-init also inserts host `iptables` INPUT allow rules for those NFS ports (before any final REJECT rule)
+  using `directus_uploads_nfs_allowed_cidrs`.
 
 ## Cloud-init scope
 

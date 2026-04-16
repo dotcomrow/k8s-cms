@@ -227,6 +227,7 @@ resource "oci_core_instance" "directus_db" {
       directus_uploads_nfs_enable_v3_compat = var.directus_uploads_nfs_enable_v3_compat
       directus_uploads_nfs_rpcbind_port = tostring(var.directus_uploads_nfs_rpcbind_port)
       directus_uploads_nfs_mountd_port = tostring(var.directus_uploads_nfs_mountd_port)
+      directus_uploads_nfs_allowed_cidrs = join("\n", var.directus_uploads_nfs_allowed_cidrs)
       directus_uploads_nfs_exports = local.directus_uploads_nfs_exports
     }))
     ssh_authorized_keys = join("\n", local.instance_ssh_authorized_keys)

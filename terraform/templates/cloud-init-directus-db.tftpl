@@ -152,6 +152,11 @@ write_files:
 
         install -d -m 0775 "$DIRECTUS_UPLOADS_EXPORT_PATH"
         chown "$DIRECTUS_UPLOADS_NFS_ANON_UID:$DIRECTUS_UPLOADS_NFS_ANON_GID" "$DIRECTUS_UPLOADS_EXPORT_PATH"
+        install -d -m 0755 /etc/directus
+        cat > /etc/directus/directus-uploads-nfs-allowed-cidrs.txt <<'EOF_DIRECTUS_NFS_ALLOWED_CIDRS'
+      ${directus_uploads_nfs_allowed_cidrs}
+      EOF_DIRECTUS_NFS_ALLOWED_CIDRS
+        sed -i '/^[[:space:]]*$/d' /etc/directus/directus-uploads-nfs-allowed-cidrs.txt
 
         # Pin NFS daemon behavior so OCI firewall rules and server ports stay predictable.
         if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" = "true" ]; then
@@ -188,6 +193,39 @@ write_files:
       ${directus_uploads_nfs_exports}
       EOF_DIRECTUS_NFS_EXPORTS
         sed -i "s/anonuid=[0-9][0-9]*/anonuid=$DIRECTUS_UPLOADS_NFS_ANON_UID/g; s/anongid=[0-9][0-9]*/anongid=$DIRECTUS_UPLOADS_NFS_ANON_GID/g" /etc/exports.d/directus-uploads.exports
+
+        # Some OCI Ubuntu images enforce host iptables with final REJECT.
+        # Insert explicit NFS allow rules before that REJECT so kubelet can mount.
+        if command -v iptables >/dev/null 2>&1; then
+          _ensure_input_accept_rule() {
+            _proto="$1"
+            _port="$2"
+            _cidr="$3"
+            if iptables -C INPUT -p "$_proto" -s "$_cidr" --dport "$_port" -j ACCEPT >/dev/null 2>&1; then
+              return 0
+            fi
+            _reject_line="$(iptables -L INPUT --line-numbers | awk '$2 == "REJECT" {print $1; exit}')"
+            if [ -n "$_reject_line" ]; then
+              iptables -I INPUT "$_reject_line" -p "$_proto" -s "$_cidr" --dport "$_port" -j ACCEPT
+            else
+              iptables -A INPUT -p "$_proto" -s "$_cidr" --dport "$_port" -j ACCEPT
+            fi
+          }
+
+          while IFS= read -r _cidr; do
+            _cidr="$(printf '%s' "$_cidr" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            [ -z "$_cidr" ] && continue
+            _ensure_input_accept_rule tcp 2049 "$_cidr"
+            _ensure_input_accept_rule udp 2049 "$_cidr"
+            if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" = "true" ]; then
+              _ensure_input_accept_rule tcp "$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT" "$_cidr"
+              _ensure_input_accept_rule udp "$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT" "$_cidr"
+              _ensure_input_accept_rule tcp "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" "$_cidr"
+              _ensure_input_accept_rule udp "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" "$_cidr"
+            fi
+          done < /etc/directus/directus-uploads-nfs-allowed-cidrs.txt
+        fi
+
         systemctl enable rpcbind >/dev/null 2>&1 || true
         systemctl restart rpcbind || true
         systemctl enable nfs-kernel-server >/dev/null 2>&1 || true
