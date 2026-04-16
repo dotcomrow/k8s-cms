@@ -270,12 +270,25 @@ data "oci_core_vnic" "directus_db_primary" {
   vnic_id = data.oci_core_vnic_attachments.directus_db[0].vnic_attachments[0].vnic_id
 }
 
+data "oci_core_private_ips" "directus_db_primary_vnic" {
+  count   = var.assign_public_ip ? 1 : 0
+  vnic_id = data.oci_core_vnic.directus_db_primary[0].id
+}
+
+locals {
+  # Resolve the primary private IP OCID for reserved public IP association.
+  db_primary_private_ip_id = var.assign_public_ip ? one([
+    for ip in data.oci_core_private_ips.directus_db_primary_vnic[0].private_ips : ip.id
+    if ip.is_primary
+  ]) : null
+}
+
 resource "oci_core_public_ip" "directus_db_reserved" {
   count          = var.assign_public_ip ? 1 : 0
   compartment_id = var.oci_compartment_ocid
   display_name   = "${var.db_instance_name}-reserved-public-ip"
   lifetime       = "RESERVED"
-  private_ip_id  = data.oci_core_vnic.directus_db_primary[0].private_ip_id
+  private_ip_id  = local.db_primary_private_ip_id
 
   lifecycle {
     prevent_destroy = true
