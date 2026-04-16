@@ -162,6 +162,7 @@ spec:
               LEAF_DB_PORT_URL="${VAULT_ADDR}/v1/secret/data/directus_db_port"
               LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
+              LEAF_DB_SSH_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_host"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
@@ -241,6 +242,7 @@ spec:
                 LEAF_DB_PORT_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-port.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_PORT_URL}" || true)"
                 LEAF_DB_DATABASE_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-database.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_DATABASE_URL}" || true)"
                 LEAF_DB_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-tunnel-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_HOST_URL}" || true)"
+                LEAF_DB_SSH_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-tunnel-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_TUNNEL_HOST_URL}" || true)"
                 LEAF_DB_SSH_PRIVATE_KEY_B64_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-key.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_PRIVATE_KEY_B64_URL}" || true)"
                 LEAF_DB_USER=""
                 LEAF_DB_PASS=""
@@ -269,6 +271,8 @@ spec:
                 fi
                 if [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
                   LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' /tmp/db-leaf-tunnel-host.json)"
+                elif [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
+                  LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-ssh-tunnel-host.json)"
                 fi
                 if [ "${LEAF_DB_SSH_PRIVATE_KEY_B64_CODE}" = "200" ]; then
                   LEAF_DB_SSH_PRIVATE_KEY_B64="$(jq -r '.data.data.value // .data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-leaf-ssh-key.json)"
@@ -336,7 +340,7 @@ spec:
                 exit 1
               fi
               if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" = "true" ] && { [ -z "${DB_HOST_OVERRIDE}" ] || [ "${DB_HOST_OVERRIDE}" = "null" ]; }; then
-                echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host (or directus_db_host) is missing."
+                echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host or secret/data/directus_db_ssh_tunnel_host (or directus_db_host) is missing."
                 exit 1
               fi
 
@@ -442,6 +446,7 @@ spec:
               LEAF_DB_PORT_URL="${VAULT_ADDR}/v1/secret/data/directus_db_port"
               LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
+              LEAF_DB_SSH_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_host"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
               case "$(printf '%s' "${DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW}" | tr '[:upper:]' '[:lower:]')" in
@@ -508,6 +513,7 @@ spec:
                 LEAF_DB_PORT_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/leaf-db-port.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_PORT_URL}" || true)"
                 LEAF_DB_DATABASE_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/leaf-db-database.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_DATABASE_URL}" || true)"
                 LEAF_DB_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/leaf-db-tunnel-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_HOST_URL}" || true)"
+                LEAF_DB_SSH_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/leaf-db-ssh-tunnel-host.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_TUNNEL_HOST_URL}" || true)"
                 LEAF_DB_USER=""
                 LEAF_DB_PASS=""
                 LEAF_DB_HOST=""
@@ -534,6 +540,8 @@ spec:
                 fi
                 if [ "$LEAF_DB_TUNNEL_HOST_CODE" = "200" ]; then
                   LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' /tmp/leaf-db-tunnel-host.json)"
+                elif [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
+                  LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/leaf-db-ssh-tunnel-host.json)"
                 fi
                 if [ -n "$LEAF_DB_USER" ] && [ -n "$LEAF_DB_PASS" ]; then
                   DB_USER="$LEAF_DB_USER"
@@ -687,6 +695,7 @@ spec:
               LEAF_DB_PORT_URL="${VAULT_ADDR}/v1/secret/data/directus_db_port"
               LEAF_DB_DATABASE_URL="${VAULT_ADDR}/v1/secret/data/directus_db_database"
               LEAF_DB_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_tunnel_host"
+              LEAF_DB_SSH_TUNNEL_HOST_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_tunnel_host"
               LEAF_DB_SSH_PRIVATE_KEY_B64_URL="${VAULT_ADDR}/v1/secret/data/directus_db_ssh_private_key_b64"
               LEGACY_CREDS_URL="${VAULT_ADDR}/v1/yugabyte-db/static-creds/directus-app"
               DIRECTUS_DB_LEAF_SECRETS_ONLY_RAW="${DIRECTUS_DB_LEAF_SECRETS_ONLY:-true}"
@@ -770,6 +779,7 @@ spec:
                   LEAF_DB_PORT_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-port-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_PORT_URL}" || true)"
                   LEAF_DB_DATABASE_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-database-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_DATABASE_URL}" || true)"
                   LEAF_DB_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-tunnel-host-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_TUNNEL_HOST_URL}" || true)"
+                  LEAF_DB_SSH_TUNNEL_HOST_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-tunnel-host-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_TUNNEL_HOST_URL}" || true)"
                   LEAF_DB_SSH_PRIVATE_KEY_B64_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/db-leaf-ssh-key-creds.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" "${LEAF_DB_SSH_PRIVATE_KEY_B64_URL}" || true)"
                   LEAF_DB_USER=""
                   LEAF_DB_PASS=""
@@ -798,6 +808,8 @@ spec:
                   fi
                   if [ "${LEAF_DB_TUNNEL_HOST_CODE}" = "200" ]; then
                     LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' /tmp/db-leaf-tunnel-host-creds.json)"
+                  elif [ "${LEAF_DB_SSH_TUNNEL_HOST_CODE}" = "200" ]; then
+                    LEAF_DB_TUNNEL_HOST="$(jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' /tmp/db-leaf-ssh-tunnel-host-creds.json)"
                   fi
                   if [ "${LEAF_DB_SSH_PRIVATE_KEY_B64_CODE}" = "200" ]; then
                     LEAF_DB_SSH_PRIVATE_KEY_B64="$(jq -r '.data.data.value // .data.data.directus_db_ssh_private_key_b64 // .data.data.ssh_private_key_b64 // empty' /tmp/db-leaf-ssh-key-creds.json)"
@@ -840,7 +852,7 @@ spec:
                   fi
                 fi
                 if [ "${DIRECTUS_DB_LEAF_SECRETS_ONLY}" = "true" ] && { [ -z "${DB_HOST_OVERRIDE}" ] || [ "${DB_HOST_OVERRIDE}" = "null" ]; }; then
-                  echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host (or directus_db_host) is missing."
+                  echo "❌ DIRECTUS_DB_LEAF_SECRETS_ONLY=true but secret/data/directus_db_tunnel_host or secret/data/directus_db_ssh_tunnel_host (or directus_db_host) is missing."
                   exit 1
                 fi
 

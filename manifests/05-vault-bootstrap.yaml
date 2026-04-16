@@ -135,6 +135,7 @@ spec:
                 LEAF_PORT_CFG="$(vault kv get -format=json secret/directus_db_port 2>/dev/null || true)"
                 LEAF_DATABASE_CFG="$(vault kv get -format=json secret/directus_db_database 2>/dev/null || true)"
                 LEAF_TUNNEL_HOST_CFG="$(vault kv get -format=json secret/directus_db_tunnel_host 2>/dev/null || true)"
+                LEAF_SSH_TUNNEL_HOST_CFG="$(vault kv get -format=json secret/directus_db_ssh_tunnel_host 2>/dev/null || true)"
                 EXTERNAL_DB_USER="$(printf '%s' "${LEAF_USER_CFG}" | jq -r '.data.data.value // .data.data.username // .data.data.user // .data.data.directus_db_user // .data.data.directus_db_username // empty' 2>/dev/null || true)"
                 EXTERNAL_DB_PASS="$(printf '%s' "${LEAF_PASSWROD_CFG}" | jq -r '.data.data.value // .data.data.password // .data.data.pass // .data.data.directus_db_password // empty' 2>/dev/null || true)"
                 if [ -z "${EXTERNAL_DB_PASS}" ]; then
@@ -142,6 +143,9 @@ spec:
                 fi
                 EXTERNAL_DB_HOST="$(printf '%s' "${LEAF_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_host // empty' 2>/dev/null || true)"
                 LEAF_TUNNEL_HOST="$(printf '%s' "${LEAF_TUNNEL_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_tunnel_host // .data.data.directus_db_ssh_tunnel_host // empty' 2>/dev/null || true)"
+                if [ -z "${LEAF_TUNNEL_HOST}" ] || [ "${LEAF_TUNNEL_HOST}" = "null" ]; then
+                  LEAF_TUNNEL_HOST="$(printf '%s' "${LEAF_SSH_TUNNEL_HOST_CFG}" | jq -r '.data.data.value // .data.data.host // .data.data.directus_db_ssh_tunnel_host // .data.data.directus_db_tunnel_host // empty' 2>/dev/null || true)"
+                fi
                 if [ -n "${LEAF_TUNNEL_HOST}" ] && [ "${LEAF_TUNNEL_HOST}" != "null" ]; then
                   EXTERNAL_DB_HOST="${LEAF_TUNNEL_HOST}"
                 fi
@@ -233,6 +237,7 @@ spec:
               path "secret/data/directus_db_port"                 { capabilities = ["read"] }
               path "secret/data/directus_db_database"             { capabilities = ["read"] }
               path "secret/data/directus_db_tunnel_host"          { capabilities = ["read"] }
+              path "secret/data/directus_db_ssh_tunnel_host"      { capabilities = ["read"] }
               path "secret/data/directus_db_ssh_private_key_b64"  { capabilities = ["read"] }
               path "yugabyte-db/static-creds/directus-app"         { capabilities = ["read"] }
               path "secret/data/directus/admin"                    { capabilities = ["read"] }
