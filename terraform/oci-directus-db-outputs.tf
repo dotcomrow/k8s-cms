@@ -23,7 +23,8 @@ output "db_name" {
 }
 
 output "directus_db_user" {
-  value = var.directus_db_user
+  value     = var.directus_db_user
+  sensitive = true
 }
 
 output "db_tunnel_user" {

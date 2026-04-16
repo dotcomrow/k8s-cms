@@ -38,12 +38,12 @@ write_files:
       EOF_DB_TUNNEL_PUBLIC_KEY
       )
 
-      DB_NAME="$(printf '%s' "${DB_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      DB_USER="$(printf '%s' "${DB_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      DB_PASS="$(printf '%s' "${DB_PASS}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      ENABLE_DB_SSH_TUNNEL="$(printf '%s' "${ENABLE_DB_SSH_TUNNEL}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-      DB_TUNNEL_USER="$(printf '%s' "${DB_TUNNEL_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      DB_TUNNEL_PUBLIC_KEY="$(printf '%s' "${DB_TUNNEL_PUBLIC_KEY}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DB_NAME="$(printf '%s' "$${DB_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DB_USER="$(printf '%s' "$${DB_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DB_PASS="$(printf '%s' "$${DB_PASS}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      ENABLE_DB_SSH_TUNNEL="$(printf '%s' "$${ENABLE_DB_SSH_TUNNEL}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+      DB_TUNNEL_USER="$(printf '%s' "$${DB_TUNNEL_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DB_TUNNEL_PUBLIC_KEY="$(printf '%s' "$${DB_TUNNEL_PUBLIC_KEY}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
       if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
         echo "Directus DB bootstrap values are missing."
@@ -86,7 +86,7 @@ write_files:
         chmod 600 "/home/$DB_TUNNEL_USER/.ssh/authorized_keys"
 
         cat > /etc/ssh/sshd_config.d/directus-db-tunnel.conf <<EOF_SSHD
-      Match User ${DB_TUNNEL_USER}
+      Match User $${DB_TUNNEL_USER}
         PasswordAuthentication no
         PubkeyAuthentication yes
         AuthenticationMethods publickey
