@@ -45,6 +45,39 @@ resource "oci_core_route_table" "directus_db" {
   }
 }
 
+locals {
+  directus_uploads_nfs_tcp_ports = var.enable_directus_uploads_nfs ? distinct(concat(
+    [2049],
+    var.directus_uploads_nfs_enable_v3_compat ? [
+      var.directus_uploads_nfs_rpcbind_port,
+      var.directus_uploads_nfs_mountd_port
+    ] : []
+  )) : []
+  directus_uploads_nfs_udp_ports = var.enable_directus_uploads_nfs ? distinct(concat(
+    [2049],
+    var.directus_uploads_nfs_enable_v3_compat ? [
+      var.directus_uploads_nfs_rpcbind_port,
+      var.directus_uploads_nfs_mountd_port
+    ] : []
+  )) : []
+  directus_uploads_nfs_tcp_rules = flatten([
+    for cidr in var.directus_uploads_nfs_allowed_cidrs : [
+      for port in local.directus_uploads_nfs_tcp_ports : {
+        cidr = cidr
+        port = port
+      }
+    ]
+  ])
+  directus_uploads_nfs_udp_rules = flatten([
+    for cidr in var.directus_uploads_nfs_allowed_cidrs : [
+      for port in local.directus_uploads_nfs_udp_ports : {
+        cidr = cidr
+        port = port
+      }
+    ]
+  ])
+}
+
 resource "oci_core_security_list" "directus_db" {
   compartment_id = var.oci_compartment_ocid
   vcn_id         = oci_core_vcn.directus_db.id
@@ -80,13 +113,25 @@ resource "oci_core_security_list" "directus_db" {
   }
 
   dynamic "ingress_security_rules" {
-    for_each = var.enable_directus_uploads_nfs ? var.directus_uploads_nfs_allowed_cidrs : []
+    for_each = local.directus_uploads_nfs_tcp_rules
     content {
       protocol = "6"
-      source   = ingress_security_rules.value
+      source   = ingress_security_rules.value.cidr
       tcp_options {
-        min = 2049
-        max = 2049
+        min = ingress_security_rules.value.port
+        max = ingress_security_rules.value.port
+      }
+    }
+  }
+
+  dynamic "ingress_security_rules" {
+    for_each = local.directus_uploads_nfs_udp_rules
+    content {
+      protocol = "17"
+      source   = ingress_security_rules.value.cidr
+      udp_options {
+        min = ingress_security_rules.value.port
+        max = ingress_security_rules.value.port
       }
     }
   }
@@ -179,6 +224,9 @@ resource "oci_core_instance" "directus_db" {
       directus_uploads_export_path = var.directus_uploads_export_path
       directus_uploads_nfs_anon_uid = tostring(var.directus_uploads_nfs_anon_uid)
       directus_uploads_nfs_anon_gid = tostring(var.directus_uploads_nfs_anon_gid)
+      directus_uploads_nfs_enable_v3_compat = var.directus_uploads_nfs_enable_v3_compat
+      directus_uploads_nfs_rpcbind_port = tostring(var.directus_uploads_nfs_rpcbind_port)
+      directus_uploads_nfs_mountd_port = tostring(var.directus_uploads_nfs_mountd_port)
       directus_uploads_nfs_exports = local.directus_uploads_nfs_exports
     }))
     ssh_authorized_keys = join("\n", local.instance_ssh_authorized_keys)

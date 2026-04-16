@@ -13,6 +13,8 @@ This stack provisions a small paid Oracle Cloud VM for PostgreSQL and bootstraps
   - Cloud-init creates the tunnel user and installs the tunnel public key automatically.
   - Terraform exposes a Vault-ready secret payload for Directus.
 - Cloud-init can also export `/srv/directus/uploads` over NFS (`enable_directus_uploads_nfs=true`) so Directus uploads/media/files live on the OCI VM.
+  - OCI security rules are created automatically for NFS.
+  - Cloud-init pins NFS daemon ports and verifies NFS/export readiness during first boot.
 
 ## Usage
 
@@ -107,6 +109,9 @@ terraform output -raw db_tunnel_private_key_b64 | base64 --decode | ssh-keygen -
 
 - Default model: private DB access over automated SSH tunnel (encrypted) with Postgres bound to localhost.
 - Port `22` is still required for the tunnel endpoint; lock `ssh_allowed_cidrs` down to your cluster egress IP/CIDR.
+- For uploads on NFS, Terraform now opens the required OCI ingress rules automatically:
+  - Always: `2049/tcp` and `2049/udp`.
+  - If `directus_uploads_nfs_enable_v3_compat=true` (default): `111/tcp+udp` and `20048/tcp+udp`.
 
 ## Cloud-init scope
 

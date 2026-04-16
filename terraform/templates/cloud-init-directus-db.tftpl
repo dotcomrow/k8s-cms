@@ -5,6 +5,7 @@ packages:
   - postgresql
   - postgresql-contrib
   - nfs-kernel-server
+  - rpcbind
 
 write_files:
   - path: /usr/local/sbin/bootstrap-directus-postgres.sh
@@ -54,6 +55,18 @@ write_files:
       ${directus_uploads_nfs_anon_gid}
       EOF_DIRECTUS_UPLOADS_NFS_ANON_GID
       )
+      DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT'
+      ${directus_uploads_nfs_enable_v3_compat}
+      EOF_DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT
+      )
+      DIRECTUS_UPLOADS_NFS_RPCBIND_PORT=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_RPCBIND_PORT'
+      ${directus_uploads_nfs_rpcbind_port}
+      EOF_DIRECTUS_UPLOADS_NFS_RPCBIND_PORT
+      )
+      DIRECTUS_UPLOADS_NFS_MOUNTD_PORT=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_MOUNTD_PORT'
+      ${directus_uploads_nfs_mountd_port}
+      EOF_DIRECTUS_UPLOADS_NFS_MOUNTD_PORT
+      )
 
       DB_NAME="$(printf '%s' "$${DB_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       DB_USER="$(printf '%s' "$${DB_USER}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -65,6 +78,9 @@ write_files:
       DIRECTUS_UPLOADS_EXPORT_PATH="$(printf '%s' "$${DIRECTUS_UPLOADS_EXPORT_PATH}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       DIRECTUS_UPLOADS_NFS_ANON_UID="$(printf '%s' "$${DIRECTUS_UPLOADS_NFS_ANON_UID}" | tr -dc '0-9')"
       DIRECTUS_UPLOADS_NFS_ANON_GID="$(printf '%s' "$${DIRECTUS_UPLOADS_NFS_ANON_GID}" | tr -dc '0-9')"
+      DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT="$(printf '%s' "$${DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+      DIRECTUS_UPLOADS_NFS_RPCBIND_PORT="$(printf '%s' "$${DIRECTUS_UPLOADS_NFS_RPCBIND_PORT}" | tr -dc '0-9')"
+      DIRECTUS_UPLOADS_NFS_MOUNTD_PORT="$(printf '%s' "$${DIRECTUS_UPLOADS_NFS_MOUNTD_PORT}" | tr -dc '0-9')"
 
       if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
         echo "Directus DB bootstrap values are missing."
@@ -124,17 +140,79 @@ write_files:
         if [ -z "$DIRECTUS_UPLOADS_NFS_ANON_GID" ]; then
           DIRECTUS_UPLOADS_NFS_ANON_GID="1000"
         fi
+        if [ -z "$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT" ]; then
+          DIRECTUS_UPLOADS_NFS_RPCBIND_PORT="111"
+        fi
+        if [ -z "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" ]; then
+          DIRECTUS_UPLOADS_NFS_MOUNTD_PORT="20048"
+        fi
+        if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" != "true" ]; then
+          DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT="false"
+        fi
 
         install -d -m 0775 "$DIRECTUS_UPLOADS_EXPORT_PATH"
         chown "$DIRECTUS_UPLOADS_NFS_ANON_UID:$DIRECTUS_UPLOADS_NFS_ANON_GID" "$DIRECTUS_UPLOADS_EXPORT_PATH"
+
+        # Pin NFS daemon behavior so OCI firewall rules and server ports stay predictable.
+        if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" = "true" ]; then
+          NFS_V3_ENABLED="y"
+        else
+          NFS_V3_ENABLED="n"
+        fi
+        install -d -m 0755 /etc/nfs.conf.d
+        cat > /etc/nfs.conf.d/90-directus-uploads.conf <<EOF_DIRECTUS_NFS_CONF
+      [nfsd]
+      vers3=$NFS_V3_ENABLED
+      vers4=y
+      vers4.1=y
+      vers4.2=y
+      tcp=y
+      udp=y
+      port=2049
+
+      [mountd]
+      port=$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT
+      EOF_DIRECTUS_NFS_CONF
+        if grep -Eq '^RPCMOUNTDOPTS=' /etc/default/nfs-kernel-server; then
+          sed -ri "s|^RPCMOUNTDOPTS=.*|RPCMOUNTDOPTS=\"--port $DIRECTUS_UPLOADS_NFS_MOUNTD_PORT\"|" /etc/default/nfs-kernel-server
+        else
+          printf '\nRPCMOUNTDOPTS=\"--port %s\"\n' "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" >> /etc/default/nfs-kernel-server
+        fi
+        if grep -Eq '^OPTIONS=' /etc/default/rpcbind; then
+          sed -ri "s|^OPTIONS=.*|OPTIONS=\"-w\"|" /etc/default/rpcbind
+        else
+          printf '\nOPTIONS=\"-w\"\n' >> /etc/default/rpcbind
+        fi
 
         cat > /etc/exports.d/directus-uploads.exports <<'EOF_DIRECTUS_NFS_EXPORTS'
       ${directus_uploads_nfs_exports}
       EOF_DIRECTUS_NFS_EXPORTS
         sed -i "s/anonuid=[0-9][0-9]*/anonuid=$DIRECTUS_UPLOADS_NFS_ANON_UID/g; s/anongid=[0-9][0-9]*/anongid=$DIRECTUS_UPLOADS_NFS_ANON_GID/g" /etc/exports.d/directus-uploads.exports
-        exportfs -ra
+        systemctl enable rpcbind >/dev/null 2>&1 || true
+        systemctl restart rpcbind || true
         systemctl enable nfs-kernel-server >/dev/null 2>&1 || true
         systemctl restart nfs-kernel-server
+        exportfs -ra
+
+        # Fail bootstrap early if NFS did not become ready.
+        if ! timeout 30 bash -c 'until ss -lnt | awk "{print \$4}" | grep -Eq "[:.]2049$"; do sleep 1; done'; then
+          echo "NFS service did not open TCP 2049."
+          exit 1
+        fi
+        if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" = "true" ]; then
+          if ! timeout 30 bash -c "until ss -lnt | awk '{print \\$4}' | grep -Eq '[:.]$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT$'; do sleep 1; done"; then
+            echo "rpcbind did not open TCP $DIRECTUS_UPLOADS_NFS_RPCBIND_PORT."
+            exit 1
+          fi
+          if ! timeout 30 bash -c "until ss -lnt | awk '{print \\$4}' | grep -Eq '[:.]$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT$'; do sleep 1; done"; then
+            echo "NFS mountd did not open TCP $DIRECTUS_UPLOADS_NFS_MOUNTD_PORT."
+            exit 1
+          fi
+        fi
+        if ! exportfs -v | grep -Fq "$DIRECTUS_UPLOADS_EXPORT_PATH"; then
+          echo "NFS export path not active: $DIRECTUS_UPLOADS_EXPORT_PATH"
+          exit 1
+        fi
       fi
 
       pg_major="$(psql --version | awk '{print $3}' | cut -d. -f1)"

@@ -185,13 +185,41 @@ variable "enable_directus_uploads_nfs" {
 }
 
 variable "directus_uploads_nfs_allowed_cidrs" {
-  description = "CIDRs allowed to mount the Directus uploads NFS export (TCP 2049)."
+  description = "CIDRs allowed to mount the Directus uploads NFS export (NFS ports managed by Terraform)."
   type        = list(string)
   default     = ["0.0.0.0/0"]
 
   validation {
     condition     = !var.enable_directus_uploads_nfs || length(var.directus_uploads_nfs_allowed_cidrs) > 0
     error_message = "directus_uploads_nfs_allowed_cidrs must include at least one CIDR when enable_directus_uploads_nfs=true."
+  }
+}
+
+variable "directus_uploads_nfs_enable_v3_compat" {
+  description = "When true, enable NFSv3 compatibility on the VM and open rpcbind/mountd ports in OCI security rules."
+  type        = bool
+  default     = true
+}
+
+variable "directus_uploads_nfs_rpcbind_port" {
+  description = "rpcbind port used for NFSv3 compatibility."
+  type        = number
+  default     = 111
+
+  validation {
+    condition     = var.directus_uploads_nfs_rpcbind_port >= 1 && var.directus_uploads_nfs_rpcbind_port <= 65535
+    error_message = "directus_uploads_nfs_rpcbind_port must be between 1 and 65535."
+  }
+}
+
+variable "directus_uploads_nfs_mountd_port" {
+  description = "mountd port used for NFSv3 compatibility."
+  type        = number
+  default     = 20048
+
+  validation {
+    condition     = var.directus_uploads_nfs_mountd_port >= 1 && var.directus_uploads_nfs_mountd_port <= 65535
+    error_message = "directus_uploads_nfs_mountd_port must be between 1 and 65535."
   }
 }
 

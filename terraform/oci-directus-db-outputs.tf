@@ -34,6 +34,18 @@ output "directus_uploads_nfs_path" {
   value = var.directus_uploads_export_path
 }
 
+output "directus_uploads_nfs_v3_compat_enabled" {
+  value = var.directus_uploads_nfs_enable_v3_compat
+}
+
+output "directus_uploads_nfs_rpcbind_port" {
+  value = var.directus_uploads_nfs_rpcbind_port
+}
+
+output "directus_uploads_nfs_mountd_port" {
+  value = var.directus_uploads_nfs_mountd_port
+}
+
 output "directus_db_user" {
   value     = var.directus_db_user
   sensitive = true

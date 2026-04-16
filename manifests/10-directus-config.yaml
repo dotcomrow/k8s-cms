@@ -8102,12 +8102,14 @@ data:
     export REDIS_PASSWORD="{{ .Data.data.password }}"
     {{- end }}
 ---
-# PersistentVolume for Directus uploads/media/files on the OCI VM.
-# Keep `server` aligned with `terraform output -raw db_host`.
+# Legacy uploads PV retained to avoid immutable-field patch failures.
+# Do not modify in place; create a new PV/PVC pair and repoint Deployment.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: directus-uploads-oci-vm
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   capacity:
     storage: 500Gi
@@ -8120,15 +8122,53 @@ spec:
     - timeo=600
     - retrans=2
   nfs:
-    # Keep this dynamic from Vault to avoid manual manifest edits on VM reprovision.
-    server: "<path:secret/data/directus_db_ssh_tunnel_host#value>"
+    # Pinned to legacy host to keep this object immutable/stable.
+    server: "150.136.95.124"
     path: /srv/directus/uploads
 ---
-# PersistentVolumeClaim for Directus uploads/media/files (bound to OCI VM NFS export).
+# Legacy uploads PVC retained for rollback safety.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: directus-uploads-remote-vm
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: ""
+  volumeName: directus-uploads-oci-vm
+---
+# Active uploads PV on current OCI VM.
+# Keep `server` aligned with Vault secret rendered from terraform db_tunnel_host.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: directus-uploads-oci-vm-v2
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - timeo=600
+    - retrans=2
+  nfs:
+    server: "<path:secret/data/directus_db_ssh_tunnel_host#value>"
+    path: /srv/directus/uploads
+---
+# Active uploads PVC bound to the current OCI VM NFS export.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: directus-uploads-remote-vm-v2
   namespace: directus
 spec:
   accessModes:
@@ -8137,7 +8177,7 @@ spec:
     requests:
       storage: 500Gi
   storageClassName: ""
-  volumeName: directus-uploads-oci-vm
+  volumeName: directus-uploads-oci-vm-v2
 ---
 # Legacy uploads PVC kept for rollback/migration safety.
 # Directus no longer writes here.
