@@ -847,7 +847,11 @@ data:
                AND t.relname='cms_pages' \
                AND pg_get_constraintdef(c.oid) LIKE '%(parent)%REFERENCES directus.cms_pages(id)%' \
            ) THEN \
-           ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_parent_fkey FOREIGN KEY (parent) REFERENCES cms_pages(id) ON DELETE SET NULL; \
+           BEGIN \
+             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_parent_fkey FOREIGN KEY (parent) REFERENCES cms_pages(id) ON DELETE SET NULL; \
+           EXCEPTION WHEN duplicate_object THEN \
+             NULL; \
+           END; \
          END IF; \
          IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
            AND to_regclass('directus.cms_pages') IS NOT NULL \
@@ -866,7 +870,11 @@ data:
                AND t.relname='cms_page_blocks' \
                AND pg_get_constraintdef(c.oid) LIKE '%(page_id)%REFERENCES directus.cms_pages(id)%' \
            ) THEN \
-           ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_page_id_fkey FOREIGN KEY (page_id) REFERENCES cms_pages(id) ON DELETE CASCADE; \
+           BEGIN \
+             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_page_id_fkey FOREIGN KEY (page_id) REFERENCES cms_pages(id) ON DELETE CASCADE; \
+           EXCEPTION WHEN duplicate_object THEN \
+             NULL; \
+           END; \
          END IF; \
          IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
            AND EXISTS ( \
@@ -884,7 +892,11 @@ data:
                AND t.relname='cms_page_blocks' \
                AND pg_get_constraintdef(c.oid) LIKE '%(parent_block_id)%REFERENCES directus.cms_page_blocks(id)%' \
            ) THEN \
-           ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_parent_block_id_fkey FOREIGN KEY (parent_block_id) REFERENCES cms_page_blocks(id) ON DELETE SET NULL; \
+           BEGIN \
+             ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_parent_block_id_fkey FOREIGN KEY (parent_block_id) REFERENCES cms_page_blocks(id) ON DELETE SET NULL; \
+           EXCEPTION WHEN duplicate_object THEN \
+             NULL; \
+           END; \
          END IF; \
        END \
        \$\$;"
