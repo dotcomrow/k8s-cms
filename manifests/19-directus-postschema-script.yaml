@@ -1788,6 +1788,30 @@ data:
         esac
       }
 
+      _df_special_o2m_sql() {
+        if ! _df_has_col "special"; then
+          printf "NULL"
+          return
+        fi
+        case "${DF_SPECIAL_DATA_TYPE:-}:${DF_SPECIAL_UDT_NAME:-}" in
+          ARRAY:*)
+            printf "ARRAY['o2m']::text[]"
+            ;;
+          jsonb:*)
+            printf "'[\"o2m\"]'::jsonb"
+            ;;
+          json:*)
+            printf "'[\"o2m\"]'::json"
+            ;;
+          text:*|character\ varying:*)
+            printf "'o2m'"
+            ;;
+          *)
+            printf "NULL"
+            ;;
+        esac
+      }
+
       _df_special_group_sql() {
         if ! _df_has_col "special"; then
           printf "NULL"
@@ -4882,19 +4906,92 @@ data:
 
         _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
         _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        # Fresh rebuilds can miss relation metadata for cms_pages.blocks even when
+        # cms_page_blocks.page_id exists; heal relation metadata idempotently.
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; \
+           DO \$\$ \
+           BEGIN \
+             IF to_regclass('directus.directus_relations') IS NULL \
+               OR to_regclass('directus.cms_pages') IS NULL \
+               OR to_regclass('directus.cms_page_blocks') IS NULL THEN \
+               RETURN; \
+             END IF; \
+             IF NOT EXISTS ( \
+               SELECT 1 \
+               FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='cms_page_blocks' AND column_name='page_id' \
+             ) THEN \
+               RETURN; \
+             END IF; \
+             IF NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='many_collection' \
+             ) \
+               OR NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='many_field' \
+             ) \
+               OR NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='one_collection' \
+             ) \
+               OR NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='one_field' \
+             ) THEN \
+               RETURN; \
+             END IF; \
+             IF EXISTS ( \
+               SELECT 1 \
+               FROM directus_relations \
+               WHERE many_collection='cms_page_blocks' AND many_field='page_id' \
+             ) THEN \
+               UPDATE directus_relations \
+                  SET one_collection='cms_pages', \
+                      one_field='blocks' \
+                WHERE many_collection='cms_page_blocks' \
+                  AND many_field='page_id' \
+                  AND (COALESCE(one_collection, '') IS DISTINCT FROM 'cms_pages' \
+                    OR COALESCE(one_field, '') IS DISTINCT FROM 'blocks'); \
+             ELSE \
+               BEGIN \
+                 INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) \
+                 VALUES ('cms_page_blocks', 'page_id', 'cms_pages', 'blocks'); \
+               EXCEPTION WHEN unique_violation THEN \
+                 NULL; \
+               END; \
+             END IF; \
+           END \
+           \$\$;"
         _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
         _exists="$(printf '%s' "$_exists" | tr -d '\r')"
 
-        if [ "${_exists}" != "1" ]; then
-          echo "  └─ cms_pages.blocks relation metadata row not found; skipping page blocks relation UX update"
-          return 0
-        fi
-
         _interface_value="cms-page-blocks-manager"
         _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${page_blocks_manager_interface_options_json}")"
+        _special_sql="$(_df_special_o2m_sql)"
+
+        if [ "${_exists}" != "1" ]; then
+          FCOLS="collection,field"
+          FVALS="'${_collection_sql}','${_field_sql}'"
+          if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then FCOLS="${FCOLS},special"; FVALS="${FVALS},${_special_sql}"; fi
+          if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'${_interface_value}'"; fi
+          if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+          if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+          if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+          if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+          if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'Blocks'"; fi
+          if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+          if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},30"; fi
+          if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${page_blocks_relation_note_sql}'"; fi
+          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+            "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+          echo "✅ Created cms_pages.blocks relation metadata"
+        fi
 
         SETS=""
+        if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
         if _df_has_col "interface"; then SETS="${SETS},interface='${_interface_value}'"; fi
         if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
         if _df_has_col "required"; then SETS="${SETS},required=false"; fi
