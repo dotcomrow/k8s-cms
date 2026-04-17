@@ -396,7 +396,83 @@ data:
       fi
     fi
 
-    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ]; then
+    RECON_SCHEMA_HEALTHY="1"
+    MISSING_REQUIRED_TABLES="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "WITH required(table_name) AS ( \
+         VALUES \
+           ('cms_pages'), \
+           ('cms_page_blocks'), \
+           ('cms_block_rich_text'), \
+           ('cms_block_hero'), \
+           ('cms_block_module'), \
+           ('cms_block_template_ref'), \
+           ('cms_layout_templates'), \
+           ('cms_layout_template_slots'), \
+           ('cms_theme_packages'), \
+           ('cms_modules'), \
+           ('cms_cache_refresh_targets') \
+       ) \
+       SELECT COALESCE(string_agg(required.table_name, ',' ORDER BY required.table_name), '') \
+       FROM required \
+       WHERE to_regclass('directus.' || required.table_name) IS NULL;" || true)"
+    MISSING_REQUIRED_TABLES="$(printf '%s' "${MISSING_REQUIRED_TABLES:-}" | tr -d '\r')"
+    if [ -n "${MISSING_REQUIRED_TABLES:-}" ]; then
+      RECON_SCHEMA_HEALTHY="0"
+      echo "⚠️ Required CMS tables missing (${MISSING_REQUIRED_TABLES}); forcing reconcile despite checksum match."
+    fi
+
+    if [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
+      MISSING_REQUIRED_COLUMNS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "WITH required(table_name, column_name) AS ( \
+           VALUES \
+             ('cms_pages','slug'), \
+             ('cms_pages','status'), \
+             ('cms_pages','site_key'), \
+             ('cms_pages','release_channel'), \
+             ('cms_pages','layout_template_key'), \
+             ('cms_pages','theme_package_key'), \
+             ('cms_page_blocks','page_id'), \
+             ('cms_page_blocks','collection'), \
+             ('cms_page_blocks','item'), \
+             ('cms_page_blocks','slot'), \
+             ('cms_page_blocks','parent_block_id'), \
+             ('cms_page_blocks','site_key'), \
+             ('cms_page_blocks','release_channel'), \
+             ('cms_page_blocks','page_slug'), \
+             ('cms_block_rich_text','status'), \
+             ('cms_block_rich_text','body'), \
+             ('cms_block_hero','status'), \
+             ('cms_block_hero','headline'), \
+             ('cms_block_module','status'), \
+             ('cms_block_module','module_provider'), \
+             ('cms_block_module','module_key'), \
+             ('cms_block_template_ref','status'), \
+             ('cms_block_template_ref','template_key'), \
+             ('cms_layout_templates','template_key'), \
+             ('cms_layout_templates','html'), \
+             ('cms_layout_template_slots','template_key'), \
+             ('cms_layout_template_slots','slot_key'), \
+             ('cms_theme_packages','theme_key'), \
+             ('cms_theme_packages','css_light'), \
+             ('cms_modules','module_key'), \
+             ('cms_cache_refresh_targets','site_key'), \
+             ('cms_cache_refresh_targets','target_key') \
+         ) \
+         SELECT COALESCE(string_agg(required.table_name || '.' || required.column_name, ',' ORDER BY required.table_name, required.column_name), '') \
+         FROM required \
+         LEFT JOIN information_schema.columns c \
+           ON c.table_schema='directus' \
+          AND c.table_name=required.table_name \
+          AND c.column_name=required.column_name \
+         WHERE c.column_name IS NULL;" || true)"
+      MISSING_REQUIRED_COLUMNS="$(printf '%s' "${MISSING_REQUIRED_COLUMNS:-}" | tr -d '\r')"
+      if [ -n "${MISSING_REQUIRED_COLUMNS:-}" ]; then
+        RECON_SCHEMA_HEALTHY="0"
+        echo "⚠️ Required CMS columns missing (${MISSING_REQUIRED_COLUMNS}); forcing reconcile despite checksum match."
+      fi
+    fi
+
+    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ] && [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
         "SET search_path TO directus, public; UPDATE schema_patch_log SET last_checked_at=now() WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null
       echo "✅ Postschema reconcile already up to date (version=${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}, checksum=${RECON_PATCH_CHECKSUM})."
@@ -613,6 +689,202 @@ data:
            UPDATE directus_presets SET collection='cms_block_hero' WHERE collection='demo_block_hero'; \
            UPDATE directus_presets SET collection='cms_layout_templates' WHERE collection='demo_layout_templates'; \
            UPDATE directus_presets SET collection='cms_layout_template_slots' WHERE collection='demo_layout_template_slots'; \
+         END IF; \
+       END \
+       \$\$;"
+
+    # Ensure core page-authoring tables exist for fresh installs that don't have
+    # legacy demo_* collections to rename.
+    echo "🧱 Ensuring core CMS page/block tables exist..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE TABLE IF NOT EXISTS cms_pages ( \
+         id UUID PRIMARY KEY, \
+         slug TEXT NOT NULL, \
+         title TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         seo_title TEXT NULL, \
+         seo_description TEXT NULL, \
+         parent UUID NULL, \
+         site_key TEXT NULL, \
+         release_channel TEXT NULL, \
+         layout_template_key TEXT NULL, \
+         theme_package_key TEXT NULL, \
+         theme_mode TEXT NULL, \
+         widget_dock_enabled BOOLEAN NULL, \
+         widget_dock_position TEXT NULL, \
+         widget_dock_direction TEXT NULL, \
+         theme_selector_dock_position TEXT NULL, \
+         analytics_google_measurement_id TEXT NULL, \
+         analytics_openobserve_rum_script_url TEXT NULL, \
+         analytics_openobserve_rum_config JSONB NULL, \
+         head_title TEXT NULL, \
+         head_description TEXT NULL, \
+         head_theme_color TEXT NULL, \
+         head_manifest_url TEXT NULL, \
+         head_icon_url TEXT NULL, \
+         head_apple_touch_icon_url TEXT NULL, \
+         head_icon_shortcut_url TEXT NULL, \
+         head_icon_svg_url TEXT NULL, \
+         head_icon_16_url TEXT NULL, \
+         head_icon_32_url TEXT NULL, \
+         head_icon_180_url TEXT NULL, \
+         head_icon_192_url TEXT NULL, \
+         head_icon_512_url TEXT NULL, \
+         head_icon_mask_url TEXT NULL, \
+         head_icon_mask_color TEXT NULL, \
+         head_canonical_url TEXT NULL, \
+         head_robots TEXT NULL, \
+         head_generator TEXT NULL, \
+         theme_switcher_position TEXT NULL, \
+         theme_switcher_dock_direction TEXT NULL, \
+         refresh_target TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS slug TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS title TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS seo_title TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS seo_description TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS parent UUID; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_pages ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_pages ALTER COLUMN date_created SET DEFAULT now(); \
+       CREATE TABLE IF NOT EXISTS cms_page_blocks ( \
+         id UUID PRIMARY KEY, \
+         page_id UUID NOT NULL, \
+         collection TEXT NOT NULL, \
+         item TEXT NOT NULL, \
+         sort INTEGER NULL, \
+         slot TEXT NULL, \
+         parent_block_id UUID NULL, \
+         group_tag TEXT NULL, \
+         tree_depth INTEGER NULL, \
+         tree_path TEXT NULL, \
+         template_scope TEXT NULL, \
+         template_group_key TEXT NULL, \
+         template_ancestor_block_ids TEXT NULL, \
+         template_ancestor_template_keys TEXT NULL, \
+         template_root_block_id UUID NULL, \
+         template_nearest_block_id UUID NULL, \
+         site_key TEXT NULL, \
+         release_channel TEXT NULL, \
+         page_slug TEXT NULL, \
+         refresh_target TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS page_id UUID; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS collection TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS item TEXT; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_page_blocks ALTER COLUMN date_created SET DEFAULT now(); \
+       CREATE TABLE IF NOT EXISTS cms_block_rich_text ( \
+         id UUID PRIMARY KEY, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         sort INTEGER NULL, \
+         body TEXT NULL, \
+         site_key TEXT NULL, \
+         release_channel TEXT NULL, \
+         page_slug TEXT NULL, \
+         refresh_target TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS body TEXT; \
+       ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_block_rich_text ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_block_rich_text ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_block_rich_text ALTER COLUMN date_created SET DEFAULT now(); \
+       CREATE TABLE IF NOT EXISTS cms_block_hero ( \
+         id UUID PRIMARY KEY, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         sort INTEGER NULL, \
+         headline TEXT NULL, \
+         subheadline TEXT NULL, \
+         background_image TEXT NULL, \
+         cta_label TEXT NULL, \
+         cta_url TEXT NULL, \
+         site_key TEXT NULL, \
+         release_channel TEXT NULL, \
+         page_slug TEXT NULL, \
+         refresh_target TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS headline TEXT; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS subheadline TEXT; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS background_image TEXT; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS cta_label TEXT; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS cta_url TEXT; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_block_hero ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_block_hero ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_block_hero ALTER COLUMN date_created SET DEFAULT now(); \
+       DO \$\$ \
+       BEGIN \
+         IF to_regclass('directus.cms_pages') IS NOT NULL \
+           AND EXISTS ( \
+             SELECT 1 \
+             FROM information_schema.columns \
+             WHERE table_schema='directus' AND table_name='cms_pages' AND column_name='parent' AND udt_name='uuid' \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 \
+             FROM pg_constraint c \
+             JOIN pg_class t ON t.oid = c.conrelid \
+             JOIN pg_namespace tn ON tn.oid = t.relnamespace \
+             WHERE c.contype='f' \
+               AND tn.nspname='directus' \
+               AND t.relname='cms_pages' \
+               AND pg_get_constraintdef(c.oid) LIKE '%(parent)%REFERENCES directus.cms_pages(id)%' \
+           ) THEN \
+           ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_parent_fkey FOREIGN KEY (parent) REFERENCES cms_pages(id) ON DELETE SET NULL; \
+         END IF; \
+         IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
+           AND to_regclass('directus.cms_pages') IS NOT NULL \
+           AND EXISTS ( \
+             SELECT 1 \
+             FROM information_schema.columns \
+             WHERE table_schema='directus' AND table_name='cms_page_blocks' AND column_name='page_id' AND udt_name='uuid' \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 \
+             FROM pg_constraint c \
+             JOIN pg_class t ON t.oid = c.conrelid \
+             JOIN pg_namespace tn ON tn.oid = t.relnamespace \
+             WHERE c.contype='f' \
+               AND tn.nspname='directus' \
+               AND t.relname='cms_page_blocks' \
+               AND pg_get_constraintdef(c.oid) LIKE '%(page_id)%REFERENCES directus.cms_pages(id)%' \
+           ) THEN \
+           ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_page_id_fkey FOREIGN KEY (page_id) REFERENCES cms_pages(id) ON DELETE CASCADE; \
+         END IF; \
+         IF to_regclass('directus.cms_page_blocks') IS NOT NULL \
+           AND EXISTS ( \
+             SELECT 1 \
+             FROM information_schema.columns \
+             WHERE table_schema='directus' AND table_name='cms_page_blocks' AND column_name='parent_block_id' AND udt_name='uuid' \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 \
+             FROM pg_constraint c \
+             JOIN pg_class t ON t.oid = c.conrelid \
+             JOIN pg_namespace tn ON tn.oid = t.relnamespace \
+             WHERE c.contype='f' \
+               AND tn.nspname='directus' \
+               AND t.relname='cms_page_blocks' \
+               AND pg_get_constraintdef(c.oid) LIKE '%(parent_block_id)%REFERENCES directus.cms_page_blocks(id)%' \
+           ) THEN \
+           ALTER TABLE cms_page_blocks ADD CONSTRAINT cms_page_blocks_parent_block_id_fkey FOREIGN KEY (parent_block_id) REFERENCES cms_page_blocks(id) ON DELETE SET NULL; \
          END IF; \
        END \
        \$\$;"
