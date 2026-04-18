@@ -11,8 +11,8 @@ data:
     # Single-source cache refresh endpoints for all sites/targets.
     # Update URLs here only; site target endpoint fields below reference these anchors.
     cache_refresh_endpoint_templates:
-      prod_refresh_url: &cache_refresh_prod_refresh_url "https://suncoast-systems-cf-www-home-app.suncoast.systems/api/cache/refresh?mode=refresh"
-      preview_refresh_url: &cache_refresh_preview_refresh_url "https://suncoast-systems-cf-www-home-app-preview.suncoast.systems/api/cache/refresh?mode=refresh"
+      prod_refresh_url: &cache_refresh_prod_refresh_url "https://cloudflare-shell-template-app.suncoast.systems/api/cache/refresh?mode=refresh"
+      preview_refresh_url: &cache_refresh_preview_refresh_url "https://cloudflare-shell-template-app-preview.suncoast.systems/api/cache/refresh?mode=refresh"
 
     sites:
       # Internal site (Cloudflare Worker service client)
