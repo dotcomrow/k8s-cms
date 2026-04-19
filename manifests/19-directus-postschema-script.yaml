@@ -7128,7 +7128,7 @@ data:
               if [ "${refresh_auth_enabled}" = "true" ]; then
                 if [ "${refresh_auth_ready}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
                   target_headers_effective_json="$(jq -nc --argjson headers "${target_headers_json}" \
-                    '[{header:"Authorization",value:"Bearer {{ mint_refresh_token_attempt_1.data.access_token }}"}] + ($headers // [])')"
+                    '[{header:"Authorization",value:"Bearer {{ mint_refresh_token_attempt_1.response.access_token }}"}] + ($headers // [])')"
                 else
                   flow_status="inactive"
                 fi
