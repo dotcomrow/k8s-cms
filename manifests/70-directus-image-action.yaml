@@ -599,6 +599,8 @@ kind: Deployment
 metadata:
   name: directus-image-action
   namespace: directus
+  annotations:
+    reloader.stakater.com/auto: "true"
   labels:
     app: directus-image-action
 spec:
@@ -608,6 +610,8 @@ spec:
       app: directus-image-action
   template:
     metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
       labels:
         app: directus-image-action
     spec:
