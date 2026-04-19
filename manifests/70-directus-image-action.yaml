@@ -519,7 +519,12 @@ data:
     async def fetch_image(payload: FetchImageInput):
       return await _build_fetch_response(payload)
 
-    @app.post("/hasura/actions/fetch-image", response_model=FetchImageResponse, operation_id="hasuraFetchImage")
+    @app.post(
+      "/hasura/actions/fetch-image",
+      response_model=FetchImageResponse,
+      operation_id="hasuraFetchImage",
+      include_in_schema=False,
+    )
     async def hasura_fetch_image(payload: HasuraActionRequest):
       return await _build_fetch_response(payload.input)
 
