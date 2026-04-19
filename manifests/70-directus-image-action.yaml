@@ -256,6 +256,8 @@ data:
       redoc_url="/redoc",
       openapi_url="/openapi.json",
     )
+    # Gravitee import expects OpenAPI 3.0.x; FastAPI defaults to 3.1.x.
+    app.openapi_version = "3.0.3"
 
     _directus_host = urllib.parse.urlparse(DIRECTUS_ASSET_BASE_URL).hostname or ""
 
@@ -513,11 +515,11 @@ data:
       except Exception as exc:
         raise HTTPException(status_code=500, detail=f"openapi.yaml unavailable: {exc}") from exc
 
-    @app.post("/fetch-image", response_model=FetchImageResponse)
+    @app.post("/fetch-image", response_model=FetchImageResponse, operation_id="fetchImage")
     async def fetch_image(payload: FetchImageInput):
       return await _build_fetch_response(payload)
 
-    @app.post("/hasura/actions/fetch-image", response_model=FetchImageResponse)
+    @app.post("/hasura/actions/fetch-image", response_model=FetchImageResponse, operation_id="hasuraFetchImage")
     async def hasura_fetch_image(payload: HasuraActionRequest):
       return await _build_fetch_response(payload.input)
 
