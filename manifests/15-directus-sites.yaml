@@ -172,7 +172,7 @@ data:
           retry_delay_ms: 2000
           targets:
             prod:
-              enabled: false
+              enabled: true
               endpoint: *cache_refresh_prod_refresh_url
               method: POST
               headers: []
