@@ -1,0 +1,92 @@
+# Directus pod self-heal watchdog
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: directus-pod-guardian
+  namespace: directus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: directus-pod-guardian
+  namespace: directus
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: directus-pod-guardian
+  namespace: directus
+subjects:
+  - kind: ServiceAccount
+    name: directus-pod-guardian
+    namespace: directus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: directus-pod-guardian
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: directus-pod-guardian
+  namespace: directus
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 300
+      template:
+        metadata:
+          labels:
+            app: directus-pod-guardian
+          annotations:
+            linkerd.io/inject: "disabled"
+        spec:
+          serviceAccountName: directus-pod-guardian
+          restartPolicy: Never
+          containers:
+            - name: guard
+              image: alpine/k8s:1.31.4
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-lc"]
+              args:
+                - |
+                  set -eu
+
+                  echo "[guard] Checking Directus pods for stuck CreateContainerError state..."
+
+                  directus_status_lines="$(kubectl -n directus get pods -l app=directus \
+                    -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .status.containerStatuses[?(@.name=="directus")]}{.state.waiting.reason}{"|"}{.state.waiting.message}{"\\n"}{end}{end}')"
+
+                  if [ -z "${directus_status_lines}" ]; then
+                    echo "[guard] No Directus pod status lines returned; nothing to do."
+                    exit 0
+                  fi
+
+                  deleted_any="false"
+
+                  while IFS='|' read -r pod_name waiting_reason waiting_message; do
+                    [ -z "${pod_name:-}" ] && continue
+
+                    if [ "${waiting_reason:-}" = "CreateContainerError" ] && printf '%s' "${waiting_message:-}" | grep -qi 'failed to reserve container name'; then
+                      echo "[guard] Detected stuck Directus pod (${pod_name}): ${waiting_reason}"
+                      echo "[guard] Deleting ${pod_name} so Deployment can recreate it..."
+                      kubectl -n directus delete pod "${pod_name}" --wait=false
+                      deleted_any="true"
+                    fi
+                  done <<EOF_STATUS_LINES
+                  ${directus_status_lines}
+                  EOF_STATUS_LINES
+
+                  if [ "${deleted_any}" = "true" ]; then
+                    echo "[guard] Self-heal action completed."
+                  else
+                    echo "[guard] No stuck Directus pods found."
+                  fi
