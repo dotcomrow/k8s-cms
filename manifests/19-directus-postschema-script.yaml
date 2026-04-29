@@ -7420,8 +7420,80 @@ data:
     else
       echo "  └─ ${SITES_FILE} not found; skipping"
     fi
+
+    # 5d) Keep the backward-compatible Gravitee default token usable.
+    # The auth bridge falls back to this path when a caller has no matching
+    # client-specific token. Bootstrap creates the Vault secret, but Directus
+    # only accepts it after a service user owns the same static token.
+    echo "🔐 Ensuring default Gravitee Directus token is bound to a service user..."
+    DEFAULT_GRAVITEE_TOKEN_VAULT_PATH="${DIRECTUS_DEFAULT_GRAVITEE_TOKEN_VAULT_PATH:-secret/data/directus/gravitee}"
+    DEFAULT_GRAVITEE_ROLE_NAME="${DIRECTUS_DEFAULT_GRAVITEE_ROLE_NAME:-cms-site-external}"
+    DEFAULT_USER_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' ORDER BY column_name;" || true)"
+    _default_has_user_col() { printf '%s\n' "$DEFAULT_USER_COLS" | grep -qx "$1"; }
+
+    if _default_has_user_col "token"; then
+      DEFAULT_ROLE_NAME_SQL="$(printf '%s' "$DEFAULT_GRAVITEE_ROLE_NAME" | sed "s/'/''/g")"
+      DEFAULT_ROLE_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT id FROM directus.directus_roles WHERE name='${DEFAULT_ROLE_NAME_SQL}' LIMIT 1;" || true)"
+      DEFAULT_ROLE_ID="$(printf '%s' "$DEFAULT_ROLE_ID" | tr -d '\r')"
+
+      if [ -z "${DEFAULT_ROLE_ID:-}" ] || [ "${DEFAULT_ROLE_ID}" = "null" ]; then
+        echo "⚠️ Default Gravitee role '${DEFAULT_GRAVITEE_ROLE_NAME}' not found; skipping default token binding."
+      else
+        DEFAULT_GRAVITEE_TOKEN=""
+        DCODE="$(curl -sS -o /tmp/default-gravitee-token-read.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
+          "${VAULT_ADDR}/v1/${DEFAULT_GRAVITEE_TOKEN_VAULT_PATH}" || true)"
+        if [ "$DCODE" = "200" ]; then
+          DEFAULT_GRAVITEE_TOKEN="$(jq -r '.data.data.token // empty' /tmp/default-gravitee-token-read.json 2>/dev/null || true)"
+        fi
+        if [ -z "${DEFAULT_GRAVITEE_TOKEN:-}" ] || [ "${DEFAULT_GRAVITEE_TOKEN}" = "null" ]; then
+          DEFAULT_GRAVITEE_TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+          payload="$(jq -nc --arg t "$DEFAULT_GRAVITEE_TOKEN" '{data:{token:$t}}')"
+          DWCODE="$(curl -sS -o /tmp/default-gravitee-token-write.json -w '%{http_code}' -X POST \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+            -d "$payload" "${VAULT_ADDR}/v1/${DEFAULT_GRAVITEE_TOKEN_VAULT_PATH}" || true)"
+          if [ "$DWCODE" != "200" ] && [ "$DWCODE" != "204" ]; then
+            echo "⚠️ Failed to write default Gravitee token to Vault (HTTP ${DWCODE}); skipping default token binding."
+            DEFAULT_GRAVITEE_TOKEN=""
+          else
+            echo "🔐 Default Gravitee token created in Vault (${DEFAULT_GRAVITEE_TOKEN_VAULT_PATH})"
+          fi
+        fi
+
+        if [ -n "${DEFAULT_GRAVITEE_TOKEN:-}" ] && [ "${DEFAULT_GRAVITEE_TOKEN}" != "null" ]; then
+          default_svc_email="svc-gravitee-default@svc.local"
+          default_svc_email_sql="$(printf '%s' "$default_svc_email" | sed "s/'/''/g")"
+          DEFAULT_USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id FROM directus.directus_users WHERE email='${default_svc_email_sql}' LIMIT 1;" || true)"
+          DEFAULT_USER_ID="$(printf '%s' "$DEFAULT_USER_ID" | tr -d '\r')"
+          default_token_sql="$(printf '%s' "$DEFAULT_GRAVITEE_TOKEN" | sed "s/'/''/g")"
+          default_role_id_sql="$(printf '%s' "$DEFAULT_ROLE_ID" | sed "s/'/''/g")"
+
+          if [ -z "${DEFAULT_USER_ID:-}" ] || [ "${DEFAULT_USER_ID}" = "null" ]; then
+            DEFAULT_USER_ID="$(cat /proc/sys/kernel/random/uuid)"
+            DUCOLS="id,email"
+            DUVALS="'${DEFAULT_USER_ID}','${default_svc_email_sql}'"
+            if _default_has_user_col "role"; then DUCOLS="${DUCOLS},role"; DUVALS="${DUVALS},'${default_role_id_sql}'"; fi
+            if _default_has_user_col "token"; then DUCOLS="${DUCOLS},token"; DUVALS="${DUVALS},'${default_token_sql}'"; fi
+            if _default_has_user_col "status"; then DUCOLS="${DUCOLS},status"; DUVALS="${DUVALS},'active'"; fi
+            if _default_has_user_col "first_name"; then DUCOLS="${DUCOLS},first_name"; DUVALS="${DUVALS},'svc'"; fi
+            if _default_has_user_col "last_name"; then DUCOLS="${DUCOLS},last_name"; DUVALS="${DUVALS},'gravitee-default'"; fi
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; INSERT INTO directus_users (${DUCOLS}) VALUES (${DUVALS});"
+            echo "✅ Created default Gravitee service user ${default_svc_email}"
+          else
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_users SET role='${default_role_id_sql}', token='${default_token_sql}', status='active' WHERE id='${DEFAULT_USER_ID}';"
+            echo "✅ Updated default Gravitee service user ${default_svc_email}"
+          fi
+        fi
+      fi
+    else
+      echo "⚠️ directus_users.token column not found; cannot bind default Gravitee token."
+    fi
     
-    # 5d) Provision a dedicated admin-backed token for OpenAPI discovery sync.
+    # 5e) Provision a dedicated admin-backed token for OpenAPI discovery sync.
     # Directus only includes `/items/*` paths in OAS for admin-level users.
     echo "🧾 Ensuring OpenAPI sync admin token exists..."
     OPENAPI_SYNC_TOKEN_VAULT_PATH="${OPENAPI_SYNC_TOKEN_VAULT_PATH:-secret/data/directus/gravitee/openapi/admin}"
