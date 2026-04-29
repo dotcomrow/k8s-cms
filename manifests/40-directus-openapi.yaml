@@ -48,6 +48,11 @@ spec:
               retry_seconds = int(os.environ.get("OPENAPI_RETRY_SECONDS", "5"))
               refresh_seconds = int(os.environ.get("OPENAPI_REFRESH_SECONDS", "300"))
               fetch_timeout_seconds = int(os.environ.get("OPENAPI_FETCH_TIMEOUT_SECONDS", "15"))
+              extra_collections = [
+                  item.strip()
+                  for item in os.environ.get("OPENAPI_EXTRA_COLLECTIONS", "cms_pages").split(",")
+                  if item.strip()
+              ]
 
               vault_addr = os.environ.get("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200").rstrip("/")
               vault_auth_path = os.environ.get("VAULT_AUTH_PATH", "kubernetes").strip("/")
@@ -241,6 +246,42 @@ spec:
                           else:
                               seen[op_id] = (path, method)
 
+              def pascal_collection_name(collection):
+                  return "".join(part[:1].upper() + part[1:] for part in collection.split("_") if part)
+
+              def add_collection_paths(spec):
+                  paths = spec.setdefault("paths", {})
+                  for collection in extra_collections:
+                      if not re.match(r"^[A-Za-z0-9_]+$", collection):
+                          print(f"Skipping invalid OpenAPI extra collection: {collection}")
+                          continue
+                      path = f"/items/{collection}"
+                      methods = paths.setdefault(path, {})
+                      if "get" in methods:
+                          continue
+                      methods["get"] = {
+                          "operationId": f"readItems{pascal_collection_name(collection)}",
+                          "summary": f"Read {collection} items",
+                          "parameters": [
+                              {"name": "fields", "in": "query", "required": False, "schema": {"type": "string"}},
+                              {"name": "filter", "in": "query", "required": False, "schema": {"type": "string"}},
+                              {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer"}},
+                              {"name": "offset", "in": "query", "required": False, "schema": {"type": "integer"}},
+                              {"name": "sort", "in": "query", "required": False, "schema": {"type": "string"}},
+                              {"name": "search", "in": "query", "required": False, "schema": {"type": "string"}},
+                          ],
+                          "responses": {
+                              "200": {
+                                  "description": "Items response",
+                                  "content": {
+                                      "application/json": {
+                                          "schema": {"type": "object"}
+                                      }
+                                  },
+                              }
+                          },
+                      }
+
               def write_stub():
                   if os.path.exists(out_path):
                       return
@@ -273,6 +314,7 @@ spec:
                   data["openapi"] = "3.0.3"
                   normalize(data)
                   ensure_path_params(data)
+                  add_collection_paths(data)
                   dedupe_operation_ids(data)
                   os.makedirs(os.path.dirname(out_path), exist_ok=True)
                   tmp_path = f"{out_path}.tmp"
@@ -306,6 +348,8 @@ spec:
               value: "token"
             - name: OPENAPI_TOKEN_CACHE_SECONDS
               value: "300"
+            - name: OPENAPI_EXTRA_COLLECTIONS
+              value: "cms_pages"
             - name: VAULT_ADDR
               value: "http://vault.vault.svc.cluster.local:8200"
             - name: VAULT_AUTH_PATH
