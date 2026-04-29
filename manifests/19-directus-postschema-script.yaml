@@ -7443,6 +7443,7 @@ data:
       else
         DEFAULT_GRAVITEE_TOKEN=""
         DCODE="$(curl -sS -o /tmp/default-gravitee-token-read.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
+          --connect-timeout 5 --max-time 20 \
           "${VAULT_ADDR}/v1/${DEFAULT_GRAVITEE_TOKEN_VAULT_PATH}" || true)"
         if [ "$DCODE" = "200" ]; then
           DEFAULT_GRAVITEE_TOKEN="$(jq -r '.data.data.token // empty' /tmp/default-gravitee-token-read.json 2>/dev/null || true)"
@@ -7452,6 +7453,7 @@ data:
           payload="$(jq -nc --arg t "$DEFAULT_GRAVITEE_TOKEN" '{data:{token:$t}}')"
           DWCODE="$(curl -sS -o /tmp/default-gravitee-token-write.json -w '%{http_code}' -X POST \
             -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+            --connect-timeout 5 --max-time 20 \
             -d "$payload" "${VAULT_ADDR}/v1/${DEFAULT_GRAVITEE_TOKEN_VAULT_PATH}" || true)"
           if [ "$DWCODE" != "200" ] && [ "$DWCODE" != "204" ]; then
             echo "⚠️ Failed to write default Gravitee token to Vault (HTTP ${DWCODE}); skipping default token binding."
