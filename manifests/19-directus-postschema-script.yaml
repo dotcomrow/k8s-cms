@@ -472,7 +472,37 @@ data:
       fi
     fi
 
-    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ] && [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
+    RECON_TOKEN_HEALTHY="1"
+    if [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
+      USERS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_users' LIMIT 1;" || true)"
+      USER_TOKEN_COL_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='token' LIMIT 1;" || true)"
+      if [ "${USERS_TABLE_EXISTS:-0}" = "1" ] && [ "${USER_TOKEN_COL_EXISTS:-0}" = "1" ]; then
+        DEFAULT_GRAVITEE_TOKEN_VAULT_PATH="${DIRECTUS_DEFAULT_GRAVITEE_TOKEN_VAULT_PATH:-secret/data/directus/gravitee}"
+        DEFAULT_TOKEN_READ_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /tmp/recon-default-gravitee-token.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
+          "${VAULT_ADDR}/v1/${DEFAULT_GRAVITEE_TOKEN_VAULT_PATH}" || true)"
+        DEFAULT_GRAVITEE_TOKEN=""
+        if [ "${DEFAULT_TOKEN_READ_CODE}" = "200" ]; then
+          DEFAULT_GRAVITEE_TOKEN="$(jq -r '.data.data.token // empty' /tmp/recon-default-gravitee-token.json 2>/dev/null || true)"
+        fi
+        if [ -z "${DEFAULT_GRAVITEE_TOKEN:-}" ]; then
+          RECON_TOKEN_HEALTHY="0"
+          echo "⚠️ Default Gravitee token is missing/unreadable in Vault (${DEFAULT_GRAVITEE_TOKEN_VAULT_PATH}, HTTP ${DEFAULT_TOKEN_READ_CODE}); forcing reconcile despite checksum match."
+        else
+          DEFAULT_GRAVITEE_TOKEN_SQL="$(printf '%s' "${DEFAULT_GRAVITEE_TOKEN}" | sed "s/'/''/g")"
+          DEFAULT_TOKEN_ACTIVE_USER_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT COUNT(*) FROM directus.directus_users WHERE token='${DEFAULT_GRAVITEE_TOKEN_SQL}' AND COALESCE(status,'')='active';" || true)"
+          DEFAULT_TOKEN_ACTIVE_USER_COUNT="$(printf '%s' "${DEFAULT_TOKEN_ACTIVE_USER_COUNT:-0}" | tr -d '\r')"
+          if [ -z "${DEFAULT_TOKEN_ACTIVE_USER_COUNT:-}" ] || [ "${DEFAULT_TOKEN_ACTIVE_USER_COUNT}" = "0" ]; then
+            RECON_TOKEN_HEALTHY="0"
+            echo "⚠️ Default Gravitee token is not bound to any active Directus service user; forcing reconcile despite checksum match."
+          fi
+        fi
+      fi
+    fi
+
+    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ] && [ "${RECON_SCHEMA_HEALTHY}" = "1" ] && [ "${RECON_TOKEN_HEALTHY}" = "1" ]; then
       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
         "SET search_path TO directus, public; UPDATE schema_patch_log SET last_checked_at=now() WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null
       echo "✅ Postschema reconcile already up to date (version=${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}, checksum=${RECON_PATCH_CHECKSUM})."
@@ -6382,6 +6412,8 @@ data:
           homepage_theme_package_key="$(printf '%s' "$site" | jq -r '.homepage_theme_package_key // .theme_package_key // empty')"
           client_key="$(printf '%s' "$site" | jq -r '.client_key // .clientId // empty')"
           role_name="$(printf '%s' "$site" | jq -r '.role_name // .role // empty')"
+          directus_client_id_vault_path="$(printf '%s' "$site" | jq -r '.directus_client_id_vault_path // empty' 2>/dev/null || true)"
+          directus_client_id_vault_field="$(printf '%s' "$site" | jq -r '.directus_client_id_vault_field // "value"' 2>/dev/null || true)"
     
           if [ -z "${client_key:-}" ] || [ "${client_key}" = "null" ]; then
             echo "⚠️  site entry missing client_key; skipping (site_key=${site_key})"
@@ -6393,6 +6425,11 @@ data:
           if ! printf '%s' "$client_key" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
             echo "⚠️  invalid client_key '${client_key}' (site_key=${site_key}); skipping"
             continue
+          fi
+          directus_client_id_vault_path="$(printf '%s' "${directus_client_id_vault_path:-}" | tr -d '\r')"
+          directus_client_id_vault_field="$(printf '%s' "${directus_client_id_vault_field:-value}" | tr -d '\r')"
+          if [ -z "${directus_client_id_vault_field:-}" ] || [ "${directus_client_id_vault_field}" = "null" ]; then
+            directus_client_id_vault_field="value"
           fi
     
           if [ -z "${homepage_slug:-}" ] || [ "${homepage_slug}" = "null" ]; then
@@ -6685,6 +6722,25 @@ data:
             fi
             echo "🔐 Vault token created for client_key=${client_key}"
           fi
+
+          dynamic_client_key=""
+          if [ -n "${directus_client_id_vault_path:-}" ] && [ "${directus_client_id_vault_path}" != "null" ]; then
+            dynamic_client_key="$(_vault_kv_read_field "${directus_client_id_vault_path}" "${directus_client_id_vault_field}" || true)"
+            dynamic_client_key="$(printf '%s' "${dynamic_client_key:-}" | tr -d '\r')"
+            if [ -z "${dynamic_client_key:-}" ] || [ "${dynamic_client_key}" = "null" ]; then
+              echo "⚠️  directus_client_id_vault_path configured but value missing (site_key=${site_key}, path=${directus_client_id_vault_path})"
+              dynamic_client_key=""
+            elif [ "${dynamic_client_key}" = "${client_key}" ]; then
+              dynamic_client_key=""
+            elif ! printf '%s' "${dynamic_client_key}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+              echo "⚠️  invalid dynamic client key '${dynamic_client_key}' from ${directus_client_id_vault_path} (site_key=${site_key}); ignoring"
+              dynamic_client_key=""
+            else
+              echo "🔎 Resolved dynamic client key '${dynamic_client_key}' for site_key='${site_key}'"
+            fi
+          fi
+
+          client_keys_to_bind="$(printf '%s\n%s\n' "${client_key}" "${dynamic_client_key:-}" | awk 'NF && !seen[$0]++')"
     
           # Ensure Directus role exists (create if missing).
           role_name_sql="$(printf '%s' "$role_name" | sed "s/'/''/g")"
@@ -6743,32 +6799,66 @@ data:
             fi
           fi
     
-          # Ensure a service user exists for this site and set its static token (Directus uses directus_users.token).
+          # Ensure each bound client key has the same static token in Vault and on its Directus service user.
           if _has_user_col "token"; then
-            svc_email="svc-${client_key}@svc.local"
-            svc_email_sql="$(printf '%s' "$svc_email" | sed "s/'/''/g")"
-            USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SELECT id FROM directus.directus_users WHERE email = '${svc_email_sql}' LIMIT 1;" || true)"
-            USER_ID="$(printf '%s' "$USER_ID" | tr -d '\r')"
             token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
-            if [ -z "${USER_ID:-}" ] || [ "${USER_ID}" = "null" ]; then
-              USER_ID="$(cat /proc/sys/kernel/random/uuid)"
-              UCOLS="id,email"
-              UVALS="'${USER_ID}','${svc_email_sql}'"
-              if _has_user_col "role"; then UCOLS="${UCOLS},role"; UVALS="${UVALS},'${ROLE_ID}'"; fi
-              if _has_user_col "token"; then UCOLS="${UCOLS},token"; UVALS="${UVALS},'${token_sql}'"; fi
-              if _has_user_col "status"; then UCOLS="${UCOLS},status"; UVALS="${UVALS},'active'"; fi
-              if _has_user_col "first_name"; then UCOLS="${UCOLS},first_name"; UVALS="${UVALS},'svc'"; fi
-              if _has_user_col "last_name"; then UCOLS="${UCOLS},last_name"; UVALS="${UVALS},'${role_name_sql}'"; fi
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                "SET search_path TO directus, public; INSERT INTO directus_users (${UCOLS}) VALUES (${UVALS});"
-              echo "✅ Created site user ${svc_email}"
-            else
-              role_id_sql="$(printf '%s' "$ROLE_ID" | sed "s/'/''/g")"
-              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                "SET search_path TO directus, public; UPDATE directus_users SET role='${role_id_sql}', token='${token_sql}', status='active' WHERE id='${USER_ID}';"
-              echo "✅ Updated site user ${svc_email}"
-            fi
+            printf '%s\n' "${client_keys_to_bind}" | while IFS= read -r bind_client_key; do
+              bind_client_key="$(printf '%s' "${bind_client_key:-}" | tr -d '\r')"
+              if [ -z "${bind_client_key:-}" ] || [ "${bind_client_key}" = "null" ]; then
+                continue
+              fi
+              if ! printf '%s' "${bind_client_key}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+                echo "⚠️  invalid bind client_key '${bind_client_key}' for site_key='${site_key}'; skipping"
+                continue
+              fi
+
+              bind_vault_path="secret/data/directus/gravitee/clients/${bind_client_key}"
+              bind_code="$(curl -sS -o /tmp/site-token-bind.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                "${VAULT_ADDR}/v1/${bind_vault_path}" || true)"
+              bind_token=""
+              if [ "${bind_code}" = "200" ]; then
+                bind_token="$(jq -r '.data.data.token // empty' /tmp/site-token-bind.json 2>/dev/null || true)"
+              fi
+              if [ -z "${bind_token:-}" ] || [ "${bind_token}" = "null" ] || [ "${bind_token}" != "${SITE_TOKEN}" ]; then
+                payload="$(jq -nc --arg t "$SITE_TOKEN" '{data:{token:$t}}')"
+                bind_write_code="$(curl -sS -o /tmp/site-token-bind-write.json -w '%{http_code}' -X POST \
+                  -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+                  -d "$payload" "${VAULT_ADDR}/v1/${bind_vault_path}" || true)"
+                if [ "${bind_write_code}" != "200" ] && [ "${bind_write_code}" != "204" ]; then
+                  echo "⚠️  failed to bind Vault token for client_key=${bind_client_key} (HTTP ${bind_write_code}); skipping Directus user binding"
+                  continue
+                fi
+                if [ -z "${bind_token:-}" ] || [ "${bind_token}" = "null" ]; then
+                  echo "🔐 Vault token created for client_key=${bind_client_key}"
+                else
+                  echo "🔐 Vault token updated for client_key=${bind_client_key}"
+                fi
+              fi
+
+              svc_email="svc-${bind_client_key}@svc.local"
+              svc_email_sql="$(printf '%s' "$svc_email" | sed "s/'/''/g")"
+              USER_ID="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT id FROM directus.directus_users WHERE email = '${svc_email_sql}' LIMIT 1;" || true)"
+              USER_ID="$(printf '%s' "$USER_ID" | tr -d '\r')"
+              if [ -z "${USER_ID:-}" ] || [ "${USER_ID}" = "null" ]; then
+                USER_ID="$(cat /proc/sys/kernel/random/uuid)"
+                UCOLS="id,email"
+                UVALS="'${USER_ID}','${svc_email_sql}'"
+                if _has_user_col "role"; then UCOLS="${UCOLS},role"; UVALS="${UVALS},'${ROLE_ID}'"; fi
+                if _has_user_col "token"; then UCOLS="${UCOLS},token"; UVALS="${UVALS},'${token_sql}'"; fi
+                if _has_user_col "status"; then UCOLS="${UCOLS},status"; UVALS="${UVALS},'active'"; fi
+                if _has_user_col "first_name"; then UCOLS="${UCOLS},first_name"; UVALS="${UVALS},'svc'"; fi
+                if _has_user_col "last_name"; then UCOLS="${UCOLS},last_name"; UVALS="${UVALS},'${role_name_sql}'"; fi
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                  "SET search_path TO directus, public; INSERT INTO directus_users (${UCOLS}) VALUES (${UVALS});"
+                echo "✅ Created site user ${svc_email}"
+              else
+                role_id_sql="$(printf '%s' "$ROLE_ID" | sed "s/'/''/g")"
+                psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                  "SET search_path TO directus, public; UPDATE directus_users SET role='${role_id_sql}', token='${token_sql}', status='active' WHERE id='${USER_ID}';"
+                echo "✅ Updated site user ${svc_email}"
+              fi
+            done
           else
             echo "⚠️ directus_users.token column not found; cannot provision site token for client_key=${client_key}"
           fi

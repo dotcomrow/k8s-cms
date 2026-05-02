@@ -35,10 +35,6 @@ data:
 
     VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200").rstrip("/")
     VAULT_TOKEN_FILE = os.environ.get("VAULT_TOKEN_FILE", "/vault-secrets/vault-token")
-    DIRECTUS_TOKEN_DEFAULT_VAULT_PATH = os.environ.get(
-        "DIRECTUS_TOKEN_DEFAULT_VAULT_PATH",
-        "secret/data/directus/gravitee",
-    )
     DIRECTUS_TOKEN_CLIENT_PREFIX = os.environ.get(
         "DIRECTUS_TOKEN_CLIENT_PREFIX",
         "secret/data/directus/gravitee/clients/",
@@ -49,7 +45,7 @@ data:
     _jwks_cache = {"data": None, "loaded_at": 0.0}
     _jwks_lock = threading.Lock()
 
-    _token_cache = {"default": "", "default_loaded_at": 0.0, "by_client": {}}
+    _token_cache = {"by_client": {}}
     _token_lock = threading.Lock()
 
     app = FastAPI()
@@ -105,21 +101,6 @@ data:
                 return cid2
 
         return ""
-
-    def _get_default_directus_token() -> str:
-        now = time.time()
-        with _token_lock:
-            cached = _token_cache.get("default", "")
-            loaded_at = _token_cache.get("default_loaded_at", 0.0)
-            if cached and now - loaded_at < TOKEN_CACHE_SECONDS:
-                return cached
-
-        token = _extract_token(_vault_read(DIRECTUS_TOKEN_DEFAULT_VAULT_PATH))
-
-        with _token_lock:
-            _token_cache["default"] = token
-            _token_cache["default_loaded_at"] = now
-        return token
 
     def _get_directus_token_for_client(client_key: str) -> str:
         now = time.time()
@@ -212,19 +193,17 @@ data:
                 raise HTTPException(status_code=401, detail="Requested audience not available")
 
         client_key = _get_client_key(decoded)
-        if client_key:
-            directus_token = _get_directus_token_for_client(client_key)
-        else:
-            directus_token = ""
+        if not client_key:
+            raise HTTPException(
+                status_code=403,
+                detail="Subject token missing client identifier",
+            )
 
-        if not directus_token:
-            # Backward compatible default token (single-tenant / bootstrap).
-            directus_token = _get_default_directus_token()
-
+        directus_token = _get_directus_token_for_client(client_key)
         if not directus_token:
             raise HTTPException(
                 status_code=403,
-                detail="No Directus token configured for caller",
+                detail=f"No Directus token configured for client '{client_key}'",
             )
 
         return {

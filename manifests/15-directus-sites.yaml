@@ -164,6 +164,10 @@ data:
         homepage_layout_template_key: spa-default
         homepage_theme_package_key: theme-clear
         client_key: cms-site-external
+        # Runtime Keycloak client id can rotate on rebuilds; postschema reads this
+        # Vault path and binds the resolved client id to the same Directus token.
+        directus_client_id_vault_path: "secret/data/keycloak-client-id-graphql-api"
+        directus_client_id_vault_field: "value"
         role_name: cms-site-external
         cache_refresh:
           enabled: true
