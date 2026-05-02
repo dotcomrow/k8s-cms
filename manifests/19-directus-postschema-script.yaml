@@ -6799,7 +6799,10 @@ data:
             fi
           fi
     
-          # Ensure each bound client key has the same static token in Vault and on its Directus service user.
+          # Keep one Directus service user token owner per site client_key.
+          # Additional bound client keys (aliases) reuse the same Vault token, but
+          # do not receive separate directus_users.token assignments because that
+          # column is unique.
           if _has_user_col "token"; then
             token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
             printf '%s\n' "${client_keys_to_bind}" | while IFS= read -r bind_client_key; do
@@ -6833,6 +6836,11 @@ data:
                 else
                   echo "🔐 Vault token updated for client_key=${bind_client_key}"
                 fi
+              fi
+
+              if [ "${bind_client_key}" != "${client_key}" ]; then
+                echo "ℹ️  skipping Directus user token binding for alias client_key=${bind_client_key}; token owner remains client_key=${client_key}"
+                continue
               fi
 
               svc_email="svc-${bind_client_key}@svc.local"
