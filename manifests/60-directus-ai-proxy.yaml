@@ -262,6 +262,18 @@ data:
         await _http.aclose()
         _http = None
 
+    @app.get("/livez")
+    async def livez():
+      return {"ok": True}
+
+    @app.get("/readyz")
+    async def readyz():
+      if _http is None:
+        return JSONResponse(status_code=503, content={"ok": False, "reason": "http client not ready"})
+      if not _read_file(VAULT_TOKEN_FILE):
+        return JSONResponse(status_code=503, content={"ok": False, "reason": "vault token not available"})
+      return {"ok": True}
+
     @app.get("/healthz")
     async def healthz():
       try:
@@ -435,14 +447,17 @@ spec:
             - |
               set -e
               pip install --no-cache-dir -r /app/requirements.txt >/dev/null
-              echo "Waiting for Vault agent to authenticate..."
-              while [ ! -f /vault-secrets/vault-token ]; do
-                sleep 2
-              done
               python -m uvicorn app:app --app-dir /app --host 0.0.0.0 --port 8080
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 120
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -450,7 +465,7 @@ spec:
             failureThreshold: 6
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 20
