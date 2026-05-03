@@ -1185,11 +1185,19 @@ spec:
                 fi
               done
 
-              until redis-cli -h "${_master_host}" -p "${_master_port}" ping | grep -q PONG; do
-                echo "Redis master ${_master_host}:${_master_port} not ready, waiting..."
-                sleep 5
+              while true; do
+                _master_ping="$(redis-cli -h "${_master_host}" -p "${_master_port}" ping 2>&1 || true)"
+                case "${_master_ping}" in
+                  *PONG*|*NOAUTH*)
+                    echo "✅ Redis master ${_master_host}:${_master_port} is reachable (${_master_ping})"
+                    break
+                    ;;
+                  *)
+                    echo "Redis master ${_master_host}:${_master_port} not ready yet (${_master_ping}), waiting..."
+                    sleep 5
+                    ;;
+                esac
               done
-              echo "✅ Redis master ${_master_host}:${_master_port} is ready"
           env:
             - name: REDIS_NAME
               valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_NAME } }
