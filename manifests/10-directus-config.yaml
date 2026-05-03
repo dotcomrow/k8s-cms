@@ -23,7 +23,11 @@ data:
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
   REDIS_ENABLED: "true"
-  REDIS_HOST: "redis-0.redis-headless.redis.svc.cluster.local"
+  # Use Redis Sentinel for automatic master discovery and failover.
+  REDIS_NAME: "mymaster"
+  REDIS_SENTINELS: 'json:[{"host":"redis-sentinel.redis.svc.cluster.local","port":26379}]'
+  # Fallback direct Redis endpoint (used only if Sentinel settings are unavailable).
+  REDIS_HOST: "redis.redis.svc.cluster.local"
   REDIS_PORT: "6379"
   RATE_LIMITER_ENABLED: "true"
   RATE_LIMITER_STORE: "redis"

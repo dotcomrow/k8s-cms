@@ -1164,12 +1164,39 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              echo "⏳ Waiting for existing Redis instance to be ready..."
-              until redis-cli -h redis-0.redis-headless.redis.svc.cluster.local -p 6379 ping; do
-                echo "Redis not ready, waiting..."
+              set -eu
+
+              REDIS_MASTER_SET="${REDIS_NAME:-mymaster}"
+              REDIS_SENTINEL_HOST="${REDIS_SENTINEL_HOST:-redis-sentinel.redis.svc.cluster.local}"
+              REDIS_SENTINEL_PORT="${REDIS_SENTINEL_PORT:-26379}"
+
+              echo "⏳ Waiting for Redis master (${REDIS_MASTER_SET}) via Sentinel..."
+              _master_host=""
+              _master_port=""
+              while [ -z "${_master_host}" ] || [ -z "${_master_port}" ]; do
+                _master_reply="$(redis-cli -h "${REDIS_SENTINEL_HOST}" -p "${REDIS_SENTINEL_PORT}" --raw SENTINEL get-master-addr-by-name "${REDIS_MASTER_SET}" 2>/dev/null || true)"
+                if [ -n "${_master_reply}" ]; then
+                  _master_host="$(printf '%s\n' "${_master_reply}" | sed -n '1p')"
+                  _master_port="$(printf '%s\n' "${_master_reply}" | sed -n '2p')"
+                fi
+                if [ -z "${_master_host}" ] || [ -z "${_master_port}" ]; then
+                  echo "Redis master not yet published by Sentinel, waiting..."
+                  sleep 5
+                fi
+              done
+
+              until redis-cli -h "${_master_host}" -p "${_master_port}" ping | grep -q PONG; do
+                echo "Redis master ${_master_host}:${_master_port} not ready, waiting..."
                 sleep 5
               done
-              echo "✅ Existing Redis instance is ready"
+              echo "✅ Redis master ${_master_host}:${_master_port} is ready"
+          env:
+            - name: REDIS_NAME
+              valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_NAME } }
+            - name: REDIS_SENTINEL_HOST
+              value: "redis-sentinel.redis.svc.cluster.local"
+            - name: REDIS_SENTINEL_PORT
+              value: "26379"
       containers:
       - name: directus-postschema
         image: postgres:16-alpine
@@ -1920,7 +1947,8 @@ spec:
 
             echo "🔍 Debug: Environment check..."
             echo "DB_HOST: $DB_HOST, DB_USER: $DB_USER, DB_SCHEMA: $DB_SCHEMA"
-            echo "REDIS_HOST: $REDIS_HOST"
+            echo "REDIS_NAME: ${REDIS_NAME:-<unset>}"
+            echo "REDIS_SENTINELS: ${REDIS_SENTINELS:-<unset>}"
             echo "Credentials loaded: KEY(${#KEY}), SECRET(${#SECRET}), ADMIN_EMAIL($ADMIN_EMAIL)"
 
             # Ensure proper schema connection
@@ -2207,12 +2235,12 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: CACHE_ENABLED } }
         - name: CACHE_STORE
           valueFrom: { configMapKeyRef: { name: directus-config, key: CACHE_STORE } }
-        - name: REDIS_HOST
-          valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_HOST } }
-        - name: REDIS_PORT
-          valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_PORT } }
         - name: REDIS_ENABLED
           valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_ENABLED } }
+        - name: REDIS_NAME
+          valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_NAME } }
+        - name: REDIS_SENTINELS
+          valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_SENTINELS } }
 
         # Rate limiting
         - name: RATE_LIMITER_ENABLED
