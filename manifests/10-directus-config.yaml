@@ -2626,6 +2626,7 @@ data:
         const recordModuleKey = ref('');
         const recordModuleProvider = ref('');
         const recordSiteKey = ref('');
+        const recordReleaseChannel = ref('');
         const assetPickerField = ref('');
         const assetPickerQuery = ref('');
         const assetPickerRows = ref([]);
@@ -2992,46 +2993,56 @@ data:
             recordModuleKey.value = '';
             recordModuleProvider.value = '';
             recordSiteKey.value = '';
+            recordReleaseChannel.value = '';
             return;
           }
-    
+
           try {
             let rowCollection = recordCollection;
             let rowId = recordId;
             let inheritedSiteKey = '';
-    
+            let inheritedReleaseChannel = '';
+
             if (asString(recordCollection).toLowerCase() === 'cms_page_blocks') {
               const blockResponse = await apiGet(`/items/${recordCollection}/${encodeURIComponent(recordId)}`, {
-                fields: 'collection,item,site_key',
+                fields: 'collection,item,site_key,release_channel',
               });
               const blockRow = blockResponse?.data || {};
               const contentCollection = asString(blockRow?.collection);
               const contentItemId = parseId(blockRow?.item);
               inheritedSiteKey = asString(blockRow?.site_key);
+              inheritedReleaseChannel = toLower(blockRow?.release_channel);
               if (contentCollection && contentItemId) {
                 rowCollection = contentCollection;
                 rowId = contentItemId;
               }
             }
-    
+
             const response = await apiGet(`/items/${rowCollection}/${encodeURIComponent(rowId)}`, {
-              fields: [moduleKeyField.value, moduleProviderField.value, pageSiteField.value, 'site_key'].join(','),
+              fields: [moduleKeyField.value, moduleProviderField.value, pageSiteField.value, 'site_key', 'release_channel'].join(','),
             });
             const row = response?.data || {};
             const loadedModuleKey = asString(row?.[moduleKeyField.value] ?? row?.module_key);
             const loadedModuleProvider = asString(row?.[moduleProviderField.value] ?? row?.module_provider);
             const loadedSiteKey = asString(row?.[pageSiteField.value] ?? row?.site_key ?? inheritedSiteKey);
-    
+            const loadedReleaseChannel = toLower(row?.release_channel || inheritedReleaseChannel);
+
             recordModuleKey.value = loadedModuleKey;
             recordModuleProvider.value = loadedModuleProvider;
             if (loadedSiteKey) {
               recordSiteKey.value = loadedSiteKey;
+            }
+            if (loadedReleaseChannel === 'preview' || loadedReleaseChannel === 'prod') {
+              recordReleaseChannel.value = loadedReleaseChannel;
+            } else {
+              recordReleaseChannel.value = '';
             }
           } catch {
             // Clear fallback hints when record lookup fails.
             recordModuleKey.value = '';
             recordModuleProvider.value = '';
             recordSiteKey.value = '';
+            recordReleaseChannel.value = '';
           }
         };
     
@@ -3274,16 +3285,20 @@ data:
           return {};
         };
     
-        const resolveRegistryChannel = () => {
-          const explicit = moduleRegistryChannelOption.value;
-          if (explicit === 'preview' || explicit === 'prod' || explicit === 'all') return explicit;
-    
+        const resolveRegistryReleaseChannel = () => {
           const inferred = toLower(
             props.values?.[moduleRegistryChannelField.value]
             ?? props.values?.release_channel
+            ?? recordReleaseChannel.value
           );
           if (inferred === 'preview' || inferred === 'prod') return inferred;
-          return 'all';
+          return '';
+        };
+
+        const resolveRegistryChannel = () => {
+          const explicit = moduleRegistryChannelOption.value;
+          if (explicit === 'preview' || explicit === 'prod') return explicit;
+          return resolveRegistryReleaseChannel();
         };
     
         const buildModuleRegistryDetailPath = (moduleKeyValue) => {
@@ -3300,6 +3315,12 @@ data:
           return versions
             .map((entry) => normalizeObject(parseJsonLike(entry, {})))
             .filter((entry) => asString(entry?.module_version));
+        };
+
+        const filterRegistryVersionRowsByChannel = (rows, channelValue = resolveRegistryChannel()) => {
+          const versionRows = Array.isArray(rows) ? rows : [];
+          if (channelValue !== 'preview' && channelValue !== 'prod') return [];
+          return versionRows.filter((row) => toLower(row?.channel) === channelValue);
         };
 
         const pickRegistryVersionRowForChannel = (rows, channel) => {
@@ -3632,6 +3653,12 @@ data:
             mfeRegistryLoadError.value = 'Module registry URL is not configured for this interface context.';
             return;
           }
+          const activeChannel = resolveRegistryChannel();
+          if (activeChannel !== 'preview' && activeChannel !== 'prod') {
+            mfeRegistryModuleRows.value = [];
+            mfeRegistryLoadError.value = 'Select page release channel (preview or prod) to load MFE module options.';
+            return;
+          }
 
           try {
             const fetchRowsForChannel = async (channel) => {
@@ -3659,11 +3686,7 @@ data:
                 .sort((left, right) => asString(left?.module_key).localeCompare(asString(right?.module_key)));
             };
 
-            const activeChannel = resolveRegistryChannel();
-            let rows = await fetchRowsForChannel(activeChannel);
-            if (rows.length === 0 && activeChannel !== 'all') {
-              rows = await fetchRowsForChannel('all');
-            }
+            const rows = await fetchRowsForChannel(activeChannel);
             mfeRegistryModuleRows.value = rows;
             mfeRegistryLoadError.value = '';
           } catch (error) {
@@ -3898,7 +3921,9 @@ data:
           normalizeObject(parseJsonLike(mfeRegistryDetailByKey.value?.[selectedMfeRegistryKey.value], {}))
         );
         const selectedMfeRegistryVersionRow = computed(() => {
-          const versionRows = normalizeRegistryVersionRows(selectedMfeRegistryDetail.value);
+          const versionRows = filterRegistryVersionRowsByChannel(
+            normalizeRegistryVersionRows(selectedMfeRegistryDetail.value),
+          );
           if (versionRows.length === 0) return {};
           const requestedVersion = asString(selectedMfeRegistryVersion.value);
           if (requestedVersion) {
@@ -4002,14 +4027,19 @@ data:
         const mfeRegistryKeyOptions = computed(() =>
           mfeRegistryModuleRows.value.map((row) => {
             const moduleKeyValue = asString(row?.module_key);
-            const latestVersion = asString(row?.latest_version_preview || row?.latest_version_prod);
+            const registryChannel = resolveRegistryChannel();
+            const latestVersion = registryChannel === 'prod'
+              ? asString(row?.latest_version_prod || row?.latest_version_preview)
+              : asString(row?.latest_version_preview || row?.latest_version_prod);
             return {
               text: latestVersion ? `${moduleKeyValue} (${latestVersion})` : moduleKeyValue,
               value: moduleKeyValue,
             };
           })
         );
-        const mfeRegistryVersionRows = computed(() => normalizeRegistryVersionRows(selectedMfeRegistryDetail.value));
+        const mfeRegistryVersionRows = computed(() =>
+          filterRegistryVersionRowsByChannel(normalizeRegistryVersionRows(selectedMfeRegistryDetail.value))
+        );
         const mfeRegistryVersionOptions = computed(() => {
           const seen = new Set();
           return mfeRegistryVersionRows.value
@@ -4116,6 +4146,10 @@ data:
             if (!hasMfeRegistrySchemaShape.value || !moduleRegistryHasUrl.value) {
               return;
             }
+            const channel = resolveRegistryChannel();
+            if (channel !== 'preview' && channel !== 'prod') {
+              return;
+            }
 
             const registryKeyValue = selectedMfeRegistryKey.value;
             if (!registryKeyValue) return;
@@ -4127,10 +4161,12 @@ data:
               return;
             }
 
-            const versionRows = normalizeRegistryVersionRows(selectedMfeRegistryDetail.value);
+            const versionRows = filterRegistryVersionRowsByChannel(
+              normalizeRegistryVersionRows(selectedMfeRegistryDetail.value),
+              channel,
+            );
             if (!Array.isArray(versionRows) || versionRows.length === 0) return;
 
-            const channel = resolveRegistryChannel();
             const requestedVersion = selectedMfeRegistryVersion.value;
             const requestedRows = requestedVersion
               ? versionRows.filter((row) => asString(row?.module_version) === requestedVersion)
@@ -4280,8 +4316,12 @@ data:
           const isVersionProp = normalizedPropKey === 'version' || normalizedPropKey === 'module_version' || normalizedPropKey === 'moduleversion';
           const isManifestUrlProp = normalizedPropKey === 'manifesturl' || normalizedPropKey === 'manifest_url';
           const isRegistryBackedMfeProp = isRegistryKeyProp || isVersionProp || isManifestUrlProp;
+          const resolvedRegistryChannel = resolveRegistryChannel();
+          const hasResolvedRegistryChannel = resolvedRegistryChannel === 'preview' || resolvedRegistryChannel === 'prod';
           const canUseRegistryBackedMfeSelect =
             hasMfeRegistrySchemaShape.value
+            && moduleRegistryHasUrl.value
+            && hasResolvedRegistryChannel
             && isRegistryBackedMfeProp;
     
           const resolvedInput = resolveComponent('v-input');
@@ -4426,9 +4466,10 @@ data:
             hasMfeRegistrySchemaShape.value
             && isRegistryBackedMfeProp
             && !canUseRegistryBackedMfeSelect
-            && !moduleRegistryHasUrl.value
           )
-            ? 'Module registry selections are unavailable in this field context. Ensure cms_block_module.props_json interface options include module_registry_url.'
+            ? (!moduleRegistryHasUrl.value
+              ? 'Module registry selections are unavailable in this field context. Ensure cms_block_module.props_json interface options include module_registry_url.'
+              : 'Select page release channel (preview or prod) to load module registry selections.')
             : '';
 
           if (canUseRegistryBackedMfeSelect && isRegistryKeyProp) {
@@ -4939,6 +4980,11 @@ data:
           );
           const definitionTitle = asString(definition?.name) || moduleKey.value || 'Module';
           const definitionDescription = asString(definition?.description);
+          const shouldHideMfeSectionEditor = (
+            isMfeRemoteModuleDefinition.value
+            && hasMfeRegistrySchemaShape.value
+            && !resolveRegistryChannel()
+          );
     
           const children = [
             h('div', { class: 'cms-module-props-editor__header' }, [
@@ -4953,7 +4999,15 @@ data:
             schemaError.value ? h('p', { class: 'cms-module-props-editor__error' }, schemaError.value) : null,
           ];
     
-          if (hasInlineProperties) {
+          if (shouldHideMfeSectionEditor) {
+            children.push(
+              h(
+                'p',
+                { class: 'cms-module-props-editor__hint' },
+                'Select page release channel (preview or prod) before configuring this MFE section.'
+              )
+            );
+          } else if (hasInlineProperties) {
             if (isMfeRemoteModuleDefinition.value) {
               const sectionBuckets = MFE_SECTION_DEFINITIONS.map((section) => ({
                 ...section,
@@ -5599,6 +5653,9 @@ data:
           if (contextValue) return contextValue;
           return toLower(props.values?.release_channel);
         });
+        const hasPageReleaseChannel = computed(() =>
+          sourcePageReleaseChannel.value === 'preview' || sourcePageReleaseChannel.value === 'prod'
+        );
         const canPromoteToProd = computed(() =>
           Boolean(pageId.value)
           && sourcePageReleaseChannel.value === PROMOTE_SOURCE_CHANNEL
@@ -5994,24 +6051,29 @@ data:
     
         const resolveModuleRegistryChannel = () => {
           const configured = moduleRegistryChannelOption.value;
-          if (configured === 'preview' || configured === 'prod' || configured === 'all') return configured;
+          if (configured === 'preview' || configured === 'prod') return configured;
           const pageReleaseChannel = toLower(pageContext.value?.release_channel);
           if (pageReleaseChannel === 'preview' || pageReleaseChannel === 'prod') return pageReleaseChannel;
-          return 'all';
+          return '';
         };
-    
+
         const loadModuleRegistryModules = async () => {
           if (!moduleRegistryEnabled.value || !moduleRegistryUrl.value) {
             moduleRegistryModules.value = [];
             return;
           }
-    
+          const registryChannel = resolveModuleRegistryChannel();
+          if (registryChannel !== 'preview' && registryChannel !== 'prod') {
+            moduleRegistryModules.value = [];
+            return;
+          }
+
           try {
             const response = await externalApiGet(moduleRegistryUrl.value, moduleRegistryPath.value, {
-              channel: resolveModuleRegistryChannel(),
+              channel: registryChannel,
               limit: moduleRegistryLimit.value,
             }, {
-              cacheKey: `module-list:${moduleRegistryUrl.value}:${moduleRegistryPath.value}:${resolveModuleRegistryChannel()}:${moduleRegistryLimit.value}`,
+              cacheKey: `module-list:${moduleRegistryUrl.value}:${moduleRegistryPath.value}:${registryChannel}:${moduleRegistryLimit.value}`,
               cacheTtlMs: moduleRegistryCacheTtlMs.value,
             });
             const rows = Array.isArray(response?.items)
@@ -6636,6 +6698,10 @@ data:
     
         const createPageBlockWithContent = async (type) => {
           if (props.disabled || !pageId.value || creatingBlockType.value) return;
+          if (!hasPageReleaseChannel.value) {
+            error.value = 'Set page release channel to preview or prod before managing section blocks.';
+            return;
+          }
           creatingBlockType.value = asString(type);
           error.value = '';
           info.value = '';
@@ -7271,6 +7337,12 @@ data:
           if (!isPrimaryInstance.value) {
             return h('div', {
               class: 'cms-page-blocks-manager cms-page-blocks-manager--duplicate-hidden',
+              style: { display: 'none' },
+            });
+          }
+          if (pageId.value && !hasPageReleaseChannel.value) {
+            return h('div', {
+              class: 'cms-page-blocks-manager cms-page-blocks-manager--release-channel-hidden',
               style: { display: 'none' },
             });
           }
