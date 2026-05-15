@@ -103,6 +103,10 @@ spec:
                 path: cms-content-model-select/package.json
               - key: cms-content-model-select.index.js
                 path: cms-content-model-select/index.js
+              - key: cms-keycloak-role-options.package.json
+                path: cms-keycloak-role-options/package.json
+              - key: cms-keycloak-role-options.index.js
+                path: cms-keycloak-role-options/index.js
               - key: cms-asset-url-picker.package.json
                 path: cms-asset-url-picker/package.json
               - key: cms-asset-url-picker.index.js
@@ -168,7 +172,7 @@ spec:
               mkdir -p /directus/extensions
 
               # Keep our GitOps-managed extensions deterministic on every start.
-              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-asset-url-picker /directus/extensions/cms-module-props-editor /directus/extensions/cms-page-blocks-manager
+              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-keycloak-role-options /directus/extensions/cms-asset-url-picker /directus/extensions/cms-module-props-editor /directus/extensions/cms-page-blocks-manager
               # ConfigMap volumes use symlinks; dereference so we copy real files into the PVC.
               cp -RL /extensions-seed/* /directus/extensions/
 
@@ -2281,6 +2285,20 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: CORS_ORIGIN } }
         - name: ASSETS_CACHE_TTL
           valueFrom: { configMapKeyRef: { name: directus-config, key: ASSETS_CACHE_TTL } }
+        - name: DIRECTUS_KC_BASE_URL
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_KC_BASE_URL } }
+        - name: DIRECTUS_KC_INTERNAL_REALM
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_KC_INTERNAL_REALM } }
+        - name: DIRECTUS_KC_EXTERNAL_REALM
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_KC_EXTERNAL_REALM } }
+        - name: DIRECTUS_KC_INTERNAL_CLIENT_ID
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_KC_INTERNAL_CLIENT_ID } }
+        - name: DIRECTUS_KC_INTERNAL_CLIENT_SECRET
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_KC_INTERNAL_CLIENT_SECRET } }
+        - name: DIRECTUS_KC_EXTERNAL_CLIENT_ID
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_KC_EXTERNAL_CLIENT_ID } }
+        - name: DIRECTUS_KC_EXTERNAL_CLIENT_SECRET
+          valueFrom: { configMapKeyRef: { name: directus-config, key: DIRECTUS_KC_EXTERNAL_CLIENT_SECRET } }
 
         # WebSockets configuration
         - name: WEBSOCKETS_ENABLED

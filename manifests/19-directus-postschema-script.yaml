@@ -968,6 +968,8 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_generator TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_position TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_dock_direction TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS force_login_for_page_access BOOLEAN; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS required_role_for_page_access TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS release_channel TEXT; \
@@ -1154,6 +1156,24 @@ data:
     if ! _psql_yb_retry "UPDATE cms_pages p
       SET widget_dock_enabled = COALESCE(p.widget_dock_enabled, true)
       WHERE p.widget_dock_enabled IS NULL;" "normalize cms_pages.widget_dock_enabled"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET force_login_for_page_access = COALESCE(p.force_login_for_page_access, false)
+      WHERE p.force_login_for_page_access IS NULL;" "normalize cms_pages.force_login_for_page_access"; then
+      sync_site_metadata_failed="1"
+    fi
+    if ! _psql_yb_retry "UPDATE cms_pages p
+      SET required_role_for_page_access = CASE
+        WHEN NULLIF(BTRIM(p.required_role_for_page_access), '') IS NULL THEN NULL
+        WHEN LOWER(NULLIF(BTRIM(p.required_role_for_page_access), '')) = 'none' THEN NULL
+        ELSE NULLIF(BTRIM(p.required_role_for_page_access), '')
+      END
+      WHERE p.required_role_for_page_access IS DISTINCT FROM CASE
+        WHEN NULLIF(BTRIM(p.required_role_for_page_access), '') IS NULL THEN NULL
+        WHEN LOWER(NULLIF(BTRIM(p.required_role_for_page_access), '')) = 'none' THEN NULL
+        ELSE NULLIF(BTRIM(p.required_role_for_page_access), '')
+      END;" "normalize cms_pages.required_role_for_page_access"; then
       sync_site_metadata_failed="1"
     fi
     if ! _psql_yb_retry "UPDATE cms_pages p
@@ -1647,6 +1667,8 @@ data:
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
             ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_mode_check CHECK (theme_mode IN ('auto','light','dark'));
           END IF;
+          ALTER TABLE cms_pages ALTER COLUMN force_login_for_page_access SET DEFAULT false;
+          ALTER TABLE cms_pages ALTER COLUMN force_login_for_page_access SET NOT NULL;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_enabled SET DEFAULT true;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_enabled SET NOT NULL;
           ALTER TABLE cms_pages ALTER COLUMN widget_dock_position SET DEFAULT 'top-right';
@@ -1788,6 +1810,61 @@ data:
       \$\$;" "enforce refresh_target constraints"; then
       sync_site_metadata_failed="1"
     fi
+    if ! _psql_yb_retry "SET search_path TO directus, public;
+      CREATE OR REPLACE FUNCTION cms_pages_parent_scope_guard()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS \$\$
+      DECLARE
+        parent_site_key text;
+        parent_release_channel text;
+      BEGIN
+        IF NEW.parent IS NULL THEN
+          RETURN NEW;
+        END IF;
+
+        IF NEW.id IS NOT NULL AND NEW.parent = NEW.id THEN
+          RAISE EXCEPTION 'cms_pages.parent cannot reference the same page id (%).', NEW.id;
+        END IF;
+
+        SELECT p.site_key, p.release_channel
+          INTO parent_site_key, parent_release_channel
+          FROM cms_pages p
+         WHERE p.id = NEW.parent;
+
+        IF NOT FOUND THEN
+          RETURN NEW;
+        END IF;
+
+        IF NEW.site_key IS DISTINCT FROM parent_site_key
+           OR NEW.release_channel IS DISTINCT FROM parent_release_channel THEN
+          RAISE EXCEPTION
+            'cms_pages.parent must reference a page in the same site_key and release_channel (child site=% channel=% parent site=% channel=%).',
+            NEW.site_key,
+            NEW.release_channel,
+            parent_site_key,
+            parent_release_channel;
+        END IF;
+
+        RETURN NEW;
+      END
+      \$\$;
+
+      DO \$\$
+      BEGIN
+        IF to_regclass('directus.cms_pages') IS NULL THEN
+          RETURN;
+        END IF;
+        DROP TRIGGER IF EXISTS cms_pages_parent_scope_guard_trg ON cms_pages;
+        CREATE TRIGGER cms_pages_parent_scope_guard_trg
+          BEFORE INSERT OR UPDATE OF parent, site_key, release_channel
+          ON cms_pages
+          FOR EACH ROW
+          EXECUTE FUNCTION cms_pages_parent_scope_guard();
+      END
+      \$\$;" "enforce cms_pages.parent scope (site_key + release_channel)"; then
+      sync_site_metadata_failed="1"
+    fi
     if [ "${sync_site_metadata_failed}" != "0" ]; then
       echo "⚠️ Some site metadata sync steps failed after retries; continuing startup and retrying on next deploy."
     fi
@@ -1847,6 +1924,30 @@ data:
             ;;
           text:*|character\ varying:*)
             printf "'o2m'"
+            ;;
+          *)
+            printf "NULL"
+            ;;
+        esac
+      }
+
+      _df_special_m2o_sql() {
+        if ! _df_has_col "special"; then
+          printf "NULL"
+          return
+        fi
+        case "${DF_SPECIAL_DATA_TYPE:-}:${DF_SPECIAL_UDT_NAME:-}" in
+          ARRAY:*)
+            printf "ARRAY['m2o']::text[]"
+            ;;
+          jsonb:*)
+            printf "'[\"m2o\"]'::jsonb"
+            ;;
+          json:*)
+            printf "'[\"m2o\"]'::json"
+            ;;
+          text:*|character\ varying:*)
+            printf "'m2o'"
             ;;
           *)
             printf "NULL"
@@ -2136,7 +2237,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","release_channel","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","release_channel","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","force_login_for_page_access","required_role_for_page_access","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -3859,6 +3960,8 @@ data:
         --argjson registry_cache_ttl_ms "${module_registry_cache_ttl_ms}" \
         '{mode:"module",modules_collection:"cms_modules",pages_collection:"cms_pages",module_value_field:"module_key",module_label_field:"name",module_provider_field:"module_provider",page_site_field:"site_key",include_global:true,module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_channel_field:"release_channel",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,choices:$choices}')"
       module_display_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices}')"
+      role_interface_options_json="$(jq -nc \
+        '{mode:"role",role_endpoint_path:"/cms-keycloak-role-options/roles",role_site_field:"site_key",role_none_label:"None (Any Logged-In User)",role_none_value:"none",role_include_none:true}')"
       module_props_interface_options_json="$(jq -nc \
         --arg registry_url "${module_registry_url}" \
         --arg registry_path "${module_registry_path}" \
@@ -3873,13 +3976,18 @@ data:
         --argjson registry_enabled "${module_registry_enabled_json}" \
         --argjson registry_cache_ttl_ms "${module_registry_cache_ttl_ms}" \
         '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,default_group_by:"template",default_hierarchy:"direct_children",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
+      page_parent_interface_options_json="$(jq -nc \
+        '{template:"{{title}} ({{slug}} | {{site_key}} | {{release_channel}})",enableCreate:false,enableSelect:true,enableLink:true,filter:{_and:[{site_key:{_eq:"{{site_key}}"}},{release_channel:{_eq:"{{release_channel}}"}},{id:{_neq:"{{id}}"}}]}}')"
 
-      site_key_note="Required: site scope for this page (for example external or internal)."
+      site_key_note="Required: site scope for this page. Allowed values: internal or external."
       slug_note="Required: page route slug within site + channel (for SPA home use 'home')."
       title_note="Required: editorial page title."
+      page_parent_note="Optional: choose a parent page to build a page hierarchy."
       template_note="Required: choose which registered layout template this page uses."
       theme_note="Required: choose which published theme family this page uses."
       release_channel_note="Required: choose which release channel this page belongs to (preview or prod)."
+      force_login_for_page_access_note="Enable to require Keycloak login before this page is rendered."
+      required_role_for_page_access_note="Optional: restrict to a specific Keycloak role from the page realm. Choose None to allow any logged-in user."
       theme_mode_note="Required: choose how this page resolves theme variants (Auto uses system light/dark preference)."
       analytics_google_measurement_id_note="Optional: Google Analytics 4 measurement id (example: G-XXXXXXXXXX). Leave empty to disable GA."
       analytics_openobserve_rum_script_url_note="Optional: OpenObserve browser RUM script URL. Leave empty to disable OpenObserve RUM for this page."
@@ -3917,8 +4025,11 @@ data:
       group_tag_note="Optional editor grouping tag (for example: hero, onboarding, checkout-step-1). Blocks with the same tag can be filtered together."
       page_blocks_relation_note="Blocks Manager: grouped/searchable block editor for this page with quick open/edit actions."
       internal_metadata_note="Managed automatically from page/block context."
+      date_created_note="System-managed timestamp for when this page was created."
+      date_updated_note="System-managed timestamp for the last page update."
       status_note="Publishing control for this record."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
+      site_key_choices_json="$(jq -nc '[ {"text":"Internal","value":"internal","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"External","value":"external","foreground":"#065F46","background":"#D1FAE5"} ]')"
       release_channel_choices_json="$(jq -nc '[ {"text":"Preview","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Prod","value":"prod","foreground":"#92400E","background":"#FEF3C7"} ]')"
       theme_mode_choices_json="$(jq -nc '[ {"text":"Auto (System)","value":"auto","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Light","value":"light","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Dark","value":"dark","foreground":"#92400E","background":"#FEF3C7"} ]')"
       widget_dock_position_choices_json="$(jq -nc '[ {"text":"Top Right","value":"top-right","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Top Left","value":"top-left","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Bottom Right","value":"bottom-right","foreground":"#92400E","background":"#FEF3C7"}, {"text":"Bottom Left","value":"bottom-left","foreground":"#6D28D9","background":"#EDE9FE"} ]')"
@@ -3926,6 +4037,8 @@ data:
       theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
       asset_url_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
+      site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
       release_channel_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       release_channel_display_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices}')"
       theme_mode_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
@@ -3940,6 +4053,7 @@ data:
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       widget_dock_dependent_readonly_conditions_json="$(jq -nc '[{"name":"Widget dock disabled","rule":{"widget_dock_enabled":{"_neq":true}},"readonly":true}]')"
+      required_role_for_page_access_hidden_conditions_json="$(jq -nc '[{"name":"Force login required","rule":{"force_login_for_page_access":{"_neq":true}},"hidden":true}]')"
       openobserve_config_readonly_conditions_json="$(jq -nc '[{"name":"OpenObserve URL required","rule":{"_or":[{"analytics_openobserve_rum_script_url":{"_null":true}},{"analytics_openobserve_rum_script_url":{"_eq":""}}]},"readonly":true}]')"
       hero_background_asset_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,store_file_id:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
@@ -3947,8 +4061,11 @@ data:
       site_key_note_sql="$(printf '%s' "${site_key_note}" | sed "s/'/''/g")"
       slug_note_sql="$(printf '%s' "${slug_note}" | sed "s/'/''/g")"
       title_note_sql="$(printf '%s' "${title_note}" | sed "s/'/''/g")"
+      page_parent_note_sql="$(printf '%s' "${page_parent_note}" | sed "s/'/''/g")"
       theme_note_sql="$(printf '%s' "${theme_note}" | sed "s/'/''/g")"
       release_channel_note_sql="$(printf '%s' "${release_channel_note}" | sed "s/'/''/g")"
+      force_login_for_page_access_note_sql="$(printf '%s' "${force_login_for_page_access_note}" | sed "s/'/''/g")"
+      required_role_for_page_access_note_sql="$(printf '%s' "${required_role_for_page_access_note}" | sed "s/'/''/g")"
       theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
       analytics_google_measurement_id_note_sql="$(printf '%s' "${analytics_google_measurement_id_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_script_url_note_sql="$(printf '%s' "${analytics_openobserve_rum_script_url_note}" | sed "s/'/''/g")"
@@ -3993,6 +4110,8 @@ data:
       head_canonical_url_name_sql="$(printf '%s' "Canonical URL" | sed "s/'/''/g")"
       head_robots_name_sql="$(printf '%s' "Robots" | sed "s/'/''/g")"
       head_generator_name_sql="$(printf '%s' "Generator" | sed "s/'/''/g")"
+      force_login_for_page_access_name_sql="$(printf '%s' "Force Login For Page Access" | sed "s/'/''/g")"
+      required_role_for_page_access_name_sql="$(printf '%s' "Required Role For Page Access" | sed "s/'/''/g")"
       hero_background_image_note_sql="$(printf '%s' "${hero_background_image_note}" | sed "s/'/''/g")"
       widget_dock_enabled_note_sql="$(printf '%s' "${widget_dock_enabled_note}" | sed "s/'/''/g")"
       widget_dock_enabled_name_sql="$(printf '%s' "Enable Widget Dock" | sed "s/'/''/g")"
@@ -4007,6 +4126,8 @@ data:
       group_tag_note_sql="$(printf '%s' "${group_tag_note}" | sed "s/'/''/g")"
       page_blocks_relation_note_sql="$(printf '%s' "${page_blocks_relation_note}" | sed "s/'/''/g")"
       internal_metadata_note_sql="$(printf '%s' "${internal_metadata_note}" | sed "s/'/''/g")"
+      date_created_note_sql="$(printf '%s' "${date_created_note}" | sed "s/'/''/g")"
+      date_updated_note_sql="$(printf '%s' "${date_updated_note}" | sed "s/'/''/g")"
       status_note_sql="$(printf '%s' "${status_note}" | sed "s/'/''/g")"
     
       _upsert_page_layout_template_field_meta() {
@@ -4121,6 +4242,70 @@ data:
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created theme_package_key field UX on ${_collection}"
+      }
+
+      _upsert_page_site_key_field_meta() {
+        _collection="cms_pages"
+        _field="site_key"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${site_key_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${site_key_display_options_json}")"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options"; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=true"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=1"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${site_key_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated site_key field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options"; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},1"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${site_key_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created site_key field UX on ${_collection}"
       }
 
       _upsert_page_release_channel_field_meta() {
@@ -5049,6 +5234,185 @@ data:
         fi
       }
 
+      _upsert_page_parent_field_meta() {
+        _collection="cms_pages"
+        _field="parent"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+
+        # Ensure self-referential relation metadata so parent is rendered as relational M2O.
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; \
+           DO \$\$ \
+           BEGIN \
+             IF to_regclass('directus.directus_relations') IS NULL \
+               OR to_regclass('directus.cms_pages') IS NULL THEN \
+               RETURN; \
+             END IF; \
+             IF NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='cms_pages' AND column_name='parent' \
+             ) THEN \
+               RETURN; \
+             END IF; \
+             IF NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='many_collection' \
+             ) \
+               OR NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='many_field' \
+             ) \
+               OR NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='one_collection' \
+             ) \
+               OR NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='directus_relations' AND column_name='one_field' \
+             ) THEN \
+               RETURN; \
+             END IF; \
+             IF EXISTS ( \
+               SELECT 1 \
+               FROM directus_relations \
+               WHERE many_collection='cms_pages' AND many_field='parent' \
+             ) THEN \
+               UPDATE directus_relations \
+                  SET one_collection='cms_pages' \
+                WHERE many_collection='cms_pages' \
+                  AND many_field='parent' \
+                  AND COALESCE(one_collection, '') IS DISTINCT FROM 'cms_pages'; \
+             ELSE \
+               BEGIN \
+                 INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) \
+                 VALUES ('cms_pages', 'parent', 'cms_pages', NULL); \
+               EXCEPTION WHEN unique_violation THEN \
+                 NULL; \
+               END; \
+             END IF; \
+           END \
+           \$\$;"
+
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${page_parent_interface_options_json}")"
+        _special_sql="$(_df_special_m2o_sql)"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown-m2o'"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='related-values'"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=4"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${page_parent_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated parent page field UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then FCOLS="${FCOLS},special"; FVALS="${FVALS},${_special_sql}"; fi
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown-m2o'"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'related-values'"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},4"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${page_parent_note_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created parent page field UX on ${_collection}"
+      }
+
+      _upsert_page_readonly_timestamp_field_meta() {
+        _field="$1"
+        _sort="${2:-0}"
+        _note_sql="${3:-}"
+        _collection="cms_pages"
+        if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='datetime'"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='datetime'"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=true"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then SETS="${SETS},note='${_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated readonly timestamp field UX on ${_collection}.${_field}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'datetime'"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'datetime'"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},true"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created readonly timestamp field UX on ${_collection}.${_field}"
+      }
+
       _upsert_template_ref_template_key_field_meta() {
         _collection="cms_block_template_ref"
         _field="template_key"
@@ -5488,7 +5852,12 @@ data:
     
       _upsert_page_layout_template_field_meta
       _upsert_page_theme_package_field_meta
+      _upsert_page_site_key_field_meta
+      _upsert_page_parent_field_meta
+      _upsert_status_dropdown_field_meta "cms_pages" 5
       _upsert_page_release_channel_field_meta
+      _upsert_page_readonly_timestamp_field_meta "date_created" -2 "${date_created_note_sql}"
+      _upsert_page_readonly_timestamp_field_meta "date_updated" -1 "${date_updated_note_sql}"
       _upsert_page_theme_mode_field_meta
       _upsert_page_analytics_google_measurement_id_field_meta
       _upsert_page_analytics_openobserve_rum_script_url_field_meta
@@ -5497,11 +5866,13 @@ data:
       _upsert_page_widget_dock_position_field_meta
       _upsert_page_widget_dock_direction_field_meta
       _upsert_page_theme_selector_dock_position_field_meta
+      _upsert_page_head_input_field_meta "force_login_for_page_access" 12 "half" "${force_login_for_page_access_note_sql}" "boolean" "" "${force_login_for_page_access_name_sql}"
+      _upsert_page_head_input_field_meta "required_role_for_page_access" 13 "half" "${required_role_for_page_access_note_sql}" "cms-content-model-select" "${role_interface_options_json}" "${required_role_for_page_access_name_sql}"
       _upsert_page_head_input_field_meta "seo_title" 9 "full" "${seo_title_note_sql}" "input" "" "${seo_title_name_sql}"
       _upsert_page_head_input_field_meta "seo_description" 10 "full" "${seo_description_note_sql}" "input-multiline" "" "${seo_description_name_sql}"
       _upsert_page_head_input_field_meta "head_title" 11 "half" "${head_title_note_sql}" "input" "" "${head_title_name_sql}"
       _upsert_page_head_input_field_meta "head_description" 12 "full" "${head_description_note_sql}" "input-multiline" "" "${head_description_name_sql}"
-      _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "input" "" "${head_theme_color_name_sql}"
+      _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "select-color" "" "${head_theme_color_name_sql}"
       _upsert_page_head_input_field_meta "head_manifest_url" 14 "half" "${head_manifest_url_note_sql}" "input" "" "${head_manifest_url_name_sql}"
       _upsert_page_head_input_field_meta "head_icon_url" 15 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_url_name_sql}"
       _upsert_page_head_input_field_meta "head_icon_shortcut_url" 16 "half" "${head_icon_shortcut_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_shortcut_url_name_sql}"
@@ -5513,7 +5884,7 @@ data:
       _upsert_page_head_input_field_meta "head_icon_512_url" 22 "half" "${head_icon_512_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_512_url_name_sql}"
       _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 23 "half" "${head_apple_touch_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_apple_touch_icon_url_name_sql}"
       _upsert_page_head_input_field_meta "head_icon_mask_url" 24 "half" "${head_icon_mask_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_mask_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_mask_color" 25 "half" "${head_icon_mask_color_note_sql}" "input" "" "${head_icon_mask_color_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_mask_color" 25 "half" "${head_icon_mask_color_note_sql}" "select-color" "" "${head_icon_mask_color_name_sql}"
       _upsert_page_head_input_field_meta "head_canonical_url" 26 "full" "${head_canonical_url_note_sql}" "input" "" "${head_canonical_url_name_sql}"
       _upsert_page_head_input_field_meta "head_robots" 27 "full" "${head_robots_note_sql}" "input" "" "${head_robots_name_sql}"
       _upsert_page_head_input_field_meta "head_generator" 28 "half" "${head_generator_note_sql}" "input" "" "${head_generator_name_sql}"
@@ -5538,11 +5909,16 @@ data:
       _upsert_page_section_group_field_meta "_section_meta" "Head + Icons (Optional Overrides)" 7 "flag"
       _upsert_page_section_group_field_meta "_section_blocks" "Blocks" 8 "account_tree"
       _assign_page_field_group "site_key" "_section_page_settings"
+      _assign_page_field_group "date_created" "_section_page_settings"
+      _assign_page_field_group "date_updated" "_section_page_settings"
       _assign_page_field_group "slug" "_section_page_settings"
       _assign_page_field_group "title" "_section_page_settings"
+      _assign_page_field_group "parent" "_section_page_settings"
       _assign_page_field_group "status" "_section_page_settings"
       _assign_page_field_group "release_channel" "_section_page_settings"
       _assign_page_field_group "refresh_target" "_section_page_settings"
+      _assign_page_field_group "force_login_for_page_access" "_section_page_settings"
+      _assign_page_field_group "required_role_for_page_access" "_section_page_settings"
       _assign_page_field_group "layout_template_key" "_section_layout"
       _assign_page_field_group "theme_package_key" "_section_theme"
       _assign_page_field_group "theme_mode" "_section_theme"
@@ -5575,14 +5951,20 @@ data:
       _assign_page_field_group "head_generator" "_section_meta"
       _assign_page_field_group "blocks" "_section_blocks"
       _set_page_field_note "site_key" "${site_key_note_sql}"
+      _set_page_field_note "date_created" "${date_created_note_sql}"
+      _set_page_field_note "date_updated" "${date_updated_note_sql}"
       _set_page_field_note "slug" "${slug_note_sql}"
       _set_page_field_note "title" "${title_note_sql}"
+      _set_page_field_note "parent" "${page_parent_note_sql}"
       _set_page_field_note "status" "${status_note_sql}"
       _set_page_field_note "release_channel" "${release_channel_note_sql}"
       _set_page_field_note "refresh_target" "${refresh_note_sql}"
+      _set_page_field_note "force_login_for_page_access" "${force_login_for_page_access_note_sql}"
+      _set_page_field_note "required_role_for_page_access" "${required_role_for_page_access_note_sql}"
       _set_page_field_note "layout_template_key" "${template_note_sql}"
       _set_page_field_note "theme_package_key" "${theme_note_sql}"
       _set_page_field_note "theme_mode" "${theme_mode_note_sql}"
+      _set_page_field_conditions "required_role_for_page_access" "${required_role_for_page_access_hidden_conditions_json}"
       _set_page_field_conditions "widget_dock_position" "${widget_dock_dependent_readonly_conditions_json}"
       _set_page_field_conditions "widget_dock_direction" "${widget_dock_dependent_readonly_conditions_json}"
       _set_page_field_conditions "theme_selector_dock_position" "${widget_dock_dependent_readonly_conditions_json}"
@@ -6490,7 +6872,7 @@ data:
                 if [ -n "${SEED_ID:-}" ] && [ "${SEED_ID}" != "null" ]; then
                   seed_id_sql="$(printf '%s' "$SEED_ID" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, release_channel, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', '${homepage_release_channel_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, NULLIF(BTRIM(analytics_google_measurement_id), ''), NULLIF(BTRIM(analytics_openobserve_rum_script_url), ''), CASE WHEN analytics_openobserve_rum_config IS NULL OR jsonb_typeof(analytics_openobserve_rum_config) IS DISTINCT FROM 'object' THEN '{}'::jsonb ELSE analytics_openobserve_rum_config END, COALESCE(widget_dock_enabled, true), CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(theme_selector_dock_position) ELSE 'start' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END FROM cms_pages WHERE id='${seed_id_sql}';"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, seo_title, seo_description, parent, site_key, release_channel, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target, force_login_for_page_access, required_role_for_page_access) SELECT '${new_home_sql}', slug, title, status, seo_title, seo_description, parent, '${site_key_sql}', '${homepage_release_channel_sql}', layout_template_key, theme_package_key, CASE WHEN LOWER(COALESCE(theme_mode, '')) IN ('auto','light','dark') THEN LOWER(theme_mode) ELSE 'auto' END, NULLIF(BTRIM(analytics_google_measurement_id), ''), NULLIF(BTRIM(analytics_openobserve_rum_script_url), ''), CASE WHEN analytics_openobserve_rum_config IS NULL OR jsonb_typeof(analytics_openobserve_rum_config) IS DISTINCT FROM 'object' THEN '{}'::jsonb ELSE analytics_openobserve_rum_config END, COALESCE(widget_dock_enabled, true), CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(theme_selector_dock_position, '')) IN ('start','end') THEN LOWER(theme_selector_dock_position) ELSE 'start' END, CASE WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position) WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position) ELSE 'top-right' END, CASE WHEN LOWER(COALESCE(widget_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(widget_dock_direction) WHEN LOWER(COALESCE(theme_switcher_dock_direction, '')) IN ('vertical','horizontal') THEN LOWER(theme_switcher_dock_direction) ELSE 'vertical' END, CASE WHEN LOWER(COALESCE(refresh_target, '')) IN ('preview','prod','both') THEN LOWER(refresh_target) ELSE 'both' END, COALESCE(force_login_for_page_access, false), CASE WHEN COALESCE(force_login_for_page_access, false) = true THEN NULLIF(BTRIM(required_role_for_page_access), '') ELSE NULL END FROM cms_pages WHERE id='${seed_id_sql}';"
     
                   # Clone supported homepage blocks so the new site homepage has immediate content.
                   pb_map_file="$(mktemp)"
@@ -6575,7 +6957,7 @@ data:
                 else
                   title_sql="$(printf '%s' "${site_key} Home" | sed "s/'/''/g")"
                   psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, release_channel, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}','${homepage_release_channel_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto',NULL,NULL,'{}'::jsonb,true,'top-right','vertical','start','top-right','vertical','both');"
+                    "SET search_path TO directus, public; INSERT INTO cms_pages (id, slug, title, status, site_key, release_channel, layout_template_key, theme_package_key, theme_mode, analytics_google_measurement_id, analytics_openobserve_rum_script_url, analytics_openobserve_rum_config, widget_dock_enabled, widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction, refresh_target, force_login_for_page_access, required_role_for_page_access) VALUES ('${new_home_sql}','${homepage_slug_sql}','${title_sql}','published','${site_key_sql}','${homepage_release_channel_sql}',${homepage_layout_template_value_sql},${homepage_theme_package_value_sql},'auto',NULL,NULL,'{}'::jsonb,true,'top-right','vertical','start','top-right','vertical','both',false,NULL);"
                   echo "✅ Created default homepage for site_key='${site_key}'"
                 fi
                 HOME_PAGE_ID="$NEW_HOME_ID"
@@ -7881,6 +8263,7 @@ data:
       _ensure_local_ext_enabled "github-profile-sync"
       _ensure_local_ext_enabled "ai-provider-access"
       _ensure_local_ext_enabled "cms-content-model-select"
+      _ensure_local_ext_enabled "cms-keycloak-role-options"
       _ensure_local_ext_enabled "cms-asset-url-picker"
       _ensure_local_ext_enabled "cms-module-props-editor"
       _ensure_local_ext_enabled "cms-page-blocks-manager"

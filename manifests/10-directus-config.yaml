@@ -44,6 +44,14 @@ data:
   DIRECTUS_MODULE_REGISTRY_URL: "https://cloudflare-mfe-module-registry-service.suncoast.systems"
   DIRECTUS_MODULE_REGISTRY_PATH: "/api/modules"
   DIRECTUS_MODULE_REGISTRY_CACHE_TTL_MS: "180000"
+  # Keycloak role selector endpoint (used by cms-content-model-select role mode)
+  DIRECTUS_KC_BASE_URL: "https://auth.suncoast.systems"
+  DIRECTUS_KC_INTERNAL_REALM: "internal"
+  DIRECTUS_KC_EXTERNAL_REALM: "external"
+  DIRECTUS_KC_INTERNAL_CLIENT_ID: "<path:secret/data/keycloak-client-id-cms-site-internal#value>"
+  DIRECTUS_KC_INTERNAL_CLIENT_SECRET: "<path:secret/data/keycloak-client-secret-cms-site-internal#value>"
+  DIRECTUS_KC_EXTERNAL_CLIENT_ID: "<path:secret/data/keycloak-client-id-cms-site-external#value>"
+  DIRECTUS_KC_EXTERNAL_CLIENT_SECRET: "<path:secret/data/keycloak-client-secret-cms-site-external#value>"
   # --- GitHub OAuth (Directus reads these envs) ---
   AUTH_GITHUB_DRIVER: "oauth2"
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
@@ -680,16 +688,18 @@ data:
         const collectionKey = computed(() => asString(props.collection).toLowerCase());
         const mode = computed(() => {
           const explicit = asString(resolvedOptions.value?.mode).toLowerCase();
-          if (explicit === 'template' || explicit === 'slot' || explicit === 'theme' || explicit === 'module' || explicit === 'parent') return explicit;
+          if (explicit === 'template' || explicit === 'slot' || explicit === 'theme' || explicit === 'module' || explicit === 'parent' || explicit === 'role') return explicit;
           if (fieldKey.value === 'slot') return 'slot';
           if (fieldKey.value === 'parent_block_id') return 'parent';
           if (fieldKey.value === 'layout_template_key') return 'template';
           if (fieldKey.value === 'theme_package_key') return 'theme';
           if (fieldKey.value === 'module_key') return 'module';
+          if (fieldKey.value === 'required_role_for_page_access') return 'role';
           if (collectionKey.value === 'cms_page_blocks' && fieldKey.value.includes('slot')) return 'slot';
           if (collectionKey.value === 'cms_page_blocks' && fieldKey.value.includes('parent_block')) return 'parent';
           if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('layout_template')) return 'template';
           if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('theme_package')) return 'theme';
+          if (collectionKey.value === 'cms_pages' && fieldKey.value.includes('required_role')) return 'role';
           if (collectionKey.value === 'cms_block_module' && fieldKey.value.includes('module_key')) return 'module';
           if (resolvedOptions.value?.page_blocks_collection || resolvedOptions.value?.template_refs_collection || resolvedOptions.value?.parent_id_field) {
             return 'parent';
@@ -702,6 +712,9 @@ data:
           }
           if (resolvedOptions.value?.modules_collection || resolvedOptions.value?.module_value_field || resolvedOptions.value?.module_label_field) {
             return 'module';
+          }
+          if (resolvedOptions.value?.role_endpoint_path || resolvedOptions.value?.role_none_label || resolvedOptions.value?.role_none_value) {
+            return 'role';
           }
           return 'template';
         });
@@ -717,6 +730,12 @@ data:
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'page_id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const roleEndpointPath = computed(() => asString(resolvedOptions.value?.role_endpoint_path) || '/cms-keycloak-role-options/roles');
+        const roleSiteField = computed(() => asString(resolvedOptions.value?.role_site_field) || pageSiteField.value || 'site_key');
+        const roleRealmField = computed(() => asString(resolvedOptions.value?.role_realm_field) || '');
+        const roleNoneLabel = computed(() => asString(resolvedOptions.value?.role_none_label) || 'None (Any Logged-In User)');
+        const roleNoneValue = computed(() => asString(resolvedOptions.value?.role_none_value) || 'none');
+        const roleIncludeNone = computed(() => asBoolean(resolvedOptions.value?.role_include_none, true));
         const pageSlugField = computed(() => asString(resolvedOptions.value?.page_slug_field) || 'page_slug');
         const parentIdField = computed(() => asString(resolvedOptions.value?.parent_id_field) || 'parent_block_id');
         const itemIdField = computed(() => asString(resolvedOptions.value?.item_id_field) || 'id');
@@ -913,7 +932,18 @@ data:
           }
           return { site_key: { _empty: true } };
         };
-    
+
+        const inferRealmFromSiteKey = (siteKeyValue) => {
+          const normalized = asString(siteKeyValue).toLowerCase();
+          if (!normalized) return '';
+          const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+          if (tokens.includes('internal')) return 'internal';
+          if (tokens.includes('external')) return 'external';
+          if (normalized.includes('internal')) return 'internal';
+          if (normalized.includes('external')) return 'external';
+          return '';
+        };
+
         const loadTemplateChoices = async () => {
           const siteKey = asString(props.values?.[pageSiteField.value]);
           const filter = {
@@ -1362,7 +1392,60 @@ data:
             })
           );
         };
-    
+
+        const loadRoleChoices = async () => {
+          const siteField = roleSiteField.value || pageSiteField.value || 'site_key';
+          const siteKey = asString(
+            props.values?.[siteField]
+            ?? props.values?.[pageSiteField.value]
+            ?? props.values?.site_key,
+          );
+          const explicitRealm = roleRealmField.value
+            ? asString(props.values?.[roleRealmField.value]).toLowerCase()
+            : '';
+          const realm = explicitRealm === 'internal' || explicitRealm === 'external'
+            ? explicitRealm
+            : (inferRealmFromSiteKey(siteKey) || 'external');
+
+          const response = await apiGet(roleEndpointPath.value, {
+            realm,
+            site_key: siteKey || undefined,
+          });
+          const candidateRows = normalizeRows(response);
+          const fallbackRows = Array.isArray(response?.data?.roles)
+            ? response.data.roles
+            : (Array.isArray(response?.roles) ? response.roles : []);
+          const rows = candidateRows.length > 0 ? candidateRows : fallbackRows;
+
+          const mapped = uniqueChoices(
+            rows.map((row) => {
+              if (typeof row === 'string') {
+                const roleName = asString(row);
+                return { value: roleName, text: roleName };
+              }
+              const roleValue = asString(row?.value || row?.name || row?.role);
+              const roleText = asString(row?.text || row?.label || row?.name || row?.value || row?.role);
+              return {
+                value: roleValue,
+                text: roleText || roleValue,
+              };
+            }),
+          );
+
+          if (!roleIncludeNone.value) {
+            return mapped;
+          }
+
+          const noneEntry = {
+            value: roleNoneValue.value,
+            text: roleNoneLabel.value,
+          };
+          if (mapped.some((choice) => asString(choice.value) === asString(noneEntry.value))) {
+            return mapped;
+          }
+          return [noneEntry, ...mapped];
+        };
+
         const loadChoices = async () => {
           const currentRequest = ++requestId;
           loading.value = true;
@@ -1377,7 +1460,9 @@ data:
                   ? await loadModuleChoices()
                   : mode.value === 'parent'
                     ? await loadParentChoices()
-                    : await loadSlotChoices();
+                    : mode.value === 'role'
+                      ? await loadRoleChoices()
+                      : await loadSlotChoices();
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
     
@@ -1407,6 +1492,8 @@ data:
                             ? `No published modules available for provider "${effectiveModuleProviders.value.join(',')}" in this site scope.`
                             : 'No published modules available for this site scope.'
                         )
+                      : mode.value === 'role'
+                        ? 'No roles were returned for this realm/site context.'
                       : 'No valid slots available for this page template and site scope.';
               }
             }
@@ -1527,6 +1614,12 @@ data:
             slotsCollection: slotsCollection.value,
             themesCollection: themesCollection.value,
             modulesCollection: modulesCollection.value,
+            roleEndpointPath: roleEndpointPath.value,
+            roleSiteField: roleSiteField.value,
+            roleRealmField: roleRealmField.value,
+            roleNoneLabel: roleNoneLabel.value,
+            roleNoneValue: roleNoneValue.value,
+            roleIncludeNone: roleIncludeNone.value,
             pageBlocksCollection: pageBlocksCollection.value,
             templateRefsCollection: templateRefsCollection.value,
             pagesCollection: pagesCollection.value,
@@ -1696,7 +1789,22 @@ data:
           const hasDirectusSelect = typeof resolvedSelect !== 'string';
           const placeholderText = loading.value
             ? 'Loading options...'
-            : (missingContext.value || (mode.value === 'template' ? 'Select a template' : mode.value === 'theme' ? 'Select a theme' : mode.value === 'module' ? 'Select a module' : mode.value === 'parent' ? 'Optional: select a parent block' : 'Select a slot'));
+            : (
+              missingContext.value
+              || (
+                mode.value === 'template'
+                  ? 'Select a template'
+                  : mode.value === 'theme'
+                    ? 'Select a theme'
+                    : mode.value === 'module'
+                      ? 'Select a module'
+                      : mode.value === 'parent'
+                        ? 'Optional: select a parent block'
+                        : mode.value === 'role'
+                          ? 'Select a required role'
+                          : 'Select a slot'
+              )
+            );
     
           const errorNotice = loadError.value
             ? (typeof resolvedNotice !== 'string'
@@ -1746,7 +1854,7 @@ data:
       id: 'cms-content-model-select',
       name: 'CMS Content Model Select',
       icon: 'view_quilt',
-      description: 'Context-aware selector for CMS templates, themes, modules, slots, and parent template blocks.',
+      description: 'Context-aware selector for CMS templates, themes, modules, slots, parent template blocks, and Keycloak roles.',
       component: InterfaceComponent,
       types: ['string', 'text', 'uuid'],
       group: 'selection',
@@ -1766,6 +1874,7 @@ data:
                 { text: 'Module Selector', value: 'module' },
                 { text: 'Slot Selector', value: 'slot' },
                 { text: 'Parent Block Selector', value: 'parent' },
+                { text: 'Role Selector', value: 'role' },
               ],
             },
           },
@@ -1909,9 +2018,258 @@ data:
           meta: { width: 'half', interface: 'boolean' },
           schema: { default_value: true },
         },
+        {
+          field: 'role_endpoint_path',
+          name: 'Role Endpoint Path',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '/cms-keycloak-role-options/roles' },
+        },
+        {
+          field: 'role_site_field',
+          name: 'Role Site Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'site_key' },
+        },
+        {
+          field: 'role_realm_field',
+          name: 'Role Realm Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
+        },
+        {
+          field: 'role_none_label',
+          name: 'Role None Label',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'None (Any Logged-In User)' },
+        },
+        {
+          field: 'role_none_value',
+          name: 'Role None Value',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'none' },
+        },
+        {
+          field: 'role_include_none',
+          name: 'Role Include None Option',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: true },
+        },
       ],
     });
-    
+
+  cms-keycloak-role-options.package.json: |
+    {
+      "name": "directus-extension-cms-keycloak-role-options",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "endpoint",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+  cms-keycloak-role-options.index.js: |
+    const asString = (value) => {
+      if (Array.isArray(value)) {
+        return asString(value[0]);
+      }
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const asInteger = (value, fallback) => {
+      const parsed = Number.parseInt(asString(value), 10);
+      if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+      return parsed;
+    };
+
+    const normalizeBaseUrl = (value) => {
+      const source = asString(value);
+      if (!source) return '';
+      try {
+        const parsed = new URL(source);
+        parsed.hash = '';
+        parsed.search = '';
+        parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+        return parsed.toString().replace(/\/+$/, '');
+      } catch {
+        return source.replace(/\/+$/, '');
+      }
+    };
+
+    const inferRealmFromSiteKey = (value) => {
+      const normalized = asString(value).toLowerCase();
+      if (!normalized) return '';
+      const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+      if (tokens.includes('internal')) return 'internal';
+      if (tokens.includes('external')) return 'external';
+      if (normalized.includes('internal')) return 'internal';
+      if (normalized.includes('external')) return 'external';
+      return '';
+    };
+
+    const normalizeRealmSelection = (requestedRealm, siteKey) => {
+      const requested = asString(requestedRealm).toLowerCase();
+      if (requested === 'internal' || requested === 'external') return requested;
+      const inferred = inferRealmFromSiteKey(siteKey);
+      if (inferred === 'internal' || inferred === 'external') return inferred;
+      return 'external';
+    };
+
+    const createErrorPayload = (message, code = 'ROLE_OPTIONS_ERROR') => ({
+      errors: [
+        {
+          message,
+          extensions: { code },
+        },
+      ],
+    });
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, options);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message =
+          asString(payload?.error_description)
+          || asString(payload?.error)
+          || asString(payload?.message)
+          || `Request failed (${response.status})`;
+        throw new Error(message);
+      }
+      return payload;
+    }
+
+    async function getClientAccessToken({
+      baseUrl,
+      realmName,
+      clientId,
+      clientSecret,
+    }) {
+      const tokenUrl = `${baseUrl}/realms/${encodeURIComponent(realmName)}/protocol/openid-connect/token`;
+      const body = new URLSearchParams();
+      body.set('grant_type', 'client_credentials');
+      body.set('client_id', clientId);
+      body.set('client_secret', clientSecret);
+      const payload = await requestJson(tokenUrl, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString(),
+      });
+      const token = asString(payload?.access_token);
+      if (!token) {
+        throw new Error('Keycloak token response is missing access_token.');
+      }
+      return token;
+    }
+
+    async function getRealmRoles({
+      baseUrl,
+      realmName,
+      accessToken,
+      maxRoles,
+    }) {
+      const rolesUrl = new URL(`${baseUrl}/admin/realms/${encodeURIComponent(realmName)}/roles`);
+      rolesUrl.searchParams.set('briefRepresentation', 'true');
+      rolesUrl.searchParams.set('first', '0');
+      rolesUrl.searchParams.set('max', String(maxRoles));
+      const payload = await requestJson(rolesUrl.toString(), {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${accessToken}`,
+        },
+      });
+      const rows = Array.isArray(payload) ? payload : [];
+      return rows
+        .map((row) => asString(row?.name))
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right));
+    }
+
+    export default (router, context) => {
+      const logger = context?.logger;
+      const env = context?.env || process.env || {};
+      const baseUrl = normalizeBaseUrl(env.DIRECTUS_KC_BASE_URL || 'https://auth.suncoast.systems');
+      const internalRealmName = asString(env.DIRECTUS_KC_INTERNAL_REALM || 'internal') || 'internal';
+      const externalRealmName = asString(env.DIRECTUS_KC_EXTERNAL_REALM || 'external') || 'external';
+      const roleListMax = Math.min(asInteger(env.DIRECTUS_KC_ROLE_LIST_MAX, 1000), 5000);
+
+      const credentialsByRealm = {
+        internal: {
+          realmName: internalRealmName,
+          clientId: asString(env.DIRECTUS_KC_INTERNAL_CLIENT_ID),
+          clientSecret: asString(env.DIRECTUS_KC_INTERNAL_CLIENT_SECRET),
+        },
+        external: {
+          realmName: externalRealmName,
+          clientId: asString(env.DIRECTUS_KC_EXTERNAL_CLIENT_ID),
+          clientSecret: asString(env.DIRECTUS_KC_EXTERNAL_CLIENT_SECRET),
+        },
+      };
+
+      router.get('/roles', async (req, res) => {
+        const siteKey = asString(req?.query?.site_key);
+        const realmSelection = normalizeRealmSelection(req?.query?.realm, siteKey);
+        const credentials = credentialsByRealm[realmSelection];
+
+        if (!baseUrl) {
+          res.status(500).json(createErrorPayload('Keycloak base URL is not configured.'));
+          return;
+        }
+        if (!credentials?.realmName || !credentials?.clientId || !credentials?.clientSecret) {
+          res.status(500).json(createErrorPayload(`Keycloak credentials are not configured for realm '${realmSelection}'.`));
+          return;
+        }
+
+        try {
+          const token = await getClientAccessToken({
+            baseUrl,
+            realmName: credentials.realmName,
+            clientId: credentials.clientId,
+            clientSecret: credentials.clientSecret,
+          });
+          const roles = await getRealmRoles({
+            baseUrl,
+            realmName: credentials.realmName,
+            accessToken: token,
+            maxRoles: roleListMax,
+          });
+          res.json({
+            data: roles.map((roleName) => ({ value: roleName, text: roleName })),
+          });
+        } catch (error) {
+          if (logger && typeof logger.warn === 'function') {
+            logger.warn(
+              {
+                realm: realmSelection,
+                site_key: siteKey || null,
+                message: error instanceof Error ? error.message : String(error),
+              },
+              '[cms-keycloak-role-options] failed to load roles',
+            );
+          }
+          res.status(502).json(
+            createErrorPayload(
+              error instanceof Error
+                ? error.message
+                : 'Unable to fetch roles from Keycloak.',
+              'ROLE_OPTIONS_UPSTREAM_ERROR',
+            ),
+          );
+        }
+      });
+    };
+
   cms-asset-url-picker.package.json: |
     {
       "name": "directus-extension-cms-asset-url-picker",
