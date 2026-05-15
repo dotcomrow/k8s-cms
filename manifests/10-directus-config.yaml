@@ -2141,7 +2141,10 @@ data:
           || asString(payload?.error)
           || asString(payload?.message)
           || `Request failed (${response.status})`;
-        throw new Error(message);
+        const error = new Error(message);
+        error.httpStatus = response.status;
+        error.responseBody = payload;
+        throw error;
       }
       return payload;
     }
@@ -2248,22 +2251,29 @@ data:
             data: roles.map((roleName) => ({ value: roleName, text: roleName })),
           });
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorStatus = Number(error?.httpStatus ?? error?.status ?? 0);
+          const isForbidden = errorStatus === 403 || /\b403\b/.test(errorMessage);
+          const forbiddenMessage = `Keycloak denied role listing for realm '${realmSelection}'. Grant client '${credentials.clientId}' service-account roles realm-management.query-roles and realm-management.view-realm.`;
           if (logger && typeof logger.warn === 'function') {
             logger.warn(
               {
                 realm: realmSelection,
+                realm_name: credentials?.realmName || null,
+                client_id: credentials?.clientId || null,
                 site_key: siteKey || null,
-                message: error instanceof Error ? error.message : String(error),
+                status: errorStatus || null,
+                message: errorMessage,
               },
               '[cms-keycloak-role-options] failed to load roles',
             );
           }
-          res.status(502).json(
+          res.status(isForbidden ? 403 : 502).json(
             createErrorPayload(
-              error instanceof Error
-                ? error.message
-                : 'Unable to fetch roles from Keycloak.',
-              'ROLE_OPTIONS_UPSTREAM_ERROR',
+              isForbidden
+                ? forbiddenMessage
+                : (errorMessage || 'Unable to fetch roles from Keycloak.'),
+              isForbidden ? 'ROLE_OPTIONS_FORBIDDEN' : 'ROLE_OPTIONS_UPSTREAM_ERROR',
             ),
           );
         }
