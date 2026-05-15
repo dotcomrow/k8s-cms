@@ -8093,7 +8093,7 @@ data:
     fi
     
     ENCRYPTED_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-      "SELECT field FROM directus_fields WHERE collection='directus_settings' AND special::text ILIKE '%encrypt%';" || true)"
+      "SELECT field FROM directus.directus_fields WHERE collection='directus_settings' AND special::text ILIKE '%encrypt%';" || true)"
     ENCRYPTED_REGEX='^1\\|\\|scrypt\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[0-9]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+\\|\\|[^|]+$'
     
     EXTRA_ENCRYPTED_COLS="ai_openai_api_key ai_anthropic_api_key ai_google_api_key ai_openai_compatible_api_key"
@@ -8234,7 +8234,7 @@ data:
     
         if printf '%s\n' "$EXT_COLS" | grep -qx "folder"; then
           EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-            "SELECT 1 FROM directus_extensions WHERE folder='${ext_folder_sql}' AND source='local' LIMIT 1;" || true)"
+            "SELECT 1 FROM directus.directus_extensions WHERE folder='${ext_folder_sql}' AND source='local' LIMIT 1;" || true)"
           if [ "$EXISTS" = "1" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE folder='${ext_folder_sql}' AND source='local';"
@@ -8247,7 +8247,7 @@ data:
           fi
         else
           EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-            "SELECT 1 FROM directus_extensions WHERE name='${ext_folder_sql}' LIMIT 1;" || true)"
+            "SELECT 1 FROM directus.directus_extensions WHERE name='${ext_folder_sql}' LIMIT 1;" || true)"
           if [ "$EXISTS" = "1" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=true WHERE name='${ext_folder_sql}';"
