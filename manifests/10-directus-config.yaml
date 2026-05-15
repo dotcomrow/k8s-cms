@@ -1395,17 +1395,38 @@ data:
 
         const loadRoleChoices = async () => {
           const siteField = roleSiteField.value || pageSiteField.value || 'site_key';
-          const siteKey = asString(
+          let siteKey = asString(
             props.values?.[siteField]
             ?? props.values?.[pageSiteField.value]
             ?? props.values?.site_key,
           );
+          if (!siteKey) {
+            const context = resolveRecordContext();
+            if (context.recordCollection && context.recordId) {
+              try {
+                const response = await apiGet(
+                  `/items/${context.recordCollection}/${encodeURIComponent(context.recordId)}`,
+                  { fields: [siteField, pageSiteField.value, 'site_key'].join(',') },
+                );
+                siteKey = asString(
+                  response?.data?.[siteField]
+                  ?? response?.data?.[pageSiteField.value]
+                  ?? response?.data?.site_key,
+                );
+              } catch {
+                siteKey = '';
+              }
+            }
+          }
           const explicitRealm = roleRealmField.value
             ? asString(props.values?.[roleRealmField.value]).toLowerCase()
             : '';
           const realm = explicitRealm === 'internal' || explicitRealm === 'external'
             ? explicitRealm
-            : (inferRealmFromSiteKey(siteKey) || 'external');
+            : inferRealmFromSiteKey(siteKey);
+          if (!realm) {
+            throw new Error('Select Site Key (internal or external) before choosing Required Role.');
+          }
 
           const response = await apiGet(roleEndpointPath.value, {
             realm,
@@ -1623,7 +1644,11 @@ data:
             pageBlocksCollection: pageBlocksCollection.value,
             templateRefsCollection: templateRefsCollection.value,
             pagesCollection: pagesCollection.value,
-            siteKey: asString(props.values?.[pageSiteField.value]),
+            siteKey: asString(
+              props.values?.[roleSiteField.value]
+              ?? props.values?.[pageSiteField.value]
+              ?? props.values?.site_key,
+            ),
             pageId: parseId(props.values?.[pageIdField.value]),
             pageSlug: asString(props.values?.[pageSlugField.value]),
             pageTemplate: asString(props.values?.[pageTemplateField.value]),
@@ -2120,7 +2145,7 @@ data:
       if (requested === 'internal' || requested === 'external') return requested;
       const inferred = inferRealmFromSiteKey(siteKey);
       if (inferred === 'internal' || inferred === 'external') return inferred;
-      return 'external';
+      return '';
     };
 
     const createErrorPayload = (message, code = 'ROLE_OPTIONS_ERROR') => ({
@@ -2223,6 +2248,15 @@ data:
       router.get('/roles', async (req, res) => {
         const siteKey = asString(req?.query?.site_key);
         const realmSelection = normalizeRealmSelection(req?.query?.realm, siteKey);
+        if (!realmSelection) {
+          res.status(400).json(
+            createErrorPayload(
+              "Unable to determine Keycloak realm. Set Site Key to 'internal' or 'external' first.",
+              'ROLE_OPTIONS_REALM_REQUIRED',
+            ),
+          );
+          return;
+        }
         const credentials = credentialsByRealm[realmSelection];
 
         if (!baseUrl) {
