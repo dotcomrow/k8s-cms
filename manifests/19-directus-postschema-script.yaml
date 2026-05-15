@@ -3961,7 +3961,7 @@ data:
         '{mode:"module",modules_collection:"cms_modules",pages_collection:"cms_pages",module_value_field:"module_key",module_label_field:"name",module_provider_field:"module_provider",page_site_field:"site_key",include_global:true,module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_channel_field:"release_channel",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,choices:$choices}')"
       module_display_options_json="$(jq -nc --argjson choices "${module_choices_json}" '{choices:$choices}')"
       role_interface_options_json="$(jq -nc \
-        '{mode:"role",role_endpoint_path:"/cms-keycloak-role-options/roles",role_site_field:"site_key",role_none_label:"None (Any Logged-In User)",role_none_value:"none",role_include_none:true}')"
+        '{mode:"role",role_endpoint_path:"/directus-extension-cms-keycloak-role-options/roles",role_site_field:"site_key",role_none_label:"None (Any Logged-In User)",role_none_value:"none",role_include_none:true}')"
       module_props_interface_options_json="$(jq -nc \
         --arg registry_url "${module_registry_url}" \
         --arg registry_path "${module_registry_path}" \

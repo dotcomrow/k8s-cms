@@ -730,7 +730,7 @@ data:
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'page_id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
-        const roleEndpointPath = computed(() => asString(resolvedOptions.value?.role_endpoint_path) || '/cms-keycloak-role-options/roles');
+        const roleEndpointPath = computed(() => asString(resolvedOptions.value?.role_endpoint_path) || '/directus-extension-cms-keycloak-role-options/roles');
         const roleSiteField = computed(() => asString(resolvedOptions.value?.role_site_field) || pageSiteField.value || 'site_key');
         const roleRealmField = computed(() => asString(resolvedOptions.value?.role_realm_field) || '');
         const roleNoneLabel = computed(() => asString(resolvedOptions.value?.role_none_label) || 'None (Any Logged-In User)');
@@ -2023,7 +2023,7 @@ data:
           name: 'Role Endpoint Path',
           type: 'string',
           meta: { width: 'half', interface: 'input' },
-          schema: { default_value: '/cms-keycloak-role-options/roles' },
+          schema: { default_value: '/directus-extension-cms-keycloak-role-options/roles' },
         },
         {
           field: 'role_site_field',
