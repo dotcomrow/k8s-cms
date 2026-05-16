@@ -564,7 +564,7 @@ data:
     }
   cms-content-model-select.index.js: |
     import { defineInterface } from '@directus/extensions-sdk';
-    import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
+    import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent, inject } from 'vue';
     
     const asString = (value) => {
       if (Array.isArray(value)) {
@@ -700,6 +700,7 @@ data:
         const loadError = ref('');
         const choices = ref([]);
         const missingContext = ref('');
+        const injectedValues = inject('values', null);
     
         const resolvedOptions = computed(() => parseOptions(props.options));
         const fieldKey = computed(() => asString(props.field).toLowerCase());
@@ -964,18 +965,52 @@ data:
 
         const roleScopedSiteKey = computed(() =>
           asString(
-            props.values?.[roleSiteField.value]
+            (
+              (
+                injectedValues && typeof injectedValues === 'object' && 'value' in injectedValues
+                  ? injectedValues.value
+                  : injectedValues
+              )?.[roleSiteField.value]
+              ?? (
+                injectedValues && typeof injectedValues === 'object' && 'value' in injectedValues
+                  ? injectedValues.value
+                  : injectedValues
+              )?.[pageSiteField.value]
+              ?? (
+                injectedValues && typeof injectedValues === 'object' && 'value' in injectedValues
+                  ? injectedValues.value
+                  : injectedValues
+              )?.site_key
+              ?? props.values?.[roleSiteField.value]
               ?? props.values?.[pageSiteField.value]
-              ?? props.values?.site_key,
+              ?? props.values?.site_key
+            ),
           )
         );
+
+        const getFormValues = () => {
+          const fromInjection = (
+            injectedValues && typeof injectedValues === 'object' && 'value' in injectedValues
+              ? injectedValues.value
+              : injectedValues
+          );
+          if (fromInjection && typeof fromInjection === 'object') return fromInjection;
+          if (props.values && typeof props.values === 'object') return props.values;
+          return {};
+        };
+
+        const readFormValue = (fieldName) => {
+          if (!fieldName) return undefined;
+          const values = getFormValues();
+          return values?.[fieldName];
+        };
 
         const setFormFieldValue = (fieldName, value) => {
           if (!fieldName) return;
           const payload = { field: fieldName, value };
           emit('setFieldValue', payload);
           emit('set-field-value', payload);
-          const values = props.values;
+          const values = getFormValues();
           if (!values || typeof values !== 'object') return;
           try {
             values[fieldName] = value;
@@ -984,15 +1019,10 @@ data:
           }
         };
 
-        const roleSiteWatcherInitialized = ref(false);
         watch(
           () => roleScopedSiteKey.value,
           (nextValue, previousValue) => {
             if (mode.value !== 'role') return;
-            if (!roleSiteWatcherInitialized.value) {
-              roleSiteWatcherInitialized.value = true;
-              return;
-            }
             const nextSiteKey = asString(nextValue);
             const previousSiteKey = asString(previousValue);
             if (nextSiteKey === previousSiteKey) return;
@@ -1001,6 +1031,7 @@ data:
             setFormFieldValue('force_login_for_page_access', false);
             setFormFieldValue('required_role_for_page_access', null);
             emit('input', null);
+            void loadChoices();
           },
         );
 
@@ -1459,7 +1490,10 @@ data:
             : [];
           const siteField = roleSiteField.value || pageSiteField.value || 'site_key';
           const siteKey = asString(
-            props.values?.[siteField]
+            readFormValue(siteField)
+            ?? readFormValue(pageSiteField.value)
+            ?? readFormValue('site_key')
+            ?? props.values?.[siteField]
             ?? props.values?.[pageSiteField.value]
             ?? props.values?.site_key,
           );
@@ -1467,7 +1501,7 @@ data:
             return noneChoices;
           }
           const explicitRealm = roleRealmField.value
-            ? asString(props.values?.[roleRealmField.value]).toLowerCase()
+            ? asString(readFormValue(roleRealmField.value) ?? props.values?.[roleRealmField.value]).toLowerCase()
             : '';
           const realm = explicitRealm === 'internal' || explicitRealm === 'external'
             ? explicitRealm
@@ -1692,11 +1726,7 @@ data:
             pageBlocksCollection: pageBlocksCollection.value,
             templateRefsCollection: templateRefsCollection.value,
             pagesCollection: pagesCollection.value,
-            siteKey: asString(
-              props.values?.[roleSiteField.value]
-              ?? props.values?.[pageSiteField.value]
-              ?? props.values?.site_key,
-            ),
+            siteKey: roleScopedSiteKey.value,
             pageId: parseId(props.values?.[pageIdField.value]),
             pageSlug: asString(props.values?.[pageSlugField.value]),
             pageTemplate: asString(props.values?.[pageTemplateField.value]),
