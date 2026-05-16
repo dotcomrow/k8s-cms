@@ -567,6 +567,24 @@ data:
     import { defineComponent, h, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } from 'vue';
     
     const asString = (value) => {
+      if (Array.isArray(value)) {
+        return asString(value[0]);
+      }
+      if (value && typeof value === 'object') {
+        const candidateKeys = ['value', 'key', 'id', 'site_key', 'slug', 'name', 'text', 'label'];
+        for (const key of candidateKeys) {
+          const candidate = value?.[key];
+          if (candidate === null || candidate === undefined) continue;
+          if (typeof candidate === 'object') continue;
+          const normalized = String(candidate).trim();
+          if (normalized) return normalized;
+        }
+        if (typeof value.toString === 'function' && value.toString !== Object.prototype.toString) {
+          const rendered = String(value.toString()).trim();
+          if (rendered && rendered !== '[object Object]') return rendered;
+        }
+        return '';
+      }
       if (value === null || value === undefined) return '';
       return String(value).trim();
     };
@@ -676,7 +694,7 @@ data:
         field: { type: String, default: '' },
         collection: { type: String, default: '' },
       },
-      emits: ['input'],
+      emits: ['input', 'setFieldValue', 'set-field-value'],
       setup(props, { emit }) {
         const loading = ref(false);
         const loadError = ref('');
@@ -954,6 +972,9 @@ data:
 
         const setFormFieldValue = (fieldName, value) => {
           if (!fieldName) return;
+          const payload = { field: fieldName, value };
+          emit('setFieldValue', payload);
+          emit('set-field-value', payload);
           const values = props.values;
           if (!values || typeof values !== 'object') return;
           try {
