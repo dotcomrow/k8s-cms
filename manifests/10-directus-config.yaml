@@ -676,7 +676,7 @@ data:
         field: { type: String, default: '' },
         collection: { type: String, default: '' },
       },
-      emits: ['input'],
+      emits: ['input', 'setFieldValue'],
       setup(props, { emit }) {
         const loading = ref(false);
         const loadError = ref('');
@@ -943,6 +943,34 @@ data:
           if (normalized.includes('external')) return 'external';
           return '';
         };
+
+        const roleScopedSiteKey = computed(() =>
+          asString(
+            props.values?.[roleSiteField.value]
+              ?? props.values?.[pageSiteField.value]
+              ?? props.values?.site_key,
+          )
+        );
+
+        const roleSiteWatcherInitialized = ref(false);
+        watch(
+          () => roleScopedSiteKey.value,
+          (nextValue, previousValue) => {
+            if (mode.value !== 'role') return;
+            if (!roleSiteWatcherInitialized.value) {
+              roleSiteWatcherInitialized.value = true;
+              return;
+            }
+            const nextSiteKey = asString(nextValue);
+            const previousSiteKey = asString(previousValue);
+            if (nextSiteKey === previousSiteKey) return;
+
+            // Site scope changed: access controls must be re-selected for the new realm.
+            emit('setFieldValue', { field: 'force_login_for_page_access', value: false });
+            emit('setFieldValue', { field: 'required_role_for_page_access', value: null });
+            emit('input', null);
+          },
+        );
 
         const loadTemplateChoices = async () => {
           const siteKey = asString(props.values?.[pageSiteField.value]);
@@ -1395,28 +1423,13 @@ data:
 
         const loadRoleChoices = async () => {
           const siteField = roleSiteField.value || pageSiteField.value || 'site_key';
-          let siteKey = asString(
+          const siteKey = asString(
             props.values?.[siteField]
             ?? props.values?.[pageSiteField.value]
             ?? props.values?.site_key,
           );
           if (!siteKey) {
-            const context = resolveRecordContext();
-            if (context.recordCollection && context.recordId) {
-              try {
-                const response = await apiGet(
-                  `/items/${context.recordCollection}/${encodeURIComponent(context.recordId)}`,
-                  { fields: [siteField, pageSiteField.value, 'site_key'].join(',') },
-                );
-                siteKey = asString(
-                  response?.data?.[siteField]
-                  ?? response?.data?.[pageSiteField.value]
-                  ?? response?.data?.site_key,
-                );
-              } catch {
-                siteKey = '';
-              }
-            }
+            throw new Error('Select Site Key (internal or external) before choosing Required Role.');
           }
           const explicitRealm = roleRealmField.value
             ? asString(props.values?.[roleRealmField.value]).toLowerCase()

@@ -1865,6 +1865,47 @@ data:
       \$\$;" "enforce cms_pages.parent scope (site_key + release_channel)"; then
       sync_site_metadata_failed="1"
     fi
+    if ! _psql_yb_retry "SET search_path TO directus, public;
+      CREATE OR REPLACE FUNCTION cms_pages_access_scope_guard()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS \$\$
+      BEGIN
+        IF TG_OP = 'UPDATE'
+           AND COALESCE(NULLIF(BTRIM(NEW.site_key), ''), '') IS DISTINCT FROM COALESCE(NULLIF(BTRIM(OLD.site_key), ''), '') THEN
+          NEW.force_login_for_page_access := false;
+          NEW.required_role_for_page_access := NULL;
+        END IF;
+
+        NEW.force_login_for_page_access := COALESCE(NEW.force_login_for_page_access, false);
+        IF NEW.force_login_for_page_access = false THEN
+          NEW.required_role_for_page_access := NULL;
+        ELSE
+          NEW.required_role_for_page_access := NULLIF(BTRIM(NEW.required_role_for_page_access), '');
+          IF LOWER(COALESCE(NEW.required_role_for_page_access, '')) = 'none' THEN
+            NEW.required_role_for_page_access := NULL;
+          END IF;
+        END IF;
+
+        RETURN NEW;
+      END
+      \$\$;
+
+      DO \$\$
+      BEGIN
+        IF to_regclass('directus.cms_pages') IS NULL THEN
+          RETURN;
+        END IF;
+        DROP TRIGGER IF EXISTS cms_pages_access_scope_guard_trg ON cms_pages;
+        CREATE TRIGGER cms_pages_access_scope_guard_trg
+          BEFORE INSERT OR UPDATE OF site_key, force_login_for_page_access, required_role_for_page_access
+          ON cms_pages
+          FOR EACH ROW
+          EXECUTE FUNCTION cms_pages_access_scope_guard();
+      END
+      \$\$;" "enforce cms_pages access-scope guard"; then
+      sync_site_metadata_failed="1"
+    fi
     if [ "${sync_site_metadata_failed}" != "0" ]; then
       echo "⚠️ Some site metadata sync steps failed after retries; continuing startup and retrying on next deploy."
     fi
