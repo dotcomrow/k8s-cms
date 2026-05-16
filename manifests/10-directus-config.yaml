@@ -676,7 +676,7 @@ data:
         field: { type: String, default: '' },
         collection: { type: String, default: '' },
       },
-      emits: ['input', 'setFieldValue'],
+      emits: ['input'],
       setup(props, { emit }) {
         const loading = ref(false);
         const loadError = ref('');
@@ -952,6 +952,17 @@ data:
           )
         );
 
+        const setFormFieldValue = (fieldName, value) => {
+          if (!fieldName) return;
+          const values = props.values;
+          if (!values || typeof values !== 'object') return;
+          try {
+            values[fieldName] = value;
+          } catch {
+            // Ignore immutable contexts (e.g., revision/compare views).
+          }
+        };
+
         const roleSiteWatcherInitialized = ref(false);
         watch(
           () => roleScopedSiteKey.value,
@@ -966,8 +977,8 @@ data:
             if (nextSiteKey === previousSiteKey) return;
 
             // Site scope changed: access controls must be re-selected for the new realm.
-            emit('setFieldValue', { field: 'force_login_for_page_access', value: false });
-            emit('setFieldValue', { field: 'required_role_for_page_access', value: null });
+            setFormFieldValue('force_login_for_page_access', false);
+            setFormFieldValue('required_role_for_page_access', null);
             emit('input', null);
           },
         );
@@ -1422,6 +1433,9 @@ data:
         };
 
         const loadRoleChoices = async () => {
+          const noneChoices = roleIncludeNone.value
+            ? [{ value: roleNoneValue.value, text: roleNoneLabel.value }]
+            : [];
           const siteField = roleSiteField.value || pageSiteField.value || 'site_key';
           const siteKey = asString(
             props.values?.[siteField]
@@ -1429,7 +1443,7 @@ data:
             ?? props.values?.site_key,
           );
           if (!siteKey) {
-            throw new Error('Select Site Key (internal or external) before choosing Required Role.');
+            return noneChoices;
           }
           const explicitRealm = roleRealmField.value
             ? asString(props.values?.[roleRealmField.value]).toLowerCase()
@@ -1438,7 +1452,7 @@ data:
             ? explicitRealm
             : inferRealmFromSiteKey(siteKey);
           if (!realm) {
-            throw new Error('Select Site Key (internal or external) before choosing Required Role.');
+            return noneChoices;
           }
 
           const response = await apiGet(roleEndpointPath.value, {

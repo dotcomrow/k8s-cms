@@ -4094,7 +4094,7 @@ data:
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       widget_dock_dependent_readonly_conditions_json="$(jq -nc '[{"name":"Widget dock disabled","rule":{"widget_dock_enabled":{"_neq":true}},"readonly":true}]')"
-      required_role_for_page_access_hidden_conditions_json="$(jq -nc '[{"name":"Force login required","rule":{"force_login_for_page_access":{"_neq":true}},"hidden":true}]')"
+      required_role_for_page_access_hidden_conditions_json="$(jq -nc '[{"name":"Force login + site key required","rule":{"_or":[{"force_login_for_page_access":{"_neq":true}},{"site_key":{"_empty":true}}]},"hidden":true}]')"
       openobserve_config_readonly_conditions_json="$(jq -nc '[{"name":"OpenObserve URL required","rule":{"_or":[{"analytics_openobserve_rum_script_url":{"_null":true}},{"analytics_openobserve_rum_script_url":{"_eq":""}}]},"readonly":true}]')"
       hero_background_asset_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,store_file_id:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
