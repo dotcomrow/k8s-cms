@@ -1,4 +1,4 @@
-# Token exchange bridge used by Gravitee to validate external JWTs and mint a stable Directus Bearer token.
+# Token exchange bridge used by Gravitee to validate internal/external JWTs and mint a stable Directus Bearer token.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -24,11 +24,27 @@ data:
     import jwt
     from fastapi import FastAPI, Form, HTTPException
 
-    ISSUER = os.environ.get("KEYCLOAK_ISSUER", "https://auth.suncoast.systems/realms/external")
-    JWKS_URL = os.environ.get(
-        "KEYCLOAK_JWKS_URL",
+    INTERNAL_ISSUER = os.environ.get(
+        "KEYCLOAK_INTERNAL_ISSUER",
+        "https://auth.suncoast.systems/realms/internal",
+    )
+    INTERNAL_JWKS_URL = os.environ.get(
+        "KEYCLOAK_INTERNAL_JWKS_URL",
+        "https://auth.suncoast.systems/realms/internal/protocol/openid-connect/certs",
+    )
+    EXTERNAL_ISSUER = os.environ.get(
+        "KEYCLOAK_EXTERNAL_ISSUER",
+        "https://auth.suncoast.systems/realms/external",
+    )
+    EXTERNAL_JWKS_URL = os.environ.get(
+        "KEYCLOAK_EXTERNAL_JWKS_URL",
         "https://auth.suncoast.systems/realms/external/protocol/openid-connect/certs",
     )
+
+    # Backward-compatible single-issuer overrides.
+    SINGLE_ISSUER = os.environ.get("KEYCLOAK_ISSUER", "")
+    SINGLE_JWKS_URL = os.environ.get("KEYCLOAK_JWKS_URL", "")
+
     TOKEN_TTL_SECONDS = int(os.environ.get("DIRECTUS_EXPIRES_IN_SECONDS", "3600"))
     JWKS_CACHE_SECONDS = int(os.environ.get("JWKS_CACHE_SECONDS", "300"))
     JWKS_TIMEOUT_SECONDS = int(os.environ.get("JWKS_TIMEOUT_SECONDS", "5"))
@@ -42,7 +58,7 @@ data:
     DIRECTUS_TOKEN_KEY = os.environ.get("DIRECTUS_TOKEN_KEY", "token")
     TOKEN_CACHE_SECONDS = int(os.environ.get("DIRECTUS_TOKEN_CACHE_SECONDS", "60"))
 
-    _jwks_cache = {"data": None, "loaded_at": 0.0}
+    _jwks_cache = {"by_url": {}}
     _jwks_lock = threading.Lock()
 
     _token_cache = {"by_client": {}}
@@ -51,6 +67,14 @@ data:
     app = FastAPI()
 
     _client_id_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+    def _issuer_configs():
+        if SINGLE_ISSUER and SINGLE_JWKS_URL:
+            return [{"issuer": SINGLE_ISSUER, "jwks_url": SINGLE_JWKS_URL}]
+        return [
+            {"issuer": INTERNAL_ISSUER, "jwks_url": INTERNAL_JWKS_URL},
+            {"issuer": EXTERNAL_ISSUER, "jwks_url": EXTERNAL_JWKS_URL},
+        ]
 
     def _read_file(path: str) -> str:
         try:
@@ -115,60 +139,79 @@ data:
             _token_cache["by_client"][client_key] = {"token": token, "loaded_at": now}
         return token
 
-    def _load_jwks():
+    def _load_jwks(jwks_url: str):
         now = time.time()
-        cached = _jwks_cache["data"]
-        if cached and now - _jwks_cache["loaded_at"] < JWKS_CACHE_SECONDS:
-            return cached
+        cached = _jwks_cache["by_url"].get(jwks_url)
+        if cached and now - cached.get("loaded_at", 0.0) < JWKS_CACHE_SECONDS:
+            return cached.get("data")
         with _jwks_lock:
             now = time.time()
-            cached = _jwks_cache["data"]
-            if cached and now - _jwks_cache["loaded_at"] < JWKS_CACHE_SECONDS:
-                return cached
+            cached = _jwks_cache["by_url"].get(jwks_url)
+            if cached and now - cached.get("loaded_at", 0.0) < JWKS_CACHE_SECONDS:
+                return cached.get("data")
             try:
-                with urllib.request.urlopen(JWKS_URL, timeout=JWKS_TIMEOUT_SECONDS) as resp:
+                with urllib.request.urlopen(jwks_url, timeout=JWKS_TIMEOUT_SECONDS) as resp:
                     data = json.load(resp)
-                _jwks_cache["data"] = data
-                _jwks_cache["loaded_at"] = now
+                _jwks_cache["by_url"][jwks_url] = {"data": data, "loaded_at": now}
                 return data
             except Exception:
-                if _jwks_cache["data"]:
-                    return _jwks_cache["data"]
+                if cached and cached.get("data"):
+                    return cached.get("data")
                 raise
 
-    def _find_signing_key(token: str):
+    def _find_signing_key(token: str, jwks_url: str):
         header = jwt.get_unverified_header(token)
         kid = header.get("kid")
         if not kid:
             return None
-        jwks = _load_jwks() or {}
+        jwks = _load_jwks(jwks_url) or {}
         for key in jwks.get("keys", []):
             if key.get("kid") == kid:
                 return jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
         return None
 
-    def get_signing_key(token: str):
-        key = _find_signing_key(token)
+    def get_signing_key(token: str, jwks_url: str):
+        key = _find_signing_key(token, jwks_url)
         if key:
             return key
-        _jwks_cache["loaded_at"] = 0.0
-        key = _find_signing_key(token)
+        _jwks_cache["by_url"][jwks_url] = {"data": None, "loaded_at": 0.0}
+        key = _find_signing_key(token, jwks_url)
         if key:
             return key
         raise HTTPException(status_code=401, detail="Invalid subject token")
 
     def verify_token(token: str):
+        last_error = None
         try:
-            key = get_signing_key(token)
-            return jwt.decode(
-                token,
-                key,
-                algorithms=["RS256"],
-                issuer=ISSUER,
-                options={"verify_aud": False},
-            )
+            unverified = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+            token_issuer = unverified.get("iss")
         except Exception:
+            token_issuer = None
+
+        configs = _issuer_configs()
+        if token_issuer:
+            matching = [cfg for cfg in configs if cfg.get("issuer") == token_issuer]
+            if matching:
+                configs = matching + [cfg for cfg in configs if cfg not in matching]
+        try:
+            for cfg in configs:
+                try:
+                    key = get_signing_key(token, cfg["jwks_url"])
+                    return jwt.decode(
+                        token,
+                        key,
+                        algorithms=["RS256"],
+                        issuer=cfg["issuer"],
+                        options={"verify_aud": False},
+                    )
+                except Exception as exc:
+                    last_error = exc
+                    continue
+        except Exception:
+            pass
+        if last_error is not None:
             raise HTTPException(status_code=401, detail="Invalid subject token")
+        raise HTTPException(status_code=401, detail="Invalid subject token")
 
     @app.post("/token")
     def token_exchange(
@@ -277,9 +320,13 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            - name: KEYCLOAK_ISSUER
+            - name: KEYCLOAK_INTERNAL_ISSUER
+              value: "https://auth.suncoast.systems/realms/internal"
+            - name: KEYCLOAK_INTERNAL_JWKS_URL
+              value: "https://auth.suncoast.systems/realms/internal/protocol/openid-connect/certs"
+            - name: KEYCLOAK_EXTERNAL_ISSUER
               value: "https://auth.suncoast.systems/realms/external"
-            - name: KEYCLOAK_JWKS_URL
+            - name: KEYCLOAK_EXTERNAL_JWKS_URL
               value: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/certs"
             - name: DIRECTUS_EXPIRES_IN_SECONDS
               value: "3600"
