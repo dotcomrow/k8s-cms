@@ -15,6 +15,7 @@ This stack provisions a small paid Oracle Cloud VM for PostgreSQL and bootstraps
 - Cloud-init can also export `/srv/directus/uploads` over NFS (`enable_directus_uploads_nfs=true`) so Directus uploads/media/files live on the OCI VM.
   - OCI security rules are created automatically for NFS.
   - Cloud-init pins NFS daemon ports and verifies NFS/export readiness during first boot.
+  - A systemd guardian now runs continuously to re-assert NFS firewall/service health and bound log growth.
 
 ## Usage
 
@@ -116,8 +117,13 @@ terraform output -raw db_tunnel_private_key_b64 | base64 --decode | ssh-keygen -
   A value like `0.0.0.0` (without `/0`) is invalid and will now fail validation.
 - Cloud-init also inserts host `iptables` INPUT allow rules for those NFS ports (before any final REJECT rule)
   using `directus_uploads_nfs_allowed_cidrs`.
+  - Those rules are now persisted to `/etc/iptables/rules.v4` and re-applied by a guardian timer.
 
 ## Cloud-init scope
 
 - Cloud-init fully automates PostgreSQL install/bootstrap and tunnel-user setup at VM creation time.
-- Cloud-init is first-boot initialization; it is not a continuous config-management loop.
+- Cloud-init also installs a continuous systemd guard (`directus-db-guardian.timer`) that:
+  - Restarts required services when unhealthy (`postgresql`, `rpcbind`, `nfs-kernel-server`, `ssh`).
+  - Re-applies NFS `iptables` allow rules if missing.
+  - Persists firewall rules for reboot durability.
+  - Enforces bounded journal usage and triggers emergency log vacuum/rotation under disk pressure.

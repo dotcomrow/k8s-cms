@@ -6,6 +6,7 @@ packages:
   - postgresql-contrib
   - nfs-kernel-server
   - rpcbind
+  - logrotate
 
 write_files:
   - path: /usr/local/sbin/bootstrap-directus-postgres.sh
@@ -213,6 +214,21 @@ write_files:
             fi
           }
 
+          _persist_iptables_rules() {
+            if ! command -v iptables-save >/dev/null 2>&1; then
+              return 0
+            fi
+            install -d -m 0755 /etc/iptables
+            rules_v4_path="/etc/iptables/rules.v4"
+            iptables-save > "$rules_v4_path"
+            if command -v ip6tables-save >/dev/null 2>&1; then
+              ip6tables-save > /etc/iptables/rules.v6 || true
+            fi
+            if [ -f /lib/systemd/system/netfilter-persistent.service ] || [ -f /usr/lib/systemd/system/netfilter-persistent.service ]; then
+              systemctl enable netfilter-persistent >/dev/null 2>&1 || true
+            fi
+          }
+
           while IFS= read -r _cidr; do
             _cidr="$(printf '%s' "$_cidr" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
             [ -z "$_cidr" ] && continue
@@ -225,6 +241,7 @@ write_files:
               _ensure_input_accept_rule udp "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" "$_cidr"
             fi
           done < /etc/directus/directus-uploads-nfs-allowed-cidrs.txt
+          _persist_iptables_rules
         fi
 
         systemctl enable rpcbind >/dev/null 2>&1 || true
@@ -327,5 +344,290 @@ write_files:
 
       echo "Directus PostgreSQL bootstrap complete."
 
+  - path: /usr/local/sbin/directus-db-guardian.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env bash
+      set -u -o pipefail
+
+      ENABLE_DIRECTUS_UPLOADS_NFS=$(cat <<'EOF_ENABLE_DIRECTUS_UPLOADS_NFS'
+      ${enable_directus_uploads_nfs}
+      EOF_ENABLE_DIRECTUS_UPLOADS_NFS
+      )
+      DIRECTUS_UPLOADS_EXPORT_PATH=$(cat <<'EOF_DIRECTUS_UPLOADS_EXPORT_PATH'
+      ${directus_uploads_export_path}
+      EOF_DIRECTUS_UPLOADS_EXPORT_PATH
+      )
+      DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT'
+      ${directus_uploads_nfs_enable_v3_compat}
+      EOF_DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT
+      )
+      DIRECTUS_UPLOADS_NFS_RPCBIND_PORT=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_RPCBIND_PORT'
+      ${directus_uploads_nfs_rpcbind_port}
+      EOF_DIRECTUS_UPLOADS_NFS_RPCBIND_PORT
+      )
+      DIRECTUS_UPLOADS_NFS_MOUNTD_PORT=$(cat <<'EOF_DIRECTUS_UPLOADS_NFS_MOUNTD_PORT'
+      ${directus_uploads_nfs_mountd_port}
+      EOF_DIRECTUS_UPLOADS_NFS_MOUNTD_PORT
+      )
+
+      ENABLE_DIRECTUS_UPLOADS_NFS="$(printf '%s' "$ENABLE_DIRECTUS_UPLOADS_NFS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+      DIRECTUS_UPLOADS_EXPORT_PATH="$(printf '%s' "$DIRECTUS_UPLOADS_EXPORT_PATH" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT="$(printf '%s' "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+      DIRECTUS_UPLOADS_NFS_RPCBIND_PORT="$(printf '%s' "$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT" | tr -dc '0-9')"
+      DIRECTUS_UPLOADS_NFS_MOUNTD_PORT="$(printf '%s' "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" | tr -dc '0-9')"
+
+      if [ -z "$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT" ]; then
+        DIRECTUS_UPLOADS_NFS_RPCBIND_PORT="111"
+      fi
+      if [ -z "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" ]; then
+        DIRECTUS_UPLOADS_NFS_MOUNTD_PORT="20048"
+      fi
+      if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" != "true" ]; then
+        DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT="false"
+      fi
+
+      NFS_ALLOWED_CIDRS_FILE="/etc/directus/directus-uploads-nfs-allowed-cidrs.txt"
+      GUARDIAN_LOG="/var/log/directus-db-guardian.log"
+      LOW_WATERMARK_PCT="80"
+      HIGH_WATERMARK_PCT="90"
+      JOURNAL_VACUUM_SIZE="300M"
+      JOURNAL_VACUUM_TIME="14d"
+      failures=0
+
+      log_msg() {
+        level="$1"
+        shift
+        message="$*"
+        logger -t directus-db-guardian "[$level] $message" || true
+        printf '%s [%s] %s\n' "$(date -Is)" "$level" "$message" >> "$GUARDIAN_LOG"
+      }
+
+      mark_failure() {
+        failures="$((failures + 1))"
+      }
+
+      ensure_service_active() {
+        svc="$1"
+        if systemctl is-active --quiet "$svc"; then
+          return 0
+        fi
+        log_msg warn "service_inactive $svc restarting"
+        if ! systemctl restart "$svc"; then
+          log_msg error "service_restart_failed $svc"
+          mark_failure
+          return 1
+        fi
+        if ! systemctl is-active --quiet "$svc"; then
+          log_msg error "service_not_active_after_restart $svc"
+          mark_failure
+          return 1
+        fi
+        log_msg info "service_recovered $svc"
+      }
+
+      ensure_nfs_firewall_rules() {
+        if [ "$ENABLE_DIRECTUS_UPLOADS_NFS" != "true" ]; then
+          return 0
+        fi
+        if ! command -v iptables >/dev/null 2>&1; then
+          log_msg warn "iptables_missing skip_nfs_firewall_enforcement"
+          return 0
+        fi
+        if [ ! -f "$NFS_ALLOWED_CIDRS_FILE" ]; then
+          log_msg error "missing_allowed_cidrs_file $NFS_ALLOWED_CIDRS_FILE"
+          mark_failure
+          return 1
+        fi
+
+        ensure_rule() {
+          proto="$1"
+          port="$2"
+          cidr="$3"
+          if iptables -C INPUT -p "$proto" -s "$cidr" --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+            return 0
+          fi
+          reject_line="$(iptables -L INPUT --line-numbers | awk '$2 == "REJECT" {print $1; exit}')"
+          if [ -n "$reject_line" ]; then
+            iptables -I INPUT "$reject_line" -p "$proto" -s "$cidr" --dport "$port" -j ACCEPT
+          else
+            iptables -A INPUT -p "$proto" -s "$cidr" --dport "$port" -j ACCEPT
+          fi
+          log_msg info "inserted_firewall_rule proto=$proto port=$port cidr=$cidr"
+        }
+
+        while IFS= read -r raw_cidr; do
+          cidr="$(printf '%s' "$raw_cidr" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [ -z "$cidr" ] && continue
+          ensure_rule tcp 2049 "$cidr"
+          ensure_rule udp 2049 "$cidr"
+          if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" = "true" ]; then
+            ensure_rule tcp "$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT" "$cidr"
+            ensure_rule udp "$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT" "$cidr"
+            ensure_rule tcp "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" "$cidr"
+            ensure_rule udp "$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT" "$cidr"
+          fi
+        done < "$NFS_ALLOWED_CIDRS_FILE"
+
+        if command -v iptables-save >/dev/null 2>&1; then
+          install -d -m 0755 /etc/iptables
+          iptables-save > /etc/iptables/rules.v4 || true
+          if command -v ip6tables-save >/dev/null 2>&1; then
+            ip6tables-save > /etc/iptables/rules.v6 || true
+          fi
+          if [ -f /lib/systemd/system/netfilter-persistent.service ] || [ -f /usr/lib/systemd/system/netfilter-persistent.service ]; then
+            systemctl enable netfilter-persistent >/dev/null 2>&1 || true
+          fi
+        fi
+      }
+
+      enforce_log_caps() {
+        root_pct="$(df --output=pcent / | tail -n1 | tr -dc '0-9')"
+        log_pct="$(df --output=pcent /var/log 2>/dev/null | tail -n1 | tr -dc '0-9' || true)"
+
+        if [ -n "$root_pct" ] && [ "$root_pct" -ge "$LOW_WATERMARK_PCT" ]; then
+          log_msg warn "root_usage_high percent=$root_pct vacuuming_journal"
+          journalctl --vacuum-size="$JOURNAL_VACUUM_SIZE" --vacuum-time="$JOURNAL_VACUUM_TIME" >/dev/null 2>&1 || true
+        fi
+
+        if [ -n "$log_pct" ] && [ "$log_pct" -ge "$LOW_WATERMARK_PCT" ]; then
+          log_msg warn "log_usage_high percent=$log_pct vacuuming_journal_and_rotating"
+          journalctl --vacuum-size="$JOURNAL_VACUUM_SIZE" --vacuum-time="$JOURNAL_VACUUM_TIME" >/dev/null 2>&1 || true
+          if [ -x /usr/sbin/logrotate ]; then
+            /usr/sbin/logrotate -f /etc/logrotate.conf >/dev/null 2>&1 || true
+          fi
+          find /var/log -type f -name '*.gz' -mtime +21 -delete >/dev/null 2>&1 || true
+        fi
+
+        if [ -n "$root_pct" ] && [ "$root_pct" -ge "$HIGH_WATERMARK_PCT" ]; then
+          log_msg error "root_usage_critical percent=$root_pct"
+          mark_failure
+        fi
+      }
+
+      enforce_nfs_health() {
+        if [ "$ENABLE_DIRECTUS_UPLOADS_NFS" != "true" ]; then
+          return 0
+        fi
+
+        ensure_service_active rpcbind
+        ensure_service_active nfs-kernel-server
+        exportfs -ra || {
+          log_msg error "exportfs_reload_failed"
+          mark_failure
+        }
+
+        if ! ss -lnt | awk '{print $4}' | grep -Eq '[:.]2049$'; then
+          log_msg error "nfs_port_missing tcp=2049 restarting_nfs"
+          systemctl restart nfs-kernel-server || true
+          sleep 1
+          if ! ss -lnt | awk '{print $4}' | grep -Eq '[:.]2049$'; then
+            mark_failure
+          fi
+        fi
+
+        if [ "$DIRECTUS_UPLOADS_NFS_ENABLE_V3_COMPAT" = "true" ]; then
+          if ! ss -lnt | awk '{print $4}' | grep -Eq "[:.]$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT$"; then
+            log_msg error "rpcbind_port_missing tcp=$DIRECTUS_UPLOADS_NFS_RPCBIND_PORT"
+            mark_failure
+          fi
+          if ! ss -lnt | awk '{print $4}' | grep -Eq "[:.]$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT$"; then
+            log_msg error "mountd_port_missing tcp=$DIRECTUS_UPLOADS_NFS_MOUNTD_PORT"
+            mark_failure
+          fi
+        fi
+
+        if [ -n "$DIRECTUS_UPLOADS_EXPORT_PATH" ] && ! exportfs -v | grep -Fq "$DIRECTUS_UPLOADS_EXPORT_PATH"; then
+          log_msg error "export_path_missing path=$DIRECTUS_UPLOADS_EXPORT_PATH"
+          mark_failure
+        fi
+      }
+
+      install -d -m 0755 /var/log
+      touch "$GUARDIAN_LOG"
+      chmod 0640 "$GUARDIAN_LOG"
+
+      enforce_log_caps
+      ensure_service_active postgresql
+      if systemctl list-unit-files | awk '{print $1}' | grep -Fxq ssh.service; then
+        ensure_service_active ssh
+      fi
+      ensure_nfs_firewall_rules
+      enforce_nfs_health
+
+      if [ "$failures" -gt 0 ]; then
+        log_msg error "health_check_failed failures=$failures"
+        exit 1
+      fi
+
+      log_msg info "health_check_ok"
+
+  - path: /etc/systemd/system/directus-db-guardian.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Directus DB VM guardian
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/directus-db-guardian.sh
+      Nice=10
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/directus-db-guardian.timer
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Run Directus DB VM guardian periodically
+
+      [Timer]
+      Unit=directus-db-guardian.service
+      OnBootSec=30s
+      OnUnitActiveSec=90s
+      RandomizedDelaySec=10s
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+  - path: /etc/systemd/journald.conf.d/90-directus-db-limits.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Journal]
+      Storage=persistent
+      SystemMaxUse=300M
+      RuntimeMaxUse=100M
+      SystemMaxFileSize=50M
+      MaxRetentionSec=14day
+      Compress=yes
+
+  - path: /etc/logrotate.d/directus-db-guardian
+    owner: root:root
+    permissions: "0644"
+    content: |
+      /var/log/directus-db-guardian.log {
+        daily
+        size 2M
+        rotate 14
+        missingok
+        notifempty
+        compress
+        delaycompress
+        copytruncate
+        create 0640 root root
+      }
+
 runcmd:
   - [bash, /usr/local/sbin/bootstrap-directus-postgres.sh]
+  - [systemctl, daemon-reload]
+  - [systemctl, restart, systemd-journald]
+  - [systemctl, enable, --now, directus-db-guardian.service]
+  - [systemctl, enable, --now, directus-db-guardian.timer]
