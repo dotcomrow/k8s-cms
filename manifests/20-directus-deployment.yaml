@@ -1219,7 +1219,7 @@ spec:
             command:
               - /bin/sh
               - -c
-              - test -f /postschema-state/ready
+              - test -f /postschema-state/db-ready
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 1
