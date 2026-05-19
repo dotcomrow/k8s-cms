@@ -11,8 +11,10 @@ data:
     # Single-source cache refresh endpoints for all sites/targets.
     # Update URLs here only; site target endpoint fields below reference these anchors.
     cache_refresh_endpoint_templates:
-      prod_refresh_url: &cache_refresh_prod_refresh_url "https://cloudflare-shell-template-app.suncoast.systems/api/cache/refresh?mode=refresh"
-      preview_refresh_url: &cache_refresh_preview_refresh_url "https://cloudflare-shell-template-app-preview.suncoast.systems/api/cache/refresh?mode=refresh"
+      internal_prod_refresh_url: &cache_refresh_internal_prod_refresh_url "https://internal.suncoast.systems/api/cache/refresh?mode=refresh"
+      internal_preview_refresh_url: &cache_refresh_internal_preview_refresh_url "https://internal-preview.suncoast.systems/api/cache/refresh?mode=refresh"
+      external_prod_refresh_url: &cache_refresh_external_prod_refresh_url "https://www.suncoast.systems/api/cache/refresh?mode=refresh"
+      external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=refresh"
 
     sites:
       # Internal site (Cloudflare Worker service client)
@@ -30,17 +32,17 @@ data:
           targets:
             prod:
               enabled: true
-              endpoint: *cache_refresh_prod_refresh_url
+              endpoint: *cache_refresh_internal_prod_refresh_url
               method: POST
               headers: []
             preview:
               enabled: true
-              endpoint: *cache_refresh_preview_refresh_url
+              endpoint: *cache_refresh_internal_preview_refresh_url
               method: POST
               headers: []
           auth:
             enabled: true
-            token_url: "https://auth.suncoast.systems/realms/internal/protocol/openid-connect/token"
+            token_url: "https://auth-origin.suncoast.systems/realms/internal/protocol/openid-connect/token"
             audience: ""
             scope: ""
             audience_vault_path: "secret/data/keycloak-client-id-graphql-api"
@@ -177,19 +179,19 @@ data:
           targets:
             prod:
               enabled: true
-              endpoint: *cache_refresh_prod_refresh_url
+              endpoint: *cache_refresh_external_prod_refresh_url
               method: POST
               headers: []
             preview:
               enabled: true
-              endpoint: *cache_refresh_preview_refresh_url
+              endpoint: *cache_refresh_external_preview_refresh_url
               method: POST
               retry_attempts: 12
               retry_delay_ms: 2000
               headers: []
           auth:
             enabled: true
-            token_url: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/token"
+            token_url: "https://auth-origin.suncoast.systems/realms/external/protocol/openid-connect/token"
             audience: ""
             scope: ""
             audience_vault_path: "secret/data/keycloak-client-id-graphql-api"
