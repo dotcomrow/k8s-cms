@@ -26,21 +26,21 @@ data:
         # Flow endpoints can be edited in Directus UI (Settings -> Flows),
         # but this GitOps config is authoritative on deploy.
         cache_refresh:
-          enabled: false
+          enabled: true
           targets:
             prod:
-              enabled: false
+              enabled: true
               endpoint: *cache_refresh_prod_refresh_url
               method: POST
               headers: []
             preview:
-              enabled: false
+              enabled: true
               endpoint: *cache_refresh_preview_refresh_url
               method: POST
               headers: []
           auth:
             enabled: true
-            token_url: "https://auth.suncoast.systems/realms/external/protocol/openid-connect/token"
+            token_url: "https://auth.suncoast.systems/realms/internal/protocol/openid-connect/token"
             audience: ""
             scope: ""
             audience_vault_path: "secret/data/keycloak-client-id-graphql-api"
