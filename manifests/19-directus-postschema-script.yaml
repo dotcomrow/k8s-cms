@@ -2975,6 +2975,113 @@ data:
        END \
        \$\$;"
 
+    echo "🧱 Ensuring cms_cache_refresh_targets syncs Directus refresh-flow endpoints..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE OR REPLACE FUNCTION directus.sync_cache_refresh_target_flow_config() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         v_site_key TEXT; \
+         v_target_key TEXT; \
+         v_enabled BOOLEAN; \
+         v_endpoint TEXT; \
+         v_effective_endpoint TEXT; \
+         v_flow_status TEXT; \
+         v_create_name TEXT; \
+         v_update_name TEXT; \
+         v_manual_name TEXT; \
+         v_flow_id UUID; \
+         v_options_type TEXT; \
+       BEGIN \
+         IF TG_OP = 'DELETE' THEN \
+           v_site_key := LOWER(COALESCE(NULLIF(BTRIM(OLD.site_key), ''), '')); \
+           v_target_key := LOWER(COALESCE(NULLIF(BTRIM(OLD.target_key), ''), '')); \
+           v_enabled := false; \
+           v_endpoint := ''; \
+         ELSE \
+           v_site_key := LOWER(COALESCE(NULLIF(BTRIM(NEW.site_key), ''), '')); \
+           v_target_key := LOWER(COALESCE(NULLIF(BTRIM(NEW.target_key), ''), '')); \
+           v_enabled := COALESCE(NEW.enabled, false); \
+           v_endpoint := BTRIM(COALESCE(NEW.endpoint, '')); \
+         END IF; \
+         IF v_site_key = '' OR v_target_key = '' THEN \
+           IF TG_OP = 'DELETE' THEN \
+             RETURN OLD; \
+           END IF; \
+           RETURN NEW; \
+         END IF; \
+         IF to_regclass('directus.directus_flows') IS NULL \
+            OR to_regclass('directus.directus_operations') IS NULL THEN \
+           IF TG_OP = 'DELETE' THEN \
+             RETURN OLD; \
+           END IF; \
+           RETURN NEW; \
+         END IF; \
+         IF v_enabled AND v_endpoint <> '' THEN \
+           v_flow_status := 'active'; \
+           v_effective_endpoint := v_endpoint; \
+         ELSE \
+           v_flow_status := 'inactive'; \
+           v_effective_endpoint := FORMAT('https://replace-me-%s-%s.invalid/api/cache/refresh', v_site_key, v_target_key); \
+         END IF; \
+         v_create_name := FORMAT('CMS Cache Refresh (%s/%s) - Create', v_site_key, v_target_key); \
+         v_update_name := FORMAT('CMS Cache Refresh (%s/%s) - Update', v_site_key, v_target_key); \
+         v_manual_name := FORMAT('CMS Cache Refresh (%s/%s) - Manual', v_site_key, v_target_key); \
+         SELECT c.data_type INTO v_options_type \
+         FROM information_schema.columns c \
+         WHERE c.table_schema = 'directus' \
+           AND c.table_name = 'directus_operations' \
+           AND c.column_name = 'options' \
+         LIMIT 1; \
+         UPDATE directus_flows \
+         SET status = v_flow_status \
+         WHERE name IN (v_create_name, v_update_name, v_manual_name); \
+         FOR v_flow_id IN \
+           SELECT f.id \
+           FROM directus_flows f \
+           WHERE f.name IN (v_create_name, v_update_name, v_manual_name) \
+         LOOP \
+           IF COALESCE(v_options_type, '') = 'json' THEN \
+             UPDATE directus_operations \
+             SET options = jsonb_set(COALESCE(options::jsonb, '{}'::jsonb), '{url}', to_jsonb(v_effective_endpoint), true)::json \
+             WHERE flow = v_flow_id \
+               AND type = 'request' \
+               AND key LIKE 'refresh_cache_attempt_%'; \
+           ELSE \
+             UPDATE directus_operations \
+             SET options = jsonb_set(COALESCE(options::jsonb, '{}'::jsonb), '{url}', to_jsonb(v_effective_endpoint), true) \
+             WHERE flow = v_flow_id \
+               AND type = 'request' \
+               AND key LIKE 'refresh_cache_attempt_%'; \
+           END IF; \
+         END LOOP; \
+         IF TG_OP = 'DELETE' THEN \
+           RETURN OLD; \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$\$; \
+       DO \$\$ \
+       BEGIN \
+         IF to_regclass('directus.cms_cache_refresh_targets') IS NOT NULL THEN \
+           DROP TRIGGER IF EXISTS cms_cache_refresh_targets_sync_flow_config_upsert_trg ON cms_cache_refresh_targets; \
+           CREATE TRIGGER cms_cache_refresh_targets_sync_flow_config_upsert_trg \
+           AFTER INSERT OR UPDATE OF site_key, target_key, enabled, endpoint \
+           ON cms_cache_refresh_targets \
+           FOR EACH ROW \
+           EXECUTE FUNCTION directus.sync_cache_refresh_target_flow_config(); \
+           DROP TRIGGER IF EXISTS cms_cache_refresh_targets_sync_flow_config_delete_trg ON cms_cache_refresh_targets; \
+           CREATE TRIGGER cms_cache_refresh_targets_sync_flow_config_delete_trg \
+           AFTER DELETE \
+           ON cms_cache_refresh_targets \
+           FOR EACH ROW \
+           EXECUTE FUNCTION directus.sync_cache_refresh_target_flow_config(); \
+         END IF; \
+       END \
+       \$\$;"
+
     # 5b.2) Ensure module registry + module content block collections exist and seed modules from GitOps config.
     echo "🧱 Ensuring cms_modules exists..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -7784,7 +7891,7 @@ data:
                   >/tmp/directus-flow-entry.json 2>/dev/null || true
 
                 update_read_options="$(jq -nc \
-                  '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
+                  '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys[0] }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                 update_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
                   '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                 update_request_options="$(jq -nc \
@@ -7794,7 +7901,7 @@ data:
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
                   --argjson headers "${target_headers_effective_json}" \
-                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"items.update",collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys.0 }}"}}')"
+                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"items.update",collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys[0] }}"}}')"
                 update_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
                 update_token_options="$(jq -nc \
                   --arg url "${refresh_auth_token_url}" \
