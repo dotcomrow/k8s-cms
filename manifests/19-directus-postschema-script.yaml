@@ -3021,11 +3021,10 @@ data:
          END IF; \
          IF v_enabled AND v_endpoint <> '' THEN \
            v_flow_status := 'active'; \
-           v_effective_endpoint := v_endpoint; \
          ELSE \
            v_flow_status := 'inactive'; \
-           v_effective_endpoint := FORMAT('https://replace-me-%s-%s.invalid/api/cache/refresh', v_site_key, v_target_key); \
          END IF; \
+         v_effective_endpoint := '{{ refresh_target_config.endpoint }}'; \
          v_create_name := FORMAT('CMS Cache Refresh (%s/%s) - Create', v_site_key, v_target_key); \
          v_update_name := FORMAT('CMS Cache Refresh (%s/%s) - Update', v_site_key, v_target_key); \
          v_manual_name := FORMAT('CMS Cache Refresh (%s/%s) - Manual', v_site_key, v_target_key); \
@@ -7668,7 +7667,7 @@ data:
               target_cfg_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                 "SELECT row_to_json(src)::text
                    FROM (
-                     SELECT enabled, endpoint
+                     SELECT id, enabled, endpoint
                      FROM directus.cms_cache_refresh_targets
                      WHERE site_key='${target_site_sql}'
                        AND target_key='${target_key_sql}'
@@ -7677,8 +7676,12 @@ data:
                    ) src;" || true)"
               target_cfg_json="$(printf '%s' "${target_cfg_json}" | tr -d '\r')"
               if [ -n "${target_cfg_json:-}" ] && [ "${target_cfg_json}" != "null" ]; then
+                target_cfg_id_db="$(printf '%s' "${target_cfg_json}" | jq -r '.id // empty' 2>/dev/null || true)"
                 target_cfg_enabled="$(printf '%s' "${target_cfg_json}" | jq -r '.enabled // empty' 2>/dev/null || true)"
                 target_cfg_endpoint="$(printf '%s' "${target_cfg_json}" | jq -r '.endpoint // ""' 2>/dev/null || true)"
+                if [ -n "${target_cfg_id_db:-}" ] && [ "${target_cfg_id_db}" != "null" ]; then
+                  target_cfg_id="${target_cfg_id_db}"
+                fi
                 if [ -n "${target_cfg_enabled:-}" ] && [ "${target_cfg_enabled}" != "null" ]; then
                   target_enabled_raw="${target_cfg_enabled}"
                 fi
@@ -7741,8 +7744,12 @@ data:
                 target_token_timeout_ms=120000
               fi
     
+              target_cfg_id_effective="$(printf '%s' "${target_cfg_id:-}" | tr -d '\r')"
               flow_status="active"
-              if [ "${refresh_enabled}" != "true" ] || [ "${target_enabled}" != "true" ]; then
+              if [ "${refresh_enabled}" != "true" ]; then
+                flow_status="inactive"
+              fi
+              if [ -z "${target_cfg_id_effective:-}" ] || [ "${target_cfg_id_effective}" = "null" ]; then
                 flow_status="inactive"
               fi
     
@@ -7827,9 +7834,13 @@ data:
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                 create_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
                   '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
+                create_refresh_target_read_options="$(jq -nc --arg cfg_id "${target_cfg_id_effective}" \
+                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
+                create_refresh_target_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
                 create_request_options="$(jq -nc \
                   --arg method "${target_method}" \
-                  --arg url "${target_endpoint_effective}" \
+                  --arg url "{{ refresh_target_config.endpoint }}" \
                   --arg site "${site_key}" \
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
@@ -7844,7 +7855,11 @@ data:
 
                 create_read_op_id="$(_directus_upsert_operation "${create_flow_id}" "read_item" "item-read" "Read Created Item" 19 1 "${create_read_options}")"
                 create_match_op_id="$(_directus_upsert_operation "${create_flow_id}" "match_site_target" "condition" "Match Site + Target" 37 1 "${create_match_options}")"
+                create_refresh_target_read_op_id="$(_directus_upsert_operation "${create_flow_id}" "refresh_target_config" "item-read" "Read Refresh Target Config" 55 1 "${create_refresh_target_read_options}")"
+                create_refresh_target_match_op_id="$(_directus_upsert_operation "${create_flow_id}" "match_refresh_target_config" "condition" "Match Refresh Target Config" 73 1 "${create_refresh_target_match_options}")"
                 _directus_set_operation_links "${create_read_op_id}" "${create_match_op_id}" ""
+                _directus_set_operation_links "${create_match_op_id}" "${create_refresh_target_read_op_id}" ""
+                _directus_set_operation_links "${create_refresh_target_read_op_id}" "${create_refresh_target_match_op_id}" ""
 
                 create_first_request_op_id=""
                 create_prev_sleep_op_id=""
@@ -7882,9 +7897,9 @@ data:
                   # Directus operation graph uses unique(resolve/reject) links. Keep token minting single-step.
                   create_token_op_id="$(_directus_upsert_operation "${create_flow_id}" "mint_refresh_token_attempt_1" "request" "Mint Refresh Token" 55 1 "${create_token_options}")"
                   _directus_set_operation_links "${create_token_op_id}" "${create_first_request_op_id}" ""
-                  _directus_set_operation_links "${create_match_op_id}" "${create_token_op_id}" ""
+                  _directus_set_operation_links "${create_refresh_target_match_op_id}" "${create_token_op_id}" ""
                 else
-                  _directus_set_operation_links "${create_match_op_id}" "${create_first_request_op_id}" ""
+                  _directus_set_operation_links "${create_refresh_target_match_op_id}" "${create_first_request_op_id}" ""
                 fi
                 _directus_api_write "PATCH" "/flows/${create_flow_id}" \
                   "$(jq -nc --arg operation "${create_read_op_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
@@ -7894,9 +7909,13 @@ data:
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys[0] }}",query:{fields:["id","site_key","refresh_target"]},emitEvents:false,permissions:"$full"}')"
                 update_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
                   '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
+                update_refresh_target_read_options="$(jq -nc --arg cfg_id "${target_cfg_id_effective}" \
+                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
+                update_refresh_target_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
                 update_request_options="$(jq -nc \
                   --arg method "${target_method}" \
-                  --arg url "${target_endpoint_effective}" \
+                  --arg url "{{ refresh_target_config.endpoint }}" \
                   --arg site "${site_key}" \
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
@@ -7911,7 +7930,11 @@ data:
 
                 update_read_op_id="$(_directus_upsert_operation "${update_flow_id}" "read_item" "item-read" "Read Updated Item" 19 1 "${update_read_options}")"
                 update_match_op_id="$(_directus_upsert_operation "${update_flow_id}" "match_site_target" "condition" "Match Site + Target" 37 1 "${update_match_options}")"
+                update_refresh_target_read_op_id="$(_directus_upsert_operation "${update_flow_id}" "refresh_target_config" "item-read" "Read Refresh Target Config" 55 61 "${update_refresh_target_read_options}")"
+                update_refresh_target_match_op_id="$(_directus_upsert_operation "${update_flow_id}" "match_refresh_target_config" "condition" "Match Refresh Target Config" 73 61 "${update_refresh_target_match_options}")"
                 _directus_set_operation_links "${update_read_op_id}" "${update_match_op_id}" ""
+                _directus_set_operation_links "${update_match_op_id}" "${update_refresh_target_read_op_id}" ""
+                _directus_set_operation_links "${update_refresh_target_read_op_id}" "${update_refresh_target_match_op_id}" ""
 
                 update_first_request_op_id=""
                 update_prev_sleep_op_id=""
@@ -7949,17 +7972,21 @@ data:
                   # Directus operation graph uses unique(resolve/reject) links. Keep token minting single-step.
                   update_token_op_id="$(_directus_upsert_operation "${update_flow_id}" "mint_refresh_token_attempt_1" "request" "Mint Refresh Token" 55 61 "${update_token_options}")"
                   _directus_set_operation_links "${update_token_op_id}" "${update_first_request_op_id}" ""
-                  _directus_set_operation_links "${update_match_op_id}" "${update_token_op_id}" ""
+                  _directus_set_operation_links "${update_refresh_target_match_op_id}" "${update_token_op_id}" ""
                 else
-                  _directus_set_operation_links "${update_match_op_id}" "${update_first_request_op_id}" ""
+                  _directus_set_operation_links "${update_refresh_target_match_op_id}" "${update_first_request_op_id}" ""
                 fi
                 _directus_api_write "PATCH" "/flows/${update_flow_id}" \
                   "$(jq -nc --arg operation "${update_read_op_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
                   >/tmp/directus-flow-entry.json 2>/dev/null || true
 
+                manual_refresh_target_read_options="$(jq -nc --arg cfg_id "${target_cfg_id_effective}" \
+                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
+                manual_refresh_target_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
                 manual_request_options="$(jq -nc \
                   --arg method "${target_method}" \
-                  --arg url "${target_endpoint_effective}" \
+                  --arg url "{{ refresh_target_config.endpoint }}" \
                   --arg site "${site_key}" \
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
@@ -7971,6 +7998,10 @@ data:
                   --arg body "${refresh_auth_token_body}" \
                   --argjson timeout "${target_token_timeout_ms}" \
                   '{method:"POST",url:$url,timeout:$timeout,headers:[{header:"Content-Type",value:"application/x-www-form-urlencoded"},{header:"Accept",value:"application/json"}],body:$body}')"
+
+                manual_refresh_target_read_op_id="$(_directus_upsert_operation "${manual_flow_id}" "refresh_target_config" "item-read" "Read Refresh Target Config" 19 121 "${manual_refresh_target_read_options}")"
+                manual_refresh_target_match_op_id="$(_directus_upsert_operation "${manual_flow_id}" "match_refresh_target_config" "condition" "Match Refresh Target Config" 37 121 "${manual_refresh_target_match_options}")"
+                _directus_set_operation_links "${manual_refresh_target_read_op_id}" "${manual_refresh_target_match_op_id}" ""
 
                 manual_first_request_op_id=""
                 manual_prev_sleep_op_id=""
@@ -8004,11 +8035,13 @@ data:
                   manual_attempt=$((manual_attempt + 1))
                 done
 
-                manual_entry_operation_id="${manual_first_request_op_id}"
+                manual_entry_operation_id="${manual_refresh_target_read_op_id}"
                 if [ "${refresh_auth_enabled}" = "true" ] && [ "${refresh_auth_ready}" = "true" ] && [ -n "${refresh_auth_token_body:-}" ]; then
                   manual_token_op_id="$(_directus_upsert_operation "${manual_flow_id}" "mint_refresh_token_attempt_1" "request" "Mint Refresh Token" 55 121 "${manual_token_options}")"
                   _directus_set_operation_links "${manual_token_op_id}" "${manual_first_request_op_id}" ""
-                  manual_entry_operation_id="${manual_token_op_id}"
+                  _directus_set_operation_links "${manual_refresh_target_match_op_id}" "${manual_token_op_id}" ""
+                else
+                  _directus_set_operation_links "${manual_refresh_target_match_op_id}" "${manual_first_request_op_id}" ""
                 fi
                 _directus_api_write "PATCH" "/flows/${manual_flow_id}" \
                   "$(jq -nc --arg operation "${manual_entry_operation_id}" --arg status "${flow_status}" '{operation:$operation,status:$status}')" \
