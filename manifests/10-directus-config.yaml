@@ -44,7 +44,7 @@ data:
   DIRECTUS_MODULE_REGISTRY_URL: "https://cloudflare-mfe-module-registry-service.suncoast.systems"
   DIRECTUS_MODULE_REGISTRY_PATH: "/api/modules"
   DIRECTUS_MODULE_REGISTRY_CACHE_TTL_MS: "180000"
-  # Keycloak role selector endpoint (used by cms-content-model-select role mode)
+  # Keycloak role selector endpoint (used by cms-content-model-select and cms-module-props-editor)
   DIRECTUS_KC_BASE_URL: "https://auth.suncoast.systems"
   DIRECTUS_KC_INTERNAL_REALM: "internal"
   DIRECTUS_KC_EXTERNAL_REALM: "external"
@@ -2861,9 +2861,15 @@ data:
       preload: 5,
       sandbox: 6,
       routebase: 7,
-      async: 8,
-      input: 9,
-      ui: 10,
+      secured: 8,
+      requiresauth: 8,
+      authrequired: 8,
+      requiredrole: 9,
+      unauthorizedmessage: 10,
+      hidewhenauthorized: 11,
+      async: 12,
+      input: 13,
+      ui: 14,
     });
     const FIELD_HELP_FALLBACKS = Object.freeze({
       registrykey: 'Required. Select a published module key from the registry.',
@@ -2880,6 +2886,11 @@ data:
       requestchannel: 'Channel/topic used for outbound async requests.',
       responsechannel: 'Channel/topic used for inbound async responses.',
       correlationidpath: 'JSON path used to correlate async responses with requests.',
+      secured: 'Enable module security. Visitors must sign in before this MFE mounts.',
+      requiresauth: 'Enable module security. Visitors must sign in before this MFE mounts.',
+      requiredrole: 'Optional: require a specific Keycloak role. Choose None to allow any signed-in user.',
+      unauthorizedmessage: 'Optional custom message shown when a user lacks required access.',
+      hidewhenauthorized: 'Hide this module entirely when access is denied.',
       input: 'Optional runtime input defaults for this module.',
       ui: 'Configure module-specific UI props from the selected MFE specification.',
     });
@@ -2893,6 +2904,11 @@ data:
         id: 'runtime',
         title: 'Runtime Settings',
         description: 'Host shell controls for mounting and loading this MFE in Directus.',
+      },
+      {
+        id: 'security',
+        title: 'Access Security',
+        description: 'Require authentication and optional role-based access for this MFE.',
       },
       {
         id: 'async',
@@ -2926,6 +2942,12 @@ data:
       preload: 'runtime',
       sandbox: 'runtime',
       routebase: 'runtime',
+      secured: 'security',
+      requiresauth: 'security',
+      authrequired: 'security',
+      requiredrole: 'security',
+      unauthorizedmessage: 'security',
+      hidewhenauthorized: 'security',
       async: 'async',
       input: 'input',
       ui: 'ui',
@@ -2942,9 +2964,56 @@ data:
         'preload',
         'sandbox',
         'routebase',
+        'secured',
+        'requiresauth',
+        'authrequired',
+        'requiredrole',
+        'unauthorizedmessage',
+        'hidewhenauthorized',
         'async',
         'input',
         'ui',
+      ])
+    );
+    const MFE_SECURITY_ENABLE_FIELD_TOKENS = Object.freeze(
+      new Set([
+        'secured',
+        'secure',
+        'requiressecurity',
+        'requiresecurity',
+        'securityrequired',
+        'requiresauth',
+        'requireauth',
+        'authrequired',
+      ])
+    );
+    const MFE_NESTED_SECURITY_ENABLE_FIELD_TOKENS = Object.freeze(
+      new Set([
+        'enabled',
+        'required',
+        'secured',
+        'secure',
+        'requiressecurity',
+        'requiresecurity',
+        'securityrequired',
+        'requiresauth',
+        'requireauth',
+        'authrequired',
+      ])
+    );
+    const MFE_REQUIRED_ROLE_FIELD_TOKENS = Object.freeze(
+      new Set([
+        'requiredrole',
+        'requiredroleforaccess',
+        'requiredroleforpageaccess',
+      ])
+    );
+    const MFE_SECURITY_CONTAINER_FIELD_TOKENS = Object.freeze(
+      new Set([
+        'security',
+        'access',
+        'authorization',
+        'auth',
       ])
     );
     
@@ -2963,6 +3032,41 @@ data:
     const normalizeObject = (value) => {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
       return value;
+    };
+
+    const asBooleanOrNull = (value) => {
+      if (typeof value === 'boolean') return value;
+      const normalized = asString(value).toLowerCase();
+      if (!normalized) return null;
+      if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+      if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+      return null;
+    };
+
+    const pickStringFromRecordsByToken = (records, tokenSet) => {
+      const list = Array.isArray(records) ? records : [];
+      for (const recordValue of list) {
+        const record = normalizeObject(recordValue);
+        for (const [fieldKey, fieldValue] of Object.entries(record)) {
+          if (!tokenSet.has(normalizeFieldToken(fieldKey))) continue;
+          const candidate = asString(fieldValue);
+          if (candidate) return candidate;
+        }
+      }
+      return '';
+    };
+
+    const pickBooleanFromRecordsByToken = (records, tokenSet) => {
+      const list = Array.isArray(records) ? records : [];
+      for (const recordValue of list) {
+        const record = normalizeObject(recordValue);
+        for (const [fieldKey, fieldValue] of Object.entries(record)) {
+          if (!tokenSet.has(normalizeFieldToken(fieldKey))) continue;
+          const parsed = asBooleanOrNull(fieldValue);
+          if (parsed !== null) return parsed;
+        }
+      }
+      return null;
     };
 
     const omitObjectKeysByFieldToken = (value, excludedTokens) => {
@@ -3079,6 +3183,30 @@ data:
       const candidates = ['primaryKey', 'pk', 'item', 'id'].map((key) => asString(query.get(key)));
       return candidates.find((value) => Boolean(value)) || '';
     };
+
+    const inferRealmFromSiteKey = (siteKeyValue) => {
+      const normalized = asString(siteKeyValue).toLowerCase();
+      if (!normalized) return '';
+      const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+      if (tokens.includes('internal')) return 'internal';
+      if (tokens.includes('external')) return 'external';
+      if (normalized.includes('internal')) return 'internal';
+      if (normalized.includes('external')) return 'external';
+      return '';
+    };
+
+    const uniqueChoiceItems = (items) => {
+      const rows = Array.isArray(items) ? items : [];
+      const seen = new Set();
+      const output = [];
+      for (const row of rows) {
+        const value = asString(row?.value);
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        output.push({ value, text: asString(row?.text) || value });
+      }
+      return output;
+    };
     
     const InterfaceComponent = defineComponent({
       name: 'CmsModulePropsEditor',
@@ -3118,6 +3246,9 @@ data:
         const mfeRegistryModuleRows = ref([]);
         const mfeRegistryDetailByKey = ref({});
         const mfeRegistryLoadError = ref('');
+        const securityRoleChoices = ref([]);
+        const securityRoleLoading = ref(false);
+        const securityRoleError = ref('');
         const fallbackFieldOptions = ref({});
 
         const normalizeInterfaceOptions = (value) => {
@@ -3137,6 +3268,14 @@ data:
         const propsSchemaField = computed(() => asString(resolvedOptions.value?.props_schema_field) || 'props_schema');
         const defaultPropsField = computed(() => asString(resolvedOptions.value?.default_props_field) || 'default_props');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
+        const roleEndpointPath = computed(() =>
+          asString(resolvedOptions.value?.role_endpoint_path) || '/directus-extension-cms-keycloak-role-options/roles'
+        );
+        const roleSiteField = computed(() => asString(resolvedOptions.value?.role_site_field) || pageSiteField.value || 'site_key');
+        const roleRealmField = computed(() => asString(resolvedOptions.value?.role_realm_field) || '');
+        const roleNoneLabel = computed(() => asString(resolvedOptions.value?.role_none_label) || 'None (Any Logged-In User)');
+        const roleNoneValue = computed(() => asString(resolvedOptions.value?.role_none_value) || 'none');
+        const roleIncludeNone = computed(() => asBoolean(resolvedOptions.value?.role_include_none, true));
         const staticModuleProviders = computed(() => {
           const fromList = normalizeProviderList(resolvedOptions.value?.module_provider_in);
           if (fromList.length > 0) return fromList;
@@ -3263,6 +3402,14 @@ data:
         const siteKey = computed(() =>
           asString(
             props.values?.[pageSiteField.value]
+            ?? props.values?.site_key
+            ?? recordSiteKey.value
+          )
+        );
+        const roleScopedSiteKey = computed(() =>
+          asString(
+            props.values?.[roleSiteField.value]
+            ?? props.values?.[pageSiteField.value]
             ?? props.values?.site_key
             ?? recordSiteKey.value
           )
@@ -4287,6 +4434,10 @@ data:
             };
             inferredProperties.sandbox = inferredProperties.sandbox || { type: 'boolean', title: 'Sandbox' };
             inferredProperties.preload = inferredProperties.preload || { type: 'boolean', title: 'Preload' };
+            inferredProperties.secured = inferredProperties.secured || { type: 'boolean', title: 'Secured' };
+            inferredProperties.requiredRole = inferredProperties.requiredRole || { type: 'string', title: 'Required Role' };
+            inferredProperties.unauthorizedMessage = inferredProperties.unauthorizedMessage || { type: 'string', title: 'Unauthorized Message' };
+            inferredProperties.hideWhenUnauthorized = inferredProperties.hideWhenUnauthorized || { type: 'boolean', title: 'Hide When Unauthorized' };
           };
 
           if (shouldUseMfeFallbackSchema.value) {
@@ -4384,6 +4535,26 @@ data:
             .map(({ propKey, propSchema }) => [propKey, propSchema]);
         });
         const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
+        const mfeSecurityState = computed(() => {
+          const source = normalizeObject(parseJsonLike(mergedProps.value, {}));
+          const input = normalizeObject(parseJsonLike(source?.input, {}));
+          const ui = normalizeObject(parseJsonLike(source?.ui, {}));
+          const securityFromSource = pickFirstObject(source?.security, source?.access, source?.authorization, source?.auth);
+          const securityFromInput = pickFirstObject(input?.security, input?.access, input?.authorization, input?.auth);
+          const securityFromUi = pickFirstObject(ui?.security, ui?.access, ui?.authorization, ui?.auth);
+          const securityRecords = [securityFromSource, securityFromInput, securityFromUi];
+          const allRecords = [source, input, ui, ...securityRecords];
+          const enabledFromTopLevel = pickBooleanFromRecordsByToken([source, input, ui], MFE_SECURITY_ENABLE_FIELD_TOKENS);
+          const enabledFromNested = pickBooleanFromRecordsByToken(securityRecords, MFE_NESTED_SECURITY_ENABLE_FIELD_TOKENS);
+          const enabled = enabledFromTopLevel !== null
+            ? enabledFromTopLevel
+            : (enabledFromNested !== null ? enabledFromNested : false);
+          const requiredRole = pickStringFromRecordsByToken(allRecords, MFE_REQUIRED_ROLE_FIELD_TOKENS);
+          return { enabled, requiredRole };
+        });
+        const mfeSecurityEnabled = computed(() =>
+          isMfeRemoteModuleDefinition.value && mfeSecurityState.value.enabled
+        );
         const selectedMfeRegistryKey = computed(() =>
           pickFirstNonEmptyString(
             mergedProps.value?.registryKey,
@@ -4551,6 +4722,79 @@ data:
             })
             .filter(Boolean);
         });
+        const loadSecurityRoleChoices = async () => {
+          const noneChoices = roleIncludeNone.value
+            ? [{ value: roleNoneValue.value, text: roleNoneLabel.value }]
+            : [];
+          if (!isMfeRemoteModuleDefinition.value || !mfeSecurityEnabled.value) {
+            securityRoleChoices.value = noneChoices;
+            securityRoleError.value = '';
+            securityRoleLoading.value = false;
+            return;
+          }
+
+          const siteKeyValue = asString(roleScopedSiteKey.value);
+          if (!siteKeyValue) {
+            securityRoleChoices.value = noneChoices;
+            securityRoleError.value = '';
+            securityRoleLoading.value = false;
+            return;
+          }
+
+          const explicitRealm = roleRealmField.value
+            ? asString(props.values?.[roleRealmField.value]).toLowerCase()
+            : '';
+          const realm = explicitRealm === 'internal' || explicitRealm === 'external'
+            ? explicitRealm
+            : inferRealmFromSiteKey(siteKeyValue);
+          if (!realm) {
+            securityRoleChoices.value = noneChoices;
+            securityRoleError.value = '';
+            securityRoleLoading.value = false;
+            return;
+          }
+
+          securityRoleLoading.value = true;
+          securityRoleError.value = '';
+          try {
+            const response = await apiGet(roleEndpointPath.value, {
+              realm,
+              site_key: siteKeyValue || undefined,
+            });
+            const candidateRows = normalizeRows(response);
+            const fallbackRows = Array.isArray(response?.data?.roles)
+              ? response.data.roles
+              : (Array.isArray(response?.roles) ? response.roles : []);
+            const rows = candidateRows.length > 0 ? candidateRows : fallbackRows;
+            const mapped = uniqueChoiceItems(
+              rows.map((row) => {
+                if (typeof row === 'string') {
+                  const roleName = asString(row);
+                  return { value: roleName, text: roleName };
+                }
+                const roleValue = asString(row?.value || row?.name || row?.role);
+                const roleText = asString(row?.text || row?.label || row?.name || row?.value || row?.role);
+                return {
+                  value: roleValue,
+                  text: roleText || roleValue,
+                };
+              }),
+            );
+            if (!roleIncludeNone.value) {
+              securityRoleChoices.value = mapped;
+            } else if (mapped.some((choice) => asString(choice.value) === asString(roleNoneValue.value))) {
+              securityRoleChoices.value = mapped;
+            } else {
+              securityRoleChoices.value = [noneChoices[0], ...mapped];
+            }
+            securityRoleError.value = '';
+          } catch (error) {
+            securityRoleChoices.value = noneChoices;
+            securityRoleError.value = error?.message || 'Unable to load role options.';
+          } finally {
+            securityRoleLoading.value = false;
+          }
+        };
 
         const emitProps = (nextProps) => {
           const normalized = normalizeObject(nextProps);
@@ -4714,6 +4958,26 @@ data:
           }
         );
     
+        watch(
+          () => JSON.stringify({
+            isMfeRemote: isMfeRemoteModuleDefinition.value,
+            securityEnabled: mfeSecurityEnabled.value,
+            roleEndpointPath: roleEndpointPath.value,
+            roleSiteField: roleSiteField.value,
+            roleSiteValue: roleScopedSiteKey.value,
+            roleRealmField: roleRealmField.value,
+            roleRealmValue: roleRealmField.value ? asString(props.values?.[roleRealmField.value]) : '',
+            roleIncludeNone: roleIncludeNone.value,
+            roleNoneLabel: roleNoneLabel.value,
+            roleNoneValue: roleNoneValue.value,
+            moduleKey: moduleKey.value,
+          }),
+          async () => {
+            await loadSecurityRoleChoices();
+          },
+          { immediate: true }
+        );
+    
         const onModuleSelectorEvent = (event) => {
           const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
           const eventMode = asString(detail.mode).toLowerCase();
@@ -4772,10 +5036,27 @@ data:
           }
           emitProps(next);
         };
+
+        const shouldRenderMfeTopLevelProperty = (propKey) => {
+          if (!isMfeRemoteModuleDefinition.value) return true;
+          const token = normalizeFieldToken(propKey);
+          if (MFE_REQUIRED_ROLE_FIELD_TOKENS.has(token) && !mfeSecurityEnabled.value) {
+            return false;
+          }
+          return true;
+        };
     
         const renderPropertyEditor = (propKey, propSchema) => {
           const normalizedPropKey = toLower(propKey);
           const normalizedPropToken = normalizeFieldToken(propKey);
+          const isSecurityRoleProp = MFE_REQUIRED_ROLE_FIELD_TOKENS.has(normalizedPropToken);
+          const shouldShowSecurityRoleDropdown =
+            isMfeRemoteModuleDefinition.value
+            && isSecurityRoleProp
+            && mfeSecurityEnabled.value;
+          if (isMfeRemoteModuleDefinition.value && isSecurityRoleProp && !mfeSecurityEnabled.value) {
+            return null;
+          }
           const hasSelectedMfeUiSchema = Object.keys(normalizeObject(selectedMfeUiSchema.value?.properties)).length > 0;
           const schema = normalizeObject(
             isMfeRemoteModuleDefinition.value
@@ -4951,8 +5232,24 @@ data:
               ? 'Module registry selections are unavailable in this field context. Ensure cms_block_module.props_json interface options include module_registry_url.'
               : 'Select page release channel (preview or prod) to load module registry selections.')
             : '';
+          const securityRoleHint = shouldShowSecurityRoleDropdown && !asString(roleScopedSiteKey.value)
+            ? 'Set page Site Key to internal or external before selecting a required role.'
+            : '';
 
-          if (canUseRegistryBackedMfeSelect && isRegistryKeyProp) {
+          if (shouldShowSecurityRoleDropdown) {
+            control = renderSelectControl({
+              id: inputId,
+              modelValue: asInputString(value),
+              items: securityRoleChoices.value,
+              placeholder: securityRoleLoading.value
+                ? 'Loading roles...'
+                : (
+                    securityRoleChoices.value.length > 0
+                      ? `Select ${title}`
+                      : 'No roles available for this site/realm'
+                  ),
+            });
+          } else if (canUseRegistryBackedMfeSelect && isRegistryKeyProp) {
             control = renderSelectControl({
               id: inputId,
               modelValue: asInputString(value),
@@ -5084,15 +5381,63 @@ data:
               const fieldId = `${inputId}-${pathSegments.join('-')}`;
               const fieldTitle = asString(nestedSchema?.title) || fieldKey;
               const isFieldRequired = requiredSet.has(fieldKey);
+              const fieldToken = normalizeFieldToken(fieldKey);
+              const parentToken = normalizeFieldToken(propKey);
+              const isNestedSecurityRoleField =
+                MFE_SECURITY_CONTAINER_FIELD_TOKENS.has(parentToken)
+                && (MFE_REQUIRED_ROLE_FIELD_TOKENS.has(fieldToken) || fieldToken === 'role');
+              const shouldShowNestedSecurityRoleDropdown =
+                isMfeRemoteModuleDefinition.value
+                && isNestedSecurityRoleField
+                && mfeSecurityEnabled.value;
+              if (isMfeRemoteModuleDefinition.value && isNestedSecurityRoleField && !mfeSecurityEnabled.value) {
+                return null;
+              }
               const fieldDescription = resolveFieldHelpText(
                 nestedSchema,
                 `${propKey}.${pathSegments.join('.')}`,
                 isFieldRequired
               );
               const nestedProperties = normalizeObject(nestedSchema?.properties);
+              const nestedSecurityRoleHint = shouldShowNestedSecurityRoleDropdown && !asString(roleScopedSiteKey.value)
+                ? 'Set page Site Key to internal or external before selecting a required role.'
+                : '';
 
               let nestedControl = null;
-              if (enumItems.length > 0) {
+              if (shouldShowNestedSecurityRoleDropdown) {
+                const roleItems = securityRoleChoices.value;
+                if (hasSelect) {
+                  nestedControl = h(resolvedSelect, {
+                    id: fieldId,
+                    modelValue: asInputString(fieldValue) || null,
+                    items: roleItems,
+                    placeholder: securityRoleLoading.value
+                      ? 'Loading roles...'
+                      : (
+                          roleItems.length > 0
+                            ? `Select ${fieldTitle}`
+                            : 'No roles available for this site/realm'
+                        ),
+                    disabled,
+                    showDeselect: true,
+                    'onUpdate:modelValue': (nextValue) => applyNestedValue(pathSegments, asInputString(nextValue)),
+                  });
+                } else {
+                  nestedControl = h(
+                    'select',
+                    {
+                      id: fieldId,
+                      disabled,
+                      value: asInputString(fieldValue),
+                      onChange: (event) => applyNestedValue(pathSegments, asInputString(event?.target?.value)),
+                    },
+                    [
+                      h('option', { value: '' }, securityRoleLoading.value ? 'Loading roles...' : `Select ${fieldTitle}`),
+                      ...roleItems.map((entry) => h('option', { value: entry.value }, entry.text)),
+                    ],
+                  );
+                }
+              } else if (enumItems.length > 0) {
                 const selectChoices = enumItems.map((entry) => ({ text: entry, value: entry }));
                 if (hasSelect) {
                   nestedControl = h(resolvedSelect, {
@@ -5221,6 +5566,13 @@ data:
                   isFieldRequired ? h('span', { class: 'cms-module-props-editor__required' }, ' *') : null,
                 ]),
                 fieldDescription ? h('p', { class: 'cms-module-props-editor__hint' }, fieldDescription) : null,
+                nestedSecurityRoleHint ? h('p', { class: 'cms-module-props-editor__hint' }, nestedSecurityRoleHint) : null,
+                shouldShowNestedSecurityRoleDropdown && securityRoleLoading.value
+                  ? h('p', { class: 'cms-module-props-editor__hint' }, 'Loading role options...')
+                  : null,
+                shouldShowNestedSecurityRoleDropdown && securityRoleError.value
+                  ? h('p', { class: 'cms-module-props-editor__error' }, securityRoleError.value)
+                  : null,
                 nestedControl,
               ]);
             };
@@ -5440,8 +5792,17 @@ data:
             dynamicRegistryHint
               ? h('p', { class: 'cms-module-props-editor__hint' }, dynamicRegistryHint)
               : null,
+            securityRoleHint
+              ? h('p', { class: 'cms-module-props-editor__hint' }, securityRoleHint)
+              : null,
             canUseRegistryBackedMfeSelect && mfeRegistryLoadError.value
               ? h('p', { class: 'cms-module-props-editor__error' }, mfeRegistryLoadError.value)
+              : null,
+            shouldShowSecurityRoleDropdown && securityRoleLoading.value
+              ? h('p', { class: 'cms-module-props-editor__hint' }, 'Loading role options...')
+              : null,
+            shouldShowSecurityRoleDropdown && securityRoleError.value
+              ? h('p', { class: 'cms-module-props-editor__error' }, securityRoleError.value)
               : null,
             control,
           ]);
@@ -5450,7 +5811,8 @@ data:
         return () => {
           const definition = moduleDefinition.value;
           const hasSchemaProperties = Object.keys(schemaProperties.value).length > 0;
-          const inlinePropertyEntries = orderedSchemaPropertyEntries.value.filter(([, propSchema]) => {
+          const inlinePropertyEntries = orderedSchemaPropertyEntries.value.filter(([propKey, propSchema]) => {
+            if (!shouldRenderMfeTopLevelProperty(propKey)) return false;
             if (!effectiveShowJsonFallback.value) return true;
             return !isComplexPropertySchema(propSchema);
           });
@@ -5738,6 +6100,48 @@ data:
           type: 'string',
           meta: { width: 'half', interface: 'input' },
           schema: { default_value: 'site_key' },
+        },
+        {
+          field: 'role_endpoint_path',
+          name: 'Role Endpoint Path',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '/directus-extension-cms-keycloak-role-options/roles' },
+        },
+        {
+          field: 'role_site_field',
+          name: 'Role Site Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'site_key' },
+        },
+        {
+          field: 'role_realm_field',
+          name: 'Role Realm Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: '' },
+        },
+        {
+          field: 'role_none_label',
+          name: 'Role None Label',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'None (Any Logged-In User)' },
+        },
+        {
+          field: 'role_none_value',
+          name: 'Role None Value',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'none' },
+        },
+        {
+          field: 'role_include_none',
+          name: 'Role Include None Option',
+          type: 'boolean',
+          meta: { width: 'half', interface: 'boolean' },
+          schema: { default_value: true },
         },
         {
           field: 'module_registry_enabled',
