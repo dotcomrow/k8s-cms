@@ -2866,7 +2866,7 @@ data:
       authrequired: 8,
       requiredrole: 9,
       unauthorizedmessage: 10,
-      hidewhenauthorized: 11,
+      hidewhenunauthorized: 11,
       async: 12,
       input: 13,
       ui: 14,
@@ -2890,7 +2890,7 @@ data:
       requiresauth: 'Enable module security. Visitors must sign in before this MFE mounts.',
       requiredrole: 'Optional: require a specific Keycloak role. Choose None to allow any signed-in user.',
       unauthorizedmessage: 'Optional custom message shown when a user lacks required access.',
-      hidewhenauthorized: 'Hide this module entirely when access is denied.',
+      hidewhenunauthorized: 'Hide this module entirely when access is denied.',
       input: 'Optional runtime input defaults for this module.',
       ui: 'Configure module-specific UI props from the selected MFE specification.',
     });
@@ -2947,7 +2947,7 @@ data:
       authrequired: 'security',
       requiredrole: 'security',
       unauthorizedmessage: 'security',
-      hidewhenauthorized: 'security',
+      hidewhenunauthorized: 'security',
       async: 'async',
       input: 'input',
       ui: 'ui',
@@ -2969,7 +2969,7 @@ data:
         'authrequired',
         'requiredrole',
         'unauthorizedmessage',
-        'hidewhenauthorized',
+        'hidewhenunauthorized',
         'async',
         'input',
         'ui',
@@ -3006,6 +3006,13 @@ data:
         'requiredrole',
         'requiredroleforaccess',
         'requiredroleforpageaccess',
+      ])
+    );
+    const MFE_HIDE_WHEN_UNAUTHORIZED_FIELD_TOKENS = Object.freeze(
+      new Set([
+        'hidewhenunauthorized',
+        'hideifunauthorized',
+        'hidewhendenied',
       ])
     );
     const MFE_SECURITY_CONTAINER_FIELD_TOKENS = Object.freeze(
