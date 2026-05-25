@@ -4406,6 +4406,33 @@ data:
           const parsedSchema = normalizeObject(parseJsonLike(moduleDefinition.value?.[propsSchemaField.value], {}));
           const parsedProperties = normalizeObject(parsedSchema?.properties);
           if (Object.keys(parsedProperties).length > 0) {
+            if (shouldUseMfeFallbackSchema.value) {
+              const nextProperties = { ...parsedProperties };
+              let changed = false;
+              if (!nextProperties.secured) {
+                nextProperties.secured = { type: 'boolean', title: 'Secured' };
+                changed = true;
+              }
+              if (!nextProperties.requiredRole) {
+                nextProperties.requiredRole = { type: 'string', title: 'Required Role' };
+                changed = true;
+              }
+              if (!nextProperties.unauthorizedMessage) {
+                nextProperties.unauthorizedMessage = { type: 'string', title: 'Unauthorized Message' };
+                changed = true;
+              }
+              if (!nextProperties.hideWhenUnauthorized) {
+                nextProperties.hideWhenUnauthorized = { type: 'boolean', title: 'Hide When Unauthorized' };
+                changed = true;
+              }
+              if (changed) {
+                return {
+                  ...parsedSchema,
+                  type: asString(parsedSchema?.type) || 'object',
+                  properties: nextProperties,
+                };
+              }
+            }
             return parsedSchema;
           }
     

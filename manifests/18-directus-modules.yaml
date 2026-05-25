@@ -1130,6 +1130,18 @@ data:
             routeBase:
               type: string
               title: Route Base
+            secured:
+              type: boolean
+              title: Secured
+            requiredRole:
+              type: string
+              title: Required Role
+            unauthorizedMessage:
+              type: string
+              title: Unauthorized Message
+            hideWhenUnauthorized:
+              type: boolean
+              title: Hide When Unauthorized
             async:
               type: object
               title: Async Transport
@@ -1173,6 +1185,10 @@ data:
           sandbox: true
           preload: false
           routeBase: ""
+          secured: false
+          requiredRole: ""
+          unauthorizedMessage: ""
+          hideWhenUnauthorized: false
           async:
             mode: "none"
             requestChannel: ""
