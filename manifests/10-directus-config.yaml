@@ -3005,7 +3005,6 @@ data:
       new Set([
         'requiredrole',
         'requiredroleforaccess',
-        'requiredroleforpageaccess',
       ])
     );
     const MFE_HIDE_WHEN_UNAUTHORIZED_FIELD_TOKENS = Object.freeze(
