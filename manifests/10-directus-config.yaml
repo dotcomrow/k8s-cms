@@ -4851,8 +4851,86 @@ data:
           }
         };
 
-        const emitProps = (nextProps) => {
+        const normalizeCanonicalMfeSecurity = (nextProps) => {
           const normalized = normalizeObject(nextProps);
+          if (!isMfeRemoteModuleDefinition.value) return normalized;
+
+          const source = normalizeObject(parseJsonLike(normalized, {}));
+          const input = normalizeObject(parseJsonLike(source?.input, {}));
+          const ui = normalizeObject(parseJsonLike(source?.ui, {}));
+          const securityFromSource = pickFirstObject(source?.security);
+          const securityFromSourceLegacy = pickFirstObject(source?.access, source?.authorization, source?.auth);
+          const effectiveSecurityRecord = Object.keys(securityFromSource).length > 0
+            ? securityFromSource
+            : securityFromSourceLegacy;
+
+          const enabledFromTopLevel = pickBooleanFromRecordsByToken([source], MFE_SECURITY_ENABLE_FIELD_TOKENS);
+          const enabledFromSecurity = pickBooleanFromRecordsByToken([effectiveSecurityRecord], MFE_NESTED_SECURITY_ENABLE_FIELD_TOKENS);
+          const requiredRoleFromSecurity = pickStringFromRecordsByToken([effectiveSecurityRecord], MFE_REQUIRED_ROLE_FIELD_TOKENS);
+          const requiredRoleFromTopLevel = pickStringFromRecordsByToken([source], MFE_REQUIRED_ROLE_FIELD_TOKENS);
+          const unauthorizedMessageFromSecurity = pickStringFromRecordsByToken([effectiveSecurityRecord], MFE_UNAUTHORIZED_MESSAGE_FIELD_TOKENS);
+          const unauthorizedMessageFromTopLevel = pickStringFromRecordsByToken([source, input, ui], MFE_UNAUTHORIZED_MESSAGE_FIELD_TOKENS);
+          const hideWhenUnauthorizedFromSecurity = pickBooleanFromRecordsByToken([effectiveSecurityRecord], MFE_HIDE_WHEN_UNAUTHORIZED_FIELD_TOKENS);
+          const hideWhenUnauthorizedFromTopLevel = pickBooleanFromRecordsByToken([source, input, ui], MFE_HIDE_WHEN_UNAUTHORIZED_FIELD_TOKENS);
+
+          const hasSecuritySignals = (
+            enabledFromSecurity !== null
+            || enabledFromTopLevel !== null
+            || Boolean(requiredRoleFromSecurity || requiredRoleFromTopLevel)
+            || Boolean(unauthorizedMessageFromSecurity || unauthorizedMessageFromTopLevel)
+            || hideWhenUnauthorizedFromSecurity !== null
+            || hideWhenUnauthorizedFromTopLevel !== null
+            || Object.keys(securityFromSource).length > 0
+            || Object.keys(securityFromSourceLegacy).length > 0
+          );
+          if (!hasSecuritySignals) {
+            return normalized;
+          }
+
+          const nextSecurity = { ...normalizeObject(source?.security) };
+          const effectiveEnabled = enabledFromSecurity !== null ? enabledFromSecurity : enabledFromTopLevel;
+          const effectiveRequiredRole = requiredRoleFromSecurity || requiredRoleFromTopLevel;
+          const effectiveUnauthorizedMessage = unauthorizedMessageFromSecurity || unauthorizedMessageFromTopLevel;
+          const effectiveHideWhenUnauthorized = hideWhenUnauthorizedFromSecurity !== null
+            ? hideWhenUnauthorizedFromSecurity
+            : hideWhenUnauthorizedFromTopLevel;
+
+          if (effectiveEnabled === null) {
+            delete nextSecurity.enabled;
+          } else {
+            nextSecurity.enabled = Boolean(effectiveEnabled);
+          }
+
+          const normalizedRole = asString(effectiveRequiredRole).trim();
+          if (!normalizedRole || normalizedRole.toLowerCase() === 'none') {
+            delete nextSecurity.requiredRole;
+          } else {
+            nextSecurity.requiredRole = normalizedRole;
+          }
+
+          if (!asString(effectiveUnauthorizedMessage)) {
+            delete nextSecurity.unauthorizedMessage;
+          } else {
+            nextSecurity.unauthorizedMessage = asString(effectiveUnauthorizedMessage);
+          }
+
+          if (effectiveHideWhenUnauthorized === null) {
+            delete nextSecurity.hideWhenUnauthorized;
+          } else {
+            nextSecurity.hideWhenUnauthorized = Boolean(effectiveHideWhenUnauthorized);
+          }
+
+          if (Object.keys(nextSecurity).length === 0) {
+            delete normalized.security;
+          } else {
+            normalized.security = nextSecurity;
+          }
+
+          return normalized;
+        };
+
+        const emitProps = (nextProps) => {
+          const normalized = normalizeCanonicalMfeSecurity(nextProps);
           localProps.value = { ...normalized };
           jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
           emit('input', localProps.value);
@@ -5153,6 +5231,7 @@ data:
           const isRegistryKeyProp = normalizedPropKey === 'registrykey' || normalizedPropKey === 'registry_key';
           const isVersionProp = normalizedPropKey === 'version' || normalizedPropKey === 'module_version' || normalizedPropKey === 'moduleversion';
           const isManifestUrlProp = normalizedPropKey === 'manifesturl' || normalizedPropKey === 'manifest_url';
+          const isSecurityEnableProp = MFE_SECURITY_ENABLE_FIELD_TOKENS.has(normalizedPropToken);
           const isRegistryBackedMfeProp = isRegistryKeyProp || isVersionProp || isManifestUrlProp;
           const resolvedRegistryChannel = resolveRegistryChannel();
           const hasResolvedRegistryChannel = resolvedRegistryChannel === 'preview' || resolvedRegistryChannel === 'prod';
@@ -5312,11 +5391,18 @@ data:
           const securityRoleHint = shouldShowSecurityRoleDropdown && !asString(roleScopedSiteKey.value)
             ? 'Set page Site Key to internal or external before selecting a required role.'
             : '';
+          const resolvedValue = shouldShowSecurityRoleDropdown
+            ? asInputString(mfeSecurityState.value.requiredRole)
+            : (
+                isMfeRemoteModuleDefinition.value && isSecurityEnableProp
+                  ? Boolean(mfeSecurityState.value.enabled)
+                  : value
+              );
 
           if (shouldShowSecurityRoleDropdown) {
             control = renderSelectControl({
               id: inputId,
-              modelValue: asInputString(value),
+              modelValue: resolvedValue,
               items: securityRoleChoices.value,
               placeholder: securityRoleLoading.value
                 ? 'Loading roles...'
@@ -5329,21 +5415,21 @@ data:
           } else if (canUseRegistryBackedMfeSelect && isRegistryKeyProp) {
             control = renderSelectControl({
               id: inputId,
-              modelValue: asInputString(value),
+              modelValue: asInputString(resolvedValue),
               items: mfeRegistryKeyOptions.value,
               placeholder: mfeRegistryKeyOptions.value.length > 0 ? `Select ${title}` : 'No published MFE modules available',
             });
           } else if (canUseRegistryBackedMfeSelect && isVersionProp) {
             control = renderSelectControl({
               id: inputId,
-              modelValue: asInputString(value),
+              modelValue: asInputString(resolvedValue),
               items: mfeRegistryVersionOptions.value,
               placeholder: mfeRegistryVersionOptions.value.length > 0 ? `Select ${title}` : 'No versions available for selected module',
             });
           } else if (canUseRegistryBackedMfeSelect && isManifestUrlProp) {
             control = renderSelectControl({
               id: inputId,
-              modelValue: asInputString(value),
+              modelValue: asInputString(resolvedValue),
               items: mfeRegistryManifestOptions.value,
               placeholder: mfeRegistryManifestOptions.value.length > 0 ? `Select ${title}` : 'No manifest URL available for selected module',
             });
@@ -5351,20 +5437,20 @@ data:
             const items = enumValues.map((entry) => ({ text: entry, value: entry }));
             control = renderSelectControl({
               id: inputId,
-              modelValue: asInputString(value),
+              modelValue: asInputString(resolvedValue),
               items,
               placeholder: `Select ${title}`,
             });
           } else if (type === 'boolean') {
             control = renderCheckboxControl({
               id: inputId,
-              modelValue: value,
+              modelValue: resolvedValue,
             });
           } else if (type === 'number' || type === 'integer') {
             control = renderInputControl({
               id: inputId,
               type: 'number',
-              modelValue: asInputString(value),
+              modelValue: asInputString(resolvedValue),
               onUpdate: (rawValue) => {
                 const raw = asString(rawValue);
                 if (!raw) {
@@ -5676,7 +5762,7 @@ data:
               ? propertyDraftValues.value[propKey]
               : null;
             const draftValue = existingDraft === null
-              ? (value === undefined ? '' : JSON.stringify(value, null, 2))
+              ? (resolvedValue === undefined ? '' : JSON.stringify(resolvedValue, null, 2))
               : asInputString(existingDraft);
     
             control = renderTextareaControl({
@@ -5707,7 +5793,7 @@ data:
             });
           } else {
             const supportsAssetPicker = isAssetLikeProperty(propKey, schema);
-            const currentValue = asInputString(value);
+            const currentValue = asInputString(resolvedValue);
             const isPickerOpen = assetPickerField.value === propKey;
             const schemaFormat = asString(schema?.format).toLowerCase();
             const showImagePreview =
