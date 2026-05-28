@@ -6925,6 +6925,141 @@ data:
           }
           return value;
         };
+
+        const normalizeFieldToken = (value) => asString(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+        const parseJsonObjectLike = (value) => {
+          if (!value) return {};
+          if (typeof value === 'string') {
+            try {
+              const parsed = JSON.parse(value);
+              return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch {
+              return {};
+            }
+          }
+          if (typeof value === 'object' && !Array.isArray(value)) return value;
+          return {};
+        };
+
+        const parseBooleanOrNull = (value) => {
+          if (typeof value === 'boolean') return value;
+          const normalized = asString(value).toLowerCase();
+          if (!normalized) return null;
+          if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+          if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+          return null;
+        };
+
+        const pickStringByTokens = (records, tokens) => {
+          const tokenSet = new Set((tokens || []).map((entry) => normalizeFieldToken(entry)));
+          for (const recordValue of (records || [])) {
+            const record = parseJsonObjectLike(recordValue);
+            for (const [entryKey, entryValue] of Object.entries(record)) {
+              if (!tokenSet.has(normalizeFieldToken(entryKey))) continue;
+              const value = asString(entryValue);
+              if (!value) continue;
+              return value;
+            }
+          }
+          return '';
+        };
+
+        const pickBooleanByTokens = (records, tokens) => {
+          const tokenSet = new Set((tokens || []).map((entry) => normalizeFieldToken(entry)));
+          for (const recordValue of (records || [])) {
+            const record = parseJsonObjectLike(recordValue);
+            for (const [entryKey, entryValue] of Object.entries(record)) {
+              if (!tokenSet.has(normalizeFieldToken(entryKey))) continue;
+              const parsed = parseBooleanOrNull(entryValue);
+              if (parsed === null) continue;
+              return parsed;
+            }
+          }
+          return null;
+        };
+
+        const normalizeMfePropsSecurity = (propsJsonValue) => {
+          const source = parseJsonObjectLike(propsJsonValue);
+          const securityFromSource = parseJsonObjectLike(source?.security);
+          const securityFromSourceLegacy = parseJsonObjectLike(
+            source?.access && typeof source.access === 'object'
+              ? source.access
+              : (
+                  source?.authorization && typeof source.authorization === 'object'
+                    ? source.authorization
+                    : source?.auth
+                )
+          );
+          const effectiveSecurity = Object.keys(securityFromSource).length > 0
+            ? securityFromSource
+            : securityFromSourceLegacy;
+
+          const enabledFromSecurity = pickBooleanByTokens(
+            [effectiveSecurity],
+            ['enabled', 'secured', 'requiresAuth', 'authRequired', 'required'],
+          );
+          const enabledFromTopLevel = pickBooleanByTokens(
+            [source],
+            ['secured', 'requiresAuth', 'authRequired'],
+          );
+          const requiredRole = pickStringByTokens(
+            [effectiveSecurity, source],
+            ['requiredRole', 'requiredRoleForAccess', 'role'],
+          );
+          const unauthorizedMessage = pickStringByTokens(
+            [effectiveSecurity, source],
+            ['unauthorizedMessage', 'accessDeniedMessage', 'accessDeniedText'],
+          );
+          const hideWhenUnauthorized = pickBooleanByTokens(
+            [effectiveSecurity, source],
+            ['hideWhenUnauthorized', 'hideIfUnauthorized', 'hideWhenDenied'],
+          );
+
+          const hasSignals = (
+            enabledFromSecurity !== null
+            || enabledFromTopLevel !== null
+            || Boolean(requiredRole)
+            || Boolean(unauthorizedMessage)
+            || hideWhenUnauthorized !== null
+            || Object.keys(effectiveSecurity).length > 0
+          );
+          if (!hasSignals) return source;
+
+          const nextSecurity = { ...parseJsonObjectLike(source.security) };
+          const effectiveEnabled = enabledFromSecurity !== null ? enabledFromSecurity : enabledFromTopLevel;
+          if (effectiveEnabled === null) {
+            delete nextSecurity.enabled;
+          } else {
+            nextSecurity.enabled = Boolean(effectiveEnabled);
+          }
+
+          const normalizedRole = asString(requiredRole).trim();
+          if (!normalizedRole || normalizedRole.toLowerCase() === 'none') {
+            delete nextSecurity.requiredRole;
+          } else {
+            nextSecurity.requiredRole = normalizedRole;
+          }
+
+          if (!unauthorizedMessage) {
+            delete nextSecurity.unauthorizedMessage;
+          } else {
+            nextSecurity.unauthorizedMessage = asString(unauthorizedMessage);
+          }
+
+          if (hideWhenUnauthorized === null) {
+            delete nextSecurity.hideWhenUnauthorized;
+          } else {
+            nextSecurity.hideWhenUnauthorized = Boolean(hideWhenUnauthorized);
+          }
+
+          if (Object.keys(nextSecurity).length === 0) {
+            delete source.security;
+          } else {
+            source.security = nextSecurity;
+          }
+          return source;
+        };
     
         const sanitizeDrawerPatchPayload = (value) => {
           const source = unwrapDrawerPayload(value);
@@ -6943,6 +7078,9 @@ data:
             const key = asString(rawKey);
             if (!key || blockedKeys.has(key) || key.startsWith('$')) continue;
             payload[key] = rawValue;
+          }
+          if (toLower(asString(drawerCollection.value)) === 'cms_block_module' && 'props_json' in payload) {
+            payload.props_json = normalizeMfePropsSecurity(payload.props_json);
           }
           return payload;
         };
