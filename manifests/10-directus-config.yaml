@@ -4576,13 +4576,13 @@ data:
           const securityFromInput = pickFirstObject(input?.security, input?.access, input?.authorization, input?.auth);
           const securityFromUi = pickFirstObject(ui?.security, ui?.access, ui?.authorization, ui?.auth);
           const securityRecords = [securityFromSource, securityFromInput, securityFromUi];
-          const allRecords = [source, input, ui, ...securityRecords];
-          const enabledFromTopLevel = pickBooleanFromRecordsByToken([source, input, ui], MFE_SECURITY_ENABLE_FIELD_TOKENS);
+          const enabledFromTopLevel = pickBooleanFromRecordsByToken([source], MFE_SECURITY_ENABLE_FIELD_TOKENS);
           const enabledFromNested = pickBooleanFromRecordsByToken(securityRecords, MFE_NESTED_SECURITY_ENABLE_FIELD_TOKENS);
           const enabled = enabledFromTopLevel !== null
             ? enabledFromTopLevel
             : (enabledFromNested !== null ? enabledFromNested : false);
-          const requiredRole = pickStringFromRecordsByToken(allRecords, MFE_REQUIRED_ROLE_FIELD_TOKENS);
+          const requiredRoleTopLevel = pickStringFromRecordsByToken([source], MFE_REQUIRED_ROLE_FIELD_TOKENS);
+          const requiredRole = requiredRoleTopLevel || pickStringFromRecordsByToken(securityRecords, MFE_REQUIRED_ROLE_FIELD_TOKENS);
           return { enabled, requiredRole };
         });
         const mfeSecurityEnabled = computed(() =>
