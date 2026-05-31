@@ -1005,36 +1005,6 @@ data:
           return values?.[fieldName];
         };
 
-        const setFormFieldValue = (fieldName, value) => {
-          if (!fieldName) return;
-          const payload = { field: fieldName, value };
-          emit('setFieldValue', payload);
-          emit('set-field-value', payload);
-          const values = getFormValues();
-          if (!values || typeof values !== 'object') return;
-          try {
-            values[fieldName] = value;
-          } catch {
-            // Ignore immutable contexts (e.g., revision/compare views).
-          }
-        };
-
-        watch(
-          () => roleScopedSiteKey.value,
-          (nextValue, previousValue) => {
-            if (mode.value !== 'role') return;
-            const nextSiteKey = asString(nextValue);
-            const previousSiteKey = asString(previousValue);
-            if (nextSiteKey === previousSiteKey) return;
-
-            // Site scope changed: access controls must be re-selected for the new realm.
-            setFormFieldValue('force_login_for_page_access', false);
-            setFormFieldValue('required_role_for_page_access', null);
-            emit('input', null);
-            void loadChoices();
-          },
-        );
-
         const loadTemplateChoices = async () => {
           const siteKey = asString(props.values?.[pageSiteField.value]);
           const filter = {
@@ -1484,71 +1454,6 @@ data:
           );
         };
 
-        const loadRoleChoices = async () => {
-          const noneChoices = roleIncludeNone.value
-            ? [{ value: roleNoneValue.value, text: roleNoneLabel.value }]
-            : [];
-          const siteField = roleSiteField.value || pageSiteField.value || 'site_key';
-          const siteKey = asString(
-            readFormValue(siteField)
-            ?? readFormValue(pageSiteField.value)
-            ?? readFormValue('site_key')
-            ?? props.values?.[siteField]
-            ?? props.values?.[pageSiteField.value]
-            ?? props.values?.site_key,
-          );
-          if (!siteKey) {
-            return noneChoices;
-          }
-          const explicitRealm = roleRealmField.value
-            ? asString(readFormValue(roleRealmField.value) ?? props.values?.[roleRealmField.value]).toLowerCase()
-            : '';
-          const realm = explicitRealm === 'internal' || explicitRealm === 'external'
-            ? explicitRealm
-            : inferRealmFromSiteKey(siteKey);
-          if (!realm) {
-            return noneChoices;
-          }
-
-          const response = await apiGet(roleEndpointPath.value, {
-            realm,
-            site_key: siteKey || undefined,
-          });
-          const candidateRows = normalizeRows(response);
-          const fallbackRows = Array.isArray(response?.data?.roles)
-            ? response.data.roles
-            : (Array.isArray(response?.roles) ? response.roles : []);
-          const rows = candidateRows.length > 0 ? candidateRows : fallbackRows;
-
-          const mapped = uniqueChoices(
-            rows.map((row) => {
-              if (typeof row === 'string') {
-                const roleName = asString(row);
-                return { value: roleName, text: roleName };
-              }
-              const roleValue = asString(row?.value || row?.name || row?.role);
-              const roleText = asString(row?.text || row?.label || row?.name || row?.value || row?.role);
-              return {
-                value: roleValue,
-                text: roleText || roleValue,
-              };
-            }),
-          );
-
-          if (!roleIncludeNone.value) {
-            return mapped;
-          }
-
-          const noneEntry = {
-            value: roleNoneValue.value,
-            text: roleNoneLabel.value,
-          };
-          if (mapped.some((choice) => asString(choice.value) === asString(noneEntry.value))) {
-            return mapped;
-          }
-          return [noneEntry, ...mapped];
-        };
-
         const loadChoices = async () => {
           const currentRequest = ++requestId;
           loading.value = true;
@@ -1564,7 +1469,7 @@ data:
                   : mode.value === 'parent'
                     ? await loadParentChoices()
                     : mode.value === 'role'
-                      ? await loadRoleChoices()
+                      ? []
                       : await loadSlotChoices();
             if (currentRequest !== requestId) return;
             choices.value = uniqueChoices(nextChoices);
@@ -1596,7 +1501,7 @@ data:
                             : 'No published modules available for this site scope.'
                         )
                       : mode.value === 'role'
-                        ? 'No roles were returned for this realm/site context.'
+                        ? ''
                       : 'No valid slots available for this page template and site scope.';
               }
             }
@@ -1887,11 +1792,15 @@ data:
     
         return () => {
           const currentValue = asString(props.value);
+          const resolvedInput = resolveComponent('v-input');
           const resolvedSelect = resolveComponent('v-select');
           const resolvedNotice = resolveComponent('v-notice');
+          const hasDirectusInput = typeof resolvedInput !== 'string';
           const hasDirectusSelect = typeof resolvedSelect !== 'string';
-          const placeholderText = loading.value
-            ? 'Loading options...'
+          const placeholderText = mode.value === 'role'
+            ? 'Enter a required role'
+            : loading.value
+              ? 'Loading options...'
             : (
               missingContext.value
               || (
@@ -1904,7 +1813,7 @@ data:
                       : mode.value === 'parent'
                         ? 'Optional: select a parent block'
                         : mode.value === 'role'
-                          ? 'Select a required role'
+                          ? 'Enter a required role'
                           : 'Select a slot'
               )
             );
@@ -1919,6 +1828,32 @@ data:
                 : h('p', { class: 'cms-content-model-select__error' }, loadError.value))
             : null;
     
+          if (mode.value === 'role') {
+            if (hasDirectusInput) {
+              return h('div', { class: 'cms-content-model-select' }, [
+                h(resolvedInput, {
+                  modelValue: currentValue,
+                  placeholder: placeholderText,
+                  disabled: props.disabled || loading.value,
+                  'onUpdate:modelValue': onInput,
+                }),
+                errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
+              ]);
+            }
+
+            return h('div', { class: 'cms-content-model-select' }, [
+              h('input', {
+                class: 'cms-content-model-select__input',
+                type: 'text',
+                disabled: props.disabled || loading.value,
+                value: currentValue,
+                placeholder: placeholderText,
+                onInput: (event) => onInput(event?.target?.value),
+              }),
+              errorNotice,
+            ]);
+          }
+
           if (hasDirectusSelect) {
             return h('div', { class: 'cms-content-model-select' }, [
               h(resolvedSelect, {
@@ -4778,77 +4713,9 @@ data:
             .filter(Boolean);
         });
         const loadSecurityRoleChoices = async () => {
-          const noneChoices = roleIncludeNone.value
-            ? [{ value: roleNoneValue.value, text: roleNoneLabel.value }]
-            : [];
-          if (!isMfeRemoteModuleDefinition.value || !mfeSecurityEnabled.value) {
-            securityRoleChoices.value = noneChoices;
-            securityRoleError.value = '';
-            securityRoleLoading.value = false;
-            return;
-          }
-
-          const siteKeyValue = asString(roleScopedSiteKey.value);
-          if (!siteKeyValue) {
-            securityRoleChoices.value = noneChoices;
-            securityRoleError.value = '';
-            securityRoleLoading.value = false;
-            return;
-          }
-
-          const explicitRealm = roleRealmField.value
-            ? asString(props.values?.[roleRealmField.value]).toLowerCase()
-            : '';
-          const realm = explicitRealm === 'internal' || explicitRealm === 'external'
-            ? explicitRealm
-            : inferRealmFromSiteKey(siteKeyValue);
-          if (!realm) {
-            securityRoleChoices.value = noneChoices;
-            securityRoleError.value = '';
-            securityRoleLoading.value = false;
-            return;
-          }
-
-          securityRoleLoading.value = true;
+          securityRoleChoices.value = [];
           securityRoleError.value = '';
-          try {
-            const response = await apiGet(roleEndpointPath.value, {
-              realm,
-              site_key: siteKeyValue || undefined,
-            });
-            const candidateRows = normalizeRows(response);
-            const fallbackRows = Array.isArray(response?.data?.roles)
-              ? response.data.roles
-              : (Array.isArray(response?.roles) ? response.roles : []);
-            const rows = candidateRows.length > 0 ? candidateRows : fallbackRows;
-            const mapped = uniqueChoiceItems(
-              rows.map((row) => {
-                if (typeof row === 'string') {
-                  const roleName = asString(row);
-                  return { value: roleName, text: roleName };
-                }
-                const roleValue = asString(row?.value || row?.name || row?.role);
-                const roleText = asString(row?.text || row?.label || row?.name || row?.value || row?.role);
-                return {
-                  value: roleValue,
-                  text: roleText || roleValue,
-                };
-              }),
-            );
-            if (!roleIncludeNone.value) {
-              securityRoleChoices.value = mapped;
-            } else if (mapped.some((choice) => asString(choice.value) === asString(roleNoneValue.value))) {
-              securityRoleChoices.value = mapped;
-            } else {
-              securityRoleChoices.value = [noneChoices[0], ...mapped];
-            }
-            securityRoleError.value = '';
-          } catch (error) {
-            securityRoleChoices.value = noneChoices;
-            securityRoleError.value = error?.message || 'Unable to load role options.';
-          } finally {
-            securityRoleLoading.value = false;
-          }
+          securityRoleLoading.value = false;
         };
 
         const normalizeCanonicalMfeSecurity = (nextProps) => {
@@ -5388,9 +5255,7 @@ data:
               ? 'Module registry selections are unavailable in this field context. Ensure cms_block_module.props_json interface options include module_registry_url.'
               : 'Select page release channel (preview or prod) to load module registry selections.')
             : '';
-          const securityRoleHint = shouldShowSecurityRoleDropdown && !asString(roleScopedSiteKey.value)
-            ? 'Set page Site Key to internal or external before selecting a required role.'
-            : '';
+          const securityRoleHint = '';
           const resolvedValue = shouldShowSecurityRoleDropdown
             ? asInputString(mfeSecurityState.value.requiredRole)
             : (
@@ -5400,17 +5265,12 @@ data:
               );
 
           if (shouldShowSecurityRoleDropdown) {
-            control = renderSelectControl({
+            control = renderInputControl({
               id: inputId,
-              modelValue: resolvedValue,
-              items: securityRoleChoices.value,
-              placeholder: securityRoleLoading.value
-                ? 'Loading roles...'
-                : (
-                    securityRoleChoices.value.length > 0
-                      ? `Select ${title}`
-                      : 'No roles available for this site/realm'
-                  ),
+              type: 'text',
+              modelValue: asInputString(resolvedValue),
+              placeholder: `Enter ${title}`,
+              onUpdate: (nextValue) => setPropertyValue(propKey, asInputString(nextValue)),
             });
           } else if (canUseRegistryBackedMfeSelect && isRegistryKeyProp) {
             control = renderSelectControl({
@@ -5562,44 +5422,17 @@ data:
                 isFieldRequired
               );
               const nestedProperties = normalizeObject(nestedSchema?.properties);
-              const nestedSecurityRoleHint = shouldShowNestedSecurityRoleDropdown && !asString(roleScopedSiteKey.value)
-                ? 'Set page Site Key to internal or external before selecting a required role.'
-                : '';
+              const nestedSecurityRoleHint = '';
 
               let nestedControl = null;
               if (shouldShowNestedSecurityRoleDropdown) {
-                const roleItems = securityRoleChoices.value;
-                if (hasSelect) {
-                  nestedControl = h(resolvedSelect, {
-                    id: fieldId,
-                    modelValue: asInputString(fieldValue) || null,
-                    items: roleItems,
-                    placeholder: securityRoleLoading.value
-                      ? 'Loading roles...'
-                      : (
-                          roleItems.length > 0
-                            ? `Select ${fieldTitle}`
-                            : 'No roles available for this site/realm'
-                        ),
-                    disabled,
-                    showDeselect: true,
-                    'onUpdate:modelValue': (nextValue) => applyNestedValue(pathSegments, asInputString(nextValue)),
-                  });
-                } else {
-                  nestedControl = h(
-                    'select',
-                    {
-                      id: fieldId,
-                      disabled,
-                      value: asInputString(fieldValue),
-                      onChange: (event) => applyNestedValue(pathSegments, asInputString(event?.target?.value)),
-                    },
-                    [
-                      h('option', { value: '' }, securityRoleLoading.value ? 'Loading roles...' : `Select ${fieldTitle}`),
-                      ...roleItems.map((entry) => h('option', { value: entry.value }, entry.text)),
-                    ],
-                  );
-                }
+                nestedControl = renderInputControl({
+                  id: fieldId,
+                  type: 'text',
+                  modelValue: asInputString(fieldValue),
+                  placeholder: `Enter ${fieldTitle}`,
+                  onUpdate: (nextValue) => applyNestedValue(pathSegments, asInputString(nextValue)),
+                });
               } else if (enumItems.length > 0) {
                 const selectChoices = enumItems.map((entry) => ({ text: entry, value: entry }));
                 if (hasSelect) {
@@ -5730,12 +5563,6 @@ data:
                 ]),
                 fieldDescription ? h('p', { class: 'cms-module-props-editor__hint' }, fieldDescription) : null,
                 nestedSecurityRoleHint ? h('p', { class: 'cms-module-props-editor__hint' }, nestedSecurityRoleHint) : null,
-                shouldShowNestedSecurityRoleDropdown && securityRoleLoading.value
-                  ? h('p', { class: 'cms-module-props-editor__hint' }, 'Loading role options...')
-                  : null,
-                shouldShowNestedSecurityRoleDropdown && securityRoleError.value
-                  ? h('p', { class: 'cms-module-props-editor__error' }, securityRoleError.value)
-                  : null,
                 nestedControl,
               ]);
             };
@@ -5960,12 +5787,6 @@ data:
               : null,
             canUseRegistryBackedMfeSelect && mfeRegistryLoadError.value
               ? h('p', { class: 'cms-module-props-editor__error' }, mfeRegistryLoadError.value)
-              : null,
-            shouldShowSecurityRoleDropdown && securityRoleLoading.value
-              ? h('p', { class: 'cms-module-props-editor__hint' }, 'Loading role options...')
-              : null,
-            shouldShowSecurityRoleDropdown && securityRoleError.value
-              ? h('p', { class: 'cms-module-props-editor__error' }, securityRoleError.value)
               : null,
             control,
           ]);
