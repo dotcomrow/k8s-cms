@@ -2607,11 +2607,19 @@ data:
                 minWidth: '280px',
                 maxWidth: '72%',
                 display: 'flex',
-                justifyContent: 'flex-end',
+                justifyContent: 'flex-start',
               },
             }, leftColumn);
             const containerChildren = templatePreviewNode
-              ? [templatePreviewNode, templatePickerColumn]
+              ? [
+                  templatePickerColumn,
+                  h('div', {
+                    style: {
+                      display: 'flex',
+                      justifyContent: 'flex-end',
+                    },
+                  }, templatePreviewNode),
+                ]
               : [templatePickerColumn];
             return h('div', {
               class: 'cms-content-model-select',
@@ -2647,11 +2655,19 @@ data:
               minWidth: '280px',
               maxWidth: '72%',
               display: 'flex',
-              justifyContent: 'flex-end',
+              justifyContent: 'flex-start',
             },
           }, nativeLeftColumn);
           const nativeContainerChildren = templatePreviewNode
-            ? [templatePreviewNode, nativeTemplatePickerColumn]
+            ? [
+                nativeTemplatePickerColumn,
+                h('div', {
+                  style: {
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                  },
+                }, templatePreviewNode),
+              ]
             : [nativeTemplatePickerColumn];
           return h('div', {
             class: 'cms-content-model-select',
