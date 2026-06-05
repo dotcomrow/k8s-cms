@@ -6048,13 +6048,13 @@ data:
       _upsert_status_dropdown_field_meta "cms_block_hero" 1
       _upsert_status_dropdown_field_meta "cms_modules" 1
       _upsert_page_section_group_field_meta "_section_page_settings" "Page (Core Settings)" 1 "article"
-      _upsert_page_section_group_field_meta "_section_layout" "Layout (Structure)" 2 "dashboard_customize"
+      _upsert_page_section_group_field_meta "_section_layout" "Section Layout" 2 "dashboard_customize"
       _upsert_page_section_group_field_meta "_section_theme" "Theme (Family + Mode)" 3 "palette"
       _upsert_page_section_group_field_meta "_section_widget_dock" "Widget Dock (UI Controls)" 4 "widgets"
       _upsert_page_section_group_field_meta "_section_analytics" "Analytics + Monitoring (Optional)" 5 "insights"
       _upsert_page_section_group_field_meta "_section_seo" "SEO (Primary Defaults)" 6 "manage_search"
       _upsert_page_section_group_field_meta "_section_meta" "Head + Icons (Optional Overrides)" 7 "flag"
-      _upsert_page_section_group_field_meta "_section_blocks" "Blocks" 8 "account_tree"
+      _upsert_page_section_group_field_meta "_section_blocks" "Section Blocks" 8 "account_tree"
       _assign_page_field_group "site_key" "_section_page_settings"
       _assign_page_field_group "date_created" "_section_page_settings"
       _assign_page_field_group "date_updated" "_section_page_settings"

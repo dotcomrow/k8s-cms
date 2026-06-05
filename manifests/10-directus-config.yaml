@@ -701,6 +701,7 @@ data:
         const choices = ref([]);
         const missingContext = ref('');
         const templateSlots = ref([]);
+        const templateSlotLayoutHints = ref([]);
         const templateSlotsLoading = ref(false);
         const templateSlotsError = ref('');
         const injectedValues = inject('values', null);
@@ -830,19 +831,423 @@ data:
           return { recordCollection, recordId };
         };
 
-        const pickTemplatePreviewSlots = (rows) => {
+        const pickTemplatePreviewSlots = (rows, orderedKeys = []) => {
           const seen = new Set();
           const picked = [];
+          const seenOrdered = new Set();
+          for (const rawKey of orderedKeys) {
+            const key = asString(rawKey);
+            if (!key || seenOrdered.has(key)) continue;
+            seenOrdered.add(key);
+          }
+
+          const slotMap = new Map();
           for (const row of rows) {
             const key = asString(row?.[slotValueField.value]);
             if (!key || seen.has(key)) continue;
             seen.add(key);
-            picked.push({
+            slotMap.set(key, {
               key,
               label: asString(row?.[slotLabelField.value]) || key,
             });
           }
+          for (const key of seenOrdered) {
+            const slot = slotMap.get(key);
+            if (slot) {
+              picked.push(slot);
+              slotMap.delete(key);
+            }
+          }
+          for (const slot of slotMap.values()) {
+            picked.push(slot);
+          }
           return picked;
+        };
+
+        const splitTemplateTokens = (value) => (asString(value)
+          .toLowerCase()
+          .match(/[a-z0-9]+/g) || []);
+
+        const parseTemplateSlotOrder = (templateHtml, knownKeys = new Set()) => {
+          if (!templateHtml) return [];
+          const hasLimit = knownKeys && knownKeys.size > 0;
+          const matcher = /data-slot\s*=\s*['"]([^'"]+)['"]/g;
+          const handlebarMatcher = /\{\{\s*slot:\s*([a-z0-9_-]+)\s*\}\}/gi;
+          const seen = new Set();
+          const ordered = [];
+          let match;
+          while ((match = matcher.exec(templateHtml)) !== null) {
+            const key = asString(match?.[1]);
+            if (!key) continue;
+            if (hasLimit && !knownKeys.has(key)) continue;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            ordered.push(key);
+          }
+          match = null;
+          while ((match = handlebarMatcher.exec(templateHtml)) !== null) {
+            const key = asString(match?.[1]);
+            if (!key) continue;
+            if (hasLimit && !knownKeys.has(key)) continue;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            ordered.push(key);
+          }
+          return ordered;
+        };
+
+        const normalizeTemplateSlotRole = (slotKey, className = '') => {
+          const normalizedKey = asString(slotKey).toLowerCase();
+          if (!normalizedKey) return normalizedKey;
+          const classes = splitTemplateTokens(className);
+          const keyTokens = splitTemplateTokens(normalizedKey);
+          const roleHas = (haystack, aliases) => aliases.some((alias) => haystack.includes(alias));
+          const hasRoleFromClass = (aliases) => roleHas(classes, aliases);
+          const hasRoleFromKey = (aliases) => roleHas(keyTokens, aliases);
+
+          if (hasRoleFromClass(['hero'])) return 'hero';
+          if (hasRoleFromClass(['cta'])) return 'cta';
+          if (hasRoleFromClass(['header'])) return 'header';
+          if (hasRoleFromClass(['footer'])) return 'footer';
+          if (hasRoleFromClass(['nav'])) return 'nav';
+          if (hasRoleFromClass(['toc', 'table', 'contents', 'outline'])) return 'toc';
+          if (hasRoleFromClass(['sidebar', 'side', 'rail'])) return 'sidebar';
+          if (hasRoleFromClass(['right', 'rhs', 'east'])) return 'right';
+          if (hasRoleFromClass(['left', 'lhs', 'west'])) return 'left';
+          if (hasRoleFromClass(['aside', 'edge'])) return 'aside';
+
+          if (hasRoleFromKey(['hero'])) return 'hero';
+          if (hasRoleFromKey(['cta'])) return 'cta';
+          if (hasRoleFromKey(['header'])) return 'header';
+          if (hasRoleFromKey(['footer'])) return 'footer';
+          if (hasRoleFromKey(['nav'])) return 'nav';
+          if (hasRoleFromKey(['toc', 'table', 'contents', 'outline'])) return 'toc';
+          if (hasRoleFromKey(['sidebar', 'side', 'rail'])) return 'sidebar';
+          if (hasRoleFromKey(['right', 'rhs', 'east'])) return 'right';
+          if (hasRoleFromKey(['left', 'lhs', 'west'])) return 'left';
+          if (hasRoleFromKey(['aside', 'edge'])) return 'aside';
+          if (hasRoleFromKey(['center', 'main', 'content', 'body'])) return 'main';
+
+          if (classes.includes('rail')) return 'rail';
+          if (classes.includes('right')) return 'right';
+          if (classes.includes('left')) return 'left';
+          if (classes.includes('main')) return 'main';
+          if (normalizedKey.startsWith('cell_')) return 'cell';
+          if (normalizedKey.startsWith('feature_')) return 'feature';
+          return normalizedKey;
+        };
+
+        const parseTemplateSlotLayoutHints = (templateHtml, orderedKeys = []) => {
+          if (!templateHtml) return [];
+          const orderedSet = new Set((Array.isArray(orderedKeys)
+            ? orderedKeys
+            : []
+          ).map((entry) => asString(entry).toLowerCase()));
+          const validRowContainers = new Set(['layout__columns', 'layout__body', 'layout__features', 'layout__grid']);
+          const isRowContainerClass = (className = '') => {
+            const normalized = asString(className).toLowerCase();
+            if (!normalized) return false;
+            const classes = splitTemplateTokens(normalized);
+            if (classes.includes('columns') || classes.includes('column') || classes.includes('grid') || classes.includes('row') || classes.includes('split')) return true;
+            return validRowContainers.has(normalized)
+              || normalized.includes('layout__columns')
+              || normalized.includes('layout__body')
+              || normalized.includes('layout__features')
+              || normalized.includes('layout__grid')
+              || normalized.includes('grid-cols');
+          };
+          const tagRegex = /<[^>]+>/g;
+          const attrRegex = (name, source) => {
+            const matcher = new RegExp(`${name}\\s*=\\s*(['"])(.*?)\\1`, 'i');
+            const hit = asString(source).match(matcher);
+            return hit?.[2] || '';
+          };
+          const stack = [];
+          const hintMap = [];
+          const seen = new Set();
+
+          let tagMatch;
+          while ((tagMatch = tagRegex.exec(templateHtml)) !== null) {
+            const tag = tagMatch[0];
+            const tagLower = tag.toLowerCase();
+
+            const closeMatch = tagLower.match(/^<\s*\/\s*([a-z0-9-]+)/i);
+            if (closeMatch) {
+              const closingName = asString(closeMatch?.[1]).toLowerCase();
+              for (let i = stack.length - 1; i >= 0; i -= 1) {
+                if (stack[i].tagName === closingName) {
+                  stack.splice(i);
+                  break;
+                }
+              }
+              continue;
+            }
+
+            const openMatch = tagLower.match(/^<\s*([a-z0-9-]+)/i);
+            if (!openMatch) continue;
+            const tagName = asString(openMatch?.[1]).toLowerCase();
+            const className = attrRegex('class', tag);
+            const classes = asString(className)
+              .toLowerCase()
+              .split(/\s+/)
+              .filter(Boolean);
+            const containerClass = (classes.find((entry) => validRowContainers.has(entry))
+              || (isRowContainerClass(className) ? className : '')) || '';
+
+            const slotMatch = attrRegex('data-slot', tag);
+            if (slotMatch) {
+              const rawKey = asString(slotMatch).toLowerCase();
+              if (rawKey && !seen.has(rawKey) && (!orderedSet.size || orderedSet.has(rawKey))) {
+                seen.add(rawKey);
+                const rowContainer = [...stack].reverse().find((entry) => entry.rowContainerClass)?.rowContainerClass || '';
+                hintMap.push({
+                  key: rawKey,
+                  role: normalizeTemplateSlotRole(rawKey, className),
+                  rowContainerClass: rowContainer,
+                });
+              }
+            }
+
+            const isSelfClosing = /\s*\/\s*>$/.test(tagLower);
+            if (!isSelfClosing) {
+              stack.push({
+                tagName,
+                rowContainerClass: containerClass || '',
+              });
+            }
+          }
+
+          return hintMap;
+        };
+
+        const selectScopedTemplateRow = (rows, siteKey) => {
+          if (!Array.isArray(rows) || rows.length === 0) return null;
+          const normalizedSiteKey = asString(siteKey);
+          if (normalizedSiteKey) {
+            const siteMatch = rows.find((row) => asString(row?.site_key) === normalizedSiteKey);
+            if (siteMatch) return siteMatch;
+          }
+          const globalMatch = rows.find((row) => asString(row?.site_key) === '' || row?.site_key === null || row?.site_key === undefined);
+          return globalMatch || rows[0];
+        };
+
+        const buildTemplateSlotPreviewRows = (slots, layoutHints = []) => {
+          if (!Array.isArray(slots) || slots.length === 0) return [];
+
+          const used = new Set();
+          const isFeatureSlot = (slotKey) => /^feature_[\da-z]+$/i.test(asString(slotKey));
+          const isCellSlot = (slotKey) => /^cell_[a-z]$/i.test(asString(slotKey));
+          const hintByKey = new Map(
+            (Array.isArray(layoutHints) ? layoutHints : []).map((hint) => {
+              const key = asString(hint?.key);
+              if (!key) return null;
+              return [key, {
+                role: asString(hint?.role) || asString(key),
+                rowContainerClass: asString(hint?.rowContainerClass),
+              }];
+            }).filter(Boolean),
+          );
+          const toRole = (slot) => {
+            const key = asString(slot?.key);
+            return hintByKey.get(key)?.role || normalizeTemplateSlotRole(key);
+          };
+          const inferWidths = (rowSlots) => {
+            const rowKeys = rowSlots.map((slot) => asString(slot.key));
+            const roles = rowSlots.map((slot) => toRole(slot));
+            if (rowSlots.length === 2 && (roles.includes('left') && roles.includes('right'))) {
+              return [1, 1];
+            }
+            if (rowKeys.length === 3 && roles[0] === 'left' && roles[1] === 'main' && roles[2] === 'right') {
+              return [1, 2, 1];
+            }
+            if (rowKeys.length === 3 && roles[0] === 'sidebar' && roles[1] === 'main' && roles[2] === 'toc') {
+              return [1, 2, 1];
+            }
+            if (rowKeys.length === 3 && roles[0] === 'nav' && roles[1] === 'main' && roles[2] === 'aside') {
+              return [1, 2, 1];
+            }
+            if (rowKeys.length === 2 && roles[0] === 'main' && (roles[1] === 'rail' || roles[1] === 'aside' || roles[1] === 'toc')) {
+              return [2, 1];
+            }
+            if (rowKeys.length === 2 && roles[0] === 'left' && roles[1] === 'right') {
+              return [1, 1];
+            }
+            if (rowSlots.length > 1 && rowSlots.every((slot) => isFeatureSlot(slot?.key) || toRole(slot) === 'feature')) {
+              return rowSlots.map(() => 1);
+            }
+            if (rowSlots.length > 1 && rowSlots.every((slot) => isCellSlot(slot?.key) || toRole(slot) === 'cell')) {
+              return rowSlots.map(() => 1);
+            }
+            return rowSlots.map(() => 1);
+          };
+          const isChunkableCollection = (rowSlots) => rowSlots.length > 3
+            && rowSlots.every((slot) => isCellSlot(slot?.key) || toRole(slot) === 'cell');
+          const chunk = (arr, size) => {
+            const out = [];
+            for (let i = 0; i < arr.length; i += size) {
+              out.push(arr.slice(i, i + size));
+            }
+            return out;
+          };
+
+          const rows = [];
+          const pushRow = (rowSlots, widths) => {
+            const normalizedWidths = (Array.isArray(widths) && widths.length === rowSlots.length)
+              ? widths
+              : rowSlots.map(() => 1);
+            rows.push({
+              slots: rowSlots,
+              widths: normalizedWidths,
+            });
+            rowSlots.forEach((item) => used.add(item.key));
+          };
+
+          for (let i = 0; i < slots.length; i += 1) {
+            const slot = slots[i];
+            if (!slot || used.has(slot.key)) continue;
+            const currentKey = asString(slot.key);
+            const next = slots[i + 1];
+            const nextKey = asString(next?.key);
+            const next2 = slots[i + 2];
+            const next2Key = asString(next2?.key);
+            const currentRole = toRole(slot);
+            const nextRole = toRole(next);
+            const next2Role = toRole(next2);
+            const currentRowContainer = asString(hintByKey.get(currentKey)?.rowContainerClass);
+
+            if (currentRowContainer) {
+              const rowSlots = [slot];
+              let cursor = i + 1;
+              while (cursor < slots.length) {
+                const item = slots[cursor];
+                if (!item || used.has(item.key)) break;
+                const rowItemContainer = asString(hintByKey.get(asString(item.key))?.rowContainerClass);
+                if (!rowItemContainer || rowItemContainer !== currentRowContainer) break;
+                const itemRole = toRole(item);
+                if (itemRole === 'header' || itemRole === 'footer') break;
+                rowSlots.push(item);
+                cursor += 1;
+              }
+              if (rowSlots.length > 1) {
+                if (isChunkableCollection(rowSlots)) {
+                  chunk(rowSlots, 3).forEach((chunked) => pushRow(chunked, chunked.map(() => 1)));
+                } else {
+                  pushRow(rowSlots, inferWidths(rowSlots));
+                }
+                i = cursor - 1;
+                continue;
+              }
+              pushRow([slot], [1]);
+              continue;
+            }
+
+            if (
+              currentRole === 'left'
+              && nextRole === 'main'
+              && next2Role === 'right'
+            ) {
+              pushRow([slot, next, next2], [1, 2, 1]);
+              i += 2;
+              continue;
+            }
+
+            if (currentRole === 'left' && nextRole === 'right') {
+              pushRow([slot, next], [1, 1]);
+              i += 1;
+              continue;
+            }
+
+            if (
+              currentRole === 'left'
+              && nextRole === 'main'
+              && next2 && next2Role
+              && (next2Role === 'right' || next2Role === 'main')
+            ) {
+              pushRow([slot, next, next2], next2Role === 'right' ? [1, 2, 1] : [1, 1, 1]);
+              i += 2;
+              continue;
+            }
+
+            if (
+              currentRole === 'right'
+              && nextRole === 'main'
+              && next2Role === 'left'
+            ) {
+              pushRow([slot, next, next2], [1, 2, 1]);
+              i += 2;
+              continue;
+            }
+
+            if (
+              currentRole === 'sidebar'
+              && nextRole === 'main'
+              && next2Role === 'toc'
+            ) {
+              pushRow([slot, next, next2], [1, 2, 1]);
+              i += 2;
+              continue;
+            }
+
+            if (
+              currentRole === 'nav'
+              && nextRole === 'main'
+              && next2Role === 'aside'
+            ) {
+              pushRow([slot, next, next2], [1, 2, 1]);
+              i += 2;
+              continue;
+            }
+
+            if (currentRole === 'main' && nextRole === 'rail') {
+              pushRow([slot, next], [2, 1]);
+              i += 1;
+              continue;
+            }
+
+            if (currentRole === 'main' && nextRole === 'aside') {
+              pushRow([slot, next], [2, 1]);
+              i += 1;
+              continue;
+            }
+
+            if (currentRole === 'main' && nextRole === 'toc') {
+              pushRow([slot, next], [2, 1]);
+              i += 1;
+              continue;
+            }
+
+            if (isFeatureSlot(currentKey)) {
+              const featureSlots = [slot];
+              let cursor = i + 1;
+              while (cursor < slots.length && !used.has(slots[cursor]?.key) && isFeatureSlot(slots[cursor]?.key)) {
+                featureSlots.push(slots[cursor]);
+                cursor += 1;
+              }
+              if (featureSlots.length > 1) {
+                pushRow(featureSlots, featureSlots.map(() => 1));
+                i = cursor - 1;
+                continue;
+              }
+            }
+
+            if (isCellSlot(currentKey)) {
+              const cellSlots = [slot];
+              let cursor = i + 1;
+              while (cursor < slots.length && !used.has(slots[cursor]?.key) && isCellSlot(slots[cursor]?.key)) {
+                cellSlots.push(slots[cursor]);
+                cursor += 1;
+              }
+              if (cellSlots.length > 1) {
+                pushRow(cellSlots, cellSlots.map(() => 1));
+                i = cursor - 1;
+                continue;
+              }
+            }
+
+            pushRow([slot], [1]);
+          }
+
+          return rows;
         };
     
         const resolveSelectedParentBlockId = () => {
@@ -1425,7 +1830,35 @@ data:
               sort: slotValueField.value,
               filter: JSON.stringify(filter),
             });
-            const nextSlots = pickTemplatePreviewSlots(normalizeRows(response));
+            const slotRows = normalizeRows(response);
+            const slotKeys = new Set(slotRows.map((row) => asString(row?.[slotValueField.value])));
+            templateSlotLayoutHints.value = [];
+            let templateSlotOrder = [];
+            try {
+              const templateFilter = {
+                _and: [
+                  { template_key: { _eq: templateKey } },
+                  buildScopedFilter(siteKey),
+                ],
+              };
+              const templateResponse = await apiGet(`/items/${templatesCollection.value}`, {
+                fields: ['template_key', 'site_key', 'html'].join(','),
+                limit: -1,
+                sort: 'template_key',
+                filter: JSON.stringify(templateFilter),
+              });
+              const templateRows = normalizeRows(templateResponse);
+              const scopedTemplate = selectScopedTemplateRow(templateRows, siteKey);
+              templateSlotOrder = parseTemplateSlotOrder(asString(scopedTemplate?.html), slotKeys);
+              templateSlotLayoutHints.value = parseTemplateSlotLayoutHints(
+                asString(scopedTemplate?.html),
+                templateSlotOrder,
+              );
+            } catch {
+              templateSlotOrder = [];
+              templateSlotLayoutHints.value = [];
+            }
+            const nextSlots = pickTemplatePreviewSlots(slotRows, templateSlotOrder);
             if (currentRequest !== templateSlotsRequestCounter) return;
             templateSlots.value = nextSlots;
           } catch (error) {
@@ -1916,24 +2349,39 @@ data:
 
           const templatePreviewNode = mode.value === 'template'
             ? (() => {
-                const slotItems = templateSlots.value.length > 0
-                  ? templateSlots.value.map((slot) => h(
+                const slotRows = templateSlots.value.length > 0
+                ? buildTemplateSlotPreviewRows(templateSlots.value, templateSlotLayoutHints.value).map((layoutRow) => h(
                       'div',
                       {
                         style: {
-                          border: '1px solid var(--v-border-color, #cbd5e1)',
-                          borderRadius: '3px',
-                          padding: '4px 6px',
-                          background: 'var(--foreground-subdued, #f8fafc)',
-                          color: 'var(--foreground-normal, #1e293b)',
-                          fontSize: '11px',
-                          lineHeight: '1.2',
-                          minHeight: '20px',
-                          display: 'flex',
-                          alignItems: 'center',
+                          display: 'grid',
+                          gap: '4px',
+                          gridTemplateColumns: layoutRow.widths.map((width) => `${width}fr`).join(' '),
                         },
                       },
-                      asString(slot.label || slot.key) || asString(slot.key),
+                      layoutRow.slots.map((slot) => h(
+                        'div',
+                        {
+                          style: {
+                            border: '1px solid var(--v-border-color, #cbd5e1)',
+                            borderRadius: '3px',
+                            padding: '4px 6px',
+                            background: 'var(--foreground-subdued, #f8fafc)',
+                            color: 'var(--foreground-normal, #1e293b)',
+                            fontSize: '10px',
+                            lineHeight: '1.15',
+                            minHeight: '20px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            textAlign: 'center',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          },
+                        },
+                        asString(slot.label || slot.key) || asString(slot.key),
+                      )),
                     ))
                   : [h('p', {
                     style: {
@@ -1960,10 +2408,11 @@ data:
                     padding: '8px',
                     background: 'var(--v-background-page, #ffffff)',
                     boxSizing: 'border-box',
-                    flex: '0 0 auto',
-                    width: 'clamp(170px, 24vw, 240px)',
-                    maxWidth: 'clamp(170px, 24vw, 240px)',
-                    maxHeight: 'clamp(140px, 24vh, 220px)',
+                    flex: '0 0 clamp(220px, 28vw, 290px)',
+                    width: 'clamp(220px, 28vw, 290px)',
+                    maxWidth: 'clamp(220px, 28vw, 290px)',
+                    minWidth: '220px',
+                    maxHeight: 'clamp(170px, 30vh, 280px)',
                     overflowY: 'auto',
                   },
                 }, [
@@ -1984,7 +2433,7 @@ data:
                       flexDirection: 'column',
                       gap: '4px',
                     },
-                  }, slotItems),
+                  }, slotRows),
                 ]);
               })()
             : null;
@@ -2032,7 +2481,7 @@ data:
               h('div', {
                 style: {
                   flex: '1 1 auto',
-                  minWidth: '0',
+                  minWidth: '220px',
                 },
               }, leftColumn),
             ];
@@ -2043,7 +2492,7 @@ data:
               class: 'cms-content-model-select',
               style: {
                 display: 'flex',
-                flexWrap: 'wrap',
+                flexWrap: 'nowrap',
                 gap: '12px',
                 alignItems: 'flex-start',
               },
@@ -2069,7 +2518,7 @@ data:
             h('div', {
               style: {
                 flex: '1 1 auto',
-                minWidth: '0',
+                minWidth: '220px',
               },
             }, nativeLeftColumn),
           ];
@@ -2080,7 +2529,7 @@ data:
             class: 'cms-content-model-select',
             style: {
               display: 'flex',
-              flexWrap: 'wrap',
+              flexWrap: 'nowrap',
               gap: '12px',
               alignItems: 'flex-start',
             },
