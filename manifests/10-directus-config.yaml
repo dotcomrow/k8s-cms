@@ -4722,6 +4722,12 @@ data:
           const selectedDefinition = normalizeObject(parseJsonLike(selectedVersion?.definition, {}));
           const selectedSeed = normalizeObject(parseJsonLike(selectedVersion?.seed, {}));
           const selectedDefinitionIo = normalizeObject(parseJsonLike(selectedDefinition?.io, {}));
+          const normalizedAsyncConfig = pickFirstObject(
+            selectedVersion?.async,
+            selectedDefinition?.async,
+            selectedSeed?.async,
+            moduleSummary?.async,
+          );
 
           const normalizedModuleKey = pickFirstNonEmptyString(
             moduleSummary?.module_key,
@@ -4818,6 +4824,7 @@ data:
               moduleSummary?.site_key,
             ),
             status: 'published',
+            async: normalizedAsyncConfig,
             [propsSchemaField.value]: normalizedSchema,
             [defaultPropsField.value]: normalizedDefaults,
             date_updated: pickFirstNonEmptyString(
@@ -5444,6 +5451,37 @@ data:
             required,
           };
         });
+        const selectedMfeAsyncConfig = computed(() => {
+          const moduleDefinitionAsync = normalizeObject(parseJsonLike(moduleDefinition.value?.async, {}));
+          if (Object.keys(moduleDefinitionAsync).length > 0) {
+            return moduleDefinitionAsync;
+          }
+
+          const detail = normalizeObject(parseJsonLike(selectedMfeRegistryDetail.value, {}));
+          const version = normalizeObject(parseJsonLike(selectedMfeRegistryVersionRow.value, {}));
+          const versionSeed = normalizeObject(parseJsonLike(version?.seed ?? version?.seed_ref, {}));
+          const versionDefinition = normalizeObject(parseJsonLike(version?.definition ?? version?.definition_ref, {}));
+          const detailSeed = normalizeObject(parseJsonLike(detail?.seed ?? detail?.seed_ref, {}));
+          const detailDefinition = normalizeObject(parseJsonLike(detail?.definition ?? detail?.definition_ref, {}));
+
+          return pickFirstObject(
+            version?.async,
+            versionDefinition?.async,
+            detail?.async,
+            detailDefinition?.async,
+            versionSeed?.async,
+            detailSeed?.async,
+          );
+        });
+        const selectedMfeSupportsAsync = computed(() => {
+          const asyncConfig = normalizeObject(selectedMfeAsyncConfig.value);
+          if (Object.keys(asyncConfig).length === 0) {
+            return true;
+          }
+          const enabled = asBoolean(asyncConfig.enabled, true);
+          const mode = toLower(asyncConfig.mode);
+          return enabled && mode !== 'none';
+        });
         const mfeRegistryKeyOptions = computed(() =>
           mfeRegistryModuleRows.value.map((row) => {
             const moduleKeyValue = asString(row?.module_key);
@@ -5842,6 +5880,9 @@ data:
           if (!isMfeRemoteModuleDefinition.value) return true;
           const token = normalizeFieldToken(propKey);
           if (MFE_REQUIRED_ROLE_FIELD_TOKENS.has(token) && !mfeSecurityEnabled.value) {
+            return false;
+          }
+          if (token === 'async' && !selectedMfeSupportsAsync.value) {
             return false;
           }
           return true;
