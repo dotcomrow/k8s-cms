@@ -944,6 +944,7 @@ data:
             : []
           ).map((entry) => asString(entry).toLowerCase()));
           const validRowContainers = new Set(['layout__columns', 'layout__body', 'layout__features', 'layout__grid']);
+          const floatingSidebarKeywords = new Set(['hamburger', 'offcanvas', 'overlay', 'drawer', 'floating']);
           const isRowContainerClass = (className = '') => {
             const normalized = asString(className).toLowerCase();
             if (!normalized) return false;
@@ -1000,10 +1001,15 @@ data:
               if (rawKey && !seen.has(rawKey) && (!orderedSet.size || orderedSet.has(rawKey))) {
                 seen.add(rawKey);
                 const rowContainer = [...stack].reverse().find((entry) => entry.rowContainerClass)?.rowContainerClass || '';
+                const normalizedSlotClass = asString(className || '').trim();
+                const slotSignature = `${normalizedSlotClass} ${rawKey}`.toLowerCase();
+                const isFloatingPanel = [...floatingSidebarKeywords].some((entry) => slotSignature.includes(entry));
                 hintMap.push({
                   key: rawKey,
                   role: normalizeTemplateSlotRole(rawKey, className),
                   rowContainerClass: rowContainer,
+                  className: normalizedSlotClass,
+                  isFloatingPanel,
                 });
               }
             }
@@ -1044,6 +1050,8 @@ data:
               return [key, {
                 role: asString(hint?.role) || asString(key),
                 rowContainerClass: asString(hint?.rowContainerClass),
+                className: asString(hint?.className),
+                isFloatingPanel: Boolean(hint?.isFloatingPanel),
               }];
             }).filter(Boolean),
           );
@@ -1051,6 +1059,17 @@ data:
             const key = asString(slot?.key);
             return hintByKey.get(key)?.role || normalizeTemplateSlotRole(key);
           };
+          const isContentPanelSlot = (slot) => {
+            const role = toRole(slot);
+            return ['header', 'main', 'footer', 'toc', 'rail', 'aside', 'hero', 'content', 'body', 'cta', 'nav'].includes(role);
+          };
+          const decorateSlot = (slot, overrides = {}) => ({
+            ...(slot || {}),
+            __previewRole: toRole(slot),
+            __previewClassName: asString(hintByKey.get(asString(slot?.key))?.className),
+            __previewIsFloatingPanel: Boolean(hintByKey.get(asString(slot?.key))?.isFloatingPanel),
+            ...overrides,
+          });
           const inferWidths = (rowSlots) => {
             const rowKeys = rowSlots.map((slot) => asString(slot.key));
             const roles = rowSlots.map((slot) => toRole(slot));
@@ -1096,10 +1115,24 @@ data:
               ? widths
               : rowSlots.map(() => 1);
             rows.push({
-              slots: rowSlots,
+              slots: rowSlots.map((slot) => decorateSlot(slot)),
               widths: normalizedWidths,
             });
             rowSlots.forEach((item) => used.add(item.key));
+          };
+          const collectSidebarPanel = (startIndex) => {
+            const contentSlots = [];
+            let cursor = startIndex;
+            while (cursor < slots.length) {
+              const candidate = slots[cursor];
+              if (!candidate || used.has(candidate.key)) break;
+              const candidateRole = toRole(candidate);
+              if (candidateRole === 'sidebar' || candidateRole === 'left' || candidateRole === 'right') break;
+              if (!isContentPanelSlot(candidate)) break;
+              contentSlots.push(candidate);
+              cursor += 1;
+            }
+            return { contentSlots, cursor };
           };
 
           for (let i = 0; i < slots.length; i += 1) {
@@ -1107,9 +1140,7 @@ data:
             if (!slot || used.has(slot.key)) continue;
             const currentKey = asString(slot.key);
             const next = slots[i + 1];
-            const nextKey = asString(next?.key);
             const next2 = slots[i + 2];
-            const next2Key = asString(next2?.key);
             const currentRole = toRole(slot);
             const nextRole = toRole(next);
             const next2Role = toRole(next2);
@@ -1139,6 +1170,26 @@ data:
               }
               pushRow([slot], [1]);
               continue;
+            }
+
+            if (currentRole === 'sidebar') {
+              const contentPanel = collectSidebarPanel(i + 1);
+              if (contentPanel.contentSlots.length > 0) {
+                pushRow(
+                  [
+                    slot,
+                    {
+                      key: `__content-column:${currentKey}`,
+                      label: 'content',
+                      __previewKind: 'sidebar-content',
+                      __previewChildren: contentPanel.contentSlots.map((value) => decorateSlot(value)),
+                    },
+                  ],
+                  [1, 2.35],
+                );
+                i = contentPanel.cursor - 1;
+                continue;
+              }
             }
 
             if (
@@ -2359,29 +2410,102 @@ data:
                           gridTemplateColumns: layoutRow.widths.map((width) => `${width}fr`).join(' '),
                         },
                       },
-                      layoutRow.slots.map((slot) => h(
-                        'div',
-                        {
-                          style: {
-                            border: '1px solid var(--v-border-color, #cbd5e1)',
-                            borderRadius: '3px',
-                            padding: '4px 6px',
-                            background: 'var(--foreground-subdued, #f8fafc)',
-                            color: 'var(--foreground-normal, #1e293b)',
-                            fontSize: '10px',
-                            lineHeight: '1.15',
-                            minHeight: '20px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            textAlign: 'center',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          },
-                        },
-                        asString(slot.label || slot.key) || asString(slot.key),
-                      )),
+                      layoutRow.slots.map((slot) => {
+                        const isSidebar = slot?.__previewRole === 'sidebar';
+                        const isFloatingSidebar = Boolean(slot?.__previewIsFloatingPanel);
+                        const isSidebarPanel = slot?.__previewKind === 'sidebar-content';
+                        const slotLabel = asString(slot?.label || slot?.key) || asString(slot?.key);
+                        const childSlotRows = Array.isArray(slot?.__previewChildren) ? slot.__previewChildren : [];
+                        const childHeight = isSidebarPanel ? 'normal' : 'nowrap';
+                        const baseStyles = {
+                          border: '1px solid var(--v-border-color, #cbd5e1)',
+                          borderRadius: '3px',
+                          padding: '4px 6px',
+                          background: 'var(--foreground-subdued, #f8fafc)',
+                          color: 'var(--foreground-normal, #1e293b)',
+                          fontSize: isSidebarPanel ? '9px' : '10px',
+                          lineHeight: '1.15',
+                          minHeight: isSidebarPanel ? '28px' : '20px',
+                          display: 'flex',
+                          flexDirection: isSidebarPanel ? 'column' : 'row',
+                          alignItems: 'center',
+                          justifyContent: isSidebarPanel ? 'flex-start' : 'center',
+                          textAlign: isSidebarPanel ? 'left' : 'center',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: childHeight,
+                        };
+                        const sidebarStyles = isSidebar ? {
+                          border: isFloatingSidebar ? '1px dashed #f59e0b' : '1px dashed #3b82f6',
+                          background: isFloatingSidebar
+                            ? 'linear-gradient(180deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.03))'
+                            : 'linear-gradient(180deg, rgba(59, 130, 246, 0.12), rgba(59, 130, 246, 0.03))',
+                          color: 'var(--foreground-subdued, #334155)',
+                          fontWeight: isFloatingSidebar ? '600' : '500',
+                        } : {};
+                        const styles = {
+                          ...baseStyles,
+                          ...sidebarStyles,
+                        };
+                        if (isSidebarPanel) {
+                          return h('div', {
+                            title: slotLabel,
+                            style: styles,
+                          }, [
+                            h('div', {
+                              style: {
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: '4px',
+                                width: '100%',
+                              },
+                            }, [
+                              h('span', {
+                                style: {
+                                  fontWeight: '600',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                },
+                              }, `${slotLabel} column`),
+                              h('span', {
+                                style: {
+                                  fontSize: '9px',
+                                  color: 'var(--foreground-subdued, #64748b)',
+                                },
+                              }, 'stacked'),
+                            ]),
+                            h('div', {
+                              style: {
+                                display: 'grid',
+                                gap: '2px',
+                                width: '100%',
+                              },
+                            }, childSlotRows.map((childSlot) => h('div', {
+                              style: {
+                                border: '1px solid var(--v-border-color, #d1d5db)',
+                                borderRadius: '2px',
+                                padding: '2px 3px',
+                                background: 'rgba(255, 255, 255, 0.7)',
+                                color: 'var(--foreground-subdued, #64748b)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                minHeight: '16px',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                fontSize: '8px',
+                                lineHeight: '1.05',
+                              },
+                            }, asString(childSlot?.label || childSlot?.key) || asString(childSlot?.key)))),
+                          ]);
+                        }
+
+                        return h('div', {
+                          title: slotLabel,
+                          style: styles,
+                        }, slotLabel);
+                      }),
                     ))
                   : [h('p', {
                     style: {
@@ -2477,17 +2601,18 @@ data:
               }),
               errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
             ];
-            const containerChildren = [
-              h('div', {
-                style: {
-                  flex: '1 1 auto',
-                  minWidth: '220px',
-                },
-              }, leftColumn),
-            ];
-            if (templatePreviewNode) {
-              containerChildren.push(templatePreviewNode);
-            }
+            const templatePickerColumn = h('div', {
+              style: {
+                flex: '0 1 clamp(280px, 52vw, 520px)',
+                minWidth: '280px',
+                maxWidth: '72%',
+                display: 'flex',
+                justifyContent: 'flex-end',
+              },
+            }, leftColumn);
+            const containerChildren = templatePreviewNode
+              ? [templatePreviewNode, templatePickerColumn]
+              : [templatePickerColumn];
             return h('div', {
               class: 'cms-content-model-select',
               style: {
@@ -2495,10 +2620,11 @@ data:
                 flexWrap: 'nowrap',
                 gap: '12px',
                 alignItems: 'flex-start',
+                justifyContent: 'space-between',
               },
             }, containerChildren);
           }
-    
+   
           const opts = selectItems.value.map((choice) => h('option', { value: choice.value }, choice.text));
   
           const nativeLeftColumn = [
@@ -2508,23 +2634,25 @@ data:
                 class: 'cms-content-model-select__input',
                 disabled: props.disabled || loading.value,
                 value: currentValue,
+                style: { width: '100%' },
                 onChange: (event) => onInput(event?.target?.value),
               },
               [h('option', { value: '' }, placeholderText), ...opts]
             ),
             errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
           ];
-          const nativeContainerChildren = [
-            h('div', {
-              style: {
-                flex: '1 1 auto',
-                minWidth: '220px',
-              },
-            }, nativeLeftColumn),
-          ];
-          if (templatePreviewNode) {
-            nativeContainerChildren.push(templatePreviewNode);
-          }
+          const nativeTemplatePickerColumn = h('div', {
+            style: {
+              flex: '0 1 clamp(280px, 52vw, 520px)',
+              minWidth: '280px',
+              maxWidth: '72%',
+              display: 'flex',
+              justifyContent: 'flex-end',
+            },
+          }, nativeLeftColumn);
+          const nativeContainerChildren = templatePreviewNode
+            ? [templatePreviewNode, nativeTemplatePickerColumn]
+            : [nativeTemplatePickerColumn];
           return h('div', {
             class: 'cms-content-model-select',
             style: {
@@ -2532,6 +2660,7 @@ data:
               flexWrap: 'nowrap',
               gap: '12px',
               alignItems: 'flex-start',
+              justifyContent: 'space-between',
             },
           }, nativeContainerChildren);
         };
