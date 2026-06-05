@@ -2611,15 +2611,7 @@ data:
               },
             }, leftColumn);
             const containerChildren = templatePreviewNode
-              ? [
-                  templatePickerColumn,
-                  h('div', {
-                    style: {
-                      display: 'flex',
-                      justifyContent: 'flex-end',
-                    },
-                  }, templatePreviewNode),
-                ]
+              ? [templatePickerColumn, templatePreviewNode]
               : [templatePickerColumn];
             return h('div', {
               class: 'cms-content-model-select',
@@ -2628,7 +2620,7 @@ data:
                 flexWrap: 'nowrap',
                 gap: '12px',
                 alignItems: 'flex-start',
-                justifyContent: 'space-between',
+                justifyContent: 'flex-start',
               },
             }, containerChildren);
           }
@@ -2658,17 +2650,9 @@ data:
               justifyContent: 'flex-start',
             },
           }, nativeLeftColumn);
-          const nativeContainerChildren = templatePreviewNode
-            ? [
-                nativeTemplatePickerColumn,
-                h('div', {
-                  style: {
-                    display: 'flex',
-                    justifyContent: 'flex-end',
-                  },
-                }, templatePreviewNode),
-              ]
-            : [nativeTemplatePickerColumn];
+            const nativeContainerChildren = templatePreviewNode
+              ? [nativeTemplatePickerColumn, templatePreviewNode]
+              : [nativeTemplatePickerColumn];
           return h('div', {
             class: 'cms-content-model-select',
             style: {
@@ -2676,7 +2660,7 @@ data:
               flexWrap: 'nowrap',
               gap: '12px',
               alignItems: 'flex-start',
-              justifyContent: 'space-between',
+              justifyContent: 'flex-start',
             },
           }, nativeContainerChildren);
         };
