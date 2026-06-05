@@ -700,6 +700,9 @@ data:
         const loadError = ref('');
         const choices = ref([]);
         const missingContext = ref('');
+        const templateSlots = ref([]);
+        const templateSlotsLoading = ref(false);
+        const templateSlotsError = ref('');
         const injectedValues = inject('values', null);
     
         const resolvedOptions = computed(() => parseOptions(props.options));
@@ -739,6 +742,7 @@ data:
         });
         const templatesCollection = computed(() => asString(resolvedOptions.value?.templates_collection) || 'cms_layout_templates');
         const slotsCollection = computed(() => asString(resolvedOptions.value?.slots_collection) || 'cms_layout_template_slots');
+        const layoutSlotsCollection = computed(() => asString(resolvedOptions.value?.layout_slots_collection) || slotsCollection.value);
         const themesCollection = computed(() => asString(resolvedOptions.value?.themes_collection) || 'cms_theme_packages');
         const modulesCollection = computed(() => asString(resolvedOptions.value?.modules_collection) || 'cms_modules');
         const pagesCollection = computed(() => asString(resolvedOptions.value?.pages_collection) || 'cms_pages');
@@ -824,6 +828,21 @@ data:
           }
     
           return { recordCollection, recordId };
+        };
+
+        const pickTemplatePreviewSlots = (rows) => {
+          const seen = new Set();
+          const picked = [];
+          for (const row of rows) {
+            const key = asString(row?.[slotValueField.value]);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            picked.push({
+              key,
+              label: asString(row?.[slotLabelField.value]) || key,
+            });
+          }
+          return picked;
         };
     
         const resolveSelectedParentBlockId = () => {
@@ -1377,6 +1396,48 @@ data:
             }))
           );
         };
+
+        let templateSlotsRequestCounter = 0;
+        const resolveTemplatePreviewKey = (nextValue) => asString(nextValue || props.value || props.values?.[pageTemplateField.value]);
+        const loadTemplateSlotsPreview = async (nextValue) => {
+          const currentRequest = ++templateSlotsRequestCounter;
+          const templateKey = resolveTemplatePreviewKey(nextValue);
+          if (!templateKey) {
+            templateSlots.value = [];
+            templateSlotsError.value = '';
+            templateSlotsLoading.value = false;
+            return;
+          }
+
+          templateSlotsLoading.value = true;
+          templateSlotsError.value = '';
+          try {
+            const siteKey = asString(props.values?.[pageSiteField.value]);
+            const filter = {
+              _and: [
+                { template_key: { _eq: templateKey } },
+                buildScopedFilter(siteKey),
+              ],
+            };
+            const response = await apiGet(`/items/${layoutSlotsCollection.value}`, {
+              fields: [slotValueField.value, slotLabelField.value, 'site_key', 'template_key'].join(','),
+              limit: -1,
+              sort: slotValueField.value,
+              filter: JSON.stringify(filter),
+            });
+            const nextSlots = pickTemplatePreviewSlots(normalizeRows(response));
+            if (currentRequest !== templateSlotsRequestCounter) return;
+            templateSlots.value = nextSlots;
+          } catch (error) {
+            if (currentRequest !== templateSlotsRequestCounter) return;
+            templateSlots.value = [];
+            templateSlotsError.value = error?.response?.data?.errors?.[0]?.message
+              || error?.message
+              || 'Failed to load template sections';
+          } finally {
+            if (currentRequest === templateSlotsRequestCounter) templateSlotsLoading.value = false;
+          }
+        };
     
         const loadParentChoices = async () => {
           const context = await resolvePageContext();
@@ -1649,6 +1710,28 @@ data:
           () => { void loadChoices(); },
           { immediate: true }
         );
+
+        watch(
+          () => JSON.stringify({
+            mode: mode.value,
+            templateValue: resolveTemplatePreviewKey(props.value),
+            siteKey: asString(props.values?.[pageSiteField.value]),
+            layoutSlotsCollection: layoutSlotsCollection.value,
+            slotValueField: slotValueField.value,
+            slotLabelField: slotLabelField.value,
+            recordId: resolveRecordContext().recordId,
+          }),
+          () => {
+            if (mode.value === 'template') {
+              void loadTemplateSlotsPreview();
+            } else {
+              templateSlots.value = [];
+              templateSlotsError.value = '';
+              templateSlotsLoading.value = false;
+            }
+          },
+          { immediate: true }
+        );
     
         watch(
           () => JSON.stringify({
@@ -1748,6 +1831,9 @@ data:
           if (next !== current) {
             hasUserInput.value = true;
           }
+          if (mode.value === 'template') {
+            void loadTemplateSlotsPreview(next);
+          }
           if (typeof window !== 'undefined') {
             const context = resolveRecordContext();
             window.dispatchEvent(
@@ -1827,7 +1913,82 @@ data:
                   )
                 : h('p', { class: 'cms-content-model-select__error' }, loadError.value))
             : null;
-    
+
+          const templatePreviewNode = mode.value === 'template'
+            ? (() => {
+                const slotItems = templateSlots.value.length > 0
+                  ? templateSlots.value.map((slot) => h(
+                      'div',
+                      {
+                        style: {
+                          border: '1px solid var(--v-border-color, #cbd5e1)',
+                          borderRadius: '3px',
+                          padding: '4px 6px',
+                          background: 'var(--foreground-subdued, #f8fafc)',
+                          color: 'var(--foreground-normal, #1e293b)',
+                          fontSize: '11px',
+                          lineHeight: '1.2',
+                          minHeight: '20px',
+                          display: 'flex',
+                          alignItems: 'center',
+                        },
+                      },
+                      asString(slot.label || slot.key) || asString(slot.key),
+                    ))
+                  : [h('p', {
+                    style: {
+                      margin: '0',
+                      fontSize: '11px',
+                      color: 'var(--foreground-subdued, #64748b)',
+                    },
+                  }, templateSlotsLoading.value ? 'Loading sections...' : 'No sections configured')];
+                const previewNotice = templateSlotsError.value
+                  ? h(
+                      typeof resolvedNotice === 'string'
+                        ? 'p'
+                        : resolvedNotice,
+                      typeof resolvedNotice === 'string'
+                        ? { style: { margin: '0', color: '#b91c1c', fontSize: '11px' } }
+                        : { type: 'danger', icon: 'warning' },
+                      { default: () => templateSlotsError.value },
+                    )
+                  : null;
+                return h('div', {
+                  style: {
+                    border: '1px solid var(--v-border-color, #cbd5e1)',
+                    borderRadius: '5px',
+                    padding: '8px',
+                    background: 'var(--v-background-page, #ffffff)',
+                    boxSizing: 'border-box',
+                    flex: '0 0 auto',
+                    width: 'clamp(170px, 24vw, 240px)',
+                    maxWidth: 'clamp(170px, 24vw, 240px)',
+                    maxHeight: 'clamp(140px, 24vh, 220px)',
+                    overflowY: 'auto',
+                  },
+                }, [
+                  h('div', {
+                    style: {
+                      fontSize: '10px',
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.03em',
+                      color: 'var(--foreground-subdued, #64748b)',
+                      marginBottom: '6px',
+                    },
+                  }, 'Template preview'),
+                  previewNotice || null,
+                  h('div', {
+                    style: {
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                    },
+                  }, slotItems),
+                ]);
+              })()
+            : null;
+
           if (mode.value === 'role') {
             if (hasDirectusInput) {
               return h('div', { class: 'cms-content-model-select' }, [
@@ -1855,7 +2016,7 @@ data:
           }
 
           if (hasDirectusSelect) {
-            return h('div', { class: 'cms-content-model-select' }, [
+            const leftColumn = [
               h(resolvedSelect, {
                 modelValue: currentValue || null,
                 items: selectItems.value,
@@ -1866,12 +2027,32 @@ data:
                 'onUpdate:modelValue': onInput,
               }),
               errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
-            ]);
+            ];
+            const containerChildren = [
+              h('div', {
+                style: {
+                  flex: '1 1 auto',
+                  minWidth: '0',
+                },
+              }, leftColumn),
+            ];
+            if (templatePreviewNode) {
+              containerChildren.push(templatePreviewNode);
+            }
+            return h('div', {
+              class: 'cms-content-model-select',
+              style: {
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '12px',
+                alignItems: 'flex-start',
+              },
+            }, containerChildren);
           }
     
           const opts = selectItems.value.map((choice) => h('option', { value: choice.value }, choice.text));
-    
-          return h('div', { class: 'cms-content-model-select' }, [
+  
+          const nativeLeftColumn = [
             h(
               'select',
               {
@@ -1882,8 +2063,28 @@ data:
               },
               [h('option', { value: '' }, placeholderText), ...opts]
             ),
-            errorNotice,
-          ]);
+            errorNotice ? h('div', { style: { marginTop: '8px' } }, [errorNotice]) : null,
+          ];
+          const nativeContainerChildren = [
+            h('div', {
+              style: {
+                flex: '1 1 auto',
+                minWidth: '0',
+              },
+            }, nativeLeftColumn),
+          ];
+          if (templatePreviewNode) {
+            nativeContainerChildren.push(templatePreviewNode);
+          }
+          return h('div', {
+            class: 'cms-content-model-select',
+            style: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '12px',
+              alignItems: 'flex-start',
+            },
+          }, nativeContainerChildren);
         };
       },
     });
