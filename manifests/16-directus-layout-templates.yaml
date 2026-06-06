@@ -89,6 +89,14 @@ data:
         site_key: null
         html_file: spa-marketing-columns.html
         css_file: spa-marketing-columns.css
+    
+      - template_key: spa-fullscreen-mfe
+        name: SPA Fullscreen MFE
+        description: "Single full-screen MFE section with only a main slot."
+        status: published
+        site_key: null
+        html_file: spa-fullscreen-mfe.html
+        css_file: spa-fullscreen-mfe.css
   spa-default.html: |
     <div class="layout layout-default" data-layout="spa-default">
       <header class="layout__header" data-slot="header">{{ slot:header }}</header>
@@ -568,4 +576,26 @@ data:
       .layout-marketing-columns .layout__features {
         grid-template-columns: 1fr;
       }
+    }
+  spa-fullscreen-mfe.html: |
+    <div class="layout layout-fullscreen-mfe" data-layout="spa-fullscreen-mfe">
+      <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+    </div>
+  spa-fullscreen-mfe.css: |
+    .layout-fullscreen-mfe {
+      width: 100%;
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: 1fr;
+      background: transparent;
+    }
+    
+    .layout-fullscreen-mfe .layout__main {
+      width: 100%;
+      min-height: 100vh;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
     }
