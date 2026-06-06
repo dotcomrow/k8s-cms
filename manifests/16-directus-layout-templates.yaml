@@ -582,61 +582,140 @@ data:
       <main class="layout__main" data-slot="main">{{ slot:main }}</main>
       <script>
         (function () {
-          var preventPullToRefresh = function () {
-            var main = document.querySelector('.layout-fullscreen-mfe .layout__main');
-            if (!main) return;
+          var layout = document.currentScript && document.currentScript.closest
+            ? document.currentScript.closest('.layout-fullscreen-mfe')
+            : document.querySelector('.layout-fullscreen-mfe');
+          if (!layout) return;
 
-            var startY = 0;
-            document.documentElement.style.overscrollBehavior = 'none';
-            document.body.style.overscrollBehavior = 'none';
+          var main = layout.querySelector('.layout__main');
+          if (!main) return;
 
-            document.addEventListener('touchstart', function (event) {
-              if (event.touches && event.touches.length === 1) {
-                startY = event.touches[0].clientY;
-              }
-            }, { passive: true });
+          var html = document.documentElement;
+          var body = document.body;
+          if (html) {
+            html.classList.add('fullscreen-mfe-no-ptr');
+            html.style.overscrollBehavior = 'none';
+            html.style.overscrollBehaviorY = 'none';
+          }
+          if (body) {
+            body.classList.add('fullscreen-mfe-no-ptr');
+            body.style.overscrollBehavior = 'none';
+            body.style.overscrollBehaviorY = 'none';
+          }
 
-            document.addEventListener('touchmove', function (event) {
-              if (!event.touches || event.touches.length !== 1) return;
+          var startY = 0;
+          var startX = 0;
+          var pointerDown = false;
 
-              var currentY = event.touches[0].clientY;
-              var deltaY = currentY - startY;
-              var atTop = main.scrollTop <= 0;
-              var atBottom = main.scrollHeight <= main.clientHeight || main.scrollTop + main.clientHeight >= main.scrollHeight;
-
-              if ((atTop && deltaY > 0) || (atBottom && deltaY < 0)) {
-                event.preventDefault();
-              }
-            }, { passive: false });
+          var nearestScrollable = function (node) {
+            var cursor = node;
+            while (cursor && cursor !== layout) {
+              var styles = window.getComputedStyle(cursor);
+              var canScroll = (styles.overflowY === 'auto' || styles.overflowY === 'scroll' || styles.overflowY === 'overlay');
+              if (canScroll && cursor.scrollHeight > cursor.clientHeight + 1) return cursor;
+              cursor = cursor.parentElement;
+            }
+            return main;
           };
 
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', preventPullToRefresh);
-          } else {
-            preventPullToRefresh();
-          }
+          var isAtTop = function (node) {
+            return node.scrollTop <= 0;
+          };
+
+          var isAtBottom = function (node) {
+            return node.scrollTop + node.clientHeight >= node.scrollHeight - 1;
+          };
+
+          var handleTouchStart = function (event) {
+            if (!event.touches || event.touches.length !== 1) return;
+            var touch = event.touches[0];
+            startY = touch.clientY;
+            startX = touch.clientX;
+            pointerDown = true;
+          };
+
+          var handleTouchMove = function (event) {
+            if (!pointerDown || !event.touches || event.touches.length !== 1 || !event.cancelable) return;
+            var touch = event.touches[0];
+            var deltaY = touch.clientY - startY;
+            var deltaX = Math.abs(touch.clientX - startX);
+
+            if (Math.abs(deltaY) < 3 || deltaX > Math.abs(deltaY)) return;
+            if (!layout.contains(event.target)) return;
+
+            var node = nearestScrollable(event.target);
+            if ((isAtTop(node) && deltaY > 0) || (isAtBottom(node) && deltaY < 0)) {
+              event.preventDefault();
+            }
+          };
+
+          var resetTouch = function () {
+            pointerDown = false;
+          };
+
+          var handleWheel = function (event) {
+            if (!event.cancelable || !layout.contains(event.target)) return;
+            var node = nearestScrollable(event.target);
+            if ((event.deltaY < 0 && isAtTop(node)) || (event.deltaY > 0 && isAtBottom(node))) {
+              event.preventDefault();
+            }
+          };
+
+          layout.addEventListener('touchstart', handleTouchStart, { passive: true });
+          layout.addEventListener('touchmove', handleTouchMove, { passive: false });
+          layout.addEventListener('touchend', resetTouch, { passive: true });
+          layout.addEventListener('touchcancel', resetTouch, { passive: true });
+          layout.addEventListener('wheel', handleWheel, { passive: false });
         })();
       </script>
     </div>
   spa-fullscreen-mfe.css: |
-    .layout-fullscreen-mfe {
+    html.fullscreen-mfe-no-ptr,
+    body.fullscreen-mfe-no-ptr {
+      position: fixed !important;
+      inset: 0;
       width: 100%;
-      min-height: 100vh;
-      display: grid;
-      grid-template-rows: 1fr;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      touch-action: none;
+      overscroll-behavior: none;
+      overscroll-behavior-y: none;
+      overflow: hidden;
+      -webkit-overflow-scrolling: auto;
+    }
+
+    .layout-fullscreen-mfe {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100vh;
+      height: 100dvh;
       background: transparent;
       overscroll-behavior: none;
+      overscroll-behavior-y: none;
       overflow: hidden;
+      display: grid;
+      grid-template-rows: 1fr;
     }
     
     .layout-fullscreen-mfe .layout__main {
+      position: fixed;
+      inset: 0;
       width: 100%;
-      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
       margin: 0;
       padding: 0;
       border: 0;
       border-radius: 0;
       background: transparent;
+      overflow-x: hidden;
+      overflow-y: auto;
       overscroll-behavior: none;
-      overflow: auto;
+      overscroll-behavior-y: none;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      transform: translateZ(0);
+      scrollbar-gutter: stable;
     }
