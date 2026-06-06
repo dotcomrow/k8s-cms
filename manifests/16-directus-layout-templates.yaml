@@ -580,6 +580,43 @@ data:
   spa-fullscreen-mfe.html: |
     <div class="layout layout-fullscreen-mfe" data-layout="spa-fullscreen-mfe">
       <main class="layout__main" data-slot="main">{{ slot:main }}</main>
+      <script>
+        (function () {
+          var preventPullToRefresh = function () {
+            var main = document.querySelector('.layout-fullscreen-mfe .layout__main');
+            if (!main) return;
+
+            var startY = 0;
+            document.documentElement.style.overscrollBehavior = 'none';
+            document.body.style.overscrollBehavior = 'none';
+
+            document.addEventListener('touchstart', function (event) {
+              if (event.touches && event.touches.length === 1) {
+                startY = event.touches[0].clientY;
+              }
+            }, { passive: true });
+
+            document.addEventListener('touchmove', function (event) {
+              if (!event.touches || event.touches.length !== 1) return;
+
+              var currentY = event.touches[0].clientY;
+              var deltaY = currentY - startY;
+              var atTop = main.scrollTop <= 0;
+              var atBottom = main.scrollHeight <= main.clientHeight || main.scrollTop + main.clientHeight >= main.scrollHeight;
+
+              if ((atTop && deltaY > 0) || (atBottom && deltaY < 0)) {
+                event.preventDefault();
+              }
+            }, { passive: false });
+          };
+
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', preventPullToRefresh);
+          } else {
+            preventPullToRefresh();
+          }
+        })();
+      </script>
     </div>
   spa-fullscreen-mfe.css: |
     .layout-fullscreen-mfe {
@@ -588,6 +625,8 @@ data:
       display: grid;
       grid-template-rows: 1fr;
       background: transparent;
+      overscroll-behavior: none;
+      overflow: hidden;
     }
     
     .layout-fullscreen-mfe .layout__main {
@@ -598,4 +637,6 @@ data:
       border: 0;
       border-radius: 0;
       background: transparent;
+      overscroll-behavior: none;
+      overflow: auto;
     }
