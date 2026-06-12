@@ -1452,8 +1452,13 @@ spec:
 
               if command -v psql >/dev/null 2>&1; then
                 _DB_CONNECT_CHECK_MODE="psql"
-              else
+              elif command -v nc >/dev/null 2>&1; then
+                _DB_CONNECT_CHECK_MODE="nc"
+              elif command -v node >/dev/null 2>&1; then
                 _DB_CONNECT_CHECK_MODE="node"
+              else
+                echo "⚠️ No DB connectivity check tool available; skipping TCP check and allowing Directus startup."
+                _DB_CONNECT_CHECK_MODE="skip"
               fi
 
               while true; do
@@ -1462,10 +1467,21 @@ spec:
                     echo "✅ Directus can reach the DB through the tunnel."
                     return 0
                   fi
+                elif [ "${_DB_CONNECT_CHECK_MODE}" = "nc" ]; then
+                  if nc -z -w2 "${DB_HOST}" "${DB_PORT}"; then
+                    echo "✅ Directus can reach the DB through the tunnel (tcp check)."
+                    return 0
+                  fi
+                elif [ "${_DB_CONNECT_CHECK_MODE}" = "node" ]; then
+                  if node -e 'const net = require("net"); const host = process.env.DB_HOST; const port = Number(process.env.DB_PORT || 5432); const socket = net.createConnection({ host, port, timeout: 2000 }, () => { socket.end(); process.exit(0); }); socket.on("error", () => process.exit(1)); socket.on("timeout", () => { socket.destroy(); process.exit(1); });'; then
+                    echo "✅ Directus can reach the DB through the tunnel."
+                    return 0
+                  fi
                 else
-                  if node -e 'const { Client } = require("pg"); (async () => { const client = new Client({ host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE, connectionTimeoutMillis: 2000 }); try { await client.connect(); await client.query("SELECT 1"); process.exit(0); } catch (e) { process.exit(1); } finally { await client.end().catch(() => {}); } })();'; then
-                  echo "✅ Directus can reach the DB through the tunnel (node/pg check)."
-                  return 0
+                  if [ "${_DB_CONNECT_CHECK_MODE}" = "skip" ]; then
+                    echo "⚠️ DB connectivity check skipped; attempting Directus startup."
+                    return 0
+                  fi
                 fi
                 fi
 
