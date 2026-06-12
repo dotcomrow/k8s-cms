@@ -1477,12 +1477,9 @@ spec:
                     echo "✅ Directus can reach the DB through the tunnel."
                     return 0
                   fi
-                else
-                  if [ "${_DB_CONNECT_CHECK_MODE}" = "skip" ]; then
-                    echo "⚠️ DB connectivity check skipped; attempting Directus startup."
-                    return 0
-                  fi
-                fi
+                elif [ "${_DB_CONNECT_CHECK_MODE}" = "skip" ]; then
+                  echo "⚠️ DB connectivity check skipped; attempting Directus startup."
+                  return 0
                 fi
 
                 _attempt=$((_attempt + 1))
