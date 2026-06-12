@@ -1437,6 +1437,76 @@ spec:
             # Ensure Directus uses the intended schema/search_path for all CLI calls
             export DB_SEARCH_PATH="${DB_SCHEMA:-directus},public"
 
+            _directus_wait_for_db_connectivity() {
+              _attempt=0
+              _max_attempts_raw="${DIRECTUS_DB_CONNECT_MAX_ATTEMPTS:-60}"
+              _retry_seconds_raw="${DIRECTUS_DB_CONNECT_RETRY_SECONDS:-2}"
+              _max_attempts="$(printf '%s' "${_max_attempts_raw}" | tr -dc '0-9')"
+              _retry_seconds="$(printf '%s' "${_retry_seconds_raw}" | tr -dc '0-9')"
+              if [ -z "${_max_attempts}" ] || [ "${_max_attempts}" -lt 1 ]; then
+                _max_attempts=60
+              fi
+              if [ -z "${_retry_seconds}" ] || [ "${_retry_seconds}" -lt 1 ]; then
+                _retry_seconds=2
+              fi
+
+              if command -v psql >/dev/null 2>&1; then
+                _DB_CONNECT_CHECK_MODE="psql"
+              else
+                _DB_CONNECT_CHECK_MODE="node"
+              fi
+
+              while true; do
+                if [ "${_DB_CONNECT_CHECK_MODE}" = "psql" ]; then
+                  if PGPASSWORD="${DB_PASSWORD}" PGCONNECT_TIMEOUT=2 psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_DATABASE}" -Atc "SELECT 1" >/dev/null 2>&1; then
+                    echo "✅ Directus can reach the DB through the tunnel."
+                    return 0
+                  fi
+                else
+                  if node - <<'NODE'
+                const { Client } = require("pg");
+
+                (async () => {
+                  const client = new Client({
+                    host: process.env.DB_HOST,
+                    port: Number(process.env.DB_PORT || 5432),
+                    user: process.env.DB_USER,
+                    password: process.env.DB_PASSWORD,
+                    database: process.env.DB_DATABASE,
+                    connectionTimeoutMillis: 2000
+                  });
+
+                  try {
+                    await client.connect();
+                    await client.query("SELECT 1");
+                    process.exit(0);
+                  } catch {
+                    process.exit(1);
+                  } finally {
+                    try {
+                      await client.end();
+                    } catch {
+                      // ignore
+                    }
+                  }
+                })();
+                NODE
+                  then
+                  echo "✅ Directus can reach the DB through the tunnel (node/pg check)."
+                  return 0
+                fi
+                fi
+
+                _attempt=$((_attempt + 1))
+                if [ "${_attempt}" -ge "${_max_attempts}" ]; then
+                  echo "❌ Timed out after ${_max_attempts} attempts waiting for direct DB connectivity."
+                  return 1
+                fi
+                echo "⚠️ Directus DB connectivity check failed; retrying in ${_retry_seconds}s (${_attempt}/${_max_attempts})."
+                sleep "${_retry_seconds}"
+              done
+            }
+
             _reset_partial_directus_install_if_needed() {
               RESET_PARTIAL_INSTALL_RAW="${DIRECTUS_RESET_PARTIAL_INSTALL:-true}"
               case "$(printf '%s' "${RESET_PARTIAL_INSTALL_RAW}" | tr '[:upper:]' '[:lower:]')" in
@@ -2196,6 +2266,17 @@ spec:
             _directus_start_attempt=1
             while true; do
               echo "▶️ Directus start attempt ${_directus_start_attempt}/${DIRECTUS_START_MAX_RETRIES}"
+              if ! _directus_wait_for_db_connectivity; then
+                echo "⚠️ Directus DB connectivity check failed during startup; retrying in ${DIRECTUS_START_RETRY_DELAY_SECONDS}s."
+                _directus_start_rc=1
+                if [ "${_directus_start_attempt}" -ge "${DIRECTUS_START_MAX_RETRIES}" ]; then
+                  echo "❌ Directus could not establish DB connectivity after ${_directus_start_attempt} attempts."
+                  exit "${_directus_start_rc}"
+                fi
+                _directus_start_attempt=$((_directus_start_attempt + 1))
+                sleep "${DIRECTUS_START_RETRY_DELAY_SECONDS}"
+                continue
+              fi
               if node cli.js start; then
                 exit 0
               fi
