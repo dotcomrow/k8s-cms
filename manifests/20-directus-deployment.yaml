@@ -1463,35 +1463,7 @@ spec:
                     return 0
                   fi
                 else
-                  if node - <<'NODE'
-                const { Client } = require("pg");
-
-                (async () => {
-                  const client = new Client({
-                    host: process.env.DB_HOST,
-                    port: Number(process.env.DB_PORT || 5432),
-                    user: process.env.DB_USER,
-                    password: process.env.DB_PASSWORD,
-                    database: process.env.DB_DATABASE,
-                    connectionTimeoutMillis: 2000
-                  });
-
-                  try {
-                    await client.connect();
-                    await client.query("SELECT 1");
-                    process.exit(0);
-                  } catch {
-                    process.exit(1);
-                  } finally {
-                    try {
-                      await client.end();
-                    } catch {
-                      // ignore
-                    }
-                  }
-                })();
-                NODE
-                  then
+                  if node -e 'const { Client } = require("pg"); (async () => { const client = new Client({ host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 5432), user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_DATABASE, connectionTimeoutMillis: 2000 }); try { await client.connect(); await client.query("SELECT 1"); process.exit(0); } catch (e) { process.exit(1); } finally { await client.end().catch(() => {}); } })();'; then
                   echo "✅ Directus can reach the DB through the tunnel (node/pg check)."
                   return 0
                 fi
