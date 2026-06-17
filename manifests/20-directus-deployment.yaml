@@ -38,8 +38,7 @@ spec:
           persistentVolumeClaim:
             claimName: directus-uploads-remote-vm-v8
         - name: uploads-legacy
-          persistentVolumeClaim:
-            claimName: directus-uploads
+          emptyDir: {}
         - name: vault-agent-config
           configMap:
             name: vault-agent-config-directus
@@ -120,8 +119,7 @@ spec:
               - key: cms-page-blocks-manager.index.js
                 path: cms-page-blocks-manager/index.js
         - name: directus-extensions
-          persistentVolumeClaim:
-            claimName: directus-extensions
+          emptyDir: {}
       initContainers:
         - name: migrate-legacy-uploads
           image: alpine:3.20
