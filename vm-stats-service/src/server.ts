@@ -4,7 +4,8 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import { Agent, request as undiciRequest, setGlobalDispatcher } from "undici";
 import type { IncomingHttpHeaders } from "http";
-import { execFile } from "node:child_process/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -562,6 +563,8 @@ async function resolveSshKeyFile(): Promise<string | undefined> {
   return file;
 }
 
+const execFile = promisify(execFileCallback);
+
 async function runRemoteCommand(
   command: string,
   timeoutMs: number = REPORTING_COMMAND_TIMEOUT_MS
@@ -596,11 +599,11 @@ async function runRemoteCommand(
   args.push(`${REPORTING_SSH_USER}@${REPORTING_SSH_HOST}`, command);
 
   try {
-    const { stdout, stderr } = await execFile("ssh", args, {
+    const { stdout, stderr } = (await execFile("ssh", args, {
       timeout: timeoutMs,
       maxBuffer: 8_388_608,
       encoding: "utf8"
-    });
+    })) as { stdout: string; stderr: string };
     return {
       command,
       stdout: String(stdout || ""),
