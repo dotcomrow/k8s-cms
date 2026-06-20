@@ -2300,7 +2300,7 @@ if (IS_STATS_SERVICE) {
       }
       enforceReportingApiKey(req);
       const args = parseQueryArgs(req.query as QueryStringRecord);
-      const fields = asStringList(req.query.fields);
+      const fields = asStringList(asQueryValue(req.query.fields));
       const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
       const sections = asQueryValue(req.query.sections);
       const result = await collectRequestedReportData(collector, args, sections);
@@ -2366,7 +2366,7 @@ if (IS_STATS_SERVICE) {
       enforceReportingApiKey(req);
       const section = parseSectionParam(req.params.section);
       const args = parseQueryArgs(req.query as QueryStringRecord);
-      const fields = asStringList(req.query.fields);
+      const fields = asStringList(asQueryValue(req.query.fields));
       const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
       const result = await collectRequestedReportData(collector, args, section);
       const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
