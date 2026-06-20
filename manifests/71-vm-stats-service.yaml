@@ -32,12 +32,7 @@ spec:
             - name: REPORTING_ENABLED
               value: "true"
             - name: REPORTING_REQUIRE_API_KEY
-              value: "true"
-            - name: API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: vm-stats-service-secrets
-                  key: api-key
+              value: "false"
             - name: REPORTING_SSH_HOST
               valueFrom:
                 secretKeyRef:
@@ -149,7 +144,7 @@ metadata:
     gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"vm-stats-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://vm-stats-service.directus.svc.cluster.local:8080"},"secondary":false}]}]'
     gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://vm-stats-service.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
     gravitee.io/definition-resources: '[]'
-    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"No auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"},"directus-oauth2":{"name":"Directus OAuth2","description":"Directus OAuth2","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"false"}}'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"No auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"false"},"directus-oauth2":{"name":"Directus OAuth2","description":"Directus OAuth2","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"}}'
     gravitee.io/definition-flows: '[]'
     gravitee.io/definition-response-templates: '{}'
     gravitee.io/definition-analytics: '{"enabled":true,"logging":{"condition":"true","content":{"headers":true,"payload":false,"messageHeaders":false,"messageMetadata":false,"messagePayload":false},"mode":{"entrypoint":true,"endpoint":true},"phase":{"request":true,"response":true}}}'

@@ -32,7 +32,7 @@ const envSchema = z.object({
   RATE_MAX: z.string().default("60"),
   TIMEOUT_MS: z.string().default("8000"),
   REPORTING_ENABLED: z.string().default("false"),
-  REPORTING_REQUIRE_API_KEY: z.string().default("true"),
+  REPORTING_REQUIRE_API_KEY: z.string().default("false"),
   REPORTING_SSH_HOST: z.string().default(""),
   REPORTING_SSH_PORT: z.string().default("22"),
   REPORTING_SSH_USER: z.string().default("opc"),
@@ -2030,13 +2030,6 @@ const REPORTING_OPENAPI_SPEC = {
     }
   },
   components: {
-    securitySchemes: {
-      ApiKeyAuth: {
-        type: "apiKey",
-        in: "header",
-        name: "X-API-Key"
-      }
-    },
     schemas: {
       CollectorSummary: {
         type: "object",
@@ -2503,6 +2496,7 @@ app.listen(Number(env.PORT), "0.0.0.0", () => {
     } rate_limit_max=${env.RATE_MAX}`
   );
   if (REQUIRE_API_KEY) console.log(`[vm-stats-service] API key required via header X-API-Key`);
+  if (REPORTING_REQUIRE_API_KEY) console.log(`[vm-stats-service] reporting requires X-API-Key`);
   if (REPORTING_ENABLED) {
     console.log(
       `[vm-stats-service] reporting enabled (db_host=${REPORTING_DB_HOST || "n/a"}, ssh_host=${REPORTING_SSH_HOST || "n/a"})`
