@@ -22,7 +22,7 @@ spec:
       serviceAccountName: directus
       containers:
         - name: vm-stats-service
-          image: "ghcr.io/<org>/vm-stats-service:latest"
+          image: "ghcr.io/dotcomrow/vm-stats-service:latest"
           ports:
             - containerPort: 8080
           env:
