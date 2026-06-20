@@ -4,7 +4,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import { Agent, request as undiciRequest, setGlobalDispatcher } from "undici";
 import type { IncomingHttpHeaders } from "http";
-import { execFile } from "node:child_process";
+import { execFile } from "node:child_process/promises";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
