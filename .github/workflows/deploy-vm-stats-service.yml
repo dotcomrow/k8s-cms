@@ -13,6 +13,7 @@ jobs:
     env:
       TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
       TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout
@@ -40,15 +41,16 @@ jobs:
           docker push ghcr.io/${{ github.repository_owner }}/vm-stats-service:latest
 
       - name: Make VM stats package public
+        env:
+          OWNER: ${{ github.repository_owner }}
         run: |
-          gh api --method PATCH \
-            /orgs/${{ github.repository_owner }}/packages/container/vm-stats-service/visibility \
-            -f visibility=public \
-            --silent \
-            || gh api --method PATCH \
-              /user/packages/container/vm-stats-service/visibility \
-              -f visibility=public \
-              --silent
+          set -euo pipefail
+          if gh api /orgs/"${OWNER}" >/dev/null 2>&1; then
+            EP="/orgs/${OWNER}/packages/container/vm-stats-service/visibility"
+          else
+            EP="/users/${OWNER}/packages/container/vm-stats-service/visibility"
+          fi
+          gh api --method PATCH "${EP}" -f visibility=public
 
       - name: Remove local Docker image
         run: |
