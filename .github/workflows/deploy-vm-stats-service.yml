@@ -43,12 +43,16 @@ jobs:
       - name: Make VM stats package public
         env:
           OWNER: ${{ github.repository_owner }}
+          PACKAGE_NAME: vm-stats-service
         run: |
           set -euo pipefail
-          if gh api /orgs/"${OWNER}" >/dev/null 2>&1; then
-            EP="/orgs/${OWNER}/packages/container/vm-stats-service/visibility"
+          if gh api "/orgs/${OWNER}/packages/container/${PACKAGE_NAME}" >/dev/null 2>&1; then
+            EP="/orgs/${OWNER}/packages/container/${PACKAGE_NAME}/visibility"
+          elif gh api "/user/packages/container/${PACKAGE_NAME}" >/dev/null 2>&1; then
+            EP="/user/packages/container/${PACKAGE_NAME}/visibility"
           else
-            EP="/users/${OWNER}/packages/container/vm-stats-service/visibility"
+            echo "Could not locate GHCR package ${PACKAGE_NAME} for owner ${OWNER}" >&2
+            exit 1
           fi
           gh api --method PATCH "${EP}" -f visibility=public
 
