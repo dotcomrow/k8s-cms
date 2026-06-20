@@ -31,13 +31,13 @@ jobs:
       # Build the Docker image with the timestamp tag
       - name: Build Docker image
         run: |
-          cd src/
+          cd github-profile-service/
           docker build -t ghcr.io/${{ github.repository_owner }}/github-profile-service:${{ steps.set-tag.outputs.tag }} .
 
       # Push the image to GHCR using the timestamp tag
       - name: Push Docker image to GHCR
         run: |
-          cd src/
+          cd github-profile-service/
           docker push ghcr.io/${{ github.repository_owner }}/github-profile-service:${{ steps.set-tag.outputs.tag }}
 
       # Clean up the local image to free runner disk space

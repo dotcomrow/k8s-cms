@@ -1,0 +1,137 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-stats-service
+  namespace: directus
+  annotations:
+    reloader.stakater.com/auto: "true"
+  labels:
+    app: vm-stats-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vm-stats-service
+  template:
+    metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
+      labels:
+        app: vm-stats-service
+    spec:
+      serviceAccountName: directus
+      containers:
+        - name: vm-stats-service
+          image: "ghcr.io/<org>/vm-stats-service:latest"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SERVICE_MODE
+              value: "stats"
+            - name: REPORTING_ENABLED
+              value: "true"
+            - name: REPORTING_REQUIRE_API_KEY
+              value: "true"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-secrets
+                  key: api-key
+            - name: REPORTING_SSH_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-ssh
+                  key: host
+            - name: REPORTING_SSH_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-ssh
+                  key: user
+            - name: REPORTING_SSH_KEY_PATH
+              value: "/secrets/ssh-key"
+            - name: REPORTING_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-db
+                  key: host
+            - name: REPORTING_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-db
+                  key: port
+            - name: REPORTING_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-db
+                  key: name
+            - name: REPORTING_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-db
+                  key: user
+            - name: REPORTING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vm-stats-service-db
+                  key: password
+            - name: REPORTING_SYSTEM_ID
+              value: "oracle-db"
+            - name: OPENAPI_SERVER_URL
+              value: "http://vm-stats-service.directus.svc.cluster.local:8080"
+            - name: TRUST_PROXY_HOPS
+              value: "1"
+          volumeMounts:
+            - name: vm-stats-ssh-key
+              mountPath: /secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+      volumes:
+        - name: vm-stats-ssh-key
+          secret:
+            secretName: vm-stats-service-ssh
+            items:
+              - key: private-key
+                path: ssh-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-stats-service
+  namespace: directus
+  annotations:
+    gravitee.io/expose: "true"
+    gravitee.io/context-path: "/vm-stats"
+    gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-openapi-url: "http://vm-stats-service.directus.svc.cluster.local:8080/openapi.json"
+    gravitee.io/definition-context-path: "/vm-stats"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
+    gravitee.io/definition-version: "latest"
+    gravitee.io/definition-summary: "VM stats reporting API"
+    gravitee.io/definition-tags: "directus,cms,hasura,infra"
+    gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-labels: "internal,cms,hasura,infra"
+  labels:
+    app: vm-stats-service
+spec:
+  selector:
+    app: vm-stats-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

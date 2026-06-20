@@ -6,7 +6,7 @@ info:
     Internal API exposing VM reporting collectors for the oracle-db host and Hasura integration.
     Includes normalized snapshot endpoints for flexible polling by section.
 servers:
-  - url: /
+  - url: http://vm-stats-service.directus.svc.cluster.local:8080
 paths:
   /healthz:
     get:

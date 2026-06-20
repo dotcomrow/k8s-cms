@@ -34,8 +34,15 @@ This service now includes a reporting framework for gathering oracle-db VM healt
 - `POST /hasura/actions/stats` -> Hasura action payload wrapper around `getStats`.
 - `GET /openapi.json` -> machine-readable OpenAPI for Gravitee/Hasura integration.
 
-Because this service is Cloud Run-only, there is no Kubernetes Service for Gravitee annotation discovery.  
-Expose via Gravitee/Hasura by pointing them to the Cloud Run URL and `/openapi.json`.
+The VM stats code is now fully separated into the dedicated Kubernetes service (`manifests/71-vm-stats-service.yaml`)
+and source directory (`vm-stats-service/`). The GitHub profile service file (`github-profile-service/src/server.ts`) is restored to
+profile-only behavior.
+
+The VM stats service is a dedicated Kubernetes service with Gravitee/Hasura discovery annotations.
+
+For local/service discovery:
+- VM stats: discover via `/vm-stats` context-path on Gravitee
+- OpenAPI: `/openapi.json` from `vm-stats-service` service route
 
 ### Env vars for reporting
 
@@ -55,7 +62,7 @@ Expose via Gravitee/Hasura by pointing them to the Cloud Run URL and `/openapi.j
 - `REPORTING_DB_PASSWORD` (optional; if missing db sessions collector returns config error)
 - `OPENAPI_SERVER_URL` (optional; sets `servers[].url` in `/openapi.json`, default `/`)
 
-For collector metadata and thresholds, see `src/src/server.ts` env parsing section.
+For collector metadata and thresholds, see `vm-stats-service/src/server.ts` env parsing section.
 
 ### Available collectors
 

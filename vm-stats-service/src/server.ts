@@ -55,6 +55,7 @@ const envSchema = z.object({
   REPORTING_DB_NAME: z.string().default("directus"),
   REPORTING_DB_USER: z.string().default("postgres"),
   REPORTING_DB_PASSWORD: z.string().default(""),
+  SERVICE_MODE: z.enum(["stats"]).default("stats"),
   OPENAPI_SERVER_URL: z.string().default("/"),
 
   // pagination control for “fetch as much as possible”
@@ -107,6 +108,8 @@ const REPORTING_DB_PORT = Math.max(1, Math.min(65535, Number(env.REPORTING_DB_PO
 const REPORTING_DB_NAME = env.REPORTING_DB_NAME.trim() || "directus";
 const REPORTING_DB_USER = env.REPORTING_DB_USER.trim() || "postgres";
 const REPORTING_DB_PASSWORD = env.REPORTING_DB_PASSWORD;
+const SERVICE_MODE = env.SERVICE_MODE;
+const IS_STATS_SERVICE = true;
 const OPENAPI_SERVER_URL = env.OPENAPI_SERVER_URL.trim() || "/";
 const INCLUDE_ORG_AS_GROUP = toBool(env.INCLUDE_ORG_AS_GROUP);
 const INCLUDE_ROLE_SUFFIX = toBool(env.INCLUDE_ROLE_SUFFIX);
@@ -206,7 +209,7 @@ async function ghGet<T>(
   const { statusCode, body, headers } = await undiciRequest(url, {
     method: "GET",
     headers: {
-      "User-Agent": "directus-github-profile-proxy/1.2",
+      "User-Agent": "vm-stats-service/1.0",
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2022-11-28"
@@ -2173,298 +2176,283 @@ const REPORTING_OPENAPI_SPEC = {
   }
 };
 
-app.get("/openapi.json", (_req, res) => {
-  res.status(200).json(REPORTING_OPENAPI_SPEC);
-});
-
-app.get("/stats/collectors", (_req: Request, res: Response) => {
-  if (!REPORTING_ENABLED) {
-    res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-    return;
-  }
-  if (REPORTING_REQUIRE_API_KEY) {
-    try {
-      enforceReportingApiKey(_req);
-    } catch (err) {
-      const status = (err as any).status || 403;
-      res.status(status).json({
-        error: {
-          message: (err as Error).message || "Forbidden",
-          status
-        }
-      });
-      return;
-    }
-  }
-  res.status(200).json({
-    status: "ok",
-    enabled: REPORTING_ENABLED,
-    sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all").map((section) => ({
-      id: section.id,
-      description: section.description,
-      cadence: section.cadence,
-      collectors: section.collectors
-    })),
-    collectors: reportingCollectors.map((collector) => ({
-      id: collector.id,
-      description: collector.description
-    }))
+if (IS_STATS_SERVICE) {
+  app.get("/openapi.json", (_req, res) => {
+    res.status(200).json(REPORTING_OPENAPI_SPEC);
   });
-});
 
-app.get("/stats/systems", async (_req: Request, res: Response) => {
-  try {
+  app.get("/stats/collectors", (_req: Request, res: Response) => {
     if (!REPORTING_ENABLED) {
       res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
       return;
+    }
+    if (REPORTING_REQUIRE_API_KEY) {
+      try {
+        enforceReportingApiKey(_req);
+      } catch (err) {
+        const status = (err as any).status || 403;
+        res.status(status).json({
+          error: {
+            message: (err as Error).message || "Forbidden",
+            status
+          }
+        });
+        return;
+      }
     }
     res.status(200).json({
-      systems: [
-        {
-          id: REPORTING_SYSTEM_ID,
-          name: REPORTING_SYSTEM_ID,
-          ssh_host: REPORTING_SSH_HOST || null,
-          db_host: REPORTING_DB_HOST || null,
-          db_port: REPORTING_DB_PORT,
-          sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all")
+      status: "ok",
+      enabled: REPORTING_ENABLED,
+      sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all").map((section) => ({
+        id: section.id,
+        description: section.description,
+        cadence: section.cadence,
+        collectors: section.collectors
+      })),
+      collectors: reportingCollectors.map((collector) => ({
+        id: collector.id,
+        description: collector.description
+      }))
+    });
+  });
+
+  app.get("/stats/systems", async (_req: Request, res: Response) => {
+    try {
+      if (!REPORTING_ENABLED) {
+        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
+        return;
+      }
+      res.status(200).json({
+        systems: [
+          {
+            id: REPORTING_SYSTEM_ID,
+            name: REPORTING_SYSTEM_ID,
+            ssh_host: REPORTING_SSH_HOST || null,
+            db_host: REPORTING_DB_HOST || null,
+            db_port: REPORTING_DB_PORT,
+            sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all")
+          }
+        ]
+      });
+    } catch {
+      res.status(500).json({ error: { message: "Unable to list systems", status: 500 } });
+    }
+  });
+
+  app.get("/stats", async (req: Request, res: Response) => {
+    try {
+      if (!REPORTING_ENABLED) {
+        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
+        return;
+      }
+      enforceReportingApiKey(req);
+      const args = parseQueryArgs(req.query as QueryStringRecord);
+      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, req.query.sections);
+      res.status(result.all_ok ? 200 : 207).json({
+        ...result,
+        ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
+        results: result.collectors
+      });
+    } catch (err) {
+      const { message, status } = formatReportingError(err);
+      const errAny = err as { causes?: unknown };
+      res.status(status).json({
+        error: {
+          message,
+          status,
+          details: errAny?.causes || undefined
         }
-      ]
-    });
-  } catch {
-    res.status(500).json({ error: { message: "Unable to list systems", status: 500 } });
-  }
-});
-
-app.get("/stats", async (req: Request, res: Response) => {
-  try {
-    if (!REPORTING_ENABLED) {
-      res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-      return;
+      });
     }
-    enforceReportingApiKey(req);
-    const args = parseQueryArgs(req.query as QueryStringRecord);
-    const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, req.query.sections);
-    res.status(result.all_ok ? 200 : 207).json({
-      ...result,
-      ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
-      results: result.collectors
-    });
-  } catch (err) {
-    const { message, status } = formatReportingError(err);
-    const errAny = err as { causes?: unknown };
-    res.status(status).json({
-      error: {
-        message,
-        status,
-        details: errAny?.causes || undefined
+  });
+
+  app.get("/stats/snapshot", async (req: Request, res: Response) => {
+    try {
+      if (!REPORTING_ENABLED) {
+        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
+        return;
       }
-    });
-  }
-});
-
-app.get("/stats/snapshot", async (req: Request, res: Response) => {
-  try {
-    if (!REPORTING_ENABLED) {
-      res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-      return;
+      enforceReportingApiKey(req);
+      const args = parseQueryArgs(req.query as QueryStringRecord);
+      const fields = asStringList(req.query.fields);
+      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, req.query.sections);
+      const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
+      const filtered = filterSnapshotFields(snapshot, fields);
+      res.status(result.all_ok ? 200 : 207).json({
+        all_ok: result.all_ok,
+        requested: result.requested,
+        ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
+        target: result.target,
+        snapshot: filtered,
+        collectors: result.collectors
+      });
+    } catch (err) {
+      const { message, status } = formatReportingError(err);
+      const errAny = err as { causes?: unknown };
+      res.status(status).json({
+        error: {
+          message,
+          status,
+          details: errAny?.causes || undefined
+        }
+      });
     }
-    enforceReportingApiKey(req);
-    const args = parseQueryArgs(req.query as QueryStringRecord);
-    const fields = asStringList(req.query.fields);
-    const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, req.query.sections);
-    const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
-    const filtered = filterSnapshotFields(snapshot, fields);
-    res.status(result.all_ok ? 200 : 207).json({
-      all_ok: result.all_ok,
-      requested: result.requested,
-      ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
-      target: result.target,
-      snapshot: filtered,
-      collectors: result.collectors
-    });
-  } catch (err) {
-    const { message, status } = formatReportingError(err);
-    const errAny = err as { causes?: unknown };
-    res.status(status).json({
-      error: {
-        message,
-        status,
-        details: errAny?.causes || undefined
+  });
+
+  app.get("/stats/sections/:section", async (req: Request, res: Response) => {
+    try {
+      if (!REPORTING_ENABLED) {
+        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
+        return;
       }
-    });
-  }
-});
-
-app.get("/stats/sections/:section", async (req: Request, res: Response) => {
-  try {
-    if (!REPORTING_ENABLED) {
-      res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-      return;
+      enforceReportingApiKey(req);
+      const section = parseSectionParam(req.params.section);
+      const args = parseQueryArgs(req.query as QueryStringRecord);
+      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, section);
+      res.status(result.all_ok ? 200 : 207).json({
+        ...result,
+        section,
+        ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
+        results: result.collectors
+      });
+    } catch (err) {
+      const { message, status } = formatReportingError(err);
+      const errAny = err as { causes?: unknown };
+      res.status(status).json({
+        error: {
+          message,
+          status,
+          details: errAny?.causes || undefined
+        }
+      });
     }
-    enforceReportingApiKey(req);
-    const section = parseSectionParam(req.params.section);
-    const args = parseQueryArgs(req.query as QueryStringRecord);
-    const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, section);
-    res.status(result.all_ok ? 200 : 207).json({
-      ...result,
-      section,
-      ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
-      results: result.collectors
-    });
-  } catch (err) {
-    const { message, status } = formatReportingError(err);
-    const errAny = err as { causes?: unknown };
-    res.status(status).json({
-      error: {
-        message,
-        status,
-        details: errAny?.causes || undefined
+  });
+
+  app.get("/stats/sections/:section/snapshot", async (req: Request, res: Response) => {
+    try {
+      if (!REPORTING_ENABLED) {
+        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
+        return;
       }
-    });
-  }
-});
-
-app.get("/stats/sections/:section/snapshot", async (req: Request, res: Response) => {
-  try {
-    if (!REPORTING_ENABLED) {
-      res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-      return;
+      enforceReportingApiKey(req);
+      const section = parseSectionParam(req.params.section);
+      const args = parseQueryArgs(req.query as QueryStringRecord);
+      const fields = asStringList(req.query.fields);
+      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, section);
+      const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
+      const filtered = filterSnapshotFields(snapshot, fields);
+      res.status(result.all_ok ? 200 : 207).json({
+        all_ok: result.all_ok,
+        requested: result.requested,
+        section,
+        ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
+        target: result.target,
+        snapshot: filtered,
+        collectors: result.collectors
+      });
+    } catch (err) {
+      const { message, status } = formatReportingError(err);
+      const errAny = err as { causes?: unknown };
+      res.status(status).json({
+        error: {
+          message,
+          status,
+          details: errAny?.causes || undefined
+        }
+      });
     }
-    enforceReportingApiKey(req);
-    const section = parseSectionParam(req.params.section);
-    const args = parseQueryArgs(req.query as QueryStringRecord);
-    const fields = asStringList(req.query.fields);
-    const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, section);
-    const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
-    const filtered = filterSnapshotFields(snapshot, fields);
-    res.status(result.all_ok ? 200 : 207).json({
-      all_ok: result.all_ok,
-      requested: result.requested,
-      section,
-      ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
-      target: result.target,
-      snapshot: filtered,
-      collectors: result.collectors
-    });
-  } catch (err) {
-    const { message, status } = formatReportingError(err);
-    const errAny = err as { causes?: unknown };
-    res.status(status).json({
-      error: {
-        message,
-        status,
-        details: errAny?.causes || undefined
+  });
+
+  app.get("/stats/logs", async (req: Request, res: Response) => {
+    try {
+      if (!REPORTING_ENABLED) {
+        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
+        return;
       }
-    });
-  }
-});
-
-app.get("/stats/logs", async (req: Request, res: Response) => {
-  try {
-    if (!REPORTING_ENABLED) {
-      res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-      return;
-    }
-    enforceReportingApiKey(req);
-    const args = parseQueryArgs(req.query as QueryStringRecord);
-    if (!args.service) {
-      res.status(400).json({ error: { message: "service is required for /stats/logs", status: 400 } });
-      return;
-    }
-    const result = await collectRequestedReportData("service_logs", args);
-    const entries = result.collectors.find((item) => item.id === "service_logs");
-    if (!entries || entries.status !== "ok") {
-      const payload = entries?.payload as Record<string, unknown> | undefined;
-      res.status(207).json({
+      enforceReportingApiKey(req);
+      const args = parseQueryArgs(req.query as QueryStringRecord);
+      if (!args.service) {
+        res.status(400).json({ error: { message: "service is required for /stats/logs", status: 400 } });
+        return;
+      }
+      const result = await collectRequestedReportData("service_logs", args);
+      const entries = result.collectors.find((item) => item.id === "service_logs");
+      if (!entries || entries.status !== "ok") {
+        const payload = entries?.payload as Record<string, unknown> | undefined;
+        res.status(207).json({
+          all_ok: result.all_ok,
+          ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
+          system_id: result.target.system_id,
+          service: args.service,
+          lines_requested: payload?.lines_requested || null,
+          since: payload?.since || null,
+          logs: payload?.logs || []
+        });
+        return;
+      }
+      const payload = entries.payload as Record<string, unknown>;
+      res.status(200).json({
         all_ok: result.all_ok,
         ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
         system_id: result.target.system_id,
         service: args.service,
-        lines_requested: payload?.lines_requested || null,
-        since: payload?.since || null,
-        logs: payload?.logs || []
+        lines_requested: payload.lines_requested || null,
+        since: payload.since || null,
+        logs: payload.logs || []
       });
-      return;
+    } catch (err) {
+      const { message, status } = formatReportingError(err);
+      const errAny = err as { causes?: unknown };
+      res.status(status).json({
+        error: {
+          message,
+          status,
+          details: errAny?.causes || undefined
+        }
+      });
     }
-    const payload = entries.payload as Record<string, unknown>;
-    res.status(200).json({
-      all_ok: result.all_ok,
-      ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
-      system_id: result.target.system_id,
-      service: args.service,
-      lines_requested: payload.lines_requested || null,
-      since: payload.since || null,
-      logs: payload.logs || []
-    });
-  } catch (err) {
-    const { message, status } = formatReportingError(err);
-    const errAny = err as { causes?: unknown };
-    res.status(status).json({
-      error: {
-        message,
-        status,
-        details: errAny?.causes || undefined
-      }
-    });
-  }
-});
+  });
 
-app.post("/hasura/actions/stats", async (req: Request, res: Response) => {
-  try {
-    if (!REPORTING_ENABLED) {
-      res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-      return;
+  app.post("/hasura/actions/stats", async (req: Request, res: Response) => {
+    try {
+      if (!REPORTING_ENABLED) {
+        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
+        return;
+      }
+      enforceReportingApiKey(req);
+
+      const actionBody = req.body as HasuraActionEnvelope;
+      const actionInput =
+        actionBody && typeof actionBody === "object" && "input" in actionBody
+          ? actionBody.input
+          : (req.body as unknown);
+
+      const args = parseObjectArgs(actionInput);
+      const result = await collectRequestedReportData(
+        ("collector" in args ? args.collector : args.collectors) as RawQueryValue,
+        args,
+        args.sections
+      );
+      res.status(result.all_ok ? 200 : 207).json({
+        ...result,
+        ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
+        results: result.collectors
+      });
+    } catch (err) {
+      const { message, status } = formatReportingError(err);
+      const errAny = err as { causes?: unknown };
+      res.status(status).json({
+        error: {
+          message,
+          status,
+          details: errAny?.causes || undefined
+        }
+      });
     }
-    enforceReportingApiKey(req);
+  });
+}
 
-    const actionBody = req.body as HasuraActionEnvelope;
-    const actionInput =
-      actionBody && typeof actionBody === "object" && "input" in actionBody
-        ? actionBody.input
-        : (req.body as unknown);
-
-    const args = parseObjectArgs(actionInput);
-    const result = await collectRequestedReportData(
-      ("collector" in args ? args.collector : args.collectors) as RawQueryValue,
-      args,
-      args.sections
-    );
-    res.status(result.all_ok ? 200 : 207).json({
-      ...result,
-      ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
-      results: result.collectors
-    });
-  } catch (err) {
-    const { message, status } = formatReportingError(err);
-    const errAny = err as { causes?: unknown };
-    res.status(status).json({
-      error: {
-        message,
-        status,
-        details: errAny?.causes || undefined
-      }
-    });
-  }
-});
-
-// Main profile endpoint for Directus AUTH_GITHUB_PROFILE_URL
-app.get("/github", async (req: Request, res: Response) => {
-  try {
-    enforceApiKey(req);
-    const token = getBearerToken(req);
-    const profile = await fetchProfileBundle(token);
-    res.status(200).json(profile);
-  } catch (err) {
-    const status = (err as any).status || 500;
-    res.status(status).json({
-      error: {
-        message: (err as Error).message || "Internal Server Error",
-        status
-      }
-    });
-  }
-});
-
+// 404 fallback for unknown routes
 // 404
 app.use((_req, res) => res.status(404).json({ error: { message: "Not Found", status: 404 } }));
 
@@ -2477,18 +2465,19 @@ app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: 
 
 // Start
 app.listen(Number(env.PORT), "0.0.0.0", () => {
-  console.log(`[profile-proxy] listening on :${env.PORT}`);
+  console.log(`[vm-stats-service] listening on :${env.PORT}`);
+  console.log(`[vm-stats-service] service_mode=${SERVICE_MODE}`);
   console.log(
-    `[profile-proxy] trust_proxy=${String(app.get("trust proxy"))} rate_limit_window_ms=${env.RATE_WINDOW_MS} rate_limit_max=${env.RATE_MAX}`
+    `[vm-stats-service] trust_proxy=${String(app.get("trust proxy"))} rate_limit_window_ms=${
+      env.RATE_WINDOW_MS
+    } rate_limit_max=${env.RATE_MAX}`
   );
-  if (REQUIRE_API_KEY) console.log(`[profile-proxy] API key required via header X-API-Key`);
+  if (REQUIRE_API_KEY) console.log(`[vm-stats-service] API key required via header X-API-Key`);
   if (REPORTING_ENABLED) {
     console.log(
-      `[profile-proxy] reporting enabled (db_host=${REPORTING_DB_HOST || "n/a"}, ssh_host=${
-        REPORTING_SSH_HOST || "n/a"
-      })`
+      `[vm-stats-service] reporting enabled (db_host=${REPORTING_DB_HOST || "n/a"}, ssh_host=${REPORTING_SSH_HOST || "n/a"})`
     );
   } else {
-    console.log("[profile-proxy] reporting disabled; set REPORTING_ENABLED=true to expose /stats");
+    console.log("[vm-stats-service] reporting disabled; set REPORTING_ENABLED=true to expose /stats");
   }
 });
