@@ -44,8 +44,13 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           PACKAGE_NAME: vm-stats-service
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          if gh api --method PATCH "/repos/${REPO}/packages/container/${PACKAGE_NAME}" -f visibility=public --silent; then
+            exit 0
+          fi
+
           if gh api --method PATCH "/orgs/${OWNER}/packages/container/${PACKAGE_NAME}" -f visibility=public --silent; then
             exit 0
           fi
@@ -54,7 +59,11 @@ jobs:
             exit 0
           fi
 
-          echo "Failed to set visibility=public for GHCR package ${PACKAGE_NAME} (org/user scope)." >&2
+          if gh api --method PATCH "/users/${OWNER}/packages/container/${PACKAGE_NAME}" -f visibility=public --silent; then
+            exit 0
+          fi
+
+          echo "Failed to set visibility=public for GHCR package ${PACKAGE_NAME} (repo/org/user scope)." >&2
           exit 1
 
       - name: Remove local Docker image
