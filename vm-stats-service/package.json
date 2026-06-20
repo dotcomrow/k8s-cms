@@ -9,11 +9,11 @@
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
-    "express": "^4.22.1",
+    "express": "^4.22.2",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
-    "undici": "^6.24.0",
+    "undici": "^6.27.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
