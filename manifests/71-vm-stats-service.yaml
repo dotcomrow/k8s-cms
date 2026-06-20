@@ -111,10 +111,10 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-  metadata:
-    name: vm-stats-service
-    namespace: directus
-    annotations:
+metadata:
+  name: vm-stats-service
+  namespace: directus
+  annotations:
     teleport.dev/name: "vm-stats"
     teleport.dev/protocol: "http"
     teleport.dev/description: "VM stats reporting API for infrastructure monitoring"
