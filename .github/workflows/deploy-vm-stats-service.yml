@@ -46,15 +46,16 @@ jobs:
           PACKAGE_NAME: vm-stats-service
         run: |
           set -euo pipefail
-          if gh api "/orgs/${OWNER}/packages/container/${PACKAGE_NAME}" >/dev/null 2>&1; then
-            EP="/orgs/${OWNER}/packages/container/${PACKAGE_NAME}/visibility"
-          elif gh api "/user/packages/container/${PACKAGE_NAME}" >/dev/null 2>&1; then
-            EP="/user/packages/container/${PACKAGE_NAME}/visibility"
-          else
-            echo "Could not locate GHCR package ${PACKAGE_NAME} for owner ${OWNER}" >&2
-            exit 1
+          if gh api --method PATCH "/orgs/${OWNER}/packages/container/${PACKAGE_NAME}" -f visibility=public --silent; then
+            exit 0
           fi
-          gh api --method PATCH "${EP}" -f visibility=public
+
+          if gh api --method PATCH "/user/packages/container/${PACKAGE_NAME}" -f visibility=public --silent; then
+            exit 0
+          fi
+
+          echo "Failed to set visibility=public for GHCR package ${PACKAGE_NAME} (org/user scope)." >&2
+          exit 1
 
       - name: Remove local Docker image
         run: |
