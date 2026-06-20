@@ -416,6 +416,16 @@ function asInt(value: string | undefined, fallback: number, min: number, max: nu
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
+function asQueryValue(value: unknown): RawQueryValue {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const items = value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+    if (items.length === 0) return undefined;
+    return items;
+  }
+  return undefined;
+}
+
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
 }
@@ -821,7 +831,13 @@ function deriveSectionHealth(payload: { storageUsedPercent?: number; memoryPerce
 }
 
 function findStorageSummaryBySection(storage: {
-  mountpoints?: Array<{ mountpoint?: string; used_percent?: number; used_bytes?: number; size_bytes?: number }>;
+  mountpoints?: Array<{
+    mountpoint?: string;
+    used_percent?: number;
+    used_bytes?: number;
+    size_bytes?: number;
+    health?: "ok" | "warn" | "critical";
+  }>;
   inode_usage?: Array<{ mountpoint?: string; inodes_used_percent?: number }>;
 }) {
   const primaryMount =
@@ -925,7 +941,15 @@ function parseProcesses(raw: string) {
     .filter(Boolean);
 }
 
-function parseServices(raw: string, hostOnly?: boolean) {
+type ParsedService = {
+  name: string;
+  load_state: string;
+  active_state: string;
+  sub_state: string;
+  description: string;
+};
+
+function parseServices(raw: string, hostOnly?: boolean): ParsedService[] {
   const lines = raw.trim().split("\n");
   const services = lines
     .filter(Boolean)
@@ -941,7 +965,7 @@ function parseServices(raw: string, hostOnly?: boolean) {
         description: hostOnly ? "" : rest.join(" ")
       };
     })
-    .filter(Boolean);
+    .filter((service): service is ParsedService => Boolean(service));
   return services;
 }
 
@@ -2247,7 +2271,9 @@ if (IS_STATS_SERVICE) {
       }
       enforceReportingApiKey(req);
       const args = parseQueryArgs(req.query as QueryStringRecord);
-      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, req.query.sections);
+      const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
+      const sections = asQueryValue(req.query.sections);
+      const result = await collectRequestedReportData(collector, args, sections);
       res.status(result.all_ok ? 200 : 207).json({
         ...result,
         ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
@@ -2275,7 +2301,9 @@ if (IS_STATS_SERVICE) {
       enforceReportingApiKey(req);
       const args = parseQueryArgs(req.query as QueryStringRecord);
       const fields = asStringList(req.query.fields);
-      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, req.query.sections);
+      const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
+      const sections = asQueryValue(req.query.sections);
+      const result = await collectRequestedReportData(collector, args, sections);
       const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
       const filtered = filterSnapshotFields(snapshot, fields);
       res.status(result.all_ok ? 200 : 207).json({
@@ -2308,7 +2336,8 @@ if (IS_STATS_SERVICE) {
       enforceReportingApiKey(req);
       const section = parseSectionParam(req.params.section);
       const args = parseQueryArgs(req.query as QueryStringRecord);
-      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, section);
+      const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
+      const result = await collectRequestedReportData(collector, args, section);
       res.status(result.all_ok ? 200 : 207).json({
         ...result,
         section,
@@ -2338,7 +2367,8 @@ if (IS_STATS_SERVICE) {
       const section = parseSectionParam(req.params.section);
       const args = parseQueryArgs(req.query as QueryStringRecord);
       const fields = asStringList(req.query.fields);
-      const result = await collectRequestedReportData(req.query.collector || req.query.collectors, args, section);
+      const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
+      const result = await collectRequestedReportData(collector, args, section);
       const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
       const filtered = filterSnapshotFields(snapshot, fields);
       res.status(result.all_ok ? 200 : 207).json({
