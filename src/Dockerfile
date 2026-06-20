@@ -13,6 +13,7 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
+RUN apk add --no-cache openssh-client
 # Create non-root user
 RUN addgroup -S app && adduser -S -G app app
 COPY package.json package-lock.json* ./

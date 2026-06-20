@@ -1,0 +1,654 @@
+openapi: 3.0.3
+info:
+  title: VM Stats Service
+  version: 1.2.0
+  description: |
+    Internal API exposing VM reporting collectors for the oracle-db host and Hasura integration.
+    Includes normalized snapshot endpoints for flexible polling by section.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: healthz
+      responses:
+        "200":
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+  /stats/collectors:
+    get:
+      summary: List reporting collectors
+      operationId: listStatsCollectors
+      description: Enumerates available collectors and reusable snapshot sections.
+      responses:
+        "200":
+          description: Available collectors and sections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectorAndSectionListResponse"
+  /stats/systems:
+    get:
+      summary: List monitored systems
+      operationId: listStatsSystems
+      responses:
+        "200":
+          description: Available systems
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemListResponse"
+  /stats:
+    get:
+      summary: Fetch VM stats
+      operationId: getStats
+      parameters:
+        - in: query
+          name: collector
+          required: false
+          schema:
+            type: string
+          description: Collector name (comma-separated supported)
+        - in: query
+          name: collectors
+          required: false
+          schema:
+            type: string
+          description: Comma-separated collectors
+        - in: query
+          name: sections
+          required: false
+          schema:
+            type: string
+          description: Comma-separated sections (quick,storage,processes,services,ports,sessions,logs)
+        - in: query
+          name: state
+          required: false
+          schema:
+            type: string
+          description: Service state filter
+        - in: query
+          name: scope
+          required: false
+          schema:
+            type: string
+          description: Session scope filter
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+          description: Result limit
+        - in: query
+          name: service
+          required: false
+          schema:
+            type: string
+          description: Target service name
+        - in: query
+          name: lines
+          required: false
+          schema:
+            type: integer
+          description: Log lines
+        - in: query
+          name: since
+          required: false
+          schema:
+            type: string
+          description: Log range start
+        - in: query
+          name: system_id
+          required: false
+          schema:
+            type: string
+          description: System identifier override
+      responses:
+        "200":
+          description: Collected stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponseEnvelope"
+        "207":
+          description: Partial stats; one or more collectors failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponseEnvelope"
+  /stats/snapshot:
+    get:
+      summary: Fetch normalized snapshot for UI
+      operationId: getStatsSnapshot
+      parameters:
+        - in: query
+          name: sections
+          required: false
+          schema:
+            type: string
+          description: Comma-separated sections to fetch
+        - in: query
+          name: fields
+          required: false
+          schema:
+            type: string
+          description: Comma-separated snapshot fields to include
+        - in: query
+          name: collector
+          required: false
+          schema:
+            type: string
+          description: Collector override
+        - in: query
+          name: service
+          required: false
+          schema:
+            type: string
+          description: Target service (for logs section)
+        - in: query
+          name: lines
+          required: false
+          schema:
+            type: integer
+          description: Log lines when requesting logs section
+        - in: query
+          name: since
+          required: false
+          schema:
+            type: string
+          description: Log range start
+      responses:
+        "200":
+          description: Normalized system snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotEnvelope"
+        "207":
+          description: Partial snapshot; one or more collectors failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotEnvelope"
+  /stats/sections/{section}:
+    get:
+      summary: Fetch a single reporting section
+      operationId: getStatsBySection
+      parameters:
+        - in: path
+          name: section
+          required: true
+          schema:
+            type: string
+          description: Section name (quick, storage, processes, services, ports, sessions, logs, all)
+        - in: query
+          name: collector
+          required: false
+          schema:
+            type: string
+          description: Collector override
+        - in: query
+          name: state
+          required: false
+          schema:
+            type: string
+          description: Service state filter
+        - in: query
+          name: scope
+          required: false
+          schema:
+            type: string
+          description: Session scope filter
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+          description: Result limit
+        - in: query
+          name: service
+          required: false
+          schema:
+            type: string
+          description: Target service name
+        - in: query
+          name: lines
+          required: false
+          schema:
+            type: integer
+          description: Log lines
+        - in: query
+          name: since
+          required: false
+          schema:
+            type: string
+          description: Log range start
+        - in: query
+          name: system_id
+          required: false
+          schema:
+            type: string
+          description: System identifier override
+      responses:
+        "200":
+          description: Collected stats for section
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponseEnvelope"
+        "207":
+          description: Partial section response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponseEnvelope"
+  /stats/sections/{section}/snapshot:
+    get:
+      summary: Fetch a normalized section snapshot
+      operationId: getStatsSnapshotBySection
+      parameters:
+        - in: path
+          name: section
+          required: true
+          schema:
+            type: string
+          description: Section name (quick, storage, processes, services, ports, sessions, logs, all)
+        - in: query
+          name: fields
+          required: false
+          schema:
+            type: string
+          description: Comma-separated snapshot fields to include
+        - in: query
+          name: collector
+          required: false
+          schema:
+            type: string
+          description: Collector override
+        - in: query
+          name: service
+          required: false
+          schema:
+            type: string
+          description: Target service (for logs section)
+        - in: query
+          name: lines
+          required: false
+          schema:
+            type: integer
+          description: Log lines when requesting logs section
+        - in: query
+          name: since
+          required: false
+          schema:
+            type: string
+          description: Log range start
+        - in: query
+          name: system_id
+          required: false
+          schema:
+            type: string
+          description: System identifier override
+      responses:
+        "200":
+          description: Normalized section snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotEnvelope"
+        "207":
+          description: Partial section snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotEnvelope"
+  /stats/logs:
+    get:
+      summary: Fetch logs for one service
+      operationId: getServiceLogs
+      parameters:
+        - in: query
+          name: service
+          required: true
+          schema:
+            type: string
+          description: Service name (.service optional)
+        - in: query
+          name: lines
+          required: false
+          schema:
+            type: integer
+          description: Number of lines
+        - in: query
+          name: since
+          required: false
+          schema:
+            type: string
+          description: Log range start
+      responses:
+        "200":
+          description: Service log lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceLogResponse"
+        "207":
+          description: Partial logs response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceLogResponse"
+        "400":
+          description: service parameter missing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    $ref: "#/components/schemas/ErrorResponse"
+  /hasura/actions/stats:
+    post:
+      summary: Hasura action endpoint for VM reporting
+      description: Accepts a Hasura action envelope and returns the stats response payload.
+      operationId: hasuraFetchStats
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HasuraActionRequest"
+      responses:
+        "200":
+          description: Hasura action stats payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponseEnvelope"
+        "207":
+          description: Partial stats; one or more collectors failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponseEnvelope"
+components:
+  schemas:
+    CollectorSummary:
+      type: object
+      required:
+        - id
+        - description
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+    CollectorSection:
+      type: object
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        cadence:
+          type: string
+        collectors:
+          type: array
+          items:
+            type: string
+    CollectorListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        enabled:
+          type: boolean
+        collectors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectorSummary"
+    CollectorAndSectionListResponse:
+      allOf:
+        - $ref: "#/components/schemas/CollectorListResponse"
+        - type: object
+          properties:
+            sections:
+              type: array
+              items:
+                $ref: "#/components/schemas/CollectorSection"
+    SystemListResponse:
+      type: object
+      properties:
+        systems:
+          type: array
+          items:
+            $ref: "#/components/schemas/MonitoredSystem"
+    MonitoredSystem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        ssh_host:
+          type: string
+          nullable: true
+        db_host:
+          type: string
+        db_port:
+          type: integer
+        sections:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectorSection"
+    CollectorResult:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+    StatsTarget:
+      type: object
+      properties:
+        system_id:
+          type: string
+        ssh_host:
+          type: string
+          nullable: true
+        db_host:
+          type: string
+        db_port:
+          type: integer
+        has_db_password:
+          type: boolean
+    StatsResponseEnvelope:
+      type: object
+      properties:
+        all_ok:
+          type: boolean
+        requested:
+          type: array
+          items:
+            type: string
+        ran_at:
+          type: string
+          format: date-time
+        target:
+          $ref: "#/components/schemas/StatsTarget"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectorResult"
+        collectors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectorResult"
+    SnapshotEnvelope:
+      type: object
+      properties:
+        all_ok:
+          type: boolean
+        requested:
+          type: array
+          items:
+            type: string
+        ran_at:
+          type: string
+          format: date-time
+        target:
+          $ref: "#/components/schemas/StatsTarget"
+        snapshot:
+          $ref: "#/components/schemas/StatsSnapshot"
+        collectors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectorResult"
+    StatsSnapshot:
+      type: object
+      properties:
+        systemId:
+          type: string
+        collectedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+        cpuPercent:
+          type: number
+          format: float
+        loadAverage:
+          type: number
+          format: float
+        loadAverageDetails:
+          type: object
+          additionalProperties: true
+        memoryPercent:
+          type: number
+          format: float
+        swapPercent:
+          type: number
+          format: float
+        diskPercent:
+          type: number
+          format: float
+        networkInMbps:
+          type: number
+          format: float
+        networkOutMbps:
+          type: number
+          format: float
+        storageUsedGb:
+          type: number
+          format: float
+        storageTotalGb:
+          type: number
+          format: float
+        storageUsedPercent:
+          type: number
+          format: float
+        storageInodePercent:
+          type: number
+          format: float
+        dbSessions:
+          type: integer
+        sshSessions:
+          type: integer
+        processCount:
+          type: integer
+        uptimeHours:
+          type: number
+          format: float
+        services:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        listeningPorts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        serviceLogs:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ServiceLogLine"
+    ServiceLogLine:
+      type: object
+      required:
+        - timestamp
+        - severity
+        - message
+      properties:
+        timestamp:
+          type: string
+        severity:
+          type: string
+        message:
+          type: string
+        unit:
+          type: string
+          nullable: true
+    ServiceLogResponse:
+      type: object
+      properties:
+        all_ok:
+          type: boolean
+        ran_at:
+          type: string
+          format: date-time
+        system_id:
+          type: string
+        service:
+          type: string
+        lines_requested:
+          type: integer
+        since:
+          type: string
+          nullable: true
+        logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceLogLine"
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        status:
+          type: integer
+    HasuraActionRequest:
+      type: object
+      properties:
+        action:
+          type: object
+          additionalProperties: true
+        input:
+          type: object
+          description: Args passed to /stats in query-style form
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+              - type: array
+                items:
+                  type: string
+        session_variables:
+          type: object
+          additionalProperties:
+            type: string
+        request_query:
+          type: string
