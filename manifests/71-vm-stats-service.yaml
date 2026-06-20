@@ -23,6 +23,7 @@ spec:
       containers:
         - name: vm-stats-service
           image: "ghcr.io/dotcomrow/vm-stats-service:latest"
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
@@ -110,21 +111,49 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata:
-  name: vm-stats-service
-  namespace: directus
-  annotations:
+  metadata:
+    name: vm-stats-service
+    namespace: directus
+    annotations:
+    teleport.dev/name: "vm-stats"
+    teleport.dev/protocol: "http"
+    teleport.dev/description: "VM stats reporting API for infrastructure monitoring"
+    # Gravitee discovery
     gravitee.io/expose: "true"
     gravitee.io/context-path: "/vm-stats"
+    gravitee.io/auth-required: "directus-token"
+    gravitee.io/approval-required: "admin"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
+    gravitee.io/description: "VM stats reporting API for infrastructure monitoring"
+    gravitee.io/version: "latest"
+    gravitee.io/tags: "directus,cms,hasura,infra"
+    gravitee.io/definition-name: "vm-stats-api"
+    gravitee.io/definition-summary: "VM stats reporting API"
+    gravitee.io/definition-description: "VM health and VM metrics API for Directus database and infrastructure monitoring"
     gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-visibility: "PUBLIC"
+    gravitee.io/definition-state: "STARTED"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
     gravitee.io/definition-openapi-url: "http://vm-stats-service.directus.svc.cluster.local:8080/openapi.json"
     gravitee.io/definition-context-path: "/vm-stats"
-    gravitee.io/definition-lifecycle-state: "PUBLISHED"
     gravitee.io/definition-version: "latest"
-    gravitee.io/definition-summary: "VM stats reporting API"
-    gravitee.io/definition-tags: "directus,cms,hasura,infra"
+    gravitee.io/definition-listener-host: "vm-stats-service.directus.svc.cluster.local"
+    gravitee.io/definition-listener-port: "8080"
     gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-tags: "directus,cms,hasura,infra"
     gravitee.io/definition-labels: "internal,cms,hasura,infra"
+    gravitee.io/definition-categories: "infra"
+    gravitee.io/definition-path-mappings: "/vm-stats/*"
+    gravitee.io/definition-metadata: '{"owner":"infra","service":"vm-stats","slack":"#infra"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
+    gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"vm-stats-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://vm-stats-service.directus.svc.cluster.local:8080"},"secondary":false}]}]'
+    gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://vm-stats-service.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+    gravitee.io/definition-resources: '[]'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"No auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"},"directus-oauth2":{"name":"Directus OAuth2","description":"Directus OAuth2","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"false"}}'
+    gravitee.io/definition-flows: '[]'
+    gravitee.io/definition-response-templates: '{}'
+    gravitee.io/definition-analytics: '{"enabled":true,"logging":{"condition":"true","content":{"headers":true,"payload":false,"messageHeaders":false,"messageMetadata":false,"messagePayload":false},"mode":{"entrypoint":true,"endpoint":true},"phase":{"request":true,"response":true}}}'
+    gravitee.io/definition-entrypoints: '[]'
   labels:
     app: vm-stats-service
 spec:
