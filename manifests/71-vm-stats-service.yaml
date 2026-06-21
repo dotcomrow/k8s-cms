@@ -11,7 +11,7 @@ data:
         "name": "Oracle Cloud VM",
         "ssh_host": "157.151.150.61",
         "ssh_port": "22",
-        "ssh_user": "opc",
+        "ssh_user": "ubuntu",
         "ssh_key_path": "/secrets/ssh-key",
         "db_host": "157.151.150.61",
         "db_port": "5432",
