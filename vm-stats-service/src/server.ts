@@ -42,7 +42,9 @@ const envSchema = z.object({
   REPORTING_STRICT_HOST_KEY: z.string().default("false"),
   REPORTING_SYSTEMS_JSON: z.string().default(""),
   REPORTING_COMMAND_TIMEOUT_MS: z.string().default("25000"),
+  REPORTING_SESSIONS_TIMEOUT_MS: z.string().default("45000"),
   REPORTING_CONNECT_TIMEOUT_MS: z.string().default("12000"),
+  REPORTING_SESSIONS_LOCAL_DB_FALLBACK: z.string().default("true"),
   REPORTING_STORAGE_WARNING_PERCENT: z.string().default("80"),
   REPORTING_STORAGE_CRITICAL_PERCENT: z.string().default("90"),
   REPORTING_SYSTEM_ID: z.string().default("oracle-db"),
@@ -90,7 +92,9 @@ const REPORTING_SSH_KEY = env.REPORTING_SSH_KEY.trim();
 const REPORTING_STRICT_HOST_KEY = toBool(env.REPORTING_STRICT_HOST_KEY);
 const REPORTING_SYSTEMS_JSON = env.REPORTING_SYSTEMS_JSON.trim();
 const REPORTING_COMMAND_TIMEOUT_MS = Math.max(1_000, Number(env.REPORTING_COMMAND_TIMEOUT_MS) || 25_000);
+const REPORTING_SESSIONS_TIMEOUT_MS = Math.max(1_000, Number(env.REPORTING_SESSIONS_TIMEOUT_MS) || 45_000);
 const REPORTING_CONNECT_TIMEOUT_MS = Math.max(1_000, Number(env.REPORTING_CONNECT_TIMEOUT_MS) || 12_000);
+const REPORTING_SESSIONS_LOCAL_DB_FALLBACK = toBool(env.REPORTING_SESSIONS_LOCAL_DB_FALLBACK);
 const REPORTING_STORAGE_WARNING_PERCENT = Math.min(99, Math.max(0, Number(env.REPORTING_STORAGE_WARNING_PERCENT) || 80));
 const REPORTING_STORAGE_CRITICAL_PERCENT = Math.min(99, Math.max(0, Number(env.REPORTING_STORAGE_CRITICAL_PERCENT) || 90));
 const REPORTING_SYSTEM_ID = env.REPORTING_SYSTEM_ID.trim() || "oracle-db";
@@ -1141,6 +1145,21 @@ function parseListeningPorts(raw: string) {
     .filter(Boolean);
 }
 
+function normalizeHost(host: string | undefined) {
+  return String(host || "").trim().replace(/^\[(.*)\]$/, "$1").toLowerCase();
+}
+
+function isRetryableRemoteCommandError(error: unknown) {
+  if (!error) return false;
+  const typedError = error as { message?: string; stderr?: string; causes?: { stderr?: string } };
+  const stderr = String(typedError?.causes?.stderr || typedError?.stderr || "");
+  const message = String(typedError?.message || error);
+  const combined = `${message} ${stderr}`.toLowerCase();
+  return /timed out|timeout|could not connect to server|connection timed out|connection refused|no route to host|network is unreachable|temporary failure|name or service not known|operation timed out|connection closed by remote host/.test(
+    combined
+  );
+}
+
 async function queryPostgresSessions(limit: number, target?: ReportingSystemDefinition) {
   const resolvedTarget = target || resolveReportingTarget({});
   const dbPassword = resolvedTarget.db_password || REPORTING_DB_PASSWORD;
@@ -1206,19 +1225,47 @@ SELECT json_build_object(
   `.trim();
 
   const sqlOneLine = sql.replace(/\s+/g, " ");
-  const cmd = `${dbPassword ? `PGPASSWORD=${shellQuote(dbPassword)} ` : ""}psql -h ${shellQuote(
-    dbHost
-  )} -p ${dbPort} -U ${shellQuote(dbUser)} -d ${shellQuote(dbName)} -qAtX -c ${shellQuote(
-    sqlOneLine
-  )}`;
-  const result = await runRemoteCommand(cmd, Math.max(REPORTING_COMMAND_TIMEOUT_MS, 10_000));
-  const parsed = parseJsonPayload(result.stdout);
-  if (!parsed) {
-    const err = new Error("Postgres status command did not return valid JSON");
-    (err as any).status = 500;
-    throw err;
+
+  const dbTimeout = Math.max(REPORTING_SESSIONS_TIMEOUT_MS, 10_000);
+  const commandBase = `${dbPassword ? `PGPASSWORD=${shellQuote(dbPassword)} ` : ""}psql -p ${dbPort} -U ${shellQuote(
+    dbUser
+  )} -d ${shellQuote(dbName)} -qAtX -c ${shellQuote(sqlOneLine)}`;
+  const primaryDbHost = normalizeHost(dbHost);
+  const dbHostCandidates = new Set<string>([primaryDbHost]);
+  const normalizedSshHost = normalizeHost(resolvedTarget.ssh_host);
+  if (REPORTING_SESSIONS_LOCAL_DB_FALLBACK && normalizedSshHost && primaryDbHost === normalizedSshHost) {
+    dbHostCandidates.add("127.0.0.1");
+    dbHostCandidates.add("localhost");
   }
-  return parsed;
+  const hostList = [...dbHostCandidates].filter(Boolean);
+  const terminalIndex = hostList.length - 1;
+
+  let lastError: unknown;
+  for (let idx = 0; idx < hostList.length; idx += 1) {
+    const host = hostList[idx];
+    const hostLabel = host || dbHost;
+    const cmd = `${commandBase} -h ${shellQuote(hostLabel)}`;
+    try {
+      const result = await runRemoteCommand(cmd, dbTimeout);
+      const parsed = parseJsonPayload(result.stdout);
+      if (!parsed) {
+        const err = new Error("Postgres status command did not return valid JSON");
+        (err as any).status = 500;
+        throw err;
+      }
+      return parsed;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableRemoteCommandError(error) || idx === terminalIndex) break;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  const err = new Error("Postgres status command did not return valid JSON");
+  (err as any).status = 500;
+  throw err;
 }
 
 const reportingCollectors: ReportCollector[] = [
