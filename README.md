@@ -21,7 +21,7 @@ kubectl apply -f manifests/
 
 ## New: VM reporting endpoint
 
-This service now includes a reporting framework for gathering oracle-db VM health from a remote host via SSH.
+This service now includes a reporting framework for gathering VM health from one or more configured targets via SSH and Postgres querying.
 
 - `GET /stats` -> gathers all collectors (storage, system, processes, services, ports, sessions, service_logs if args provided).
 - `GET /stats?collector=storage` -> only the storage collector.
@@ -48,6 +48,8 @@ For local/service discovery:
 
 - `REPORTING_ENABLED` (`true`/`false`, default `false`)
 - `REPORTING_REQUIRE_API_KEY` (`true`/`false`, default `true`)
+- `REPORTING_SYSTEM_ID` (`oracle-db` default; used when `REPORTING_SYSTEMS_JSON` is unset)
+- `REPORTING_SYSTEMS_JSON` (optional JSON array for multi-vm targeting; set through `vm-stats-service-targets` ConfigMap in `manifests/71-vm-stats-service.yaml`)
 - `REPORTING_SSH_HOST` (required, e.g. `oracle-db-vm-ip`)
 - `REPORTING_SSH_USER` (default `opc`)
 - `REPORTING_SSH_KEY_PATH` (preferred) or `REPORTING_SSH_KEY` (inline key body)
@@ -61,6 +63,12 @@ For local/service discovery:
 - `REPORTING_DB_USER` (default `postgres`)
 - `REPORTING_DB_PASSWORD` (optional; if missing db sessions collector returns config error)
 - `OPENAPI_SERVER_URL` (optional; sets `servers[].url` in `/openapi.json`, default `/`)
+
+In this workspace, the default `REPORTING_SYSTEMS_JSON` is set in `manifests/71-vm-stats-service.yaml` to the Oracle VM target (`oracle-db`), using:
+
+- `ssh_host`: `157.151.150.61`
+- `db_host`: `157.151.150.61`
+- `db_user`: `directus_app_k7m2v9q4x6r1t8h3`
 
 For collector metadata and thresholds, see `vm-stats-service/src/server.ts` env parsing section.
 

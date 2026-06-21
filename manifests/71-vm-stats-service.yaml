@@ -1,3 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-stats-service-targets
+  namespace: directus
+data:
+  REPORTING_SYSTEMS_JSON: |
+    [
+      {
+        "id": "oracle-db",
+        "name": "Oracle Cloud VM",
+        "ssh_host": "157.151.150.61",
+        "ssh_port": "22",
+        "ssh_user": "opc",
+        "ssh_key_path": "/secrets/ssh-key",
+        "db_host": "157.151.150.61",
+        "db_port": "5432",
+        "db_name": "directus",
+        "db_user": "directus_app_k7m2v9q4x6r1t8h3",
+        "db_password": "${REPORTING_DB_PASSWORD}"
+      }
+    ]
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -72,6 +95,11 @@ spec:
                   key: password
             - name: REPORTING_SYSTEM_ID
               value: "oracle-db"
+            - name: REPORTING_SYSTEMS_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: vm-stats-service-targets
+                  key: REPORTING_SYSTEMS_JSON
             - name: OPENAPI_SERVER_URL
               value: "http://vm-stats-service.directus.svc.cluster.local:8080"
             - name: TRUST_PROXY_HOPS

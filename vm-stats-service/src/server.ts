@@ -40,6 +40,7 @@ const envSchema = z.object({
   REPORTING_SSH_KEY_PATH: z.string().default(""),
   REPORTING_SSH_KEY: z.string().default(""),
   REPORTING_STRICT_HOST_KEY: z.string().default("false"),
+  REPORTING_SYSTEMS_JSON: z.string().default(""),
   REPORTING_COMMAND_TIMEOUT_MS: z.string().default("25000"),
   REPORTING_CONNECT_TIMEOUT_MS: z.string().default("12000"),
   REPORTING_STORAGE_WARNING_PERCENT: z.string().default("80"),
@@ -87,6 +88,7 @@ const REPORTING_SSH_USER = env.REPORTING_SSH_USER.trim() || "opc";
 const REPORTING_SSH_KEY_PATH = env.REPORTING_SSH_KEY_PATH.trim();
 const REPORTING_SSH_KEY = env.REPORTING_SSH_KEY.trim();
 const REPORTING_STRICT_HOST_KEY = toBool(env.REPORTING_STRICT_HOST_KEY);
+const REPORTING_SYSTEMS_JSON = env.REPORTING_SYSTEMS_JSON.trim();
 const REPORTING_COMMAND_TIMEOUT_MS = Math.max(1_000, Number(env.REPORTING_COMMAND_TIMEOUT_MS) || 25_000);
 const REPORTING_CONNECT_TIMEOUT_MS = Math.max(1_000, Number(env.REPORTING_CONNECT_TIMEOUT_MS) || 12_000);
 const REPORTING_STORAGE_WARNING_PERCENT = Math.min(99, Math.max(0, Number(env.REPORTING_STORAGE_WARNING_PERCENT) || 80));
@@ -170,6 +172,20 @@ type GitHubUser = {
 };
 
 type HeaderBag = { get(name: string): string | undefined };
+
+type ReportingSystemDefinition = {
+  id: string;
+  name: string;
+  ssh_host: string;
+  ssh_port: number;
+  ssh_user: string;
+  ssh_key_path: string;
+  db_host: string;
+  db_port: number;
+  db_name: string;
+  db_user: string;
+  db_password?: string;
+};
 
 /**
  * -----------------------------
@@ -325,6 +341,7 @@ type SnapshotCollectorResult = { status: "ok" | "error"; id: string; description
 type ReportingRuntime = {
   runRemote: (command: string, timeoutMs?: number) => Promise<RemoteCommandResult>;
   queryPostgresSessions: (limit: number) => Promise<unknown>;
+  target: ReportingSystemDefinition;
 };
 
 type SnapshotSectionState = "healthy" | "warning" | "critical";
@@ -425,6 +442,114 @@ function asQueryValue(value: unknown): RawQueryValue {
     return items;
   }
   return undefined;
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function resolveEnvTemplate(value: unknown, fallback: string) {
+  const resolved = String(value || "").trim();
+  if (!resolved) return fallback;
+  const parenMatch = resolved.match(/^\$\(([^)]+)\)$/);
+  if (parenMatch) return process.env[parenMatch[1]]?.trim() || fallback;
+  const braceMatch = resolved.match(/^\$\{([^}]+)\}$/);
+  if (braceMatch) return process.env[braceMatch[1]]?.trim() || fallback;
+  return resolved;
+}
+
+function buildDefaultReportingTarget(): ReportingSystemDefinition {
+  return {
+    id: REPORTING_SYSTEM_ID,
+    name: REPORTING_SYSTEM_ID,
+    ssh_host: REPORTING_SSH_HOST,
+    ssh_port: REPORTING_SSH_PORT,
+    ssh_user: REPORTING_SSH_USER,
+    ssh_key_path: REPORTING_SSH_KEY_PATH,
+    db_host: REPORTING_DB_HOST,
+    db_port: REPORTING_DB_PORT,
+    db_name: REPORTING_DB_NAME,
+    db_user: REPORTING_DB_USER,
+    db_password: REPORTING_DB_PASSWORD
+  };
+}
+
+function parseReportingSystems(raw: string): ReportingSystemDefinition[] {
+  const fallback = buildDefaultReportingTarget();
+
+  if (!raw) return [fallback];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    const e = new Error("Invalid REPORTING_SYSTEMS_JSON; expected a JSON array.");
+    (e as any).status = 500;
+    throw e;
+  }
+  if (!Array.isArray(parsed)) {
+    const e = new Error("Invalid REPORTING_SYSTEMS_JSON; expected a JSON array.");
+    (e as any).status = 500;
+    throw e;
+  }
+
+  const normalized = parsed
+    .map((entry, idx) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        const e = new Error(`Invalid REPORTING_SYSTEMS_JSON entry at index ${idx}`);
+        (e as any).status = 500;
+        throw e;
+      }
+      const row = entry as Record<string, unknown>;
+      const id = String(row.id || row.name || "").trim();
+      if (!id) {
+        const e = new Error(`Invalid REPORTING_SYSTEMS_JSON entry at index ${idx}: missing id`);
+        (e as any).status = 500;
+        throw e;
+      }
+      return {
+        id,
+        name: String(row.name || id).trim() || id,
+        ssh_host: resolveEnvTemplate(row.ssh_host, REPORTING_SSH_HOST),
+        ssh_port: clampInt(resolveEnvTemplate(row.ssh_port, String(REPORTING_SSH_PORT)), REPORTING_SSH_PORT, 1, 65535),
+        ssh_user: resolveEnvTemplate(row.ssh_user, REPORTING_SSH_USER),
+        ssh_key_path: resolveEnvTemplate(row.ssh_key_path, REPORTING_SSH_KEY_PATH),
+        db_host: resolveEnvTemplate(row.db_host, REPORTING_DB_HOST),
+        db_port: clampInt(resolveEnvTemplate(row.db_port, String(REPORTING_DB_PORT)), REPORTING_DB_PORT, 1, 65535),
+        db_name: resolveEnvTemplate(row.db_name, REPORTING_DB_NAME),
+        db_user: resolveEnvTemplate(row.db_user, REPORTING_DB_USER),
+        db_password: resolveEnvTemplate(row.db_password, REPORTING_DB_PASSWORD)
+      };
+    })
+    .filter((system) => system.id);
+
+  const unique: ReportingSystemDefinition[] = [];
+  const seen = new Set<string>();
+  for (const system of normalized) {
+    if (seen.has(system.id)) continue;
+    seen.add(system.id);
+    unique.push(system);
+  }
+
+  if (!unique.length) return [fallback];
+  if (!seen.has(fallback.id)) unique.unshift(fallback);
+  return unique;
+}
+
+const REPORTING_SYSTEMS = parseReportingSystems(REPORTING_SYSTEMS_JSON);
+const REPORTING_SYSTEMS_BY_ID = new Map(REPORTING_SYSTEMS.map((system) => [system.id, system]));
+
+function resolveReportingTarget(args: ReportQueryArgs) {
+  const requestedId = (args.system_id || REPORTING_SYSTEM_ID).trim() || REPORTING_SYSTEM_ID;
+  const target = REPORTING_SYSTEMS_BY_ID.get(requestedId);
+  if (!target) {
+    const error = new Error(`Unknown system_id: ${requestedId}`);
+    (error as any).status = 400;
+    throw error;
+  }
+  return target;
 }
 
 function nowUnix() {
@@ -555,7 +680,8 @@ function parseHostPort(addrPort: string): { host: string; port: string } {
   return { host: addr.slice(0, lastColon), port: addr.slice(lastColon + 1) };
 }
 
-async function resolveSshKeyFile(): Promise<string | undefined> {
+async function resolveSshKeyFile(overrideKeyPath?: string): Promise<string | undefined> {
+  if (overrideKeyPath) return overrideKeyPath;
   if (REPORTING_SSH_KEY_PATH) return REPORTING_SSH_KEY_PATH;
   if (!REPORTING_SSH_KEY) return undefined;
   const file = path.join("/tmp", `reporting-ssh-${randomUUID()}`);
@@ -567,14 +693,16 @@ const execFile = promisify(execFileCallback);
 
 async function runRemoteCommand(
   command: string,
-  timeoutMs: number = REPORTING_COMMAND_TIMEOUT_MS
+  timeoutMs: number = REPORTING_COMMAND_TIMEOUT_MS,
+  target?: ReportingSystemDefinition
 ): Promise<RemoteCommandResult> {
-  if (!REPORTING_SSH_HOST) {
+  const resolvedTarget = target || resolveReportingTarget({});
+  if (!resolvedTarget.ssh_host) {
     const e = new Error("Reporting SSH host is not configured");
     (e as any).status = 500;
     throw e;
   }
-  const keyFile = await resolveSshKeyFile();
+  const keyFile = await resolveSshKeyFile(resolvedTarget.ssh_key_path);
 
   const args = [
     "-o",
@@ -586,7 +714,7 @@ async function runRemoteCommand(
     "-o",
     "LogLevel=ERROR",
     "-p",
-    String(REPORTING_SSH_PORT),
+    String(resolvedTarget.ssh_port || REPORTING_SSH_PORT),
     "-o",
     `ConnectTimeout=${Math.max(1, Math.min(120, Math.floor(REPORTING_CONNECT_TIMEOUT_MS / 1000)))}`
   ];
@@ -596,7 +724,7 @@ async function runRemoteCommand(
   if (keyFile) {
     args.push("-i", keyFile);
   }
-  args.push(`${REPORTING_SSH_USER}@${REPORTING_SSH_HOST}`, command);
+  args.push(`${resolvedTarget.ssh_user || REPORTING_SSH_USER}@${resolvedTarget.ssh_host}`, command);
 
   try {
     const { stdout, stderr } = (await execFile("ssh", args, {
@@ -794,7 +922,6 @@ function parseServiceLogLines(raw: string) {
 
 type CpuSample = { total: number; idle: number; timestamp: number };
 type NetworkSample = { rx: number; tx: number; timestamp: number };
-const SERVICE_ID_NORMALIZED = REPORTING_SYSTEM_ID;
 
 const CPU_SAMPLE_STATE = new Map<string, CpuSample>();
 const NETWORK_SAMPLE_STATE = new Map<string, NetworkSample>();
@@ -1014,10 +1141,16 @@ function parseListeningPorts(raw: string) {
     .filter(Boolean);
 }
 
-async function queryPostgresSessions(limit: number) {
-  if (!REPORTING_DB_PASSWORD) {
+async function queryPostgresSessions(limit: number, target?: ReportingSystemDefinition) {
+  const resolvedTarget = target || resolveReportingTarget({});
+  const dbPassword = resolvedTarget.db_password || REPORTING_DB_PASSWORD;
+  if (!dbPassword) {
     throw new Error("DB password is not configured");
   }
+  const dbHost = resolvedTarget.db_host || REPORTING_DB_HOST;
+  const dbPort = resolvedTarget.db_port || REPORTING_DB_PORT;
+  const dbName = resolvedTarget.db_name || REPORTING_DB_NAME;
+  const dbUser = resolvedTarget.db_user || REPORTING_DB_USER;
 
   const safeLimit = asInt(String(limit), 20, 1, 1000);
   const sampleLimit = Math.min(safeLimit, 50);
@@ -1073,9 +1206,9 @@ SELECT json_build_object(
   `.trim();
 
   const sqlOneLine = sql.replace(/\s+/g, " ");
-  const cmd = `${REPORTING_DB_PASSWORD ? `PGPASSWORD=${shellQuote(REPORTING_DB_PASSWORD)} ` : ""}psql -h ${shellQuote(
-    REPORTING_DB_HOST
-  )} -p ${REPORTING_DB_PORT} -U ${shellQuote(REPORTING_DB_USER)} -d ${shellQuote(REPORTING_DB_NAME)} -qAtX -c ${shellQuote(
+  const cmd = `${dbPassword ? `PGPASSWORD=${shellQuote(dbPassword)} ` : ""}psql -h ${shellQuote(
+    dbHost
+  )} -p ${dbPort} -U ${shellQuote(dbUser)} -d ${shellQuote(dbName)} -qAtX -c ${shellQuote(
     sqlOneLine
   )}`;
   const result = await runRemoteCommand(cmd, Math.max(REPORTING_COMMAND_TIMEOUT_MS, 10_000));
@@ -1092,10 +1225,10 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "storage",
     description: "Storage usage and inode pressure with thresholds",
-    collect: async () => {
+    collect: async (_args, runtime) => {
       const [bytesOut, inodeOut] = await Promise.all([
-        runRemoteCommand("df -P -B1 -x tmpfs -x devtmpfs"),
-        runRemoteCommand("df -P -i -x tmpfs -x devtmpfs")
+        runtime.runRemote("df -P -B1 -x tmpfs -x devtmpfs"),
+        runtime.runRemote("df -P -i -x tmpfs -x devtmpfs")
       ]);
       const rows = parseDf(bytesOut.stdout);
       const inodeRows = parseDfInodes(inodeOut.stdout);
@@ -1112,12 +1245,12 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "system",
     description: "CPU, memory, swap, and load baseline",
-    collect: async () => {
+    collect: async (_args, runtime) => {
       const [loadOut, memOut, procOut, cpuOut] = await Promise.all([
-        runRemoteCommand("cat /proc/loadavg"),
-        runRemoteCommand("cat /proc/meminfo"),
-        runRemoteCommand("cat /proc/uptime"),
-        runRemoteCommand("cat /proc/stat | head -n 1")
+        runtime.runRemote("cat /proc/loadavg"),
+        runtime.runRemote("cat /proc/meminfo"),
+        runtime.runRemote("cat /proc/uptime"),
+        runtime.runRemote("cat /proc/stat | head -n 1")
       ]);
 
       const load = parseLoadAverage(loadOut.stdout);
@@ -1131,8 +1264,9 @@ const reportingCollectors: ReportCollector[] = [
       const swapUsed = Math.max(0, swapTotal - swapFree);
       const swapUsedPercent = swapTotal > 0 ? Number((swapUsed / swapTotal) * 100) : 0;
       const cpuSample = parseProcCpu(cpuOut.stdout);
-      const lastCpuSample = CPU_SAMPLE_STATE.get(SERVICE_ID_NORMALIZED);
-      CPU_SAMPLE_STATE.set(SERVICE_ID_NORMALIZED, cpuSample);
+      const stateKey = runtime.target.id;
+      const lastCpuSample = CPU_SAMPLE_STATE.get(stateKey);
+      CPU_SAMPLE_STATE.set(stateKey, cpuSample);
       const cpuPercent = deriveCpuPercent(cpuSample, lastCpuSample);
 
       return {
@@ -1158,11 +1292,12 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "network",
     description: "Network in/out throughput in Mbps",
-    collect: async () => {
-      const out = await runRemoteCommand("cat /proc/net/dev");
+    collect: async (_args, runtime) => {
+      const out = await runtime.runRemote("cat /proc/net/dev");
       const sample = parseNetworkTotals(out.stdout);
-      const lastSample = NETWORK_SAMPLE_STATE.get(SERVICE_ID_NORMALIZED);
-      NETWORK_SAMPLE_STATE.set(SERVICE_ID_NORMALIZED, sample);
+      const stateKey = runtime.target.id;
+      const lastSample = NETWORK_SAMPLE_STATE.get(stateKey);
+      NETWORK_SAMPLE_STATE.set(stateKey, sample);
       const { network_in_mbps, network_out_mbps } = deriveNetworkMbps(sample, lastSample);
       return {
         network_in_mbps,
@@ -1176,9 +1311,9 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "processes",
     description: "Top running processes by CPU",
-    collect: async (args) => {
+    collect: async (args, runtime) => {
       const limit = asInt(args.limit, REPORTING_DEFAULT_PROCESS_LIMIT, 1, REPORTING_MAX_PROCESS_LIMIT);
-      const out = await runRemoteCommand(
+      const out = await runtime.runRemote(
         `ps -eo pid,ppid,user,%cpu,%mem,state,etime,cmd --sort=-%cpu --no-headers | head -n ${limit}`
       );
       return {
@@ -1191,11 +1326,11 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "services",
     description: "Service units and states",
-    collect: async (args) => {
+    collect: async (args, runtime) => {
       const state = (args.state || "all").trim().toLowerCase();
       const normalizedState = SERVICE_STATE_FILTERS.has(state) ? state : "all";
       const stateArg = normalizedState === "all" ? "" : ` --state=${normalizedState}`;
-      const out = await runRemoteCommand(`systemctl list-units --type=service --no-pager --no-legend${stateArg}`);
+      const out = await runtime.runRemote(`systemctl list-units --type=service --no-pager --no-legend${stateArg}`);
       const services = parseServices(out.stdout, false);
       const names = services
         .map((service) => String(service.name || "").trim())
@@ -1205,7 +1340,7 @@ const reportingCollectors: ReportCollector[] = [
       let enrich: ReturnType<typeof parseSystemctlShow> = {};
       if (names.length) {
         try {
-          const showOut = await runRemoteCommand(
+          const showOut = await runtime.runRemote(
             `systemctl show ${names.join(" ")} -p Id -p LoadState -p ActiveState -p SubState -p MainPID -p ExecStart -p Description`
           );
           enrich = parseSystemctlShow(showOut.stdout);
@@ -1236,8 +1371,8 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "ports",
     description: "Listening sockets and owning processes",
-    collect: async () => {
-      const out = await runRemoteCommand("ss -ltnup");
+    collect: async (_args, runtime) => {
+      const out = await runtime.runRemote("ss -ltnup");
       return {
         listeners: parseListeningPorts(out.stdout)
       };
@@ -1246,14 +1381,14 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "service_logs",
     description: "Latest service logs from journalctl",
-    collect: async (args) => {
+    collect: async (args, runtime) => {
       const rawService = parseMaybeServiceName(args.service);
       const service = rawService || "postgresql.service";
       const lines = asInt(args.lines, REPORTING_DEFAULT_LOG_LINES, 1, REPORTING_MAX_LOG_LINES);
       const tail = `-n ${lines}`;
       const since = asString(args.since).trim();
       const sinceArg = since ? ` --since ${shellQuote(since)}` : "";
-      const out = await runRemoteCommand(
+      const out = await runtime.runRemote(
         `journalctl -u ${shellQuote(service)} --no-pager -o json ${tail}${sinceArg}`
       );
       const logs = parseServiceLogLines(out.stdout);
@@ -1269,7 +1404,7 @@ const reportingCollectors: ReportCollector[] = [
   {
     id: "sessions",
     description: "Session summary for DB and SSH/session endpoints",
-    collect: async (args) => {
+    collect: async (args, runtime) => {
       const scope = (asString(args.scope) || "all").toLowerCase();
       if (!SESSION_SCOPE_FILTERS.has(scope)) {
         const e = new Error(`Unknown sessions scope: ${scope}`);
@@ -1279,12 +1414,12 @@ const reportingCollectors: ReportCollector[] = [
       const limit = asInt(args.limit, REPORTING_DEFAULT_SESSIONS_LIMIT, 1, REPORTING_MAX_SESSIONS_LIMIT);
       const result: Record<string, unknown> = {};
       if (scope === "all" || scope === "db") {
-        result.db = await queryPostgresSessions(limit);
+        result.db = await runtime.queryPostgresSessions(limit);
       }
       if (scope === "all" || scope === "ssh") {
         const [whoOut, establishedOut] = await Promise.all([
-          runRemoteCommand("who"),
-          runRemoteCommand("ss -tn state established")
+          runtime.runRemote("who"),
+          runtime.runRemote("ss -tn state established")
         ]);
         const sessions = parseServicesFromSsh(whoOut.stdout);
         const sshNet = establishedOut.stdout
@@ -1339,9 +1474,11 @@ async function collectRequestedReportData(
     throw error;
   }
 
+  const target = resolveReportingTarget(args);
   const runtime: ReportingRuntime = {
-    runRemote: runRemoteCommand,
-    queryPostgresSessions
+    runRemote: (command, timeoutMs) => runRemoteCommand(command, timeoutMs, target),
+    queryPostgresSessions: (limit) => queryPostgresSessions(limit, target),
+    target
   };
 
   const collectors = [];
@@ -1375,11 +1512,11 @@ async function collectRequestedReportData(
     generated_at_unix: nowUnix(),
     requested,
     target: {
-      system_id: (args.system_id || REPORTING_SYSTEM_ID) as string,
-      ssh_host: REPORTING_SSH_HOST || null,
-      db_host: REPORTING_DB_HOST || null,
-      db_port: REPORTING_DB_PORT,
-      has_db_password: !!REPORTING_DB_PASSWORD
+      system_id: target.id,
+      ssh_host: target.ssh_host || null,
+      db_host: target.db_host || null,
+      db_port: target.db_port,
+      has_db_password: !!(target.db_password || REPORTING_DB_PASSWORD)
     },
     collectors,
     all_ok: !anyError
@@ -1398,7 +1535,7 @@ function buildServiceHealth(raw: {
   return "stopped";
 }
 
-function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]) {
+function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[], requestedSystemId?: string) {
   const asObject = (id: string) => {
     const match = collectors.find((entry) => entry.id === id);
     if (!match || match.status !== "ok" || typeof match.payload !== "object" || !match.payload) return {};
@@ -1462,7 +1599,7 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
   }
 
   return {
-    systemId: REPORTING_SYSTEM_ID,
+    systemId: requestedSystemId || REPORTING_SYSTEM_ID,
     collectedAt: new Date().toISOString(),
     status: deriveSectionHealth({
       storageUsedPercent,
@@ -2243,16 +2380,14 @@ if (IS_STATS_SERVICE) {
         return;
       }
       res.status(200).json({
-        systems: [
-          {
-            id: REPORTING_SYSTEM_ID,
-            name: REPORTING_SYSTEM_ID,
-            ssh_host: REPORTING_SSH_HOST || null,
-            db_host: REPORTING_DB_HOST || null,
-            db_port: REPORTING_DB_PORT,
-            sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all")
-          }
-        ]
+        systems: REPORTING_SYSTEMS.map((system) => ({
+          id: system.id,
+          name: system.name,
+          ssh_host: system.ssh_host || null,
+          db_host: system.db_host || null,
+          db_port: system.db_port,
+          sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all")
+        }))
       });
     } catch {
       res.status(500).json({ error: { message: "Unable to list systems", status: 500 } });
@@ -2300,7 +2435,10 @@ if (IS_STATS_SERVICE) {
       const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
       const sections = asQueryValue(req.query.sections);
       const result = await collectRequestedReportData(collector, args, sections);
-      const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
+      const snapshot = buildSystemSnapshotFromCollectors(
+        result.collectors as unknown as SnapshotCollectorResult[],
+        result.target.system_id
+      );
       const filtered = filterSnapshotFields(snapshot, fields);
       res.status(result.all_ok ? 200 : 207).json({
         all_ok: result.all_ok,
@@ -2365,7 +2503,10 @@ if (IS_STATS_SERVICE) {
       const fields = asStringList(asQueryValue(req.query.fields));
       const collector = asQueryValue(req.query.collector) || asQueryValue(req.query.collectors);
       const result = await collectRequestedReportData(collector, args, section);
-      const snapshot = buildSystemSnapshotFromCollectors(result.collectors as unknown as SnapshotCollectorResult[]);
+      const snapshot = buildSystemSnapshotFromCollectors(
+        result.collectors as unknown as SnapshotCollectorResult[],
+        result.target.system_id
+      );
       const filtered = filterSnapshotFields(snapshot, fields);
       res.status(result.all_ok ? 200 : 207).json({
         all_ok: result.all_ok,
@@ -2501,8 +2642,9 @@ app.listen(Number(env.PORT), "0.0.0.0", () => {
   if (REQUIRE_API_KEY) console.log(`[vm-stats-service] API key required via header X-API-Key`);
   if (REPORTING_REQUIRE_API_KEY) console.log(`[vm-stats-service] reporting requires X-API-Key`);
   if (REPORTING_ENABLED) {
+    const configuredSystems = REPORTING_SYSTEMS.map((system) => system.id).join(", ");
     console.log(
-      `[vm-stats-service] reporting enabled (db_host=${REPORTING_DB_HOST || "n/a"}, ssh_host=${REPORTING_SSH_HOST || "n/a"})`
+      `[vm-stats-service] reporting enabled (systems=${configuredSystems || REPORTING_SYSTEM_ID}, db_host=${REPORTING_DB_HOST || "n/a"}, ssh_host=${REPORTING_SSH_HOST || "n/a"})`
     );
   } else {
     console.log("[vm-stats-service] reporting disabled; set REPORTING_ENABLED=true to expose /stats");

@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
   title: VM Stats Service
-  version: 1.2.0
+  version: 1.2.1
   description: |
-    Internal API exposing VM reporting collectors for the oracle-db host and Hasura integration.
+    Internal API exposing VM reporting collectors for one or more configured VM targets and Hasura integration.
     Includes normalized snapshot endpoints for flexible polling by section.
 servers:
   - url: http://vm-stats-service.directus.svc.cluster.local:8080
@@ -164,6 +164,12 @@ paths:
           schema:
             type: string
           description: Log range start
+        - in: query
+          name: system_id
+          required: false
+          schema:
+            type: string
+          description: System identifier override
       responses:
         "200":
           description: Normalized system snapshot
@@ -326,13 +332,19 @@ paths:
           schema:
             type: integer
           description: Number of lines
-        - in: query
-          name: since
-          required: false
-          schema:
-            type: string
-          description: Log range start
-      responses:
+      - in: query
+        name: since
+        required: false
+        schema:
+          type: string
+        description: Log range start
+      - in: query
+        name: system_id
+        required: false
+        schema:
+          type: string
+        description: System identifier override
+    responses:
         "200":
           description: Service log lines
           content:
