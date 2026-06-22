@@ -6340,9 +6340,67 @@ data:
               printf "'%s'" "$_csv_sql"
               ;;
             *)
-              printf "NULL"
-              ;;
+            printf "NULL"
+            ;;
           esac
+        }
+
+        _upsert_policy_action_permission() {
+          _policy_id="$1"
+          _collection="$2"
+          _action="$3"
+          _permissions_cfg="${4:-null}"
+          _validation_cfg="${5:-null}"
+          _fields_cfg="${6:-null}"
+          _presets_cfg="${7:-null}"
+          if [ -z "${_policy_id:-}" ] || [ -z "${_collection:-}" ] || [ -z "${_action:-}" ]; then
+            return 0
+          fi
+          if [ "${PERM_TABLE_EXISTS:-0}" != "1" ] || [ -z "${PERM_PRINC_COL:-}" ]; then
+            return 0
+          fi
+
+          _policy_id_sql="$(printf '%s' "${_policy_id}" | sed "s/'/''/g")"
+          _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+          _action_sql="$(printf '%s' "${_action}" | sed "s/'/''/g")"
+          _perms_val="$(_json_value_for_type "${PERMISSIONS_TYPE:-}" "${_permissions_cfg}")"
+          _val_val="$(_json_value_for_type "${VALIDATION_TYPE:-}" "${_validation_cfg}")"
+          _pre_val="$(_json_value_for_type "${PRESETS_TYPE:-}" "${_presets_cfg}")"
+          _fields_val="$(_fields_value_from_config_for_type "${PERM_FIELDS_TYPE:-}" "${_fields_cfg}")"
+
+          existing_perm_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id FROM directus.directus_permissions WHERE ${PERM_PRINC_COL}='${_policy_id_sql}' AND collection='${_collection_sql}' AND action='${_action_sql}' LIMIT 1;" || true)"
+          existing_perm_id="$(printf '%s' "$existing_perm_id" | tr -d '\r')"
+
+          if [ -n "${existing_perm_id:-}" ] && [ "${existing_perm_id}" != "null" ]; then
+            SETS=""
+            if _has_perm_col "permissions"; then SETS="${SETS},permissions=${_perms_val}"; fi
+            if _has_perm_col "validation"; then SETS="${SETS},validation=${_val_val}"; fi
+            if _has_perm_col "presets"; then SETS="${SETS},presets=${_pre_val}"; fi
+            if _has_perm_col "fields"; then SETS="${SETS},fields=${_fields_val}"; fi
+            if [ -n "${SETS:-}" ]; then
+              perm_id_sql="$(printf '%s' "$existing_perm_id" | sed "s/'/''/g")"
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                "SET search_path TO directus, public; UPDATE directus_permissions SET ${SETS#,} WHERE id='${perm_id_sql}';"
+            fi
+            echo "✅ Reconciled ${_action_sql} on ${_collection_sql} for policy '${role_name}'"
+            return 0
+          fi
+
+          PCOLS="${PERM_PRINC_COL},collection,action"
+          PVALS="'${_policy_id_sql}','${_collection_sql}','${_action_sql}'"
+          if [ "${PERM_ID_HAS_DEFAULT:-0}" != "1" ]; then
+            pid="$(cat /proc/sys/kernel/random/uuid)"
+            PCOLS="id,${PCOLS}"
+            PVALS="'${pid}',${PVALS}"
+          fi
+          if _has_perm_col "permissions"; then PCOLS="${PCOLS},permissions"; PVALS="${PVALS},${_perms_val}"; fi
+          if _has_perm_col "validation"; then PCOLS="${PCOLS},validation"; PVALS="${PVALS},${_val_val}"; fi
+          if _has_perm_col "presets"; then PCOLS="${PCOLS},presets"; PVALS="${PVALS},${_pre_val}"; fi
+          if _has_perm_col "fields"; then PCOLS="${PCOLS},fields"; PVALS="${PVALS},${_fields_val}"; fi
+          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+            "SET search_path TO directus, public; INSERT INTO directus_permissions (${PCOLS}) VALUES (${PVALS});"
+          echo "✅ Granted ${_action_sql} on ${_collection_sql} to policy '${role_name}'"
         }
     
         DIRECTUS_API_BASE="http://127.0.0.1:8055"
@@ -7473,6 +7531,25 @@ data:
                 "SET search_path TO directus, public; INSERT INTO directus_permissions (${PCOLS}) VALUES (${PVALS});"
               echo "✅ Granted read on ${coll} to policy '${role_name}'"
             done
+
+            # Reconcile write permissions needed by CMS page promotion actions.
+            if [ -n "${site_key:-}" ] && [ "${site_key}" != "null" ]; then
+              PROMOTE_PERMISSIONS_JSON="$(jq -nc --arg site "${site_key}" '{site_key:{_eq:$site},release_channel:{_in:["preview","prod","both"]}}')"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_pages" "create" "${PROMOTE_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_pages" "update" "${PROMOTE_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_page_blocks" "create" "${PROMOTE_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_page_blocks" "delete" "${PROMOTE_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_block_rich_text" "create" "${PROMOTE_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_block_hero" "create" "${PROMOTE_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_block_module" "create" "${PROMOTE_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_block_template_ref" "create" "${PROMOTE_PERMISSIONS_JSON}"
+
+              FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_key}/prod) - Manual"
+              FLOW_TRIGGER_NAME_SITE="CMS Cache Refresh (${site_key}) - Manual"
+              FLOW_TRIGGER_PERMISSIONS_JSON="$(jq -nc --arg prod "${FLOW_TRIGGER_NAME_PROD}" --arg site "${FLOW_TRIGGER_NAME_SITE}" '{name:{_in:[$prod,$site]}}')"
+              _upsert_policy_action_permission "${POLICY_ID}" "directus_flows" "read" "${FLOW_TRIGGER_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "directus_flows" "trigger" "${FLOW_TRIGGER_PERMISSIONS_JSON}"
+            fi
           fi
     
           # Provision per-site Directus flows that call the app cache refresh endpoint after content saves.
