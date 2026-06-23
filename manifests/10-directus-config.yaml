@@ -5372,7 +5372,7 @@ data:
             })
             .map(({ propKey, propSchema }) => [propKey, propSchema]);
         });
-        const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
+        const mergedProps = computed(() => mergeJsonValues(defaultProps.value, localProps.value));
         const mfeSecurityState = computed(() => {
           const source = normalizeObject(parseJsonLike(mergedProps.value, {}));
           const input = normalizeObject(parseJsonLike(source?.input, {}));
