@@ -4985,7 +4985,7 @@ data:
                 loadError.value = '';
                 const resolvedModuleKey = asString(registryDefinition?.[moduleKeyField.value]) || key;
                 if (pendingModuleSwitchKey.value && pendingModuleSwitchKey.value === resolvedModuleKey) {
-                  pendingModuleDefaults.value = normalizeObject(parseJsonLike(registryDefinition?.[defaultPropsField.value], {}));
+                  pendingModuleDefaults.value = normalizeObject(cloneJsonValue(defaultProps.value));
                   applyPendingDefaultsForModuleKey.value = resolvedModuleKey;
                   pendingModuleSwitchKey.value = '';
                 }
@@ -5055,7 +5055,7 @@ data:
     
           const resolvedModuleKey = asString(preferred?.[moduleKeyField.value]) || key;
           if (pendingModuleSwitchKey.value && pendingModuleSwitchKey.value === resolvedModuleKey) {
-            pendingModuleDefaults.value = normalizeObject(parseJsonLike(preferred?.[defaultPropsField.value], {}));
+            pendingModuleDefaults.value = normalizeObject(cloneJsonValue(defaultProps.value));
             applyPendingDefaultsForModuleKey.value = resolvedModuleKey;
             pendingModuleSwitchKey.value = '';
           }
