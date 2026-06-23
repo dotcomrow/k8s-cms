@@ -7547,8 +7547,10 @@ data:
               FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_key}/prod) - Manual"
               FLOW_TRIGGER_NAME_SITE="CMS Cache Refresh (${site_key}) - Manual"
               FLOW_TRIGGER_PERMISSIONS_JSON="$(jq -nc --arg prod "${FLOW_TRIGGER_NAME_PROD}" --arg site "${FLOW_TRIGGER_NAME_SITE}" '{name:{_in:[$prod,$site]}}')"
+              FLOW_OPERATIONS_PERMISSIONS_JSON="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
               _upsert_policy_action_permission "${POLICY_ID}" "directus_flows" "read" "${FLOW_TRIGGER_PERMISSIONS_JSON}"
               _upsert_policy_action_permission "${POLICY_ID}" "directus_flows" "trigger" "${FLOW_TRIGGER_PERMISSIONS_JSON}"
+              _upsert_policy_action_permission "${POLICY_ID}" "directus_operations" "read" "${FLOW_OPERATIONS_PERMISSIONS_JSON}"
             fi
           fi
     

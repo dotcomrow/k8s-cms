@@ -8796,6 +8796,7 @@ data:
               {},
               {
                 source: 'cms-page-blocks-manager',
+                collection: pagesCollection.value,
                 reason: 'promote-preview-to-prod',
                 site_key: normalizedSite || null,
                 slug: asString(slug) || null,
