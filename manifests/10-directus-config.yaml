@@ -3858,6 +3858,62 @@ data:
       }
       return value;
     };
+
+    const mergeJsonValues = (base, overrides) => {
+      const left = normalizeObject(base);
+      const right = normalizeObject(overrides);
+      const next = {};
+
+      for (const [key, value] of Object.entries(left)) {
+        next[key] = cloneJsonValue(value);
+      }
+
+      for (const [key, value] of Object.entries(right)) {
+        if (
+          Object.prototype.hasOwnProperty.call(next, key)
+          && normalizeObject(next[key])
+          && normalizeObject(value)
+          && !Array.isArray(next[key])
+          && !Array.isArray(value)
+        ) {
+          next[key] = mergeJsonValues(next[key], value);
+          continue;
+        }
+        next[key] = cloneJsonValue(value);
+      }
+
+      return next;
+    };
+
+    const extractSchemaDefaults = (schemaCandidate) => {
+      const schema = normalizeObject(parseJsonLike(schemaCandidate, {}));
+      const hasDefault = Object.prototype.hasOwnProperty.call(schema, 'default');
+
+      if (hasDefault) {
+        return cloneJsonValue(schema.default);
+      }
+
+      const properties = normalizeObject(schema?.properties);
+      const hasProperties = Object.keys(properties).length > 0;
+
+      if (!hasProperties) {
+        return {};
+      }
+
+      const defaults = {};
+      for (const [key, rawChildSchema] of Object.entries(properties)) {
+        const childDefaults = extractSchemaDefaults(rawChildSchema);
+        if (
+          childDefaults !== undefined
+          && childDefaults !== null
+          && !(typeof childDefaults === 'object' && !Array.isArray(childDefaults) && Object.keys(childDefaults).length === 0)
+        ) {
+          defaults[key] = childDefaults;
+        }
+      }
+
+      return defaults;
+    };
     
     const normalizeRows = (response) => {
       const payload = response?.data;
@@ -5120,7 +5176,15 @@ data:
           { immediate: true }
         );
     
-        const defaultProps = computed(() => normalizeObject(parseJsonLike(moduleDefinition.value?.[defaultPropsField.value], {})));
+        const inferredSchemaDefaults = computed(() => {
+          const defaults = extractSchemaDefaults(resolvedSchema.value);
+          return normalizeObject(parseJsonLike(defaults, {}));
+        });
+        const defaultProps = computed(() => {
+          const moduleDefaults = normalizeObject(parseJsonLike(moduleDefinition.value?.[defaultPropsField.value], {}));
+          const schemaDefaults = inferredSchemaDefaults.value;
+          return mergeJsonValues(schemaDefaults, moduleDefaults);
+        });
         const shouldUseMfeFallbackSchema = computed(() => {
           const activeModuleKey = toLower(
             moduleKey.value
