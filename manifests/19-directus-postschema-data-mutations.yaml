@@ -795,7 +795,9 @@ data:
           \$\$;" "enforce cms_pages access-scope guard"; then
           sync_site_metadata_failed="1"
         fi
-        if [ "${sync_site_metadata_failed}" != "0" ]; then
+    if [ "${sync_site_metadata_failed}" != "0" ]; then
+      echo "Warning: one or more cms page metadata mutations failed; continuing with best-effort updates."
+    fi
     }
 
     run_site_homepage_mutations() {
