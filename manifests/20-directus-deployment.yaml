@@ -84,6 +84,12 @@ spec:
             items:
               - key: directus-postschema.sh
                 path: directus-postschema.sh
+        - name: directus-postschema-data-mutations
+          configMap:
+            name: directus-postschema-data-mutations
+            items:
+              - key: directus-postschema-data-mutations.sh
+                path: directus-postschema-data-mutations.sh
         - name: directus-postschema-state
           emptyDir: {}
         - name: directus-extensions-seed
@@ -1241,6 +1247,8 @@ spec:
             value: "secret/data/directus/gravitee/flows/admin"
           - name: OPENAPI_SYNC_TOKEN_VAULT_PATH
             value: "secret/data/directus/gravitee/openapi/admin"
+          - name: DIRECTUS_POSTSCHEMA_DATA_MUTATIONS_ENABLED
+            value: "no"
           - name: DIRECTUS_POSTSCHEMA_RECONCILE_VERSION
             value: "2026-04-29.1"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
@@ -1268,6 +1276,9 @@ spec:
             readOnly: true
           - name: directus-postschema-script
             mountPath: /scripts
+            readOnly: true
+          - name: directus-postschema-data-mutations
+            mountPath: /scripts-data-mutations
             readOnly: true
           - name: directus-postschema-state
             mountPath: /postschema-state
