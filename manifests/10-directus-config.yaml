@@ -3885,30 +3885,6 @@ data:
       return next;
     };
 
-    const pruneEmptyNestedObjects = (value) => {
-      if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return cloneJsonValue(value);
-      }
-
-      const next = {};
-      for (const [key, entry] of Object.entries(value)) {
-        const pruned = pruneEmptyNestedObjects(entry);
-
-        if (
-          pruned
-          && typeof pruned === 'object'
-          && !Array.isArray(pruned)
-          && Object.keys(pruned).length === 0
-        ) {
-          continue;
-        }
-
-        next[key] = pruned;
-      }
-
-      return next;
-    };
-
     const extractSchemaDefaults = (schemaCandidate) => {
       const schema = normalizeObject(parseJsonLike(schemaCandidate, {}));
       const hasDefault = Object.prototype.hasOwnProperty.call(schema, 'default');
@@ -4241,7 +4217,7 @@ data:
         watch(
           () => JSON.stringify(incomingProps.value),
           () => {
-            localProps.value = pruneEmptyNestedObjects(incomingProps.value);
+            localProps.value = { ...incomingProps.value };
             propertyDraftValues.value = {};
             jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
             schemaError.value = '';
@@ -5396,7 +5372,7 @@ data:
             })
             .map(({ propKey, propSchema }) => [propKey, propSchema]);
         });
-        const mergedProps = computed(() => mergeJsonValues(defaultProps.value, pruneEmptyNestedObjects(localProps.value)));
+        const mergedProps = computed(() => ({ ...defaultProps.value, ...localProps.value }));
         const mfeSecurityState = computed(() => {
           const source = normalizeObject(parseJsonLike(mergedProps.value, {}));
           const input = normalizeObject(parseJsonLike(source?.input, {}));
