@@ -3028,6 +3028,31 @@ data:
          RETURN COALESCE(NEW, OLD); \
        END; \
        \$\$; \
+       CREATE OR REPLACE FUNCTION directus.merge_jsonb_objects_deep(left_obj JSONB, right_obj JSONB) \
+       RETURNS JSONB \
+       LANGUAGE SQL \
+       AS \$\$ \
+       SELECT CASE \
+         WHEN COALESCE(jsonb_typeof(left_obj), 'object') IS DISTINCT FROM 'object' THEN COALESCE(right_obj, '{}'::jsonb) \
+         WHEN COALESCE(jsonb_typeof(right_obj), 'object') IS DISTINCT FROM 'object' THEN COALESCE(left_obj, '{}'::jsonb) \
+         ELSE COALESCE( \
+           (SELECT jsonb_object_agg( \
+             COALESCE(left_pair.key, right_pair.key), \
+             CASE \
+               WHEN left_pair.key IS NULL THEN right_pair.value \
+               WHEN right_pair.key IS NULL THEN left_pair.value \
+               WHEN jsonb_typeof(left_pair.value) = 'object' AND jsonb_typeof(right_pair.value) = 'object' THEN \
+                 directus.merge_jsonb_objects_deep(left_pair.value, right_pair.value) \
+               ELSE right_pair.value \
+             END \
+           ) \
+           FROM jsonb_each(COALESCE(left_obj, '{}'::jsonb)) AS left_pair \
+           FULL OUTER JOIN jsonb_each(COALESCE(right_obj, '{}'::jsonb)) AS right_pair \
+             ON left_pair.key = right_pair.key \
+         ), \
+         '{}'::jsonb \
+       ); \
+       \$\$; \
        CREATE OR REPLACE FUNCTION directus.apply_cms_block_module_defaults() \
        RETURNS trigger \
        LANGUAGE plpgsql \
@@ -3085,7 +3110,7 @@ data:
          IF NEW.props_json = '{}'::jsonb THEN \
            NEW.props_json := _default_props; \
        ELSE \
-         NEW.props_json := _default_props || NEW.props_json; \
+         NEW.props_json := directus.merge_jsonb_objects_deep(_default_props, NEW.props_json); \
        END IF; \
        RETURN NEW; \
       END; \
