@@ -3052,7 +3052,8 @@ data:
          ), \
          '{}'::jsonb \
          ) \
-       ); \
+       END \
+       ; \
        \$\$; \
        CREATE OR REPLACE FUNCTION directus.apply_cms_block_module_defaults() \
        RETURNS trigger \
