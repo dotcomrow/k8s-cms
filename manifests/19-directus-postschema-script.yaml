@@ -3198,6 +3198,12 @@ data:
            FOR EACH ROW \
            EXECUTE FUNCTION directus.apply_cms_block_module_defaults(); \
          END IF; \
+         IF to_regclass('directus.cms_block_module') IS NOT NULL \
+            AND to_regclass('directus.cms_modules') IS NOT NULL THEN \
+           UPDATE directus.cms_block_module \
+           SET props_json = props_json \
+           WHERE COALESCE(NULLIF(BTRIM(COALESCE(module_key, '')), '') <> ''; \
+         END IF; \
          IF to_regclass('directus.cms_block_template_ref') IS NOT NULL \
             AND to_regclass('directus.cms_page_blocks') IS NOT NULL THEN \
            DROP TRIGGER IF EXISTS cms_block_template_ref_sync_organization ON cms_block_template_ref; \
