@@ -3219,7 +3219,7 @@ data:
            PERFORM directus.recompute_cms_page_block_organization(p.id) \
            FROM (SELECT DISTINCT page_id AS id FROM directus.cms_page_blocks WHERE page_id IS NOT NULL) p; \
          END IF; \
-       END \
+       END; \
        \$\$;"
     
     echo "🧭 Configuring layout/theme/slot/module dropdown UX from registered models..."
