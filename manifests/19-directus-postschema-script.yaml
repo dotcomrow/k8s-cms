@@ -3147,7 +3147,7 @@ data:
       END; \
       \$\$;"
 
-    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c "$(cat <<'SQL'
+    cat >/tmp/directus-postschema-triggers.sql <<'SQL'
     SET search_path TO directus, public;
     DO $$
     BEGIN
@@ -3225,7 +3225,7 @@ data:
     END;
     $$;
     SQL
-    )"
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -f /tmp/directus-postschema-triggers.sql
     
     echo "🧭 Configuring layout/theme/slot/module dropdown UX from registered models..."
     DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
