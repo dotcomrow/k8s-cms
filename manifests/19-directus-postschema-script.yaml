@@ -3051,7 +3051,7 @@ data:
              ON left_pair.key = right_pair.key \
          ), \
          '{}'::jsonb \
-         END \
+         ) \
        ); \
        \$\$; \
        CREATE OR REPLACE FUNCTION directus.apply_cms_block_module_defaults() \
