@@ -344,7 +344,7 @@ type SnapshotCollectorResult = { status: "ok" | "error"; id: string; description
 
 type ReportingRuntime = {
   runRemote: (command: string, timeoutMs?: number) => Promise<RemoteCommandResult>;
-  queryPostgresSessions: (limit: number) => Promise<unknown>;
+  queryPostgresSessions: (limit: number, summaryOnly?: boolean) => Promise<unknown>;
   target: ReportingSystemDefinition;
 };
 
@@ -1160,7 +1160,7 @@ function isRetryableRemoteCommandError(error: unknown) {
   );
 }
 
-async function queryPostgresSessions(limit: number, target?: ReportingSystemDefinition) {
+async function queryPostgresSessions(limit: number, target?: ReportingSystemDefinition, summaryOnly = false) {
   const resolvedTarget = target || resolveReportingTarget({});
   const dbPassword = resolvedTarget.db_password || REPORTING_DB_PASSWORD;
   if (!dbPassword) {
@@ -1173,7 +1173,27 @@ async function queryPostgresSessions(limit: number, target?: ReportingSystemDefi
 
   const safeLimit = asInt(String(limit), 20, 1, 1000);
   const sampleLimit = Math.min(safeLimit, 50);
-  const sql = `
+  const summarySql = `
+WITH summary AS (
+  SELECT
+    COUNT(*)::int AS total,
+    COUNT(*) FILTER (WHERE state = 'active')::int AS active,
+    COUNT(*) FILTER (WHERE state = 'idle')::int AS idle,
+    COUNT(*) FILTER (WHERE state = 'idle in transaction')::int AS idle_in_transaction,
+    COUNT(*) FILTER (WHERE wait_event IS NOT NULL)::int AS waiting,
+    COALESCE(
+      (SELECT setting::int FROM pg_settings WHERE name='max_connections'),
+      0
+    ) AS max_connections
+  FROM pg_stat_activity
+)
+SELECT json_build_object(
+  'summary', (SELECT row_to_json(summary) FROM summary),
+  'sessions', '[]'::json,
+  'top_queries', '[]'::json
+) AS payload;
+  `.trim();
+  const detailSql = `
 WITH session_rows AS (
   SELECT
     pid,
@@ -1224,6 +1244,7 @@ SELECT json_build_object(
 ) AS payload;
   `.trim();
 
+  const sql = summaryOnly ? summarySql : detailSql;
   const sqlOneLine = sql.replace(/\s+/g, " ");
 
   const dbTimeout = Math.max(REPORTING_SESSIONS_TIMEOUT_MS, 10_000);
@@ -1459,9 +1480,16 @@ const reportingCollectors: ReportCollector[] = [
         throw e;
       }
       const limit = asInt(args.limit, REPORTING_DEFAULT_SESSIONS_LIMIT, 1, REPORTING_MAX_SESSIONS_LIMIT);
+      const detail = (asString(args.detail) || asString(args.mode)).toLowerCase();
+      const summaryOnly = scope === "db" && (
+        detail === "summary"
+        || detail === "summary_only"
+        || asString(args.summaryOnly).toLowerCase() === "true"
+        || asString(args.summary_only).toLowerCase() === "true"
+      );
       const result: Record<string, unknown> = {};
       if (scope === "all" || scope === "db") {
-        result.db = await runtime.queryPostgresSessions(limit);
+        result.db = await runtime.queryPostgresSessions(limit, summaryOnly);
       }
       if (scope === "all" || scope === "ssh") {
         const [whoOut, establishedOut] = await Promise.all([
@@ -1524,7 +1552,7 @@ async function collectRequestedReportData(
   const target = resolveReportingTarget(args);
   const runtime: ReportingRuntime = {
     runRemote: (command, timeoutMs) => runRemoteCommand(command, timeoutMs, target),
-    queryPostgresSessions: (limit) => queryPostgresSessions(limit, target),
+    queryPostgresSessions: (limit, summaryOnly) => queryPostgresSessions(limit, target, summaryOnly),
     target
   };
 

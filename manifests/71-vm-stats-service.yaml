@@ -79,7 +79,7 @@ spec:
                   name: vm-stats-service-db
                   key: port
             - name: REPORTING_SESSIONS_TIMEOUT_MS
-              value: "60000"
+              value: "120000"
             - name: REPORTING_SESSIONS_LOCAL_DB_FALLBACK
               value: "true"
             - name: REPORTING_DB_NAME
