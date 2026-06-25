@@ -3150,6 +3150,8 @@ data:
     cat >/tmp/directus-postschema-triggers.sql <<'SQL'
     SET search_path TO directus, public;
     DO $$
+    DECLARE
+      _recompute_page_id UUID;
     BEGIN
     IF to_regclass('directus.cms_page_blocks') IS NOT NULL
     AND to_regclass('directus.cms_pages') IS NOT NULL
@@ -3219,8 +3221,13 @@ data:
     EXECUTE FUNCTION directus.sync_cms_page_block_organization_from_template_ref();
     END IF;
     IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN
-    PERFORM directus.recompute_cms_page_block_organization(p.id)
-    FROM (SELECT DISTINCT page_id AS id FROM directus.cms_page_blocks WHERE page_id IS NOT NULL) p;
+    FOR _recompute_page_id IN
+      SELECT DISTINCT page_id AS id
+      FROM directus.cms_page_blocks
+      WHERE page_id IS NOT NULL
+    LOOP
+      PERFORM directus.recompute_cms_page_block_organization(_recompute_page_id);
+    END LOOP;
     END IF;
     END;
     $$;
