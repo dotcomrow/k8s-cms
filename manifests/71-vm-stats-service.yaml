@@ -150,7 +150,7 @@ metadata:
     gravitee.io/context-path: "/vm-stats"
     gravitee.io/auth-required: "directus-token"
     gravitee.io/approval-required: "admin"
-    gravitee.io/token-exchange-target: "graphql-api"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
     gravitee.io/description: "VM stats reporting API for infrastructure monitoring"
     gravitee.io/version: "latest"
     gravitee.io/tags: "directus,cms,hasura,infra"
@@ -172,7 +172,7 @@ metadata:
     gravitee.io/definition-categories: "infra"
     gravitee.io/definition-path-mappings: "/vm-stats/*"
     gravitee.io/definition-metadata: '{"owner":"infra","service":"vm-stats","slack":"#infra"}'
-    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"graphql-api","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
     gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"vm-stats-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://vm-stats-service.directus.svc.cluster.local:8080"},"secondary":false}]}]'
     gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://vm-stats-service.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
     gravitee.io/definition-resources: '[]'
