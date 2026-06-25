@@ -57,6 +57,10 @@ data:
     )
     DIRECTUS_TOKEN_KEY = os.environ.get("DIRECTUS_TOKEN_KEY", "token")
     TOKEN_CACHE_SECONDS = int(os.environ.get("DIRECTUS_TOKEN_CACHE_SECONDS", "60"))
+    AUDIENCE_TOKEN_FALLBACK_ENABLED = os.environ.get(
+        "DIRECTUS_TOKEN_AUDIENCE_FALLBACK_ENABLED",
+        "true",
+    ).strip().lower() in ("1", "true", "yes", "on")
 
     _jwks_cache = {"by_url": {}}
     _jwks_lock = threading.Lock()
@@ -67,6 +71,9 @@ data:
     app = FastAPI()
 
     _client_id_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+    def _is_client_key(value) -> bool:
+        return isinstance(value, str) and _client_id_re.match(value) is not None
 
     def _issuer_configs():
         if SINGLE_ISSUER and SINGLE_JWKS_URL:
@@ -111,17 +118,17 @@ data:
     def _get_client_key(decoded: dict) -> str:
         # For client_credentials tokens, Keycloak typically includes the caller client id as `azp`.
         azp = decoded.get("azp")
-        if isinstance(azp, str) and _client_id_re.match(azp):
+        if _is_client_key(azp):
             return azp
 
         cid = decoded.get("client_id") or decoded.get("clientId")
-        if isinstance(cid, str) and _client_id_re.match(cid):
+        if _is_client_key(cid):
             return cid
 
         pu = decoded.get("preferred_username")
         if isinstance(pu, str) and pu.startswith("service-account-"):
             cid2 = pu[len("service-account-") :]
-            if cid2 and _client_id_re.match(cid2):
+            if _is_client_key(cid2):
                 return cid2
 
         return ""
@@ -243,6 +250,8 @@ data:
             )
 
         directus_token = _get_directus_token_for_client(client_key)
+        if not directus_token and AUDIENCE_TOKEN_FALLBACK_ENABLED and _is_client_key(audience):
+            directus_token = _get_directus_token_for_client(audience)
         if not directus_token:
             raise HTTPException(
                 status_code=403,
