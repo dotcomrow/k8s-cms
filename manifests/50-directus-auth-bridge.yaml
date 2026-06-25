@@ -71,9 +71,35 @@ data:
     app = FastAPI()
 
     _client_id_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    _generated_client_id_re = re.compile(r"^(.+)-[0-9a-f]{8}$")
 
     def _is_client_key(value) -> bool:
         return isinstance(value, str) and _client_id_re.match(value) is not None
+
+    def _client_key_aliases(value):
+        if not _is_client_key(value):
+            return []
+        aliases = [value]
+        match = _generated_client_id_re.match(value)
+        if match:
+            base = match.group(1)
+            if _is_client_key(base):
+                aliases.append(base)
+        return aliases
+
+    def _audience_matches(actual, requested: str) -> bool:
+        if not requested:
+            return True
+        actual_values = actual if isinstance(actual, list) else [actual]
+        requested_aliases = set(_client_key_aliases(requested))
+        for value in actual_values:
+            if not isinstance(value, str):
+                continue
+            if value == requested:
+                return True
+            if requested_aliases and requested_aliases.intersection(_client_key_aliases(value)):
+                return True
+        return False
 
     def _issuer_configs():
         if SINGLE_ISSUER and SINGLE_JWKS_URL:
@@ -236,10 +262,7 @@ data:
 
         # Enforce audience match if provided (matches Keycloak 'aud' semantics)
         if audience:
-            aud = decoded.get("aud")
-            if isinstance(aud, list) and audience not in aud:
-                raise HTTPException(status_code=401, detail="Requested audience not available")
-            if isinstance(aud, str) and aud != audience:
+            if not _audience_matches(decoded.get("aud"), audience):
                 raise HTTPException(status_code=401, detail="Requested audience not available")
 
         client_key = _get_client_key(decoded)
@@ -250,8 +273,11 @@ data:
             )
 
         directus_token = _get_directus_token_for_client(client_key)
-        if not directus_token and AUDIENCE_TOKEN_FALLBACK_ENABLED and _is_client_key(audience):
-            directus_token = _get_directus_token_for_client(audience)
+        if not directus_token and AUDIENCE_TOKEN_FALLBACK_ENABLED:
+            for token_key in _client_key_aliases(audience):
+                directus_token = _get_directus_token_for_client(token_key)
+                if directus_token:
+                    break
         if not directus_token:
             raise HTTPException(
                 status_code=403,
@@ -311,7 +337,7 @@ spec:
   template:
     metadata:
       annotations:
-        directus-auth-bridge.suncoast.systems/config-version: "2026-06-25-graphql-audience-fallback"
+        directus-auth-bridge.suncoast.systems/config-version: "2026-06-25-graphql-audience-aliases"
       labels:
         app: directus-auth-bridge
     spec:
