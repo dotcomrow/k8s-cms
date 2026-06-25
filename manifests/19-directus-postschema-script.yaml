@@ -3209,7 +3209,10 @@ data:
          BEFORE INSERT OR UPDATE OF module_provider, module_key, props_json, site_key, refresh_target \
          ON cms_block_module \
          FOR EACH ROW \
-         EXECUTE FUNCTION directus.apply_cms_block_module_defaults(); \
+         EXECUTE FUNCTION directus.apply_cms_block_module_defaults();"
+
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
          UPDATE directus.cms_block_module \
          SET props_json = props_json \
          WHERE COALESCE(NULLIF(BTRIM(COALESCE(module_key, '')), '') <> '';"
