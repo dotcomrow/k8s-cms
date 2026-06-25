@@ -310,6 +310,8 @@ spec:
       app: directus-auth-bridge
   template:
     metadata:
+      annotations:
+        directus-auth-bridge.suncoast.systems/config-version: "2026-06-25-graphql-audience-fallback"
       labels:
         app: directus-auth-bridge
     spec:
