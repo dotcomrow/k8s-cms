@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: VM Stats Service
-  version: 1.2.1
+  version: 1.2.2
   description: |
     Internal API exposing VM reporting collectors for one or more configured VM targets and Hasura integration.
     Includes normalized snapshot endpoints for flexible polling by section.
@@ -34,17 +34,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CollectorAndSectionListResponse"
-  /stats/systems:
-    get:
-      summary: List monitored systems
-      operationId: listStatsSystems
-      responses:
-        "200":
-          description: Available systems
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SystemListResponse"
   /stats:
     get:
       summary: Fetch VM stats
@@ -369,7 +358,7 @@ paths:
   /hasura/actions/stats:
     post:
       summary: Hasura action endpoint for VM reporting
-      description: Accepts a Hasura action envelope and returns the stats response payload.
+      description: Accepts a Hasura action envelope and returns either stats payloads or metadata payloads such as monitored systems.
       operationId: hasuraFetchStats
       requestBody:
         required: true
@@ -383,7 +372,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StatsResponseEnvelope"
+                oneOf:
+                  - $ref: "#/components/schemas/StatsResponseEnvelope"
+                  - $ref: "#/components/schemas/SystemListResponse"
         "207":
           description: Partial stats; one or more collectors failed
           content:

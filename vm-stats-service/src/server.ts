@@ -1905,7 +1905,7 @@ const REPORTING_OPENAPI_SPEC = {
   openapi: "3.0.3",
   info: {
     title: "VM Stats Service",
-    version: "1.2.0",
+    version: "1.2.2",
     description:
       "Internal API exposing VM reporting collectors for the oracle-db host and Hasura integration."
   },
@@ -1938,22 +1938,6 @@ const REPORTING_OPENAPI_SPEC = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/CollectorAndSectionListResponse" }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/stats/systems": {
-      get: {
-        summary: "List monitored systems",
-        operationId: "listStatsSystems",
-        responses: {
-          "200": {
-            description: "Available systems",
-            content: {
-              "application/json": {
-                schema: { $ref: "#/components/schemas/SystemListResponse" }
               }
             }
           }
@@ -2185,7 +2169,8 @@ const REPORTING_OPENAPI_SPEC = {
     "/hasura/actions/stats": {
       post: {
         summary: "Hasura action endpoint for VM reporting",
-        description: "Accepts a Hasura action envelope and returns the stats response payload.",
+        description:
+          "Accepts a Hasura action envelope and returns either stats payloads or metadata payloads such as monitored systems.",
         operationId: "hasuraFetchStats",
         requestBody: {
           required: true,
@@ -2200,7 +2185,12 @@ const REPORTING_OPENAPI_SPEC = {
             description: "Hasura action stats payload",
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/StatsResponseEnvelope" }
+                schema: {
+                  oneOf: [
+                    { $ref: "#/components/schemas/StatsResponseEnvelope" },
+                    { $ref: "#/components/schemas/SystemListResponse" }
+                  ]
+                }
               }
             }
           },
@@ -2376,9 +2366,83 @@ const REPORTING_OPENAPI_SPEC = {
           status: { type: "integer" }
         }
       }
-    }
+      }
   }
 };
+
+function listMonitoredSystems() {
+  return {
+    systems: REPORTING_SYSTEMS.map((system) => ({
+      id: system.id,
+      name: system.name,
+      ssh_host: system.ssh_host || null,
+      db_host: system.db_host || null,
+      db_port: system.db_port,
+      sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all")
+    }))
+  };
+}
+
+function toLowerString(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function asBoolInput(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const lowered = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(lowered)) return true;
+    if (["false", "0", "no", "off"].includes(lowered)) return false;
+  }
+  return undefined;
+}
+
+function isSystemsListAction(actionBody: HasuraActionEnvelope, actionInput: unknown): boolean {
+  const bodyActionObject = actionBody && typeof actionBody === "object" && !Array.isArray(actionBody)
+    ? actionBody
+    : {};
+  const input = actionInput && typeof actionInput === "object" && !Array.isArray(actionInput)
+    ? (actionInput as Record<string, unknown>)
+    : {};
+
+  const actionName =
+    toLowerString(
+      typeof bodyActionObject.action === "object" && bodyActionObject.action && !Array.isArray(bodyActionObject.action)
+        ? (bodyActionObject.action as Record<string, unknown>).name
+        : undefined
+    ) ||
+    toLowerString(
+      typeof (bodyActionObject as Record<string, unknown>).name === "string"
+        ? (bodyActionObject as Record<string, unknown>).name
+        : undefined
+    ) ||
+    toLowerString(
+      typeof bodyActionObject.action === "string" ? bodyActionObject.action : undefined
+    );
+
+  if (actionName === "systems" || actionName === "listsystems" || actionName === "list_systems" || actionName === "list-systems") {
+    return true;
+  }
+
+  const inputAction = toLowerString(input.action);
+  const inputOperation = toLowerString(input.operation);
+  const inputMode = toLowerString(input.mode);
+  const inputQuery = toLowerString(input.query);
+  const normalizedAction = [inputAction, inputOperation, inputMode, inputQuery].find(Boolean);
+  if (normalizedAction === "systems" || normalizedAction === "listsystems" || normalizedAction === "list_systems" || normalizedAction === "list-systems") {
+    return true;
+  }
+
+  const systemsFlag =
+    asBoolInput(input.list_systems) ||
+    asBoolInput(input.listSystems) ||
+    asBoolInput(input.systems) ||
+    asBoolInput(input.include_systems) ||
+    asBoolInput(input.includeSystems);
+
+  return !!systemsFlag;
+}
 
 if (IS_STATS_SERVICE) {
   app.get("/openapi.json", (_req, res) => {
@@ -2420,25 +2484,13 @@ if (IS_STATS_SERVICE) {
     });
   });
 
-  app.get("/stats/systems", async (_req: Request, res: Response) => {
-    try {
-      if (!REPORTING_ENABLED) {
-        res.status(404).json({ error: { message: "Reporting is disabled", status: 404 } });
-        return;
+  app.get("/stats/systems", (_req: Request, res: Response) => {
+    res.status(410).json({
+      error: {
+        message: "Deprecated: call /hasura/actions/stats with input.action='systems' (GraphQL).",
+        status: 410
       }
-      res.status(200).json({
-        systems: REPORTING_SYSTEMS.map((system) => ({
-          id: system.id,
-          name: system.name,
-          ssh_host: system.ssh_host || null,
-          db_host: system.db_host || null,
-          db_port: system.db_port,
-          sections: REPORTING_SECTION_DEFINITIONS.filter((section) => section.id !== "all")
-        }))
-      });
-    } catch {
-      res.status(500).json({ error: { message: "Unable to list systems", status: 500 } });
-    }
+    });
   });
 
   app.get("/stats", async (req: Request, res: Response) => {
@@ -2640,6 +2692,10 @@ if (IS_STATS_SERVICE) {
         actionBody && typeof actionBody === "object" && "input" in actionBody
           ? actionBody.input
           : (req.body as unknown);
+      if (isSystemsListAction(actionBody, actionInput)) {
+        res.status(200).json(listMonitoredSystems());
+        return;
+      }
 
       const args = parseObjectArgs(actionInput);
       const result = await collectRequestedReportData(
