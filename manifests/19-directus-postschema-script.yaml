@@ -3147,92 +3147,92 @@ data:
       END; \
       \$\$;"
 
-    cat >/tmp/directus-postschema-triggers.sql <<'SQL'
-    SET search_path TO directus, public;
-    DO $$
-    DECLARE
-      _recompute_page_id UUID;
-    BEGIN
-    IF to_regclass('directus.cms_page_blocks') IS NOT NULL
-    AND to_regclass('directus.cms_pages') IS NOT NULL
-    AND to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN
-    DROP TRIGGER IF EXISTS cms_page_blocks_slot_guard ON cms_page_blocks;
-    CREATE TRIGGER cms_page_blocks_slot_guard
-    BEFORE INSERT OR UPDATE
-    ON cms_page_blocks
-    FOR EACH ROW
-    EXECUTE FUNCTION directus.enforce_cms_page_block_slot();
-    DROP TRIGGER IF EXISTS cms_page_blocks_sync_block_metadata ON cms_page_blocks;
-    CREATE TRIGGER cms_page_blocks_sync_block_metadata
-    AFTER INSERT OR UPDATE
-    ON cms_page_blocks
-    FOR EACH ROW
-    EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page_block();
-    DROP TRIGGER IF EXISTS cms_page_blocks_sync_organization ON cms_page_blocks;
-    CREATE TRIGGER cms_page_blocks_sync_organization
-    AFTER INSERT OR DELETE OR UPDATE OF page_id, parent_block_id, collection, item
-    ON cms_page_blocks
-    FOR EACH ROW
-    EXECUTE FUNCTION directus.sync_cms_page_block_organization();
-    END IF;
-    IF to_regclass('directus.cms_pages') IS NOT NULL THEN
-    DROP TRIGGER IF EXISTS cms_pages_theme_dock_sync ON cms_pages;
-    CREATE TRIGGER cms_pages_theme_dock_sync
-    BEFORE INSERT OR UPDATE OF widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction
-    ON cms_pages
-    FOR EACH ROW
-    EXECUTE FUNCTION directus.sync_cms_page_theme_dock_fields();
-    END IF;
-    IF to_regclass('directus.cms_pages') IS NOT NULL
-       AND to_regclass('directus.cms_page_blocks') IS NOT NULL
-       AND to_regclass('directus.cms_block_rich_text') IS NOT NULL
-       AND to_regclass('directus.cms_block_hero') IS NOT NULL
-       AND to_regclass('directus.cms_block_module') IS NOT NULL
-       AND to_regclass('directus.cms_block_template_ref') IS NOT NULL THEN
-    DROP TRIGGER IF EXISTS cms_pages_sync_block_metadata ON cms_pages;
-    CREATE TRIGGER cms_pages_sync_block_metadata
-    AFTER INSERT OR UPDATE OF site_key, release_channel, slug, refresh_target
-    ON cms_pages
-    FOR EACH ROW
-    EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page();
-    END IF;
-    IF to_regclass('directus.cms_block_module') IS NOT NULL
-       AND to_regclass('directus.cms_modules') IS NOT NULL THEN
-    DROP TRIGGER IF EXISTS cms_block_module_apply_defaults ON cms_block_module;
-    CREATE TRIGGER cms_block_module_apply_defaults
-    BEFORE INSERT OR UPDATE OF module_provider, module_key, props_json, site_key, refresh_target
-    ON cms_block_module
-    FOR EACH ROW
-    EXECUTE FUNCTION directus.apply_cms_block_module_defaults();
-    END IF;
-    IF to_regclass('directus.cms_block_module') IS NOT NULL
-       AND to_regclass('directus.cms_modules') IS NOT NULL THEN
-    UPDATE directus.cms_block_module
-    SET props_json = props_json
-    WHERE COALESCE(NULLIF(BTRIM(COALESCE(module_key, '')), '') <> '';
-    END IF;
-    IF to_regclass('directus.cms_block_template_ref') IS NOT NULL
-       AND to_regclass('directus.cms_page_blocks') IS NOT NULL THEN
-    DROP TRIGGER IF EXISTS cms_block_template_ref_sync_organization ON cms_block_template_ref;
-    CREATE TRIGGER cms_block_template_ref_sync_organization
-    AFTER INSERT OR DELETE OR UPDATE OF template_key
-    ON cms_block_template_ref
-    FOR EACH ROW
-    EXECUTE FUNCTION directus.sync_cms_page_block_organization_from_template_ref();
-    END IF;
-    IF to_regclass('directus.cms_page_blocks') IS NOT NULL THEN
-    FOR _recompute_page_id IN
-      SELECT DISTINCT page_id AS id
-      FROM directus.cms_page_blocks
-      WHERE page_id IS NOT NULL
-    LOOP
-      PERFORM directus.recompute_cms_page_block_organization(_recompute_page_id);
-    END LOOP;
-    END IF;
-    END;
-    $$;
-    SQL
-    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -f /tmp/directus-postschema-triggers.sql
+    CMS_PAGES_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_pages') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+    CMS_PAGE_BLOCKS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_page_blocks') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+    CMS_BLOCK_TEMPLATE_REF_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_block_template_ref') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+    CMS_BLOCK_MODULE_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_block_module') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+    CMS_MODULES_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_modules') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+    CMS_LAYOUT_TEMPLATE_SLOTS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_layout_template_slots') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+    CMS_BLOCK_RICH_TEXT_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_block_rich_text') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+    CMS_BLOCK_HERO_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc "SELECT CASE WHEN to_regclass('directus.cms_block_hero') IS NOT NULL THEN 1 ELSE 0 END;" || true)"
+
+    if [ "${CMS_PAGE_BLOCKS_TABLE_EXISTS}" = "1" ] && [ "${CMS_PAGES_TABLE_EXISTS}" = "1" ] && [ "${CMS_LAYOUT_TEMPLATE_SLOTS_TABLE_EXISTS}" = "1" ]; then
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         DROP TRIGGER IF EXISTS cms_page_blocks_slot_guard ON cms_page_blocks; \
+         CREATE TRIGGER cms_page_blocks_slot_guard \
+         BEFORE INSERT OR UPDATE \
+         ON cms_page_blocks \
+         FOR EACH ROW \
+         EXECUTE FUNCTION directus.enforce_cms_page_block_slot(); \
+         DROP TRIGGER IF EXISTS cms_page_blocks_sync_block_metadata ON cms_page_blocks; \
+         CREATE TRIGGER cms_page_blocks_sync_block_metadata \
+         AFTER INSERT OR UPDATE \
+         ON cms_page_blocks \
+         FOR EACH ROW \
+         EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page_block(); \
+         DROP TRIGGER IF EXISTS cms_page_blocks_sync_organization ON cms_page_blocks; \
+         CREATE TRIGGER cms_page_blocks_sync_organization \
+         AFTER INSERT OR DELETE OR UPDATE OF page_id, parent_block_id, collection, item \
+         ON cms_page_blocks \
+         FOR EACH ROW \
+         EXECUTE FUNCTION directus.sync_cms_page_block_organization();"
+    fi
+
+    if [ "${CMS_PAGES_TABLE_EXISTS}" = "1" ]; then
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         DROP TRIGGER IF EXISTS cms_pages_theme_dock_sync ON cms_pages; \
+         CREATE TRIGGER cms_pages_theme_dock_sync \
+         BEFORE INSERT OR UPDATE OF widget_dock_position, widget_dock_direction, theme_selector_dock_position, theme_switcher_position, theme_switcher_dock_direction \
+         ON cms_pages \
+         FOR EACH ROW \
+         EXECUTE FUNCTION directus.sync_cms_page_theme_dock_fields();"
+    fi
+
+    if [ "${CMS_PAGES_TABLE_EXISTS}" = "1" ] && [ "${CMS_PAGE_BLOCKS_TABLE_EXISTS}" = "1" ] && [ "${CMS_BLOCK_RICH_TEXT_TABLE_EXISTS}" = "1" ] && [ "${CMS_BLOCK_HERO_TABLE_EXISTS}" = "1" ] && [ "${CMS_BLOCK_MODULE_TABLE_EXISTS}" = "1" ] && [ "${CMS_BLOCK_TEMPLATE_REF_TABLE_EXISTS}" = "1" ]; then
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         DROP TRIGGER IF EXISTS cms_pages_sync_block_metadata ON cms_pages; \
+         CREATE TRIGGER cms_pages_sync_block_metadata \
+         AFTER INSERT OR UPDATE OF site_key, release_channel, slug, refresh_target \
+         ON cms_pages \
+         FOR EACH ROW \
+         EXECUTE FUNCTION directus.sync_cms_block_metadata_from_page();"
+    fi
+
+    if [ "${CMS_BLOCK_MODULE_TABLE_EXISTS}" = "1" ] && [ "${CMS_MODULES_TABLE_EXISTS}" = "1" ]; then
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         DROP TRIGGER IF EXISTS cms_block_module_apply_defaults ON cms_block_module; \
+         CREATE TRIGGER cms_block_module_apply_defaults \
+         BEFORE INSERT OR UPDATE OF module_provider, module_key, props_json, site_key, refresh_target \
+         ON cms_block_module \
+         FOR EACH ROW \
+         EXECUTE FUNCTION directus.apply_cms_block_module_defaults(); \
+         UPDATE directus.cms_block_module \
+         SET props_json = props_json \
+         WHERE COALESCE(NULLIF(BTRIM(COALESCE(module_key, '')), '') <> '';"
+    fi
+
+    if [ "${CMS_BLOCK_TEMPLATE_REF_TABLE_EXISTS}" = "1" ] && [ "${CMS_PAGE_BLOCKS_TABLE_EXISTS}" = "1" ]; then
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         DROP TRIGGER IF EXISTS cms_block_template_ref_sync_organization ON cms_block_template_ref; \
+         CREATE TRIGGER cms_block_template_ref_sync_organization \
+         AFTER INSERT OR DELETE OR UPDATE OF template_key \
+         ON cms_block_template_ref \
+         FOR EACH ROW \
+         EXECUTE FUNCTION directus.sync_cms_page_block_organization_from_template_ref();"
+    fi
+
+    if [ "${CMS_PAGE_BLOCKS_TABLE_EXISTS}" = "1" ]; then
+      psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+        "SET search_path TO directus, public; \
+         SELECT directus.recompute_cms_page_block_organization(page_id) \
+           FROM (SELECT DISTINCT page_id FROM directus.cms_page_blocks WHERE page_id IS NOT NULL) AS pages(page_id) \
+          WHERE page_id IS NOT NULL;"
+    fi
     
     echo "🧭 Configuring layout/theme/slot/module dropdown UX from registered models..."
     DIRECTUS_FIELDS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
