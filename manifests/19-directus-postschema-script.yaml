@@ -6222,7 +6222,8 @@ data:
         fi
 
         # Ensure admin-capable policies can manually trigger flows from Directus UI.
-        # Without this permission Directus returns 403 for /flows/trigger/:id.
+        # Without these permissions Directus returns 403 for /flows/trigger/:id
+        # and /operations permission lookups during manual flow execution.
         if [ "${PERM_TABLE_EXISTS:-0}" = "1" ] && [ -n "${PERM_PRINC_COL:-}" ] && [ "${POLICY_TABLE_EXISTS:-0}" = "1" ]; then
           echo "🧭 Ensuring directus_flows.trigger permission for administrator policies..."
           admin_policy_ids=""
@@ -6239,35 +6240,23 @@ data:
             if [ -z "${admin_policy_id:-}" ] || [ "${admin_policy_id}" = "null" ]; then
               continue
             fi
-
             admin_policy_id_sql="$(printf '%s' "${admin_policy_id}" | sed "s/'/''/g")"
-            existing_trigger_perm_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SELECT id FROM directus.directus_permissions WHERE ${PERM_PRINC_COL}='${admin_policy_id_sql}' AND collection='directus_flows' AND action='trigger' LIMIT 1;" || true)"
-            existing_trigger_perm_id="$(printf '%s' "${existing_trigger_perm_id:-}" | tr -d '\r')"
-            if [ -n "${existing_trigger_perm_id:-}" ] && [ "${existing_trigger_perm_id}" != "null" ]; then
-              continue
+            admin_policy_name="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT name FROM directus.directus_policies WHERE id='${admin_policy_id_sql}' LIMIT 1;" || true)"
+            admin_policy_name="$(printf '%s' "${admin_policy_name:-}" | tr -d '\r')"
+
+            if [ -z "${admin_policy_name:-}" ] || [ "${admin_policy_name}" = "null" ]; then
+              admin_policy_name="${admin_policy_id}"
             fi
 
-            trigger_perms_val="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
-            trigger_validation_val="$(_json_empty_for_type "${VALIDATION_TYPE:-}")"
-            trigger_presets_val="$(_json_empty_for_type "${PRESETS_TYPE:-}")"
-            trigger_fields_val="$(_fields_value_for_type "${PERM_FIELDS_TYPE:-}")"
+            preserve_role_name="${role_name:-}"
+            role_name="${admin_policy_name}"
 
-            TCOLS="${PERM_PRINC_COL},collection,action"
-            TVALS="'${admin_policy_id_sql}','directus_flows','trigger'"
-            if [ "${PERM_ID_HAS_DEFAULT:-0}" != "1" ]; then
-              trigger_perm_id="$(cat /proc/sys/kernel/random/uuid)"
-              TCOLS="id,${TCOLS}"
-              TVALS="'${trigger_perm_id}',${TVALS}"
-            fi
-            if _has_perm_col "permissions"; then TCOLS="${TCOLS},permissions"; TVALS="${TVALS},${trigger_perms_val}"; fi
-            if _has_perm_col "validation"; then TCOLS="${TCOLS},validation"; TVALS="${TVALS},${trigger_validation_val}"; fi
-            if _has_perm_col "presets"; then TCOLS="${TCOLS},presets"; TVALS="${TVALS},${trigger_presets_val}"; fi
-            if _has_perm_col "fields"; then TCOLS="${TCOLS},fields"; TVALS="${TVALS},${trigger_fields_val}"; fi
-
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; INSERT INTO directus_permissions (${TCOLS}) VALUES (${TVALS});"
-            echo "✅ Granted directus_flows.trigger to administrator policy ${admin_policy_id}"
+            admin_flow_perms_json="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+            _upsert_policy_action_permission "${admin_policy_id}" "directus_flows" "read" "${admin_flow_perms_json}"
+            _upsert_policy_action_permission "${admin_policy_id}" "directus_flows" "trigger" "${admin_flow_perms_json}"
+            _upsert_policy_action_permission "${admin_policy_id}" "directus_operations" "read" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+            role_name="${preserve_role_name}"
           done
         fi
     
