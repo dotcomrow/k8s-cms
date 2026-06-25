@@ -2703,8 +2703,13 @@ if (IS_STATS_SERVICE) {
         args,
         args.sections
       );
+      const snapshot = buildSystemSnapshotFromCollectors(
+        result.collectors as unknown as SnapshotCollectorResult[],
+        asString(args.system_id) || asString(args.systemId) || REPORTING_SYSTEM_ID
+      );
       res.status(result.all_ok ? 200 : 207).json({
         ...result,
+        snapshot,
         ran_at: new Date(result.generated_at_unix * 1000).toISOString(),
         results: result.collectors
       });
