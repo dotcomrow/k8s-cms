@@ -6721,6 +6721,7 @@ data:
             fi
     
             refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_modules","cms_layout_templates","cms_layout_template_slots","cms_theme_packages"]'
+            manual_refresh_collections_json='["cms_pages"]'
             targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
             if [ "${targets_count:-0}" = "0" ]; then
               echo "⚠️ No cache refresh targets configured for site_key='${site_key}'"
@@ -6897,7 +6898,8 @@ data:
                 --arg name "${manual_flow_name}" \
                 --arg status "${flow_status}" \
                 --arg desc "${manual_flow_desc}" \
-                '{name:$name,trigger:"manual",status:$status,accountability:"all",icon:"bolt",color:"#1565C0",description:$desc,options:{}}')"
+                --argjson collections "${manual_refresh_collections_json}" \
+                '{name:$name,trigger:"manual",status:$status,accountability:"all",icon:"bolt",color:"#1565C0",description:$desc,options:{collections:$collections}}')"
     
               create_flow_id="$(_directus_find_flow_id_by_name "${create_flow_name}")"
               if [ -n "${create_flow_id:-}" ] && [ "${create_flow_id}" != "null" ]; then

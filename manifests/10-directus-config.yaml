@@ -8854,17 +8854,23 @@ data:
             const flow = normalizeRows(flowLookup)[0];
             const flowId = parseId(flow?.id);
             if (!flowId) continue;
+            const pageTriggerKey = parseId(pageId.value);
+            const triggerPayload = {
+              source: 'cms-page-blocks-manager',
+              collection: pagesCollection.value || 'cms_pages',
+              reason: 'promote-preview-to-prod',
+              site_key: normalizedSite || null,
+              slug: asString(slug) || null,
+            };
+            if (pageTriggerKey) {
+              triggerPayload.keys = [pageTriggerKey];
+              triggerPayload.key = pageTriggerKey;
+            }
             await apiRequest(
               'POST',
               `/flows/trigger/${encodeURIComponent(flowId)}`,
               {},
-              {
-                source: 'cms-page-blocks-manager',
-                collection: pagesCollection.value,
-                reason: 'promote-preview-to-prod',
-                site_key: normalizedSite || null,
-                slug: asString(slug) || null,
-              },
+              triggerPayload,
             );
             return true;
           }
