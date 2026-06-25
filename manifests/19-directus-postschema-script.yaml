@@ -3215,7 +3215,7 @@ data:
         "SET search_path TO directus, public; \
          UPDATE directus.cms_block_module \
          SET props_json = props_json \
-         WHERE COALESCE(NULLIF(BTRIM(COALESCE(module_key, '')), '') <> '';"
+         WHERE NULLIF(TRIM(module_key::text), '') IS NOT NULL;"
     fi
 
     if [ "${CMS_BLOCK_TEMPLATE_REF_TABLE_EXISTS}" = "1" ] && [ "${CMS_PAGE_BLOCKS_TABLE_EXISTS}" = "1" ]; then
