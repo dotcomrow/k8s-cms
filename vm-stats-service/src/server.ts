@@ -1248,17 +1248,28 @@ SELECT json_build_object(
   const sqlOneLine = sql.replace(/\s+/g, " ");
 
   const dbTimeout = Math.max(REPORTING_SESSIONS_TIMEOUT_MS, 10_000);
-  const commandBase = `${dbPassword ? `PGPASSWORD=${shellQuote(dbPassword)} ` : ""}psql -p ${dbPort} -U ${shellQuote(
+  const connectTimeoutSeconds = Math.max(1, Math.ceil(REPORTING_CONNECT_TIMEOUT_MS / 1000));
+  const statementTimeoutMs = Math.max(1_000, Math.min(REPORTING_SESSIONS_TIMEOUT_MS - 1_000, 15_000));
+  const commandBase = `PGCONNECT_TIMEOUT=${shellQuote(String(connectTimeoutSeconds))} PGOPTIONS=${shellQuote(
+    `-c statement_timeout=${statementTimeoutMs}`
+  )} ${dbPassword ? `PGPASSWORD=${shellQuote(dbPassword)} ` : ""}psql -p ${dbPort} -U ${shellQuote(
     dbUser
   )} -d ${shellQuote(dbName)} -qAtX -c ${shellQuote(sqlOneLine)}`;
   const primaryDbHost = normalizeHost(dbHost);
-  const dbHostCandidates = new Set<string>([primaryDbHost]);
   const normalizedSshHost = normalizeHost(resolvedTarget.ssh_host);
+  const dbHostCandidates: string[] = [];
+  const addDbHostCandidate = (candidate: string) => {
+    const normalizedCandidate = normalizeHost(candidate);
+    if (normalizedCandidate && !dbHostCandidates.includes(normalizedCandidate)) {
+      dbHostCandidates.push(normalizedCandidate);
+    }
+  };
   if (REPORTING_SESSIONS_LOCAL_DB_FALLBACK && normalizedSshHost && primaryDbHost === normalizedSshHost) {
-    dbHostCandidates.add("127.0.0.1");
-    dbHostCandidates.add("localhost");
+    addDbHostCandidate("127.0.0.1");
+    addDbHostCandidate("localhost");
   }
-  const hostList = [...dbHostCandidates].filter(Boolean);
+  addDbHostCandidate(primaryDbHost);
+  const hostList = dbHostCandidates;
   const terminalIndex = hostList.length - 1;
 
   let lastError: unknown;

@@ -13,7 +13,7 @@ data:
         "ssh_port": "22",
         "ssh_user": "ubuntu",
         "ssh_key_path": "/secrets/ssh-key",
-        "db_host": "157.151.150.61",
+        "db_host": "127.0.0.1",
         "db_port": "5432",
         "db_name": "directus",
         "db_user": "directus_app_k7m2v9q4x6r1t8h3",
@@ -80,6 +80,8 @@ spec:
                   key: port
             - name: REPORTING_SESSIONS_TIMEOUT_MS
               value: "120000"
+            - name: REPORTING_CONNECT_TIMEOUT_MS
+              value: "5000"
             - name: REPORTING_SESSIONS_LOCAL_DB_FALLBACK
               value: "true"
             - name: REPORTING_DB_NAME
