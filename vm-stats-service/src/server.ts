@@ -1460,7 +1460,8 @@ const reportingCollectors: ReportCollector[] = [
       const state = (args.state || "all").trim().toLowerCase();
       const normalizedState = SERVICE_STATE_FILTERS.has(state) ? state : "all";
       const stateArg = normalizedState === "all" ? "" : ` --state=${normalizedState}`;
-      const out = await runtime.runRemote(`systemctl list-units --type=service --no-pager --no-legend${stateArg}`);
+      const allArg = normalizedState === "all" ? " --all" : "";
+      const out = await runtime.runRemote(`systemctl list-units --type=service${allArg} --no-pager --no-legend${stateArg}`);
       const services = parseServices(out.stdout, false);
       const names = services
         .map((service) => String(service.name || "").trim())
