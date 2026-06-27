@@ -1053,6 +1053,39 @@ function parseDfInodes(raw: string) {
     .filter(Boolean);
 }
 
+function parseFindmntMounts(raw: string) {
+  if (!raw.trim()) return [];
+  const parsed = JSON.parse(raw) as { filesystems?: Array<Record<string, unknown>> };
+  const rows: Array<Record<string, unknown>> = [];
+  const visit = (entry: Record<string, unknown>) => {
+    const mountpoint = String(entry.target || entry.mountpoint || "").trim();
+    if (mountpoint) {
+      const sizeBytes = Number(entry.size);
+      const usedBytes = Number(entry.used);
+      const availableBytes = Number(entry.avail);
+      const usedPercent = Number.parseInt(String(entry["use%"] || "0").replace("%", ""), 10) || 0;
+      rows.push({
+        mountpoint,
+        source: String(entry.source || ""),
+        fstype: String(entry.fstype || ""),
+        options: String(entry.options || ""),
+        size_bytes: Number.isFinite(sizeBytes) ? sizeBytes : null,
+        used_bytes: Number.isFinite(usedBytes) ? usedBytes : null,
+        available_bytes: Number.isFinite(availableBytes) ? availableBytes : null,
+        used_percent: usedPercent
+      });
+    }
+    const children = Array.isArray(entry.children) ? entry.children : [];
+    children.forEach((child) => {
+      if (child && typeof child === "object") {
+        visit(child as Record<string, unknown>);
+      }
+    });
+  };
+  (parsed.filesystems || []).forEach((entry) => visit(entry));
+  return rows;
+}
+
 function parseProcesses(raw: string) {
   const lines = raw.trim().split("\n");
   return lines
@@ -1305,19 +1338,37 @@ const reportingCollectors: ReportCollector[] = [
     id: "storage",
     description: "Storage usage and inode pressure with thresholds",
     collect: async (_args, runtime) => {
-      const [bytesOut, inodeOut] = await Promise.all([
+      const mountInventory = runtime
+        .runRemote("findmnt -J -b -o TARGET,SOURCE,FSTYPE,OPTIONS,SIZE,USED,AVAIL,USE% || findmnt -J -b -o TARGET,SOURCE,FSTYPE,OPTIONS")
+        .catch((error) => ({
+          command: "findmnt",
+          stdout: "",
+          stderr: error instanceof Error ? error.message : String(error),
+          exitCode: 1,
+          timedOut: false
+        }));
+      const [bytesOut, inodeOut, mountOut] = await Promise.all([
         runtime.runRemote("df -P -B1 -x tmpfs -x devtmpfs"),
-        runtime.runRemote("df -P -i -x tmpfs -x devtmpfs")
+        runtime.runRemote("df -P -i -x tmpfs -x devtmpfs"),
+        mountInventory
       ]);
       const rows = parseDf(bytesOut.stdout);
       const inodeRows = parseDfInodes(inodeOut.stdout);
+      let allMounts: ReturnType<typeof parseFindmntMounts> = [];
+      try {
+        allMounts = mountOut.stdout ? parseFindmntMounts(mountOut.stdout) : [];
+      } catch {
+        allMounts = [];
+      }
       return {
         mountpoints: rows,
+        all_mounts: allMounts,
         inode_usage: inodeRows,
         generated_at_unix: nowUnix(),
         warning_threshold_percent: REPORTING_STORAGE_WARNING_PERCENT,
         critical_threshold_percent: REPORTING_STORAGE_CRITICAL_PERCENT,
-        count: rows.length
+        count: rows.length,
+        all_mount_count: allMounts.length
       };
     }
   },
@@ -1703,6 +1754,7 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
     storageUsedGb: Number(((storageSummary.storageUsedBytes || 0) / 1024 ** 3).toFixed(2)),
     storageTotalGb: Number(((storageSummary.storageTotalBytes || 0) / 1024 ** 3).toFixed(2)),
     storageInodePercent: Number((storageSummary.storageInodePercent || 0).toFixed(2)),
+    storageInventory: Array.isArray(storage["all_mounts"]) ? storage["all_mounts"] : [],
     networkInMbps: Number(network["network_in_mbps"] || 0),
     networkOutMbps: Number(network["network_out_mbps"] || 0),
     dbSessions: Number(dbSessionSummary.total || 0),
@@ -2356,6 +2408,7 @@ const REPORTING_OPENAPI_SPEC = {
           storageTotalGb: { type: "number", format: "float" },
           storageUsedPercent: { type: "number", format: "float" },
           storageInodePercent: { type: "number", format: "float" },
+          storageInventory: { type: "array", items: { type: "object", additionalProperties: true } },
           dbSessions: { type: "integer" },
           sshSessions: { type: "integer" },
           processCount: { type: "integer" },

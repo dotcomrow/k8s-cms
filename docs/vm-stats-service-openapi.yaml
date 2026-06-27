@@ -563,6 +563,11 @@ components:
         storageInodePercent:
           type: number
           format: float
+        storageInventory:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
         dbSessions:
           type: integer
         sshSessions:
