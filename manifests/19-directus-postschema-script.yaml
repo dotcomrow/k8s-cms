@@ -3216,6 +3216,36 @@ data:
          UPDATE directus.cms_block_module \
          SET props_json = props_json \
          WHERE NULLIF(TRIM(module_key::text), '') IS NOT NULL;"
+
+      if ! _psql_yb_retry "WITH target AS (
+          SELECT id,
+                 directus.merge_jsonb_objects_deep(
+                   CASE WHEN jsonb_typeof(props_json) = 'object' THEN props_json ELSE '{}'::jsonb END,
+                   jsonb_build_object(
+                     'registryUrl', 'https://cloudflare-mfe-module-registry-service.suncoast.systems',
+                     'channel', LOWER(release_channel),
+                     'ui', jsonb_build_object(
+                       'moduleRegistry', jsonb_build_object(
+                         'baseUrl', 'https://cloudflare-mfe-module-registry-service.suncoast.systems',
+                         'defaultChannel', LOWER(release_channel)
+                       )
+                     )
+                   )
+                 ) AS next_props
+          FROM cms_block_module
+          WHERE LOWER(COALESCE(release_channel, '')) IN ('preview', 'prod')
+            AND LOWER(COALESCE(module_provider, '')) = 'mfe'
+            AND module_key = 'mfe-generic-remote'
+            AND NULLIF(BTRIM(COALESCE(props_json->>'registryKey', '')), '') IS NOT NULL
+        )
+        UPDATE cms_block_module m
+        SET props_json = target.next_props,
+            date_updated = now()
+        FROM target
+        WHERE m.id = target.id
+          AND m.props_json IS DISTINCT FROM target.next_props;" "normalize MFE registry runtime channel config" 12; then
+        echo "⚠️ Could not normalize MFE registry runtime channel config; will retry on next reconcile."
+      fi
     fi
 
     if [ "${CMS_BLOCK_TEMPLATE_REF_TABLE_EXISTS}" = "1" ] && [ "${CMS_PAGE_BLOCKS_TABLE_EXISTS}" = "1" ]; then

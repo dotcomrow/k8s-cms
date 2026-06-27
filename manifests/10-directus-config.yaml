@@ -5677,8 +5677,47 @@ data:
           return normalized;
         };
 
+        const normalizeMfeRegistryRuntimeConfig = (nextProps) => {
+          const normalized = normalizeObject(nextProps);
+          if (!isMfeRemoteModuleDefinition.value) return normalized;
+
+          const registryKeyValue = asString(normalized.registryKey ?? normalized.registry_key);
+          const registryUrl = asString(moduleRegistryUrl.value);
+          const channel = resolveRegistryChannel();
+          if (!registryKeyValue || !registryUrl || (channel !== 'preview' && channel !== 'prod')) {
+            return normalized;
+          }
+
+          normalized.registryUrl = registryUrl;
+          normalized.channel = channel;
+
+          const ui = normalizeObject(parseJsonLike(normalized.ui, {}));
+          const uiRegistry = normalizeObject(parseJsonLike(ui.moduleRegistry ?? ui.module_registry, {}));
+          const topRegistry = normalizeObject(parseJsonLike(normalized.moduleRegistry ?? normalized.module_registry, {}));
+          const specDefaults = normalizeObject(parseJsonLike(selectedMfeRegistrySpecDefaults.value, {}));
+          const specRegistry = normalizeObject(parseJsonLike(specDefaults.moduleRegistry ?? specDefaults.module_registry, {}));
+          const registryConfig = Object.keys(uiRegistry).length > 0
+            ? uiRegistry
+            : Object.keys(topRegistry).length > 0
+              ? topRegistry
+              : specRegistry;
+          if (Object.keys(registryConfig).length > 0) {
+            ui.moduleRegistry = {
+              ...registryConfig,
+              baseUrl: registryUrl,
+              defaultChannel: channel,
+            };
+            delete ui.module_registry;
+            normalized.ui = ui;
+          }
+
+          return normalized;
+        };
+
         const emitProps = (nextProps) => {
-          const normalized = normalizeCanonicalMfeSecurity(nextProps);
+          const normalized = normalizeMfeRegistryRuntimeConfig(
+            normalizeCanonicalMfeSecurity(nextProps)
+          );
           localProps.value = { ...normalized };
           jsonEditorValue.value = JSON.stringify(localProps.value, null, 2);
           emit('input', localProps.value);
