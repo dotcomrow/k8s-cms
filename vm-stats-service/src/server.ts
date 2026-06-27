@@ -1123,6 +1123,9 @@ function parseServices(raw: string, hostOnly?: boolean): ParsedService[] {
     .map((line) => {
       const tokens = line.trim().split(/\s+/);
       if (tokens.length < 5) return null;
+      if (!tokens[0].includes(".service") && tokens[1]?.includes(".service")) {
+        tokens.shift();
+      }
       const [name, load, active, sub, ...rest] = tokens;
       return {
         name,
