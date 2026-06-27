@@ -1708,20 +1708,32 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
     serviceByPid.set(pid, service);
   }
 
+  const parsePort = (value: unknown) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  };
   const listeningPorts = listenerRows.flatMap((row) => {
-    const local = row["local"] as Record<string, string>;
-    const entries = (row["processes"] as Array<Record<string, unknown>>) || [];
-    return entries.map((entry) => {
+    const local = (row["local"] as Record<string, string>) || {};
+    const peer = (row["peer"] as Record<string, string>) || {};
+    const protocol = String(row.protocol || "").toLowerCase();
+    if (protocol !== "tcp" && protocol !== "udp") return [];
+    const localPort = parsePort(local.port);
+    const peerPort = parsePort(peer.port);
+    const port = localPort || peerPort;
+    if (!port) return [];
+    const entries = ((row["processes"] as Array<Record<string, unknown>>) || []);
+    const rowEntries = entries.length ? entries : [{}];
+    return rowEntries.map((entry) => {
       const pid = Number(entry.pid || 0);
       const owner = serviceByPid.get(pid);
       return {
-        protocol: String(row.protocol || ""),
-        localAddress: local?.host || "",
-        port: Number(local?.port || 0),
+        protocol,
+        localAddress: localPort ? local.host || "" : peer.host || local.host || "",
+        port,
         serviceId: owner ? String(owner.id || owner.name || "") : "",
-        processName: String(entry.name || ""),
+        processName: String(entry.name || entry.command || (entries.length ? "process" : "unreported")),
         pid,
-        description: owner ? String(owner.description || "") : ""
+        description: owner ? String(owner.description || "") : "No owning process returned by listener collector."
       };
     });
   });
