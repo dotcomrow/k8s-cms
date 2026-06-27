@@ -400,8 +400,8 @@ const REPORTING_SECTION_DEFINITIONS: ReportingSectionDefinition[] = [
   },
   {
     id: "logs",
-    description: "Service logs from journald",
-    collectors: ["service_logs"],
+    description: "Log files from /var/log and service logs from journald",
+    collectors: ["log_files", "service_logs"],
     cadence: "slow"
   },
   {
@@ -922,6 +922,51 @@ function parseServiceLogLines(raw: string) {
       }
     })
     .filter((entry) => entry.message.length > 0);
+}
+
+function normalizeVarLogPath(raw: string | undefined): string {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  const normalized = path.posix.normalize(trimmed.startsWith("/") ? trimmed : `/var/log/${trimmed}`);
+  if (!normalized.startsWith("/var/log/") || normalized.includes("\0")) {
+    const e = new Error(`Invalid log file path: ${trimmed}`);
+    (e as any).status = 400;
+    throw e;
+  }
+  return normalized;
+}
+
+function parseVarLogFileList(raw: string) {
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [filePath, sizeRaw, modifiedRaw] = line.split("\t");
+      if (!filePath) return null;
+      return {
+        path: filePath,
+        name: filePath.replace(/^\/var\/log\//, ""),
+        size_bytes: Number(sizeRaw) || 0,
+        modified_at: modifiedRaw && Number.isFinite(Number(modifiedRaw))
+          ? new Date(Number(modifiedRaw) * 1000).toISOString()
+          : null
+      };
+    })
+    .filter(Boolean);
+}
+
+function parseVarLogFileLines(raw: string, filePath: string) {
+  return raw
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .map((line) => ({
+      timestamp: new Date().toISOString(),
+      severity: "info" as const,
+      message: line,
+      file: filePath
+    }));
 }
 
 type CpuSample = { total: number; idle: number; timestamp: number };
@@ -1513,11 +1558,49 @@ const reportingCollectors: ReportCollector[] = [
     }
   },
   {
+    id: "log_files",
+    description: "Log files under /var/log",
+    collect: async (args, runtime) => {
+      const filePath = normalizeVarLogPath(asString(args.file));
+      const lines = asInt(args.lines, REPORTING_DEFAULT_LOG_LINES, 1, REPORTING_MAX_LOG_LINES);
+      const listCommand = "find /var/log -maxdepth 2 -type f -printf '%p\\t%s\\t%T@\\n' 2>/dev/null | sort | head -n 300";
+      const listOut = await runtime.runRemote(listCommand);
+      const files = parseVarLogFileList(listOut.stdout);
+      if (!filePath) {
+        return {
+          root: "/var/log",
+          count: files.length,
+          files
+        };
+      }
+      const out = await runtime.runRemote(`tail -n ${lines} -- ${shellQuote(filePath)}`);
+      const logs = parseVarLogFileLines(out.stdout, filePath);
+      return {
+        root: "/var/log",
+        count: files.length,
+        files,
+        file: filePath,
+        lines_requested: lines,
+        lines_returned: logs.length,
+        logs
+      };
+    }
+  },
+  {
     id: "service_logs",
     description: "Latest service logs from journalctl",
     collect: async (args, runtime) => {
       const rawService = parseMaybeServiceName(args.service);
-      const service = rawService || "postgresql.service";
+      if (!rawService) {
+        return {
+          service: "",
+          lines_requested: 0,
+          lines_returned: 0,
+          since: null,
+          logs: []
+        };
+      }
+      const service = rawService;
       const lines = asInt(args.lines, REPORTING_DEFAULT_LOG_LINES, 1, REPORTING_MAX_LOG_LINES);
       const tail = `-n ${lines}`;
       const since = asString(args.since).trim();
@@ -1691,6 +1774,7 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
   const ports = asObject("ports");
   const processes = asObject("processes");
   const logs = asObject("service_logs");
+  const logFiles = asObject("log_files");
 
   const storageSummary = findStorageSummaryBySection(storage as any);
   const storageUsedPercent = Number(storageSummary.storageUsedPercent || 0);
@@ -1746,9 +1830,14 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
   const sshSummary = sessions["ssh"] as Record<string, unknown> | undefined;
   const dbSessionSummary = (dbSummary?.summary || {}) as Record<string, number>;
   const sshUsers = Array.isArray(sshSummary?.users) ? sshSummary.users : [];
+  const sshConnections = Number(sshSummary?.ssh_connections || sshSummary?.sshConnections || sshUsers.length || 0);
   const serviceLogs = {} as Record<string, unknown>;
-  if (logs && typeof logs.service === "string" && Array.isArray(logs.logs)) {
+  if (logs && typeof logs.service === "string" && logs.service && Array.isArray(logs.logs)) {
     serviceLogs[logs.service] = logs.logs;
+  }
+  const logFileContents = {} as Record<string, unknown>;
+  if (logFiles && typeof logFiles.file === "string" && logFiles.file && Array.isArray(logFiles.logs)) {
+    logFileContents[logFiles.file] = logFiles.logs;
   }
 
   return {
@@ -1774,7 +1863,7 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
     networkInMbps: Number(network["network_in_mbps"] || 0),
     networkOutMbps: Number(network["network_out_mbps"] || 0),
     dbSessions: Number(dbSessionSummary.total || 0),
-    sshSessions: Array.isArray(sshUsers) ? sshUsers.length : 0,
+    sshSessions: sshConnections,
     processCount,
     services: serviceRows.map((service) => ({
       id: String(service.name || service.id || ""),
@@ -1789,6 +1878,8 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
       description: String(service.description || "")
     })),
     listeningPorts,
+    logFiles: Array.isArray(logFiles.files) ? logFiles.files : [],
+    logFileContents,
     serviceLogs,
     uptimeHours: Number((((system["uptime_seconds"] as number) || 0) / 3600).toFixed(2))
   };
@@ -2431,6 +2522,8 @@ const REPORTING_OPENAPI_SPEC = {
           uptimeHours: { type: "number", format: "float" },
           services: { type: "array", items: { type: "object" } },
           listeningPorts: { type: "array", items: { type: "object" } },
+          logFiles: { type: "array", items: { type: "object", additionalProperties: true } },
+          logFileContents: { type: "object", additionalProperties: { type: "array", items: { $ref: "#/components/schemas/ServiceLogLine" } } },
           serviceLogs: { type: "object", additionalProperties: { type: "array", items: { $ref: "#/components/schemas/ServiceLogLine" } } },
           loadAverage: { type: "number", format: "float" },
           loadAverageDetails: { type: "object", additionalProperties: true }

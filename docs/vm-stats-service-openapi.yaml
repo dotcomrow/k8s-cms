@@ -587,6 +587,17 @@ components:
           items:
             type: object
             additionalProperties: true
+        logFiles:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        logFileContents:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ServiceLogLine"
         serviceLogs:
           type: object
           additionalProperties:
