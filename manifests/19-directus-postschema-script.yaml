@@ -3632,7 +3632,7 @@ data:
           if _df_has_col "required"; then SETS="${SETS},required=true"; fi
           if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
           if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
-          if _df_has_col "width"; then SETS="${SETS},width='half'"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
           if _df_has_col "sort"; then SETS="${SETS},sort=2"; fi
           if _df_has_col "note"; then SETS="${SETS},note='${template_note_sql}'"; fi
           if [ -n "${SETS:-}" ]; then
@@ -3652,7 +3652,7 @@ data:
         if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},true"; fi
         if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
         if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
-        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'half'"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
         if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},2"; fi
         if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${template_note_sql}'"; fi
     
