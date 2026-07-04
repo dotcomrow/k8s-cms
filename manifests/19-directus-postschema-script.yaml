@@ -469,6 +469,7 @@ data:
              ('cms_pages','site_key'), \
              ('cms_pages','release_channel'), \
              ('cms_pages','layout_template_key'), \
+             ('cms_pages','layout_chrome'), \
              ('cms_pages','theme_package_key'), \
              ('cms_page_blocks','page_id'), \
              ('cms_page_blocks','collection'), \
@@ -778,6 +779,7 @@ data:
          site_key TEXT NULL, \
          release_channel TEXT NULL, \
          layout_template_key TEXT NULL, \
+         layout_chrome TEXT NOT NULL DEFAULT 'carded', \
          theme_package_key TEXT NULL, \
          theme_mode TEXT NULL, \
          widget_dock_enabled BOOLEAN NULL, \
@@ -819,6 +821,9 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS parent UUID; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_chrome TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ALTER COLUMN layout_chrome SET DEFAULT 'carded'; \
+       UPDATE cms_pages SET layout_chrome='carded' WHERE NULLIF(BTRIM(layout_chrome), '') IS NULL; \
        ALTER TABLE IF EXISTS cms_pages ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_pages ALTER COLUMN date_created SET DEFAULT now(); \
        CREATE TABLE IF NOT EXISTS cms_page_blocks ( \
@@ -978,6 +983,9 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_chrome TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ALTER COLUMN layout_chrome SET DEFAULT 'carded'; \
+       UPDATE cms_pages SET layout_chrome='carded' WHERE NULLIF(BTRIM(layout_chrome), '') IS NULL; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_package_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_mode TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS widget_dock_enabled BOOLEAN; \
@@ -1514,7 +1522,7 @@ data:
         esac
       }
 
-      cms_pages_tabular_fields_json='["site_key","release_channel","slug","title","head_title","status","layout_template_key","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","force_login_for_page_access","required_role_for_page_access","date_updated"]'
+      cms_pages_tabular_fields_json='["site_key","release_channel","slug","title","head_title","status","layout_template_key","layout_chrome","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","force_login_for_page_access","required_role_for_page_access","date_updated"]'
       cms_pages_layout_query_json="$(jq -nc --argjson fields "${cms_pages_tabular_fields_json}" \
         '{tabular:{fields:$fields,sort:["-date_updated"]}}')"
       cms_pages_layout_options_json="$(jq -nc '{}')"
@@ -3450,6 +3458,7 @@ data:
       force_login_for_page_access_note="Enable to require Keycloak login before this page is rendered."
       required_role_for_page_access_note="Optional: restrict to a specific Keycloak role from the page realm. Choose None to allow any logged-in user."
       theme_mode_note="Required: choose how this page resolves theme variants (Auto uses system light/dark preference)."
+      layout_chrome_note="Choose whether layout slots render as carded panels or bare sections. Carded keeps the current bordered section panels."
       analytics_google_measurement_id_note="Optional: Google Analytics 4 measurement id (example: G-XXXXXXXXXX). Leave empty to disable GA."
       analytics_openobserve_rum_script_url_note="Optional: OpenObserve browser RUM script URL. Leave empty to disable OpenObserve RUM for this page."
       analytics_openobserve_rum_config_note="Optional JSON object passed to OpenObserve RUM init. Used only when OpenObserve script URL is set."
@@ -3493,6 +3502,7 @@ data:
       site_key_choices_json="$(jq -nc '[ {"text":"Internal","value":"internal","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"External","value":"external","foreground":"#065F46","background":"#D1FAE5"} ]')"
       release_channel_choices_json="$(jq -nc '[ {"text":"Preview","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Prod","value":"prod","foreground":"#92400E","background":"#FEF3C7"} ]')"
       theme_mode_choices_json="$(jq -nc '[ {"text":"Auto (System)","value":"auto","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Light","value":"light","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Dark","value":"dark","foreground":"#92400E","background":"#FEF3C7"} ]')"
+      layout_chrome_choices_json="$(jq -nc '[ {"text":"Carded panels","value":"carded","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Bare sections","value":"bare","foreground":"#065F46","background":"#D1FAE5"} ]')"
       widget_dock_position_choices_json="$(jq -nc '[ {"text":"Top Right","value":"top-right","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Top Left","value":"top-left","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Bottom Right","value":"bottom-right","foreground":"#92400E","background":"#FEF3C7"}, {"text":"Bottom Left","value":"bottom-left","foreground":"#6D28D9","background":"#EDE9FE"} ]')"
       widget_dock_direction_choices_json="$(jq -nc '[ {"text":"Vertical","value":"vertical","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Horizontal","value":"horizontal","foreground":"#065F46","background":"#D1FAE5"} ]')"
       theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
@@ -3504,6 +3514,7 @@ data:
       release_channel_display_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices}')"
       theme_mode_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       theme_mode_display_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices}')"
+      layout_chrome_options_json="$(jq -nc --argjson choices "${layout_chrome_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       analytics_openobserve_rum_config_options_json="$(jq -nc '{language:"json",lineNumber:true,template:"{}"}')"
       widget_dock_position_options_json="$(jq -nc --argjson choices "${widget_dock_position_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       widget_dock_position_display_options_json="$(jq -nc --argjson choices "${widget_dock_position_choices_json}" '{choices:$choices}')"
@@ -3528,6 +3539,7 @@ data:
       force_login_for_page_access_note_sql="$(printf '%s' "${force_login_for_page_access_note}" | sed "s/'/''/g")"
       required_role_for_page_access_note_sql="$(printf '%s' "${required_role_for_page_access_note}" | sed "s/'/''/g")"
       theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
+      layout_chrome_note_sql="$(printf '%s' "${layout_chrome_note}" | sed "s/'/''/g")"
       analytics_google_measurement_id_note_sql="$(printf '%s' "${analytics_google_measurement_id_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_script_url_note_sql="$(printf '%s' "${analytics_openobserve_rum_script_url_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_config_note_sql="$(printf '%s' "${analytics_openobserve_rum_config_note}" | sed "s/'/''/g")"
@@ -3573,6 +3585,7 @@ data:
       head_generator_name_sql="$(printf '%s' "Generator" | sed "s/'/''/g")"
       force_login_for_page_access_name_sql="$(printf '%s' "Force Login For Page Access" | sed "s/'/''/g")"
       required_role_for_page_access_name_sql="$(printf '%s' "Required Role For Page Access" | sed "s/'/''/g")"
+      layout_chrome_name_sql="$(printf '%s' "Layout Chrome" | sed "s/'/''/g")"
       hero_background_image_note_sql="$(printf '%s' "${hero_background_image_note}" | sed "s/'/''/g")"
       widget_dock_enabled_note_sql="$(printf '%s' "${widget_dock_enabled_note}" | sed "s/'/''/g")"
       widget_dock_enabled_name_sql="$(printf '%s' "Enable Widget Dock" | sed "s/'/''/g")"
@@ -5312,6 +5325,7 @@ data:
       }
     
       _upsert_page_layout_template_field_meta
+      _upsert_page_head_input_field_meta "layout_chrome" 3 "half" "${layout_chrome_note_sql}" "select-dropdown" "${layout_chrome_options_json}" "${layout_chrome_name_sql}"
       _upsert_page_theme_package_field_meta
       _upsert_page_site_key_field_meta
       _upsert_page_parent_field_meta
@@ -5381,6 +5395,7 @@ data:
       _assign_page_field_group "force_login_for_page_access" "_section_page_settings"
       _assign_page_field_group "required_role_for_page_access" "_section_page_settings"
       _assign_page_field_group "layout_template_key" "_section_layout"
+      _assign_page_field_group "layout_chrome" "_section_layout"
       _assign_page_field_group "theme_package_key" "_section_theme"
       _assign_page_field_group "theme_mode" "_section_theme"
       _assign_page_field_group "widget_dock_enabled" "_section_widget_dock"
@@ -5423,6 +5438,7 @@ data:
       _set_page_field_note "force_login_for_page_access" "${force_login_for_page_access_note_sql}"
       _set_page_field_note "required_role_for_page_access" "${required_role_for_page_access_note_sql}"
       _set_page_field_note "layout_template_key" "${template_note_sql}"
+      _set_page_field_note "layout_chrome" "${layout_chrome_note_sql}"
       _set_page_field_note "theme_package_key" "${theme_note_sql}"
       _set_page_field_note "theme_mode" "${theme_mode_note_sql}"
       _set_page_field_conditions "required_role_for_page_access" "${required_role_for_page_access_hidden_conditions_json}"
