@@ -102,6 +102,7 @@ data:
                       - cms_block_hero
                       - cms_block_module
                       - cms_block_template_ref
+                      - cms_block_content_ref
           - collection: cms_block_rich_text
             fields:
               - "*"
@@ -133,6 +134,52 @@ data:
                     _eq: internal
                 - page_slug:
                     _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_block_content_ref
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: internal
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_content_items
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - release_channel:
+                    _in:
+                      - preview
+                      - prod
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: internal
+          - collection: cms_content_templates
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: internal
+          - collection: cms_content_item_translations
+            fields:
+              - "*"
+            permissions:
+              _and:
                 - status:
                     _eq: published
           - collection: cms_modules
@@ -251,6 +298,7 @@ data:
                       - cms_block_hero
                       - cms_block_module
                       - cms_block_template_ref
+                      - cms_block_content_ref
           - collection: cms_block_rich_text
             fields:
               - "*"
@@ -282,6 +330,52 @@ data:
                     _eq: external
                 - page_slug:
                     _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_block_content_ref
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - site_key:
+                    _eq: external
+                - page_slug:
+                    _eq: home
+                - status:
+                    _eq: published
+          - collection: cms_content_items
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - release_channel:
+                    _in:
+                      - preview
+                      - prod
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: external
+          - collection: cms_content_templates
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: external
+          - collection: cms_content_item_translations
+            fields:
+              - "*"
+            permissions:
+              _and:
                 - status:
                     _eq: published
           - collection: cms_modules

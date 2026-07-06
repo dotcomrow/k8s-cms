@@ -7248,6 +7248,9 @@ data:
     const collectionDisplayName = (collection) => {
       const normalized = toLower(collection);
       if (!normalized) return 'Block';
+      if (normalized.includes('content_ref')) return 'Content';
+      if (normalized.includes('content_item')) return 'Content Item';
+      if (normalized.includes('content_template')) return 'Content Template';
       if (normalized.includes('hero')) return 'Hero';
       if (normalized.includes('rich_text')) return 'Rich Text';
       if (normalized.includes('module')) return 'Module';
@@ -7305,7 +7308,7 @@ data:
         const saving = ref({});
         const deleting = ref({});
         const creatingBlockType = ref('');
-        const addBlockType = ref('rich_text');
+        const addBlockType = ref('content_ref');
         const promoting = ref(false);
         const error = ref('');
         const info = ref('');
@@ -7397,7 +7400,7 @@ data:
           return Math.min(configured, 3600000);
         });
         const addBlockTypeChoices = [
-          { text: 'Rich Text', value: 'rich_text' },
+          { text: 'Content', value: 'content_ref' },
           { text: 'Hero', value: 'hero' },
           { text: 'Image', value: 'image' },
           { text: 'Module', value: 'module' },
@@ -8388,8 +8391,22 @@ data:
           openDrawerItem(pageBlocksCollection.value, row?.id);
         };
     
-        const openContentItem = (row) => {
+        const openContentItem = async (row) => {
           if (!row.collection || !row.item) return;
+          if (toLower(row.collection) === 'cms_block_content_ref') {
+            try {
+              const response = await apiRequest('GET', `/items/cms_block_content_ref/${encodeURIComponent(parseId(row.item))}`, {
+                fields: 'content_item_id',
+              });
+              const contentItemId = parseId(response?.data?.content_item_id);
+              if (contentItemId) {
+                openDrawerItem('cms_content_items', contentItemId);
+                return;
+              }
+            } catch {
+              // Fall back to the content-ref row so the author can repair the reference.
+            }
+          }
           openDrawerItem(row.collection, row.item);
         };
     
@@ -8404,6 +8421,18 @@ data:
           }
           if (key === 'cms_block_rich_text') {
             return ['id', 'status', 'body'];
+          }
+          if (key === 'cms_block_content_ref') {
+            return ['id', 'status', 'template_key', 'template_id', 'content_item_id', 'props_json'];
+          }
+          if (key === 'cms_content_items') {
+            return ['id', 'status', 'content_key', 'name', 'default_language_code', 'content_json'];
+          }
+          if (key === 'cms_content_templates') {
+            return ['id', 'status', 'template_key', 'name', 'html_template', 'css', 'content_schema'];
+          }
+          if (key === 'cms_content_item_translations') {
+            return ['id', 'content_item_id', 'language_code', 'status', 'content_json'];
           }
           if (key === 'cms_block_hero') {
             return ['id', 'status', 'headline', 'subheadline', 'background_image', 'cta_label', 'cta_url'];
@@ -8624,6 +8653,30 @@ data:
           const siteSpecific = rows.find((row) => asString(row?.site_key) === siteKey);
           return asString(siteSpecific?.template_key || rows[0]?.template_key);
         };
+
+        const resolveDefaultPublishedContentTemplateKey = async (preferredTemplateKey = 'rich-text-body-v1') => {
+          const preferred = asString(preferredTemplateKey);
+          const releaseChannel = hasPageReleaseChannel.value ? sourcePageReleaseChannel.value : 'preview';
+          const filter = {
+            _and: [
+              { status: { _eq: 'published' } },
+              { release_channel: { _eq: releaseChannel } },
+              publishedSiteScopeFilter(),
+              ...(preferred ? [{ template_key: { _eq: preferred } }] : []),
+            ],
+          };
+          const response = await apiRequest('GET', '/items/cms_content_templates', {
+            fields: 'template_key,site_key',
+            limit: 50,
+            sort: 'site_key,template_key',
+            filter: JSON.stringify(filter),
+          });
+          const rows = normalizeRows(response);
+          if (!rows.length) return '';
+          const siteKey = asString(pageContext.value?.site_key);
+          const siteSpecific = rows.find((row) => asString(row?.site_key) === siteKey);
+          return asString(siteSpecific?.template_key || rows[0]?.template_key);
+        };
     
         const createPageBlockWithContent = async (type) => {
           if (props.disabled || !pageId.value || creatingBlockType.value) return;
@@ -8641,12 +8694,35 @@ data:
             let preferredEditorCollection = '';
             let preferredEditorId = '';
     
-            if (type === 'rich_text') {
-              contentCollection = 'cms_block_rich_text';
+            if (type === 'content_ref') {
+              const contentTemplateKey = await resolveDefaultPublishedContentTemplateKey('rich-text-body-v1');
+              if (!contentTemplateKey) {
+                throw new Error('No published content templates are available for this site context.');
+              }
+              const createdContentItem = await apiRequest('POST', '/items/cms_content_items', {}, {
+                status: 'published',
+                name: 'New content block',
+                default_language_code: 'en',
+                content_json: {
+                  body_html: '<p>New content block</p>',
+                },
+                site_key: asString(pageContext.value?.site_key) || null,
+                release_channel: sourcePageReleaseChannel.value,
+                refresh_target: 'both',
+              });
+              const contentItemId = parseId(createdContentItem?.data?.id);
+              if (!contentItemId) {
+                throw new Error('Content item created but id was missing.');
+              }
+              contentCollection = 'cms_block_content_ref';
               contentPayload = {
                 status: 'published',
-                body: '<p>New content block</p>',
+                template_key: contentTemplateKey,
+                content_item_id: contentItemId,
+                props_json: {},
               };
+              preferredEditorCollection = 'cms_content_items';
+              preferredEditorId = contentItemId;
             } else if (type === 'hero') {
               contentCollection = 'cms_block_hero';
               contentPayload = {
@@ -8731,8 +8807,10 @@ data:
             info.value = `Created ${collectionDisplayName(contentCollection)} block.`;
             await refreshAll();
     
-            preferredEditorCollection = contentCollection;
-            preferredEditorId = contentId;
+            if (!preferredEditorCollection || !preferredEditorId) {
+              preferredEditorCollection = contentCollection;
+              preferredEditorId = contentId;
+            }
     
             if (preferredEditorCollection && preferredEditorId) {
               openDrawerItem(preferredEditorCollection, preferredEditorId);
@@ -8818,6 +8896,84 @@ data:
           });
           const rows = normalizeRows(response);
           return rows[0] || null;
+        };
+
+        const findContentItemByKey = async ({ contentKey, siteKey, releaseChannel }) => {
+          const normalizedContentKey = asString(contentKey);
+          const normalizedRelease = toLower(releaseChannel);
+          if (!normalizedContentKey || !normalizedRelease) return null;
+          const filter = {
+            _and: [
+              { content_key: { _eq: normalizedContentKey } },
+              { release_channel: { _eq: normalizedRelease } },
+              siteScopeFilterFor(siteKey),
+            ],
+          };
+          const response = await apiRequest('GET', '/items/cms_content_items', {
+            fields: 'id,content_key,site_key,release_channel',
+            limit: 1,
+            sort: '-date_updated',
+            filter: JSON.stringify(filter),
+          });
+          const rows = normalizeRows(response);
+          return rows[0] || null;
+        };
+
+        const promoteContentItemForProd = async ({ sourceContentItemId, siteKey }) => {
+          const normalizedSourceId = parseId(sourceContentItemId);
+          if (!normalizedSourceId) {
+            throw new Error('Content-ref block is missing content_item_id.');
+          }
+
+          const sourceResponse = await apiRequest(
+            'GET',
+            `/items/cms_content_items/${encodeURIComponent(normalizedSourceId)}`,
+            { fields: '*' },
+          );
+          const sourceContentItem = sourceResponse?.data || null;
+          if (!sourceContentItem) {
+            throw new Error(`Content item ${normalizedSourceId} could not be loaded for promotion.`);
+          }
+
+          const sourceContentKey = asString(sourceContentItem?.content_key);
+          const targetContentKey = sourceContentKey || `promoted:${normalizedSourceId}`;
+          const targetContentPayload = sanitizeClonePayload(sourceContentItem, {
+            blockedKeys: ['site_key', 'release_channel', 'refresh_target'],
+            force: {
+              content_key: targetContentKey,
+              site_key: asString(siteKey) || null,
+              release_channel: PROMOTE_TARGET_CHANNEL,
+              refresh_target: PROMOTE_TARGET_REFRESH,
+            },
+          });
+
+          const existingTargetContentItem = await findContentItemByKey({
+            contentKey: targetContentKey,
+            siteKey,
+            releaseChannel: PROMOTE_TARGET_CHANNEL,
+          });
+          const existingTargetContentItemId = parseId(existingTargetContentItem?.id);
+          if (existingTargetContentItemId) {
+            const updatedContentItem = await apiRequest(
+              'PATCH',
+              `/items/cms_content_items/${encodeURIComponent(existingTargetContentItemId)}`,
+              {},
+              targetContentPayload,
+            );
+            return parseId(updatedContentItem?.data?.id) || existingTargetContentItemId;
+          }
+
+          const createdContentItem = await apiRequest(
+            'POST',
+            '/items/cms_content_items',
+            {},
+            targetContentPayload,
+          );
+          const targetContentItemId = parseId(createdContentItem?.data?.id);
+          if (!targetContentItemId) {
+            throw new Error('Promotion failed: created content item id is missing.');
+          }
+          return targetContentItemId;
         };
     
         const listBlocksForPage = async (targetPageId) => {
@@ -9015,6 +9171,13 @@ data:
                   refresh_target: PROMOTE_TARGET_REFRESH,
                 },
               });
+              if (sourceCollection === 'cms_block_content_ref') {
+                targetContentPayload.template_id = null;
+                targetContentPayload.content_item_id = await promoteContentItemForProd({
+                  sourceContentItemId: sourceContent?.content_item_id,
+                  siteKey: sourceSiteKey,
+                });
+              }
               const createdContent = await apiRequest(
                 'POST',
                 `/items/${sourceCollection}`,
@@ -9733,7 +9896,7 @@ data:
                       fallbackIcon: 'C',
                       label: 'Edit block content',
                       disabled: !row.collection || !row.item || rowBusy,
-                      onClick: () => openContentItem(row),
+                      onClick: () => { void openContentItem(row); },
                     }),
                     renderIconControl({
                       icon: 'delete',
@@ -9807,7 +9970,7 @@ data:
                         value: addBlockType.value,
                         items: addBlockTypeChoices,
                         disabled: !pageId.value || !!creatingBlockType.value || loading.value,
-                        onUpdate: (next) => { addBlockType.value = asString(next) || 'rich_text'; },
+                        onUpdate: (next) => { addBlockType.value = asString(next) || 'content_ref'; },
                       }),
                     ]),
                     renderButtonControl({
