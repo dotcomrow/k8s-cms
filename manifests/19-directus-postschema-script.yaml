@@ -2776,6 +2776,56 @@ data:
       echo "⚠️ Could not ensure UUID defaults for CMS collection IDs after retries; continuing startup and retrying on next reconcile."
     fi
 
+    echo "🧱 Ensuring cms_content_items.content_key is generated when blank..."
+    if ! _psql_yb_retry "CREATE OR REPLACE FUNCTION directus.generate_cms_content_key(_name TEXT, _id UUID)
+      RETURNS TEXT
+      LANGUAGE plpgsql
+      AS \$\$
+      DECLARE
+        _base TEXT;
+        _suffix TEXT;
+      BEGIN
+        _base := REGEXP_REPLACE(LOWER(COALESCE(NULLIF(BTRIM(_name), ''), 'content')), '[^a-z0-9]+', '-', 'g');
+        _base := REGEXP_REPLACE(_base, '(^-+|-+$)', '', 'g');
+        IF COALESCE(NULLIF(BTRIM(_base), ''), '') = '' THEN
+          _base := 'content';
+        END IF;
+        _base := LEFT(_base, 48);
+        _base := REGEXP_REPLACE(_base, '-+$', '', 'g');
+        _suffix := REPLACE(COALESCE(_id::TEXT, directus.cms_generate_uuid()::TEXT), '-', '');
+        RETURN _base || '-' || _suffix;
+      END;
+      \$\$;
+      CREATE OR REPLACE FUNCTION directus.ensure_cms_content_item_content_key()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS \$\$
+      BEGIN
+        IF NEW.id IS NULL THEN
+          NEW.id := directus.cms_generate_uuid();
+        END IF;
+        IF COALESCE(NULLIF(BTRIM(NEW.content_key), ''), '') = '' THEN
+          NEW.content_key := directus.generate_cms_content_key(NEW.name, NEW.id);
+        ELSE
+          NEW.content_key := BTRIM(NEW.content_key);
+        END IF;
+        RETURN NEW;
+      END;
+      \$\$;
+      DROP TRIGGER IF EXISTS cms_content_items_content_key_guard ON cms_content_items;
+      CREATE TRIGGER cms_content_items_content_key_guard
+      BEFORE INSERT OR UPDATE OF content_key, name
+      ON cms_content_items
+      FOR EACH ROW
+      EXECUTE FUNCTION directus.ensure_cms_content_item_content_key();
+      UPDATE cms_content_items
+         SET content_key = directus.generate_cms_content_key(name, id),
+             date_updated = now()
+       WHERE COALESCE(NULLIF(BTRIM(content_key), ''), '') = '';" "ensure cms_content_items.content_key generation" 24; then
+      echo "❌ Could not ensure cms_content_items.content_key generation after retries."
+      exit 1
+    fi
+
     if [ -f "${MODULES_FILE}" ]; then
       MODULES_JSON="$(yq -o=json '.' "${MODULES_FILE}" 2>/dev/null || true)"
       if printf '%s' "${MODULES_JSON}" | jq -e '.modules | type=="array" and length>0' >/dev/null 2>&1; then
