@@ -7321,6 +7321,8 @@ data:
           layout_template_key: '',
         });
         const slotsByTemplateKey = ref({});
+        const contentTemplateChoices = ref([]);
+        const contentTemplateChoicesLoading = ref(false);
         const blocks = ref([]);
         const moduleRegistryModules = ref([]);
         const drafts = ref({});
@@ -7871,6 +7873,7 @@ data:
           const parentBlockId = parseId(row?.parent_block_id);
           const templateRootBlockId = parseId(row?.template_root_block_id);
           const templateNearestBlockId = parseId(row?.template_nearest_block_id);
+          const contentTemplateKey = asString(row?.content_template_key);
           const contextToken = templateNearestBlockId ? buildTemplateContextId(templateNearestBlockId) : PAGE_CONTEXT_ID;
           const hierarchyToken = parentBlockId ? 'nested-child' : 'page-child';
           const searchTokens = [
@@ -7888,6 +7891,7 @@ data:
             contextToken,
             hierarchyToken,
             pageSlug,
+            contentTemplateKey,
             ...(status ? [status] : []),
           ]
             .map((entry) => toLower(entry))
@@ -7909,6 +7913,8 @@ data:
             template_root_block_id: templateRootBlockId,
             template_nearest_block_id: templateNearestBlockId,
             page_slug: pageSlug,
+            content_template_key: asString(row?.content_template_key),
+            content_item_id: parseId(row?.content_item_id),
             _context_id: contextToken,
             _search_text: searchTokens.join(' '),
           };
@@ -8087,6 +8093,102 @@ data:
           }
           slotsByTemplateKey.value = nextCache;
         };
+
+        const loadContentTemplateChoices = async () => {
+          const releaseChannel = toLower(pageContext.value?.release_channel);
+          if (releaseChannel !== 'preview' && releaseChannel !== 'prod') {
+            contentTemplateChoices.value = [];
+            return;
+          }
+
+          contentTemplateChoicesLoading.value = true;
+          try {
+            const siteKey = asString(pageContext.value?.site_key);
+            const filter = {
+              _and: [
+                { status: { _eq: 'published' } },
+                { release_channel: { _eq: releaseChannel } },
+                siteKey
+                  ? {
+                      _or: [
+                        { site_key: { _empty: true } },
+                        { site_key: { _eq: siteKey } },
+                      ],
+                    }
+                  : { site_key: { _empty: true } },
+              ],
+            };
+            const response = await apiRequest('GET', '/items/cms_content_templates', {
+              fields: 'template_key,name,site_key,release_channel',
+              limit: -1,
+              sort: 'site_key,template_key',
+              filter: JSON.stringify(filter),
+            });
+            const byKey = new Map();
+            for (const row of normalizeRows(response)) {
+              const templateKey = asString(row?.template_key);
+              if (!templateKey) continue;
+              const rowSiteKey = asString(row?.site_key);
+              const existing = byKey.get(templateKey);
+              if (!existing || (siteKey && rowSiteKey === siteKey)) {
+                byKey.set(templateKey, row);
+              }
+            }
+            contentTemplateChoices.value = Array.from(byKey.values())
+              .map((row) => {
+                const templateKey = asString(row?.template_key);
+                const name = asString(row?.name);
+                const rowSiteKey = asString(row?.site_key);
+                const scope = rowSiteKey ? `site:${rowSiteKey}` : 'global';
+                return {
+                  text: name && name !== templateKey ? `${name} (${templateKey}, ${scope})` : `${templateKey} (${scope})`,
+                  value: templateKey,
+                };
+              })
+              .sort((left, right) => left.text.localeCompare(right.text));
+          } finally {
+            contentTemplateChoicesLoading.value = false;
+          }
+        };
+
+        const contentTemplateChoiceItemsForRow = (row) => {
+          const currentKey = asString(row?.content_template_key);
+          const choices = Array.isArray(contentTemplateChoices.value) ? [...contentTemplateChoices.value] : [];
+          if (currentKey && !choices.some((choice) => asString(choice?.value) === currentKey)) {
+            choices.unshift({ text: `${currentKey} (current)`, value: currentKey });
+          }
+          return choices;
+        };
+
+        const hydrateContentRefRows = async (rows) => {
+          const contentRefIds = uniqueNonEmpty(
+            (rows || [])
+              .filter((row) => toLower(row?.collection) === 'cms_block_content_ref')
+              .map((row) => parseId(row?.item)),
+          );
+          if (contentRefIds.length === 0) return rows;
+
+          const response = await apiRequest('GET', '/items/cms_block_content_ref', {
+            fields: 'id,template_key,content_item_id',
+            limit: -1,
+            filter: JSON.stringify({ id: { _in: contentRefIds } }),
+          });
+          const contentRefById = new Map();
+          for (const row of normalizeRows(response)) {
+            const id = parseId(row?.id);
+            if (id) contentRefById.set(id, row);
+          }
+          return (rows || []).map((row) => {
+            if (toLower(row?.collection) !== 'cms_block_content_ref') return row;
+            const contentRef = contentRefById.get(parseId(row?.item));
+            if (!contentRef) return row;
+            return {
+              ...row,
+              content_template_key: asString(contentRef?.template_key),
+              content_item_id: parseId(contentRef?.content_item_id),
+            };
+          });
+        };
     
         const loadBlocks = async () => {
           if (!pageId.value) {
@@ -8118,7 +8220,8 @@ data:
             filter: JSON.stringify(filter),
           });
     
-          blocks.value = normalizeRows(response).map(normalizeBlockRow);
+          const rows = await hydrateContentRefRows(normalizeRows(response));
+          blocks.value = rows.map(normalizeBlockRow);
           primeDrafts();
         };
     
@@ -8129,6 +8232,7 @@ data:
           try {
             await loadPageContext();
             await loadModuleRegistryModules();
+            await loadContentTemplateChoices();
             await loadBlocks();
             await preloadSlotsForKnownTemplates();
           } catch (requestError) {
@@ -8243,6 +8347,38 @@ data:
           }
           info.value = `Saved ${changedRows.length} block${changedRows.length === 1 ? '' : 's'}.`;
           await loadBlocks();
+        };
+
+        const updateContentBlockTemplateKey = async (row, nextTemplateKey) => {
+          if (props.disabled) return;
+          const rowId = parseId(row?.id);
+          const contentRefId = parseId(row?.item);
+          const templateKey = asString(nextTemplateKey);
+          if (!rowId || !contentRefId || !templateKey) return;
+          if (templateKey === asString(row?.content_template_key)) return;
+
+          markSaving(rowId, true);
+          info.value = '';
+          error.value = '';
+          try {
+            await apiRequest(
+              'PATCH',
+              `/items/cms_block_content_ref/${encodeURIComponent(contentRefId)}`,
+              {},
+              { template_key: templateKey },
+            );
+            blocks.value = blocks.value.map((candidate) => (
+              candidate.id === rowId
+                ? { ...candidate, content_template_key: templateKey }
+                : candidate
+            ));
+            emit('input', buildRelationManagerValue());
+            info.value = `Updated content template to ${templateKey}. Save the page to publish and trigger refresh.`;
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to update content template.';
+          } finally {
+            markSaving(rowId, false);
+          }
         };
     
         const resetRow = (row) => {
@@ -9629,6 +9765,19 @@ data:
               gap: '4px',
               alignItems: 'center',
             },
+            treeNodeFieldRow: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '6px',
+              alignItems: 'center',
+              paddingTop: '2px',
+            },
+            treeNodeFieldLabel: {
+              minWidth: '92px',
+              fontSize: '11px',
+              fontWeight: '600',
+              color: 'var(--theme--foreground-subdued)',
+            },
             treeNodeActions: {
               display: 'flex',
               flexWrap: 'nowrap',
@@ -9708,6 +9857,7 @@ data:
                 items,
                 disabled,
                 allowNone: false,
+                style,
                 'onUpdate:modelValue': (next) => onUpdate(next),
               });
             }
@@ -9856,6 +10006,7 @@ data:
             const nodeExpanded = isNodeExpanded(rowId, true);
             const collectionKey = asString(row?.collection);
             const blockTypeLabel = collectionDisplayName(collectionKey);
+            const isContentRefBlock = toLower(collectionKey) === 'cms_block_content_ref';
             const isTemplateNode = hasChildren
               || toLower(row?.template_scope) === 'template'
               || toLower(collectionKey).includes('template');
@@ -9863,6 +10014,14 @@ data:
             const subtitle = collectionKey || '(collection?)';
             const rowBusy = isSaving(rowId) || isDeleting(rowId);
             const rowTemplateKey = asString(row?.template_group_key);
+            const contentTemplateItems = isContentRefBlock ? contentTemplateChoiceItemsForRow(row) : [];
+            const currentContentTemplateKey = asString(row?.content_template_key);
+            const renderedContentTemplateItems = contentTemplateItems.length > 0
+              ? contentTemplateItems
+              : [{
+                  text: contentTemplateChoicesLoading.value ? 'Loading templates' : 'No published templates',
+                  value: currentContentTemplateKey,
+                }];
             return h('li', { key: rowId }, [
               h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
                 h('header', { class: 'cms-page-blocks-manager__tree-node-header', style: styles.treeNodeHeader }, [
@@ -9914,8 +10073,25 @@ data:
                   ...(asInteger(row?.sort) !== null ? [renderMetaChip(`sort:${asInteger(row?.sort)}`)] : []),
                   ...(asString(row?.group_tag) ? [renderMetaChip(`group:${asString(row.group_tag)}`)] : []),
                   ...(rowTemplateKey && rowTemplateKey !== 'page-root' ? [renderMetaChip(`tpl:${rowTemplateKey}`)] : []),
+                  ...(currentContentTemplateKey ? [renderMetaChip(`html:${currentContentTemplateKey}`)] : []),
                   ...(isTemplateNode ? [renderMetaChip(`children:${childRows.length}`)] : []),
                 ]),
+                ...(isContentRefBlock
+                  ? [
+                      h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
+                        h('span', { style: styles.treeNodeFieldLabel }, 'HTML template'),
+                        h('div', { style: { minWidth: '260px', flex: '1 1 260px' } }, [
+                          renderSelectControl({
+                            value: currentContentTemplateKey,
+                            items: renderedContentTemplateItems,
+                            disabled: props.disabled || rowBusy || contentTemplateChoicesLoading.value || contentTemplateItems.length === 0,
+                            style: { width: '100%' },
+                            onUpdate: (next) => { void updateContentBlockTemplateKey(row, next); },
+                          }),
+                        ]),
+                      ]),
+                    ]
+                  : []),
               ]),
               ...(hasChildren && nodeExpanded
                 ? [
