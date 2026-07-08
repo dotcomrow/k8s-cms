@@ -448,6 +448,7 @@ data:
            ('cms_content_templates'), \
            ('cms_content_items'), \
            ('cms_content_item_translations'), \
+           ('cms_template_functions'), \
            ('cms_block_content_ref'), \
            ('cms_layout_templates'), \
            ('cms_layout_template_slots'), \
@@ -499,6 +500,9 @@ data:
              ('cms_content_item_translations','content_item_id'), \
              ('cms_content_item_translations','language_code'), \
              ('cms_content_item_translations','content_json'), \
+             ('cms_template_functions','token_key'), \
+             ('cms_template_functions','handler_key'), \
+             ('cms_template_functions','function_kind'), \
              ('cms_block_content_ref','status'), \
              ('cms_block_content_ref','template_key'), \
              ('cms_block_content_ref','content_item_id'), \
@@ -1463,6 +1467,12 @@ data:
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "model" 103
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "prompt_version" 104
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "translated_by" 105
+      _upsert_hidden_internal_field_meta "cms_template_functions" "id" 106
+      _upsert_hidden_internal_field_meta "cms_template_functions" "site_key" 107
+      _upsert_hidden_internal_field_meta "cms_template_functions" "release_channel" 108
+      _upsert_hidden_internal_field_meta "cms_template_functions" "refresh_target" 109
+      _upsert_hidden_internal_field_meta "cms_template_functions" "date_created" 110
+      _upsert_hidden_internal_field_meta "cms_template_functions" "date_updated" 111
       _upsert_hidden_internal_field_meta "cms_layout_templates" "id" 89
       _upsert_hidden_internal_field_meta "cms_layout_template_slots" "id" 89
       _upsert_hidden_internal_field_meta "cms_theme_packages" "id" 89
@@ -2576,6 +2586,52 @@ data:
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN content_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN date_created SET DEFAULT now(); \
+       CREATE TABLE IF NOT EXISTS cms_template_functions ( \
+         id UUID PRIMARY KEY, \
+         token_key TEXT NOT NULL, \
+         name TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         function_kind TEXT NOT NULL DEFAULT 'builtin', \
+         handler_key TEXT NOT NULL DEFAULT 'current_year', \
+         function_config JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         output_type TEXT NOT NULL DEFAULT 'text', \
+         description TEXT NULL, \
+         function_source TEXT NULL, \
+         review_status TEXT NOT NULL DEFAULT 'pending', \
+         reviewed_by TEXT NULL, \
+         reviewed_at TIMESTAMPTZ NULL, \
+         site_key TEXT NULL, \
+         release_channel TEXT NOT NULL DEFAULT 'preview', \
+         refresh_target TEXT NOT NULL DEFAULT 'both', \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS token_key TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS function_kind TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS handler_key TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS function_config JSONB; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS output_type TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS description TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS function_source TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS review_status TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS reviewed_by TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS release_channel TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN function_kind SET DEFAULT 'builtin'; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN handler_key SET DEFAULT 'current_year'; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN function_config SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN output_type SET DEFAULT 'text'; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN review_status SET DEFAULT 'pending'; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN release_channel SET DEFAULT 'preview'; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN refresh_target SET DEFAULT 'both'; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN date_created SET DEFAULT now(); \
        CREATE TABLE IF NOT EXISTS cms_block_content_ref ( \
          id UUID PRIMARY KEY, \
          status TEXT NOT NULL DEFAULT 'draft', \
@@ -2613,6 +2669,8 @@ data:
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_items_global_key_unique ON cms_content_items (release_channel, content_key) WHERE content_key IS NOT NULL AND BTRIM(content_key) <> '' AND (site_key IS NULL OR BTRIM(site_key) = ''); \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_items_site_key_unique ON cms_content_items (site_key, release_channel, content_key) WHERE content_key IS NOT NULL AND BTRIM(content_key) <> '' AND site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_item_translations_item_language_unique ON cms_content_item_translations (content_item_id, language_code); \
+       CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_global_key_unique ON cms_template_functions (release_channel, token_key) WHERE site_key IS NULL OR BTRIM(site_key) = ''; \
+       CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_site_key_unique ON cms_template_functions (site_key, release_channel, token_key) WHERE site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE INDEX IF NOT EXISTS cms_block_content_ref_content_item_idx ON cms_block_content_ref (content_item_id); \
        CREATE INDEX IF NOT EXISTS cms_block_content_ref_template_key_idx ON cms_block_content_ref (template_key); \
        DO \$\$ \
@@ -2690,6 +2748,41 @@ data:
          WHERE existing.template_key='rich-text-body-v1' \
            AND existing.release_channel=defaults.release_channel \
            AND (existing.site_key IS NULL OR BTRIM(existing.site_key) = '') \
+       ); \
+       WITH defaults(release_channel) AS (VALUES ('preview'), ('prod')), \
+       tokens(token_key, name) AS ( \
+         VALUES \
+           ('system.year', 'Current Year'), \
+           ('system.current_year', 'Current Year'), \
+           ('system.currentYear', 'Current Year') \
+       ) \
+       INSERT INTO cms_template_functions (id, token_key, name, status, function_kind, handler_key, function_config, output_type, description, function_source, review_status, reviewed_by, reviewed_at, site_key, release_channel, refresh_target, date_created, date_updated) \
+       SELECT \
+         md5(random()::text || clock_timestamp()::text || defaults.release_channel || tokens.token_key)::uuid, \
+         tokens.token_key, \
+         tokens.name, \
+         'published', \
+         'builtin', \
+         'current_year', \
+         '{}'::jsonb, \
+         'text', \
+         'Returns the current four-digit year from the shell runtime clock.', \
+         NULL, \
+         'approved', \
+         'postschema', \
+         now(), \
+         NULL, \
+         defaults.release_channel, \
+         'both', \
+         now(), \
+         now() \
+       FROM defaults \
+       CROSS JOIN tokens \
+       WHERE NOT EXISTS ( \
+         SELECT 1 FROM cms_template_functions existing \
+         WHERE existing.token_key=tokens.token_key \
+           AND existing.release_channel=defaults.release_channel \
+           AND (existing.site_key IS NULL OR BTRIM(existing.site_key) = '') \
        );"
 
     LEGACY_RICH_TEXT_CLEARED="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -2755,6 +2848,9 @@ data:
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_content_item_translations' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_content_item_translations ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_template_functions' AND column_name='id' AND udt_name='uuid') THEN
+          ALTER TABLE cms_template_functions ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_block_content_ref' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_block_content_ref ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
@@ -5717,6 +5813,7 @@ data:
       _upsert_status_dropdown_field_meta "cms_content_templates" 1
       _upsert_status_dropdown_field_meta "cms_content_items" 1
       _upsert_status_dropdown_field_meta "cms_content_item_translations" 1
+      _upsert_status_dropdown_field_meta "cms_template_functions" 1
       _upsert_status_dropdown_field_meta "cms_modules" 1
       _upsert_page_section_group_field_meta "_section_page_settings" "Page (Core Settings)" 1 "article"
       _upsert_page_section_group_field_meta "_section_layout" "Section Layout" 8 "dashboard_customize"
@@ -5844,6 +5941,12 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "translated_by" 121
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_created" 122
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_updated" 123
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "id" 124
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "site_key" 125
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "release_channel" 126
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "refresh_target" 127
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "date_created" 128
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "date_updated" 129
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "id" 101
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_created" 102
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 103
@@ -7140,7 +7243,7 @@ data:
               refresh_targets_json="[]"
             fi
     
-            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_block_content_ref","cms_content_templates","cms_content_items","cms_content_item_translations","cms_modules","cms_layout_templates","cms_layout_template_slots","cms_theme_packages"]'
+            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_block_content_ref","cms_content_templates","cms_content_items","cms_content_item_translations","cms_template_functions","cms_modules","cms_layout_templates","cms_layout_template_slots","cms_theme_packages"]'
             manual_refresh_collections_json='["cms_pages"]'
             targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
             if [ "${targets_count:-0}" = "0" ]; then
