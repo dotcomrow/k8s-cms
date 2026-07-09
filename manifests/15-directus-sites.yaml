@@ -59,8 +59,6 @@ data:
               _and:
                 - site_key:
                     _eq: internal
-                - slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_layout_templates
@@ -94,8 +92,6 @@ data:
               _and:
                 - site_key:
                     _eq: internal
-                - page_slug:
-                    _eq: home
                 - collection:
                     _in:
                       - cms_block_rich_text
@@ -110,8 +106,6 @@ data:
               _and:
                 - site_key:
                     _eq: internal
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_block_module
@@ -121,8 +115,6 @@ data:
               _and:
                 - site_key:
                     _eq: internal
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_block_template_ref
@@ -132,8 +124,6 @@ data:
               _and:
                 - site_key:
                     _eq: internal
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_block_content_ref
@@ -143,8 +133,6 @@ data:
               _and:
                 - site_key:
                     _eq: internal
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_content_items
@@ -217,8 +205,6 @@ data:
               _and:
                 - site_key:
                     _eq: internal
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
 
@@ -271,8 +257,6 @@ data:
               _and:
                 - site_key:
                     _eq: external
-                - slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_layout_templates
@@ -306,8 +290,6 @@ data:
               _and:
                 - site_key:
                     _eq: external
-                - page_slug:
-                    _eq: home
                 - collection:
                     _in:
                       - cms_block_rich_text
@@ -322,8 +304,6 @@ data:
               _and:
                 - site_key:
                     _eq: external
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_block_module
@@ -333,8 +313,6 @@ data:
               _and:
                 - site_key:
                     _eq: external
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_block_template_ref
@@ -344,8 +322,6 @@ data:
               _and:
                 - site_key:
                     _eq: external
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_block_content_ref
@@ -355,8 +331,6 @@ data:
               _and:
                 - site_key:
                     _eq: external
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
           - collection: cms_content_items
@@ -429,7 +403,5 @@ data:
               _and:
                 - site_key:
                     _eq: external
-                - page_slug:
-                    _eq: home
                 - status:
                     _eq: published
