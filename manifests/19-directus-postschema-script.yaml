@@ -8320,6 +8320,7 @@ data:
       _ensure_local_ext_enabled "cms-asset-url-picker"
       _ensure_local_ext_enabled "cms-module-props-editor"
       _ensure_local_ext_enabled "cms-preset-bookmark-copy"
+      _ensure_local_ext_enabled "cms-bookmark-copy"
       _ensure_local_ext_enabled "cms-page-blocks-manager"
     else
       echo "⚠️ directus_extensions table not found; skipping extension enable."

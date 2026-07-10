@@ -24,7 +24,7 @@ spec:
         app: directus
       annotations:
         reloader.stakater.com/auto: "true"
-        directus.suncoast.systems/extensions-seed-revision: "2026-07-10.1"
+        directus.suncoast.systems/extensions-seed-revision: "2026-07-10.2"
         # Init containers must reach Oracle VM (SSH 22 / Postgres 5432) before
         # linkerd-proxy is running. Skip proxy redirection for these ports.
         config.linkerd.io/skip-outbound-ports: "22,5432,5433"
@@ -124,6 +124,10 @@ spec:
                 path: cms-preset-bookmark-copy/package.json
               - key: cms-preset-bookmark-copy.index.js
                 path: cms-preset-bookmark-copy/index.js
+              - key: cms-bookmark-copy.package.json
+                path: cms-bookmark-copy/package.json
+              - key: cms-bookmark-copy.index.js
+                path: cms-bookmark-copy/index.js
               - key: cms-page-blocks-manager.package.json
                 path: cms-page-blocks-manager/package.json
               - key: cms-page-blocks-manager.index.js
@@ -180,7 +184,7 @@ spec:
               mkdir -p /directus/extensions
 
               # Keep our GitOps-managed extensions deterministic on every start.
-              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-keycloak-role-options /directus/extensions/cms-asset-url-picker /directus/extensions/cms-module-props-editor /directus/extensions/cms-preset-bookmark-copy /directus/extensions/cms-page-blocks-manager
+              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-keycloak-role-options /directus/extensions/cms-asset-url-picker /directus/extensions/cms-module-props-editor /directus/extensions/cms-preset-bookmark-copy /directus/extensions/cms-bookmark-copy /directus/extensions/cms-page-blocks-manager
               # ConfigMap volumes use symlinks; dereference so we copy real files into the PVC.
               cp -RL /extensions-seed/* /directus/extensions/
 

@@ -7543,6 +7543,454 @@ data:
       group: 'standard',
     });
 
+  cms-bookmark-copy.package.json: |
+    {
+      "name": "directus-extension-cms-bookmark-copy",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "module",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0",
+        "hidden": false
+      }
+    }
+  cms-bookmark-copy.index.js: |
+    import { defineComponent, h, onMounted, ref, computed, resolveComponent } from 'vue';
+
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const parseId = (value) => {
+      if (value && typeof value === 'object') {
+        if ('id' in value) return asString(value.id);
+        if ('primaryKey' in value) return asString(value.primaryKey);
+      }
+      return asString(value);
+    };
+
+    const normalizeRows = (response) => {
+      const payload = response?.data;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    };
+
+    const appendCopySuffix = (value, suffix) => {
+      const base = asString(value) || 'Bookmark';
+      return `${base}${asString(suffix)}`;
+    };
+
+    const defaultCopyBookmarkName = (sourcePreset) => {
+      const base = asString(sourcePreset?.bookmark || sourcePreset?.collection || 'Bookmark');
+      if (base.toLowerCase().endsWith(' copy')) return base;
+      return appendCopySuffix(base, ' Copy');
+    };
+
+    const sanitizeClonePayload = (value, { force = {} } = {}) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...force };
+      const blocked = new Set([
+        'id',
+        'date_created',
+        'date_updated',
+        'user_created',
+        'user_updated',
+        '__typename',
+      ]);
+      const payload = {};
+      for (const [rawKey, rawValue] of Object.entries(value)) {
+        const key = asString(rawKey);
+        if (!key || blocked.has(key) || key.startsWith('$') || key.startsWith('_')) continue;
+        if (rawValue === undefined) continue;
+        payload[key] = rawValue;
+      }
+      if ('role' in payload) payload.role = parseId(payload.role) || null;
+      if ('user' in payload) payload.user = parseId(payload.user) || null;
+      return {
+        ...payload,
+        ...force,
+      };
+    };
+
+    const styles = {
+      page: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '16px',
+        padding: 'var(--content-padding)',
+        maxWidth: '960px',
+      },
+      toolbar: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+        gap: '12px',
+        alignItems: 'end',
+      },
+      label: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+        fontSize: '12px',
+        fontWeight: 600,
+        color: 'var(--theme--foreground-subdued)',
+      },
+      input: {
+        minHeight: '38px',
+        width: '100%',
+        border: '1px solid var(--theme--border-normal)',
+        borderRadius: '6px',
+        padding: '6px 10px',
+        color: 'var(--theme--foreground-normal)',
+        background: 'var(--theme--background-page)',
+      },
+      button: {
+        minHeight: '38px',
+        border: '1px solid var(--theme--border-normal)',
+        borderRadius: '6px',
+        padding: '6px 12px',
+        background: 'var(--theme--background-page)',
+        color: 'var(--theme--foreground-normal)',
+        whiteSpace: 'nowrap',
+      },
+      primaryButton: {
+        minHeight: '38px',
+        border: '1px solid var(--theme--primary)',
+        borderRadius: '6px',
+        padding: '6px 12px',
+        background: 'var(--theme--primary)',
+        color: 'var(--theme--primary-foreground, #fff)',
+        whiteSpace: 'nowrap',
+      },
+      details: {
+        display: 'grid',
+        gap: '8px',
+        paddingTop: '4px',
+      },
+      meta: {
+        margin: 0,
+        color: 'var(--theme--foreground-subdued)',
+      },
+      title: {
+        margin: 0,
+        fontSize: '18px',
+        fontWeight: 700,
+      },
+    };
+
+    const BookmarkCopyModule = defineComponent({
+      name: 'CmsBookmarkCopyModule',
+      setup() {
+        const loading = ref(false);
+        const copying = ref(false);
+        const error = ref('');
+        const info = ref('');
+        const search = ref('');
+        const presets = ref([]);
+        const selectedPresetId = ref('');
+
+        const apiRequest = async (method, path, query = {}, body = null) => {
+          const url = new URL(path, window.location.origin);
+          Object.entries(query || {}).forEach(([key, value]) => {
+            if (value === null || value === undefined || value === '') return;
+            url.searchParams.set(key, String(value));
+          });
+          const response = await fetch(url.toString(), {
+            method,
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: {
+              Accept: 'application/json',
+              ...(body ? { 'Content-Type': 'application/json' } : {}),
+            },
+            ...(body ? { body: JSON.stringify(body) } : {}),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const message = payload?.errors?.[0]?.message || `${method} failed (${response.status})`;
+            throw new Error(message);
+          }
+          return payload;
+        };
+
+        const presetLabel = (preset) => {
+          const bookmark = asString(preset?.bookmark) || '(unnamed bookmark)';
+          const collection = asString(preset?.collection) || 'global';
+          return `${bookmark} - ${collection}`;
+        };
+
+        const selectedPreset = computed(() =>
+          presets.value.find((preset) => parseId(preset?.id) === selectedPresetId.value) || null
+        );
+
+        const filteredPresets = computed(() => {
+          const needle = asString(search.value).toLowerCase();
+          if (!needle) return presets.value;
+          return presets.value.filter((preset) =>
+            [
+              preset?.bookmark,
+              preset?.collection,
+              preset?.layout,
+              preset?.icon,
+            ].some((value) => asString(value).toLowerCase().includes(needle))
+          );
+        });
+
+        const loadPresets = async () => {
+          loading.value = true;
+          error.value = '';
+          try {
+            let rows = [];
+            try {
+              const response = await apiRequest('GET', '/presets', {
+                fields: 'id,bookmark,collection,layout,icon,user,role',
+                sort: 'collection,bookmark',
+                limit: 500,
+              });
+              rows = normalizeRows(response);
+            } catch (presetError) {
+              const response = await apiRequest('GET', '/items/directus_presets', {
+                fields: 'id,bookmark,collection,layout,icon,user,role',
+                sort: 'collection,bookmark',
+                limit: 500,
+              });
+              rows = normalizeRows(response);
+            }
+            presets.value = rows.filter((preset) => asString(preset?.bookmark));
+            if (selectedPresetId.value && !presets.value.some((preset) => parseId(preset?.id) === selectedPresetId.value)) {
+              selectedPresetId.value = '';
+            }
+            if (!selectedPresetId.value && presets.value[0]) {
+              selectedPresetId.value = parseId(presets.value[0].id);
+            }
+            if (presets.value.length === 0) {
+              info.value = 'No bookmark presets were returned for this user. Create a bookmark on a collection view first, then return here to copy it.';
+            }
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to load bookmark presets.';
+          } finally {
+            loading.value = false;
+          }
+        };
+
+        const fetchPreset = async (id) => {
+          const normalizedId = parseId(id);
+          if (!normalizedId) throw new Error('Choose a source bookmark first.');
+          try {
+            const response = await apiRequest('GET', `/presets/${encodeURIComponent(normalizedId)}`, { fields: '*' });
+            return response?.data || null;
+          } catch (presetError) {
+            const response = await apiRequest('GET', `/items/directus_presets/${encodeURIComponent(normalizedId)}`, { fields: '*' });
+            return response?.data || null;
+          }
+        };
+
+        const presetScopeFilter = ({ bookmark, sourcePreset }) => {
+          const clauses = [
+            { bookmark: { _eq: asString(bookmark) } },
+          ];
+          const collectionName = asString(sourcePreset?.collection);
+          if (collectionName) clauses.push({ collection: { _eq: collectionName } });
+          else clauses.push({ collection: { _null: true } });
+
+          const roleId = parseId(sourcePreset?.role);
+          if (roleId) clauses.push({ role: { _eq: roleId } });
+          else clauses.push({ role: { _null: true } });
+
+          const userId = parseId(sourcePreset?.user);
+          if (userId) clauses.push({ user: { _eq: userId } });
+          else clauses.push({ user: { _null: true } });
+
+          return { _and: clauses };
+        };
+
+        const findBookmarkByScope = async ({ bookmark, sourcePreset }) => {
+          const filter = presetScopeFilter({ bookmark, sourcePreset });
+          try {
+            const response = await apiRequest('GET', '/presets', {
+              fields: 'id,bookmark,collection,user,role',
+              limit: 1,
+              filter: JSON.stringify(filter),
+            });
+            return normalizeRows(response)[0] || null;
+          } catch (presetError) {
+            const response = await apiRequest('GET', '/items/directus_presets', {
+              fields: 'id,bookmark,collection,user,role',
+              limit: 1,
+              filter: JSON.stringify(filter),
+            });
+            return normalizeRows(response)[0] || null;
+          }
+        };
+
+        const resolveAvailableBookmarkName = async ({ sourcePreset, baseName }) => {
+          const normalizedBaseName = asString(baseName) || 'Bookmark Copy';
+          for (let index = 0; index < 100; index += 1) {
+            const candidate = index === 0
+              ? normalizedBaseName
+              : appendCopySuffix(normalizedBaseName, ` ${index + 1}`);
+            const existing = await findBookmarkByScope({ bookmark: candidate, sourcePreset });
+            if (!parseId(existing?.id)) return candidate;
+          }
+          throw new Error('Could not find an available bookmark name in this scope.');
+        };
+
+        const createPreset = async (payload) => {
+          try {
+            const response = await apiRequest('POST', '/presets', {}, payload);
+            return response?.data || null;
+          } catch (presetError) {
+            const response = await apiRequest('POST', '/items/directus_presets', {}, payload);
+            return response?.data || null;
+          }
+        };
+
+        const copySelectedBookmark = async () => {
+          if (copying.value || loading.value || !selectedPresetId.value) return;
+          copying.value = true;
+          error.value = '';
+          info.value = '';
+
+          try {
+            const sourcePreset = await fetchPreset(selectedPresetId.value);
+            if (!sourcePreset) throw new Error('Source bookmark could not be loaded.');
+            const suggestedName = await resolveAvailableBookmarkName({
+              sourcePreset,
+              baseName: defaultCopyBookmarkName(sourcePreset),
+            });
+            const rawBookmarkName = window.prompt('New bookmark name', suggestedName);
+            if (rawBookmarkName === null) return;
+            const bookmarkName = asString(rawBookmarkName);
+            if (!bookmarkName) throw new Error('New bookmark name is required.');
+            const existing = await findBookmarkByScope({ bookmark: bookmarkName, sourcePreset });
+            if (parseId(existing?.id)) {
+              throw new Error(`A bookmark named '${bookmarkName}' already exists for this collection/scope.`);
+            }
+            const created = await createPreset(sanitizeClonePayload(sourcePreset, {
+              force: { bookmark: bookmarkName },
+            }));
+            const createdId = parseId(created?.id);
+            info.value = createdId
+              ? `Created bookmark '${bookmarkName}' (${createdId}).`
+              : `Created bookmark '${bookmarkName}'.`;
+            await loadPresets();
+            if (createdId) selectedPresetId.value = createdId;
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to copy bookmark.';
+          } finally {
+            copying.value = false;
+          }
+        };
+
+        onMounted(() => { void loadPresets(); });
+
+        const renderButton = ({ label, disabled = false, primary = false, onClick }) => {
+          const resolvedButton = resolveComponent('v-button');
+          if (typeof resolvedButton !== 'string') {
+            return h(resolvedButton, { disabled, secondary: !primary, onClick }, () => label);
+          }
+          return h('button', {
+            type: 'button',
+            disabled,
+            style: {
+              ...(primary ? styles.primaryButton : styles.button),
+              cursor: disabled ? 'default' : 'pointer',
+              opacity: disabled ? 0.65 : 1,
+            },
+            onClick,
+          }, label);
+        };
+
+        const renderNotice = ({ type, message }) => {
+          const resolvedNotice = resolveComponent('v-notice');
+          if (typeof resolvedNotice !== 'string') {
+            return h(resolvedNotice, { type }, () => message);
+          }
+          return h('p', {
+            style: {
+              margin: 0,
+              color: type === 'danger' ? 'var(--theme--danger)' : 'var(--theme--foreground-subdued)',
+            },
+          }, message);
+        };
+
+        return () => {
+          const resolvedPrivateView = resolveComponent('private-view');
+          const selected = selectedPreset.value;
+          const content = [
+            h('section', { style: styles.page }, [
+              h('div', { style: styles.toolbar }, [
+                h('label', { style: styles.label }, [
+                  'Search',
+                  h('input', {
+                    type: 'search',
+                    value: search.value,
+                    placeholder: 'Filter bookmarks',
+                    disabled: loading.value,
+                    style: styles.input,
+                    onInput: (event) => { search.value = asString(event?.target?.value); },
+                  }),
+                ]),
+                h('label', { style: styles.label }, [
+                  'Source bookmark',
+                  h('select', {
+                    value: selectedPresetId.value,
+                    disabled: loading.value || filteredPresets.value.length === 0,
+                    style: styles.input,
+                    onChange: (event) => { selectedPresetId.value = parseId(event?.target?.value); },
+                  }, filteredPresets.value.map((preset) =>
+                    h('option', { value: parseId(preset?.id) }, presetLabel(preset))
+                  )),
+                ]),
+                renderButton({
+                  label: loading.value ? 'Loading...' : 'Refresh',
+                  disabled: loading.value || copying.value,
+                  onClick: () => { void loadPresets(); },
+                }),
+                renderButton({
+                  label: copying.value ? 'Copying...' : 'Copy Bookmark',
+                  disabled: loading.value || copying.value || !selectedPresetId.value,
+                  primary: true,
+                  onClick: () => { void copySelectedBookmark(); },
+                }),
+              ]),
+              selected
+                ? h('div', { style: styles.details }, [
+                    h('h2', { style: styles.title }, asString(selected.bookmark) || 'Selected bookmark'),
+                    h('p', { style: styles.meta }, `Collection: ${asString(selected.collection) || '(global)'}`),
+                    h('p', { style: styles.meta }, `Layout: ${asString(selected.layout) || '(default)'}`),
+                    h('p', { style: styles.meta }, `Icon: ${asString(selected.icon) || '(default)'}`),
+                  ])
+                : h('p', { style: styles.meta }, loading.value ? 'Loading bookmarks...' : 'Choose a source bookmark to copy.'),
+              error.value ? renderNotice({ type: 'danger', message: error.value }) : null,
+              info.value && !error.value ? renderNotice({ type: 'success', message: info.value }) : null,
+            ]),
+          ];
+
+          if (typeof resolvedPrivateView !== 'string') {
+            return h(resolvedPrivateView, { title: 'Bookmark Copy' }, { default: () => content });
+          }
+          return h('main', {}, content);
+        };
+      },
+    });
+
+    export default {
+      id: 'cms-bookmark-copy',
+      name: 'Bookmark Copy',
+      icon: 'bookmark_add',
+      color: '#1D4ED8',
+      routes: [
+        {
+          path: '',
+          component: BookmarkCopyModule,
+        },
+      ],
+      hidden: false,
+    };
+
   cms-page-blocks-manager.package.json: |
     {
       "name": "directus-extension-cms-page-blocks-manager",
