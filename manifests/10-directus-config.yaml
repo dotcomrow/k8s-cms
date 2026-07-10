@@ -7597,7 +7597,7 @@ data:
           ];
 
           if (typeof resolvedPrivateView !== 'string') {
-            return h(resolvedPrivateView, { title: 'Bookmark Copy' }, { default: () => content });
+            return h(resolvedPrivateView, { title: 'Copy Bookmarks' }, { default: () => content });
           }
           return h('main', {}, content);
         };
@@ -7606,8 +7606,8 @@ data:
 
     export default {
       id: 'cms-bookmark-copy',
-      name: 'Bookmark Copy',
-      icon: 'bookmark_add',
+      name: 'Copy Bookmarks',
+      icon: 'content_copy',
       color: '#1D4ED8',
       routes: [
         {

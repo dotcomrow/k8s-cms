@@ -8275,6 +8275,65 @@ data:
       echo "⚠️ directus_extensions table not found; skipping extension enable."
     fi
 
+    echo "🧭 Ensuring Copy Bookmarks appears in customized module bars..."
+    if ! _psql_yb_retry "DO \$\$
+      DECLARE
+        _module_bar_type text;
+      BEGIN
+        IF to_regclass('directus.directus_settings') IS NULL THEN
+          RETURN;
+        END IF;
+
+        SELECT udt_name
+          INTO _module_bar_type
+          FROM information_schema.columns
+         WHERE table_schema='directus'
+           AND table_name='directus_settings'
+           AND column_name='module_bar'
+         LIMIT 1;
+
+        IF _module_bar_type = 'jsonb' THEN
+          UPDATE directus_settings ds
+             SET module_bar = (
+               SELECT CASE
+                 WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(ds.module_bar::jsonb) elem WHERE jsonb_typeof(elem) = 'object')
+                   THEN ds.module_bar::jsonb || jsonb_build_array(jsonb_build_object('type', 'module', 'id', 'cms-bookmark-copy', 'enabled', true))
+                 ELSE ds.module_bar::jsonb || jsonb_build_array(to_jsonb('cms-bookmark-copy'::text))
+               END
+             )
+           WHERE ds.module_bar IS NOT NULL
+             AND jsonb_typeof(ds.module_bar::jsonb) = 'array'
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM jsonb_array_elements(ds.module_bar::jsonb) elem
+                WHERE (jsonb_typeof(elem) = 'string' AND elem #>> '{}' = 'cms-bookmark-copy')
+                   OR (jsonb_typeof(elem) = 'object' AND elem->>'id' = 'cms-bookmark-copy')
+                   OR (jsonb_typeof(elem) = 'object' AND elem->>'url' IN ('cms-bookmark-copy', '/cms-bookmark-copy', '/admin/cms-bookmark-copy'))
+             );
+        ELSIF _module_bar_type = 'json' THEN
+          UPDATE directus_settings ds
+             SET module_bar = (
+               SELECT CASE
+                 WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(ds.module_bar::jsonb) elem WHERE jsonb_typeof(elem) = 'object')
+                   THEN (ds.module_bar::jsonb || jsonb_build_array(jsonb_build_object('type', 'module', 'id', 'cms-bookmark-copy', 'enabled', true)))::json
+                 ELSE (ds.module_bar::jsonb || jsonb_build_array(to_jsonb('cms-bookmark-copy'::text)))::json
+               END
+             )
+           WHERE ds.module_bar IS NOT NULL
+             AND jsonb_typeof(ds.module_bar::jsonb) = 'array'
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM jsonb_array_elements(ds.module_bar::jsonb) elem
+                WHERE (jsonb_typeof(elem) = 'string' AND elem #>> '{}' = 'cms-bookmark-copy')
+                   OR (jsonb_typeof(elem) = 'object' AND elem->>'id' = 'cms-bookmark-copy')
+                   OR (jsonb_typeof(elem) = 'object' AND elem->>'url' IN ('cms-bookmark-copy', '/cms-bookmark-copy', '/admin/cms-bookmark-copy'))
+             );
+        END IF;
+      END
+      \$\$;" "ensure Copy Bookmarks module bar item" 12; then
+      echo "⚠️ Could not reconcile Copy Bookmarks module bar item."
+    fi
+
     RECON_DURATION_MS=$(( ($(date +%s) - RECON_STARTED_EPOCH) * 1000 ))
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
