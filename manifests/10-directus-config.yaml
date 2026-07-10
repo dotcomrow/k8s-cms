@@ -7427,6 +7427,7 @@ data:
           const hasButton = typeof resolvedButton !== 'string';
           const hasNotice = typeof resolvedNotice !== 'string';
           const currentValue = asString(props.value);
+          const showBookmarkNameInput = asString(props.field).toLowerCase() === 'bookmark';
           const buttonDisabled = props.disabled || copying.value || !presetId.value;
 
           const inputNode = hasInput
@@ -7521,7 +7522,9 @@ data:
                 alignItems: 'center',
               },
             }, [
-              h('div', { style: { minWidth: '220px', flex: '1 1 280px' } }, [inputNode]),
+              ...(showBookmarkNameInput
+                ? [h('div', { style: { minWidth: '220px', flex: '1 1 280px' } }, [inputNode])]
+                : []),
               buttonNode,
             ]),
             ...notices,
@@ -7536,7 +7539,7 @@ data:
       icon: 'bookmark_add',
       description: 'Bookmark-name input with an editor-triggered action to copy an existing Directus bookmark preset.',
       component: InterfaceComponent,
-      types: ['string', 'text'],
+      types: ['string', 'text', 'alias'],
       group: 'standard',
     });
 
@@ -10370,12 +10373,6 @@ data:
               style: { display: 'none' },
             });
           }
-          if (pageId.value && !hasPageReleaseChannel.value) {
-            return h('div', {
-              class: 'cms-page-blocks-manager cms-page-blocks-manager--release-channel-hidden',
-              style: { display: 'none' },
-            });
-          }
           const resolvedNotice = resolveComponent('v-notice');
           const resolvedInput = resolveComponent('v-input');
           const resolvedSelect = resolveComponent('v-select');
@@ -10393,6 +10390,7 @@ data:
           const hasChip = typeof resolvedChip !== 'string';
           const hasDivider = typeof resolvedDivider !== 'string';
           const hasCard = typeof resolvedCard !== 'string';
+          const pageMissingReleaseChannel = Boolean(pageId.value) && !hasPageReleaseChannel.value;
     
           const sortBlockRows = (left, right) => {
             const leftSort = asInteger(left?.sort);
@@ -10951,7 +10949,7 @@ data:
                       onClick: () => { void createPageBlockWithContent(addBlockType.value); },
                     }),
                     renderButtonControl({
-                      label: copyingPage.value ? 'Copying...' : 'Copy Page',
+                      label: copyingPage.value ? 'Copying...' : 'Copy This Page',
                       disabled: !pageId.value || !hasPageReleaseChannel.value || copyingPage.value || loading.value || !!creatingBlockType.value || promoting.value,
                       primary: false,
                       onClick: () => { void copyPageFromCurrent(); },
@@ -10975,6 +10973,13 @@ data:
           } else {
             children.push(
               h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, 'Save this page first to manage blocks.')
+            );
+          }
+          if (pageMissingReleaseChannel) {
+            children.push(
+              hasNotice
+                ? h(resolvedNotice, { type: 'warning' }, () => 'Set this page release channel to preview or prod before copying pages or managing scoped blocks.')
+                : h('p', { class: 'cms-page-blocks-manager__hint', style: styles.meta }, 'Set this page release channel to preview or prod before copying pages or managing scoped blocks.')
             );
           }
     

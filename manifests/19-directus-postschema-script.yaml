@@ -1298,6 +1298,30 @@ data:
             ;;
         esac
       }
+
+      _df_special_alias_no_data_sql() {
+        if ! _df_has_col "special"; then
+          printf "NULL"
+          return
+        fi
+        case "${DF_SPECIAL_DATA_TYPE:-}:${DF_SPECIAL_UDT_NAME:-}" in
+          ARRAY:*)
+            printf "ARRAY['alias','no-data']::text[]"
+            ;;
+          jsonb:*)
+            printf "'[\"alias\",\"no-data\"]'::jsonb"
+            ;;
+          json:*)
+            printf "'[\"alias\",\"no-data\"]'::json"
+            ;;
+          text:*|character\ varying:*)
+            printf "'alias,no-data'"
+            ;;
+          *)
+            printf "NULL"
+            ;;
+        esac
+      }
     
       refresh_choices_json="$(jq -nc '[
         {"text":"Preview Only","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"},
@@ -1600,7 +1624,63 @@ data:
         echo "✅ Created directus_presets.bookmark copy field UX"
       }
 
+      _upsert_preset_bookmark_copy_action_field_meta() {
+        _collection="directus_presets"
+        _field="copy_bookmark_action"
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+
+        _preset_table_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_presets' LIMIT 1;" || true)"
+        _preset_table_exists="$(printf '%s' "${_preset_table_exists}" | tr -d '\r')"
+        if [ "${_preset_table_exists}" != "1" ]; then
+          echo "  └─ directus_presets table not found; skipping bookmark copy action UX"
+          return 0
+        fi
+
+        _note="Open an existing bookmark preset and use this action to copy it into a new bookmark preset."
+        _note_sql="$(printf '%s' "${_note}" | sed "s/'/''/g")"
+        _special_sql="$(_df_special_alias_no_data_sql)"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "${_exists}" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
+          if _df_has_col "interface"; then SETS="${SETS},interface='cms-preset-bookmark-copy'"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "name"; then SETS="${SETS},name='Copy Bookmark'"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=0"; fi
+          if _df_has_col "note"; then SETS="${SETS},note='${_note_sql}'"; fi
+          if [ -n "${SETS}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated directus_presets.copy_bookmark_action UX"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then FCOLS="${FCOLS},special"; FVALS="${FVALS},${_special_sql}"; fi
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-preset-bookmark-copy'"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'Copy Bookmark'"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},0"; fi
+        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
+
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created directus_presets.copy_bookmark_action UX"
+      }
+
       _upsert_preset_bookmark_copy_field_meta
+      _upsert_preset_bookmark_copy_action_field_meta
       set -e
     else
       echo "  └─ directus_fields metadata table not found; skipping refresh_target UX config"
@@ -1699,7 +1779,44 @@ data:
     if [ "${DIRECTUS_COLLECTIONS_EXISTS}" = "1" ]; then
       DC_COLS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
         "SELECT column_name FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_collections' ORDER BY column_name;" || true)"
-      if printf '%s\n' "${DC_COLS}" | grep -qx "display_template"; then
+      _dc_has_col() { printf '%s\n' "${DC_COLS}" | grep -qx "$1"; }
+      DIRECTUS_PRESETS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_presets' LIMIT 1;" || true)"
+      DIRECTUS_PRESETS_TABLE_EXISTS="$(printf '%s' "$DIRECTUS_PRESETS_TABLE_EXISTS" | tr -d '\r')"
+      if [ "${DIRECTUS_PRESETS_TABLE_EXISTS}" = "1" ]; then
+        directus_presets_note="Directus bookmark/list preset metadata. Open an existing bookmark preset to use the Copy Bookmark action."
+        directus_presets_note_sql="$(printf '%s' "${directus_presets_note}" | sed "s/'/''/g")"
+        directus_presets_display_template='{{collection}} | {{bookmark}}'
+        directus_presets_display_template_sql="$(printf '%s' "${directus_presets_display_template}" | sed "s/'/''/g")"
+        directus_presets_collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_collections WHERE collection='directus_presets' LIMIT 1;" || true)"
+        directus_presets_collection_exists="$(printf '%s' "$directus_presets_collection_exists" | tr -d '\r')"
+        if [ "${directus_presets_collection_exists}" = "1" ]; then
+          PRESET_COLLECTION_SETS=""
+          if _dc_has_col "hidden"; then PRESET_COLLECTION_SETS="${PRESET_COLLECTION_SETS},hidden=false"; fi
+          if _dc_has_col "singleton"; then PRESET_COLLECTION_SETS="${PRESET_COLLECTION_SETS},singleton=false"; fi
+          if _dc_has_col "icon"; then PRESET_COLLECTION_SETS="${PRESET_COLLECTION_SETS},icon='bookmark'"; fi
+          if _dc_has_col "note"; then PRESET_COLLECTION_SETS="${PRESET_COLLECTION_SETS},note='${directus_presets_note_sql}'"; fi
+          if _dc_has_col "display_template"; then PRESET_COLLECTION_SETS="${PRESET_COLLECTION_SETS},display_template='${directus_presets_display_template_sql}'"; fi
+          if [ -n "${PRESET_COLLECTION_SETS}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_collections SET ${PRESET_COLLECTION_SETS#,} WHERE collection='directus_presets';"
+            echo "✅ Updated directus_presets collection metadata for bookmark copy access"
+          fi
+        else
+          PRESET_COLLECTION_COLS="collection"
+          PRESET_COLLECTION_VALS="'directus_presets'"
+          if _dc_has_col "hidden"; then PRESET_COLLECTION_COLS="${PRESET_COLLECTION_COLS},hidden"; PRESET_COLLECTION_VALS="${PRESET_COLLECTION_VALS},false"; fi
+          if _dc_has_col "singleton"; then PRESET_COLLECTION_COLS="${PRESET_COLLECTION_COLS},singleton"; PRESET_COLLECTION_VALS="${PRESET_COLLECTION_VALS},false"; fi
+          if _dc_has_col "icon"; then PRESET_COLLECTION_COLS="${PRESET_COLLECTION_COLS},icon"; PRESET_COLLECTION_VALS="${PRESET_COLLECTION_VALS},'bookmark'"; fi
+          if _dc_has_col "note"; then PRESET_COLLECTION_COLS="${PRESET_COLLECTION_COLS},note"; PRESET_COLLECTION_VALS="${PRESET_COLLECTION_VALS},'${directus_presets_note_sql}'"; fi
+          if _dc_has_col "display_template"; then PRESET_COLLECTION_COLS="${PRESET_COLLECTION_COLS},display_template"; PRESET_COLLECTION_VALS="${PRESET_COLLECTION_VALS},'${directus_presets_display_template_sql}'"; fi
+          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+            "SET search_path TO directus, public; INSERT INTO directus_collections (${PRESET_COLLECTION_COLS}) VALUES (${PRESET_COLLECTION_VALS});"
+          echo "✅ Created directus_presets collection metadata for bookmark copy access"
+        fi
+      fi
+      if _dc_has_col "display_template"; then
         block_display_template='{{template_scope}}/{{template_group_key}} | {{group_tag}} | {{collection}} -> {{slot}} | #{{sort}}'
         block_display_template_sql="$(printf '%s' "${block_display_template}" | sed "s/'/''/g")"
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -3941,7 +4058,7 @@ data:
       template_function_reviewed_by_note="JavaScript-only reviewer identifier. Choices are system-managed and include existing reviewer values found in cms_template_functions."
       template_function_reviewed_at_note="JavaScript-only review timestamp. Use this to record when the JavaScript source was approved or rejected."
       template_function_config_note="Optional JSON passed to JavaScript macros as context.config. For the built-in Static Text handler, set { \"value\": \"Text to render\" }. Other current built-in handlers ignore this field."
-      page_blocks_relation_note="Blocks Manager: grouped/searchable block editor for this page with quick open/edit actions."
+      page_blocks_relation_note="Page Actions & Blocks: copy this page, add blocks, and edit the grouped/searchable block tree."
       internal_metadata_note="Managed automatically from page/block context."
       date_created_note="System-managed timestamp for when this page was created."
       date_updated_note="System-managed timestamp for the last page update."
@@ -5181,9 +5298,9 @@ data:
           if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
           if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
           if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
-          if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'Blocks'"; fi
+          if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'Page Actions & Blocks'"; fi
           if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
-          if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},30"; fi
+          if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},5"; fi
           if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${page_blocks_relation_note_sql}'"; fi
           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
             "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
@@ -5197,8 +5314,9 @@ data:
         if _df_has_col "required"; then SETS="${SETS},required=false"; fi
         if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
         if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+        if _df_has_col "name"; then SETS="${SETS},name='Page Actions & Blocks'"; fi
         if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
-        if _df_has_col "sort"; then SETS="${SETS},sort=30"; fi
+        if _df_has_col "sort"; then SETS="${SETS},sort=5"; fi
         if _df_has_col "note"; then SETS="${SETS},note='${page_blocks_relation_note_sql}'"; fi
         if [ -n "${SETS:-}" ]; then
           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
