@@ -24,7 +24,7 @@ spec:
         app: directus
       annotations:
         reloader.stakater.com/auto: "true"
-        directus.suncoast.systems/extensions-seed-revision: "2026-03-14.2"
+        directus.suncoast.systems/extensions-seed-revision: "2026-07-09.2"
         # Init containers must reach Oracle VM (SSH 22 / Postgres 5432) before
         # linkerd-proxy is running. Skip proxy redirection for these ports.
         config.linkerd.io/skip-outbound-ports: "22,5432,5433"
@@ -120,6 +120,10 @@ spec:
                 path: cms-module-props-editor/package.json
               - key: cms-module-props-editor.index.js
                 path: cms-module-props-editor/index.js
+              - key: cms-preset-bookmark-copy.package.json
+                path: cms-preset-bookmark-copy/package.json
+              - key: cms-preset-bookmark-copy.index.js
+                path: cms-preset-bookmark-copy/index.js
               - key: cms-page-blocks-manager.package.json
                 path: cms-page-blocks-manager/package.json
               - key: cms-page-blocks-manager.index.js
@@ -176,7 +180,7 @@ spec:
               mkdir -p /directus/extensions
 
               # Keep our GitOps-managed extensions deterministic on every start.
-              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-keycloak-role-options /directus/extensions/cms-asset-url-picker /directus/extensions/cms-module-props-editor /directus/extensions/cms-page-blocks-manager
+              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-keycloak-role-options /directus/extensions/cms-asset-url-picker /directus/extensions/cms-module-props-editor /directus/extensions/cms-preset-bookmark-copy /directus/extensions/cms-page-blocks-manager
               # ConfigMap volumes use symlinks; dereference so we copy real files into the PVC.
               cp -RL /extensions-seed/* /directus/extensions/
 
@@ -1249,6 +1253,12 @@ spec:
             value: "secret/data/directus/gravitee/openapi/admin"
           - name: DIRECTUS_POSTSCHEMA_DATA_MUTATIONS_ENABLED
             value: "no"
+          - name: DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED
+            value: "no"
+          - name: DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED
+            value: "no"
+          - name: DIRECTUS_POSTSCHEMA_LAYOUT_THEME_SEED_ENABLED
+            value: "no"
           - name: DIRECTUS_POSTSCHEMA_RECONCILE_VERSION
             value: "2026-04-29.1"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
@@ -1769,8 +1779,23 @@ spec:
               fi
             fi
 
-            if ! _ensure_settings_row; then
-              echo "⚠️ Failed to ensure directus_settings row; continuing..."
+            DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED_RAW="${DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED:-false}"
+            case "$(printf '%s' "${DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on) DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED="true" ;;
+              *) DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED="false" ;;
+            esac
+            DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED_RAW="${DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED:-false}"
+            case "$(printf '%s' "${DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]')" in
+              1|true|yes|on) DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED="true" ;;
+              *) DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED="false" ;;
+            esac
+
+            if [ "${DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED}" = "true" ] || [ "${DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED}" = "true" ]; then
+              if ! _ensure_settings_row; then
+                echo "⚠️ Failed to ensure directus_settings row; continuing..."
+              fi
+            else
+              echo "ℹ️ DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED=false and DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED=false; skipping directus_settings singleton row seed."
             fi
 
             _ensure_ai_settings_defaults() {
@@ -2011,14 +2036,18 @@ spec:
             NODE
             }
 
-            echo "🤖 Ensuring AI settings defaults..."
-            _ensure_ai_settings_defaults || echo "⚠️ Failed to ensure AI settings defaults."
+            if [ "${DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED}" = "true" ] || [ "${DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED}" = "true" ]; then
+              echo "🤖 Ensuring AI settings defaults..."
+              _ensure_ai_settings_defaults || echo "⚠️ Failed to ensure AI settings defaults."
 
-            if [ -n "${OPENAI_API_KEY:-}" ]; then
-              echo "🔐 Encrypting AI provider keys into directus_settings..."
-              _set_ai_provider_keys || echo "⚠️ Failed to store AI provider keys."
+              if [ -n "${OPENAI_API_KEY:-}" ]; then
+                echo "🔐 Encrypting AI provider keys into directus_settings..."
+                _set_ai_provider_keys || echo "⚠️ Failed to store AI provider keys."
+              else
+                echo "ℹ️ OPENAI_API_KEY not set; skipping encrypted AI provider keys."
+              fi
             else
-              echo "ℹ️ OPENAI_API_KEY not set; skipping encrypted AI provider keys."
+              echo "ℹ️ DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED=false and DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED=false; skipping AI settings defaults and encrypted provider keys."
             fi
 
             echo "🔍 Debug: Environment check..."
@@ -2294,6 +2323,10 @@ spec:
           value: "github"
         - name: AUTH_DISABLE_DEFAULT
           value: "true"
+        - name: DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED
+          value: "no"
+        - name: DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED
+          value: "no"
 
         # Optional: your default team→role names (left = proxy group; right = Directus role name)
         - name: TEAM_ROLE_MAP

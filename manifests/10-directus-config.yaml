@@ -7170,6 +7170,376 @@ data:
       ],
     });
     
+  cms-preset-bookmark-copy.package.json: |
+    {
+      "name": "directus-extension-cms-preset-bookmark-copy",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "interface",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+  cms-preset-bookmark-copy.index.js: |
+    import { defineInterface } from '@directus/extensions-sdk';
+    import { defineComponent, h, ref, computed, resolveComponent } from 'vue';
+
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const parseId = (value) => {
+      if (value && typeof value === 'object') {
+        if ('id' in value) return asString(value.id);
+        if ('primaryKey' in value) return asString(value.primaryKey);
+      }
+      return asString(value);
+    };
+
+    const normalizeRows = (response) => {
+      const payload = response?.data;
+      if (Array.isArray(payload?.data)) return payload.data;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    };
+
+    const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const getPrimaryKeyFromLocation = (collectionName) => {
+      if (typeof window === 'undefined') return '';
+      const targetCollection = asString(collectionName);
+      const path = asString(window.location?.pathname);
+      if (targetCollection && path) {
+        const match = path.match(new RegExp(`/${escapeRegex(targetCollection)}/([^/?#]+)`));
+        if (match?.[1]) return asString(decodeURIComponent(match[1]));
+      }
+      const query = new URLSearchParams(window.location?.search || '');
+      const candidates = ['primaryKey', 'pk', 'item', 'id'].map((key) => asString(query.get(key)));
+      return candidates.find((candidate) => Boolean(candidate)) || '';
+    };
+
+    const sanitizeClonePayload = (value, { force = {} } = {}) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...force };
+      const blocked = new Set([
+        'id',
+        'date_created',
+        'date_updated',
+        'user_created',
+        'user_updated',
+        '__typename',
+      ]);
+      const payload = {};
+      for (const [rawKey, rawValue] of Object.entries(value)) {
+        const key = asString(rawKey);
+        if (!key || blocked.has(key) || key.startsWith('$') || key.startsWith('_')) continue;
+        if (rawValue === undefined) continue;
+        payload[key] = rawValue;
+      }
+      if ('role' in payload) payload.role = parseId(payload.role) || null;
+      if ('user' in payload) payload.user = parseId(payload.user) || null;
+      return {
+        ...payload,
+        ...force,
+      };
+    };
+
+    const appendCopySuffix = (value, suffix) => {
+      const base = asString(value) || 'Bookmark';
+      return `${base}${asString(suffix)}`;
+    };
+
+    const defaultCopyBookmarkName = (sourcePreset) => {
+      const base = asString(sourcePreset?.bookmark || sourcePreset?.collection || 'Bookmark');
+      if (base.toLowerCase().endsWith(' copy')) return base;
+      return appendCopySuffix(base, ' Copy');
+    };
+
+    const InterfaceComponent = defineComponent({
+      name: 'CmsPresetBookmarkCopy',
+      props: {
+        value: { type: [String, Number, null], default: '' },
+        disabled: { type: Boolean, default: false },
+        values: { type: Object, default: () => ({}) },
+        field: { type: String, default: '' },
+        collection: { type: String, default: '' },
+      },
+      emits: ['input'],
+      setup(props, { emit }) {
+        const copying = ref(false);
+        const error = ref('');
+        const info = ref('');
+
+        const sourceCollection = computed(() => asString(props.collection) || 'directus_presets');
+        const presetId = computed(() => (
+          parseId(props.values?.id)
+          || parseId(props.values?.primaryKey)
+          || getPrimaryKeyFromLocation(sourceCollection.value)
+          || getPrimaryKeyFromLocation('directus_presets')
+        ));
+
+        const apiRequest = async (method, path, query = {}, body = null) => {
+          const url = new URL(path, window.location.origin);
+          Object.entries(query || {}).forEach(([key, value]) => {
+            if (value === null || value === undefined || value === '') return;
+            url.searchParams.set(key, String(value));
+          });
+          const response = await fetch(url.toString(), {
+            method,
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: {
+              Accept: 'application/json',
+              ...(body ? { 'Content-Type': 'application/json' } : {}),
+            },
+            ...(body ? { body: JSON.stringify(body) } : {}),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const message = payload?.errors?.[0]?.message || `${method} failed (${response.status})`;
+            throw new Error(message);
+          }
+          return payload;
+        };
+
+        const fetchPreset = async (id) => {
+          const normalizedId = parseId(id);
+          if (!normalizedId) throw new Error('Save this bookmark before copying it.');
+          try {
+            const response = await apiRequest('GET', `/presets/${encodeURIComponent(normalizedId)}`, { fields: '*' });
+            return response?.data || null;
+          } catch (presetError) {
+            const response = await apiRequest('GET', `/items/directus_presets/${encodeURIComponent(normalizedId)}`, { fields: '*' });
+            return response?.data || null;
+          }
+        };
+
+        const presetScopeFilter = ({ bookmark, sourcePreset }) => {
+          const clauses = [
+            { bookmark: { _eq: asString(bookmark) } },
+          ];
+          const collectionName = asString(sourcePreset?.collection);
+          if (collectionName) clauses.push({ collection: { _eq: collectionName } });
+          else clauses.push({ collection: { _null: true } });
+
+          const roleId = parseId(sourcePreset?.role);
+          if (roleId) clauses.push({ role: { _eq: roleId } });
+          else clauses.push({ role: { _null: true } });
+
+          const userId = parseId(sourcePreset?.user);
+          if (userId) clauses.push({ user: { _eq: userId } });
+          else clauses.push({ user: { _null: true } });
+
+          return { _and: clauses };
+        };
+
+        const findBookmarkByScope = async ({ bookmark, sourcePreset }) => {
+          const filter = presetScopeFilter({ bookmark, sourcePreset });
+          try {
+            const response = await apiRequest('GET', '/presets', {
+              fields: 'id,bookmark,collection,user,role',
+              limit: 1,
+              filter: JSON.stringify(filter),
+            });
+            return normalizeRows(response)[0] || null;
+          } catch (presetError) {
+            const response = await apiRequest('GET', '/items/directus_presets', {
+              fields: 'id,bookmark,collection,user,role',
+              limit: 1,
+              filter: JSON.stringify(filter),
+            });
+            return normalizeRows(response)[0] || null;
+          }
+        };
+
+        const resolveAvailableBookmarkName = async ({ sourcePreset, baseName }) => {
+          const normalizedBaseName = asString(baseName) || 'Bookmark Copy';
+          for (let index = 0; index < 100; index += 1) {
+            const candidate = index === 0
+              ? normalizedBaseName
+              : appendCopySuffix(normalizedBaseName, ` ${index + 1}`);
+            const existing = await findBookmarkByScope({ bookmark: candidate, sourcePreset });
+            if (!parseId(existing?.id)) return candidate;
+          }
+          throw new Error('Could not find an available bookmark name in this scope.');
+        };
+
+        const createPreset = async (payload) => {
+          try {
+            const response = await apiRequest('POST', '/presets', {}, payload);
+            return response?.data || null;
+          } catch (presetError) {
+            const response = await apiRequest('POST', '/items/directus_presets', {}, payload);
+            return response?.data || null;
+          }
+        };
+
+        const copyBookmark = async () => {
+          if (props.disabled || copying.value) return;
+          copying.value = true;
+          error.value = '';
+          info.value = '';
+
+          try {
+            const sourcePreset = await fetchPreset(presetId.value);
+            if (!sourcePreset) throw new Error('Source bookmark could not be loaded.');
+
+            const suggestedName = await resolveAvailableBookmarkName({
+              sourcePreset,
+              baseName: defaultCopyBookmarkName(sourcePreset),
+            });
+            const rawBookmarkName = typeof window !== 'undefined'
+              ? window.prompt('New bookmark name', suggestedName)
+              : null;
+            if (rawBookmarkName === null) return;
+            const bookmarkName = asString(rawBookmarkName);
+            if (!bookmarkName) throw new Error('New bookmark name is required.');
+
+            const existing = await findBookmarkByScope({ bookmark: bookmarkName, sourcePreset });
+            if (parseId(existing?.id)) {
+              throw new Error(`A bookmark named '${bookmarkName}' already exists for this collection/scope.`);
+            }
+
+            const payload = sanitizeClonePayload(sourcePreset, {
+              force: {
+                bookmark: bookmarkName,
+              },
+            });
+            const created = await createPreset(payload);
+            const createdId = parseId(created?.id);
+            info.value = createdId
+              ? `Created bookmark '${bookmarkName}' (${createdId}).`
+              : `Created bookmark '${bookmarkName}'.`;
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to copy bookmark.';
+          } finally {
+            copying.value = false;
+          }
+        };
+
+        return () => {
+          const resolvedInput = resolveComponent('v-input');
+          const resolvedButton = resolveComponent('v-button');
+          const resolvedNotice = resolveComponent('v-notice');
+          const hasInput = typeof resolvedInput !== 'string';
+          const hasButton = typeof resolvedButton !== 'string';
+          const hasNotice = typeof resolvedNotice !== 'string';
+          const currentValue = asString(props.value);
+          const buttonDisabled = props.disabled || copying.value || !presetId.value;
+
+          const inputNode = hasInput
+            ? h(resolvedInput, {
+                modelValue: currentValue,
+                disabled: props.disabled,
+                placeholder: 'Bookmark name',
+                'onUpdate:modelValue': (next) => {
+                  error.value = '';
+                  info.value = '';
+                  emit('input', asString(next));
+                },
+              })
+            : h('input', {
+                type: 'text',
+                value: currentValue,
+                disabled: props.disabled,
+                placeholder: 'Bookmark name',
+                style: {
+                  minHeight: '34px',
+                  width: '100%',
+                  border: '1px solid var(--theme--border-normal)',
+                  borderRadius: '6px',
+                  padding: '6px 10px',
+                },
+                onInput: (event) => {
+                  error.value = '';
+                  info.value = '';
+                  emit('input', asString(event?.target?.value));
+                },
+              });
+
+          const buttonNode = hasButton
+            ? h(
+                resolvedButton,
+                {
+                  disabled: buttonDisabled,
+                  secondary: true,
+                  small: true,
+                  onClick: () => { void copyBookmark(); },
+                },
+                () => (copying.value ? 'Copying...' : 'Copy Bookmark')
+              )
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  disabled: buttonDisabled,
+                  onClick: () => { void copyBookmark(); },
+                  style: {
+                    minHeight: '34px',
+                    border: '1px solid var(--theme--border-normal)',
+                    borderRadius: '6px',
+                    padding: '6px 10px',
+                    background: 'var(--theme--background-page)',
+                    color: 'var(--theme--foreground-normal)',
+                    cursor: buttonDisabled ? 'default' : 'pointer',
+                    whiteSpace: 'nowrap',
+                  },
+                },
+                copying.value ? 'Copying...' : 'Copy Bookmark'
+              );
+
+          const notices = [];
+          if (error.value) {
+            notices.push(
+              hasNotice
+                ? h(resolvedNotice, { type: 'danger' }, () => error.value)
+                : h('p', { style: { margin: '0', color: 'var(--theme--danger)' } }, error.value)
+            );
+          } else if (info.value) {
+            notices.push(
+              hasNotice
+                ? h(resolvedNotice, { type: 'success' }, () => info.value)
+                : h('p', { style: { margin: '0', color: 'var(--theme--foreground-subdued)' } }, info.value)
+            );
+          }
+
+          return h('div', {
+            class: 'cms-preset-bookmark-copy',
+            style: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+            },
+          }, [
+            h('div', {
+              style: {
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '8px',
+                alignItems: 'center',
+              },
+            }, [
+              h('div', { style: { minWidth: '220px', flex: '1 1 280px' } }, [inputNode]),
+              buttonNode,
+            ]),
+            ...notices,
+          ]);
+        };
+      },
+    });
+
+    export default defineInterface({
+      id: 'cms-preset-bookmark-copy',
+      name: 'CMS Preset Bookmark Copy',
+      icon: 'bookmark_add',
+      description: 'Bookmark-name input with an editor-triggered action to copy an existing Directus bookmark preset.',
+      component: InterfaceComponent,
+      types: ['string', 'text'],
+      group: 'standard',
+    });
+
   cms-page-blocks-manager.package.json: |
     {
       "name": "directus-extension-cms-page-blocks-manager",
@@ -7310,6 +7680,7 @@ data:
         const creatingBlockType = ref('');
         const addBlockType = ref('content_ref');
         const promoting = ref(false);
+        const copyingPage = ref(false);
         const error = ref('');
         const info = ref('');
     
@@ -9125,6 +9496,10 @@ data:
               'group_tag',
               'parent_block_id',
               'tree_depth',
+              'site_key',
+              'release_channel',
+              'page_slug',
+              'refresh_target',
             ].join(','),
             limit: -1,
             sort: 'tree_depth,sort,id',
@@ -9167,6 +9542,426 @@ data:
             await deletePageBlockAndContent(row);
           }
           return rows.length;
+        };
+
+        const normalizePageSlug = (value) => {
+          const normalized = asString(value)
+            .toLowerCase()
+            .replace(/^\/+|\/+$/g, '');
+          return normalized
+            .split('/')
+            .map((segment) => segment
+              .replace(/['"]/g, '')
+              .replace(/[^a-z0-9._-]+/g, '-')
+              .replace(/-{2,}/g, '-')
+              .replace(/^-+|-+$/g, ''))
+            .filter(Boolean)
+            .join('/');
+        };
+
+        const appendPageSlugSuffix = (slug, suffix) => {
+          const normalizedSlug = normalizePageSlug(slug) || 'page';
+          const normalizedSuffix = asString(suffix);
+          const segments = normalizedSlug.split('/').filter(Boolean);
+          const lastSegment = segments.pop() || 'page';
+          segments.push(`${lastSegment}${normalizedSuffix}`);
+          return segments.join('/');
+        };
+
+        const defaultCopyTitleForPage = (sourcePage) => {
+          const sourceTitle = asString(sourcePage?.title || sourcePage?.head_title || sourcePage?.slug || 'Page');
+          return `${sourceTitle} Copy`;
+        };
+
+        const defaultCopySlugForPage = (sourcePage) => {
+          const sourceSlug = normalizePageSlug(sourcePage?.slug) || 'page';
+          if (sourceSlug.endsWith('-copy')) return sourceSlug;
+          return appendPageSlugSuffix(sourceSlug, '-copy');
+        };
+
+        const resolveAvailablePageCopySlug = async ({ baseSlug, siteKey, releaseChannel }) => {
+          const normalizedBaseSlug = normalizePageSlug(baseSlug) || 'page-copy';
+          for (let index = 0; index < 100; index += 1) {
+            const candidate = index === 0
+              ? normalizedBaseSlug
+              : appendPageSlugSuffix(normalizedBaseSlug, `-${index + 1}`);
+            const existing = await findPageByScope({
+              slug: candidate,
+              siteKey,
+              releaseChannel,
+            });
+            if (!parseId(existing?.id)) return candidate;
+          }
+          throw new Error('Could not find an available page slug for this site/channel.');
+        };
+
+        const promptForPageCopyDetails = async (sourcePage) => {
+          if (typeof window === 'undefined') return null;
+          const sourceSiteKey = asString(sourcePage?.site_key);
+          const sourceReleaseChannel = toLower(sourcePage?.release_channel);
+          const suggestedTitle = defaultCopyTitleForPage(sourcePage);
+          const rawTitle = window.prompt('New page title', suggestedTitle);
+          if (rawTitle === null) return null;
+          const title = asString(rawTitle) || suggestedTitle;
+          const suggestedSlug = await resolveAvailablePageCopySlug({
+            baseSlug: defaultCopySlugForPage(sourcePage),
+            siteKey: sourceSiteKey,
+            releaseChannel: sourceReleaseChannel,
+          });
+          const rawSlug = window.prompt('New page slug', suggestedSlug);
+          if (rawSlug === null) return null;
+          const slug = normalizePageSlug(rawSlug);
+          if (!slug) throw new Error('New page slug is required.');
+          const existing = await findPageByScope({
+            slug,
+            siteKey: sourceSiteKey,
+            releaseChannel: sourceReleaseChannel,
+          });
+          if (parseId(existing?.id)) {
+            throw new Error(`A page already exists for slug '${slug}' in this site/channel.`);
+          }
+          return { title, slug };
+        };
+
+        const copyContentItemTranslations = async ({ sourceContentItemId, targetContentItemId }) => {
+          const normalizedSourceId = parseId(sourceContentItemId);
+          const normalizedTargetId = parseId(targetContentItemId);
+          if (!normalizedSourceId || !normalizedTargetId) return 0;
+          const response = await apiRequest('GET', '/items/cms_content_item_translations', {
+            fields: '*',
+            limit: -1,
+            filter: JSON.stringify({ content_item_id: { _eq: normalizedSourceId } }),
+          });
+          const translations = normalizeRows(response);
+          let copied = 0;
+          for (const translation of translations) {
+            const translationPayload = sanitizeClonePayload(translation, {
+              blockedKeys: ['content_item_id'],
+              force: { content_item_id: normalizedTargetId },
+            });
+            await apiRequest('POST', '/items/cms_content_item_translations', {}, translationPayload);
+            copied += 1;
+          }
+          return copied;
+        };
+
+        const copyContentItemForPage = async ({
+          sourceContentItemId,
+          siteKey,
+          releaseChannel,
+          refreshTarget,
+          createdContentItemIds,
+        }) => {
+          const normalizedSourceId = parseId(sourceContentItemId);
+          if (!normalizedSourceId) {
+            throw new Error('Content-ref block is missing content_item_id.');
+          }
+
+          const sourceResponse = await apiRequest(
+            'GET',
+            `/items/cms_content_items/${encodeURIComponent(normalizedSourceId)}`,
+            { fields: '*' },
+          );
+          const sourceContentItem = sourceResponse?.data || null;
+          if (!sourceContentItem) {
+            throw new Error(`Content item ${normalizedSourceId} could not be loaded for copy.`);
+          }
+
+          const targetContentPayload = sanitizeClonePayload(sourceContentItem, {
+            blockedKeys: ['content_key', 'site_key', 'release_channel', 'refresh_target'],
+            force: {
+              name: asString(sourceContentItem?.name) || 'Copied content block',
+              site_key: asString(siteKey) || null,
+              release_channel: toLower(releaseChannel) || null,
+              refresh_target: asString(sourceContentItem?.refresh_target || refreshTarget) || null,
+            },
+          });
+
+          const createdContentItem = await apiRequest(
+            'POST',
+            '/items/cms_content_items',
+            {},
+            targetContentPayload,
+          );
+          const targetContentItemId = parseId(createdContentItem?.data?.id);
+          if (!targetContentItemId) {
+            throw new Error('Page copy failed: created content item id is missing.');
+          }
+          if (Array.isArray(createdContentItemIds)) createdContentItemIds.push(targetContentItemId);
+          await copyContentItemTranslations({
+            sourceContentItemId: normalizedSourceId,
+            targetContentItemId,
+          });
+          return targetContentItemId;
+        };
+
+        const copyBlockItemForPage = async ({
+          sourceCollection,
+          sourceItemId,
+          targetSlug,
+          siteKey,
+          releaseChannel,
+          refreshTarget,
+          createdBlockItems,
+          createdContentItemIds,
+        }) => {
+          const normalizedCollection = asString(sourceCollection);
+          const normalizedItemId = parseId(sourceItemId);
+          if (!normalizedCollection || !normalizedItemId) return '';
+
+          const sourceContentResponse = await apiRequest(
+            'GET',
+            `/items/${normalizedCollection}/${encodeURIComponent(normalizedItemId)}`,
+            { fields: '*' },
+          );
+          const sourceContent = sourceContentResponse?.data || {};
+          const targetContentPayload = sanitizeClonePayload(sourceContent, {
+            blockedKeys: ['page_id', 'parent_block_id', 'site_key', 'release_channel', 'page_slug', 'refresh_target'],
+            force: {
+              site_key: asString(siteKey) || null,
+              release_channel: toLower(releaseChannel) || null,
+              page_slug: targetSlug,
+              refresh_target: asString(sourceContent?.refresh_target || refreshTarget) || null,
+            },
+          });
+
+          if (normalizedCollection === 'cms_block_content_ref') {
+            targetContentPayload.content_item_id = await copyContentItemForPage({
+              sourceContentItemId: sourceContent?.content_item_id,
+              siteKey,
+              releaseChannel,
+              refreshTarget,
+              createdContentItemIds,
+            });
+          }
+
+          const createdContent = await apiRequest(
+            'POST',
+            `/items/${normalizedCollection}`,
+            {},
+            targetContentPayload,
+          );
+          const targetContentId = parseId(createdContent?.data?.id);
+          if (!targetContentId) {
+            throw new Error(`Page copy failed: created content id missing for ${normalizedCollection}.`);
+          }
+          if (Array.isArray(createdBlockItems)) {
+            createdBlockItems.push({ collection: normalizedCollection, id: targetContentId });
+          }
+          return targetContentId;
+        };
+
+        const deleteCreatedBlockItems = async (blockItems) => {
+          const seen = new Set();
+          for (const item of [...(blockItems || [])].reverse()) {
+            const collectionName = asString(item?.collection);
+            const itemId = parseId(item?.id);
+            const key = `${collectionName}:${itemId}`;
+            if (!collectionName || !itemId || seen.has(key)) continue;
+            seen.add(key);
+            try {
+              await apiRequest('DELETE', `/items/${collectionName}/${encodeURIComponent(itemId)}`);
+            } catch (cleanupError) {
+              console.warn('cms-page-blocks-manager: failed to clean up copied block item', key, cleanupError);
+            }
+          }
+        };
+
+        const deleteCreatedContentItems = async (contentItemIds) => {
+          const ids = uniqueNonEmpty(contentItemIds || []);
+          for (const contentItemId of ids.reverse()) {
+            try {
+              await apiRequest('DELETE', `/items/cms_content_items/${encodeURIComponent(contentItemId)}`);
+            } catch (cleanupError) {
+              console.warn('cms-page-blocks-manager: failed to clean up copied content item', contentItemId, cleanupError);
+            }
+          }
+        };
+
+        const copyBlocksToPage = async ({
+          sourcePageId,
+          targetPageId,
+          targetSlug,
+          siteKey,
+          releaseChannel,
+          refreshTarget,
+          createdBlockItems,
+          createdContentItemIds,
+        }) => {
+          const sourceRows = await listBlocksForPage(sourcePageId);
+          const sortedSourceRows = [...sourceRows].sort((left, right) => {
+            const leftDepth = asInteger(left?.tree_depth) ?? 0;
+            const rightDepth = asInteger(right?.tree_depth) ?? 0;
+            if (leftDepth !== rightDepth) return leftDepth - rightDepth;
+            const leftSort = asInteger(left?.sort);
+            const rightSort = asInteger(right?.sort);
+            if (leftSort !== null && rightSort !== null && leftSort !== rightSort) return leftSort - rightSort;
+            return asString(left?.id).localeCompare(asString(right?.id));
+          });
+
+          const sourceToTargetBlockId = new Map();
+          let copiedCount = 0;
+          for (const sourceRow of sortedSourceRows) {
+            const sourceBlockId = parseId(sourceRow?.id);
+            const sourceCollection = asString(sourceRow?.collection);
+            const sourceItemId = parseId(sourceRow?.item);
+            if (!sourceBlockId || !sourceCollection || !sourceItemId) continue;
+
+            const targetContentId = await copyBlockItemForPage({
+              sourceCollection,
+              sourceItemId,
+              targetSlug,
+              siteKey,
+              releaseChannel,
+              refreshTarget: asString(sourceRow?.refresh_target || refreshTarget),
+              createdBlockItems,
+              createdContentItemIds,
+            });
+            if (!targetContentId) continue;
+
+            const sourceParentId = parseId(sourceRow?.parent_block_id);
+            let targetParentId = null;
+            if (sourceParentId) {
+              targetParentId = sourceToTargetBlockId.get(sourceParentId) || null;
+              if (!targetParentId) {
+                throw new Error(`Page copy failed: could not resolve parent mapping for block ${sourceBlockId}.`);
+              }
+            }
+
+            const targetBlockPayload = {
+              page_id: targetPageId,
+              collection: sourceCollection,
+              item: targetContentId,
+              slot: asString(sourceRow?.slot) || 'main',
+              group_tag: asString(sourceRow?.group_tag) || null,
+              parent_block_id: targetParentId,
+              site_key: asString(siteKey) || null,
+              release_channel: toLower(releaseChannel) || null,
+              page_slug: targetSlug,
+              refresh_target: asString(sourceRow?.refresh_target || refreshTarget) || null,
+            };
+            const sourceSort = asInteger(sourceRow?.sort);
+            if (sourceSort !== null) {
+              targetBlockPayload.sort = sourceSort;
+            }
+
+            const createdBlock = await apiRequest(
+              'POST',
+              `/items/${pageBlocksCollection.value}`,
+              {},
+              targetBlockPayload,
+            );
+            const targetBlockId = parseId(createdBlock?.data?.id);
+            if (!targetBlockId) {
+              throw new Error(`Page copy failed: created block id missing for source block ${sourceBlockId}.`);
+            }
+            sourceToTargetBlockId.set(sourceBlockId, targetBlockId);
+            copiedCount += 1;
+          }
+          return copiedCount;
+        };
+
+        const cleanupCreatedPageCopy = async ({ targetPageId, createdBlockItems, createdContentItemIds }) => {
+          const normalizedTargetPageId = parseId(targetPageId);
+          if (normalizedTargetPageId) {
+            try {
+              await clearBlocksForPage(normalizedTargetPageId);
+            } catch (cleanupError) {
+              console.warn('cms-page-blocks-manager: failed to clean up copied page blocks', normalizedTargetPageId, cleanupError);
+            }
+            try {
+              await apiRequest(
+                'DELETE',
+                `/items/${pagesCollection.value}/${encodeURIComponent(normalizedTargetPageId)}`,
+              );
+            } catch (cleanupError) {
+              console.warn('cms-page-blocks-manager: failed to clean up copied page', normalizedTargetPageId, cleanupError);
+            }
+          }
+          await deleteCreatedBlockItems(createdBlockItems);
+          await deleteCreatedContentItems(createdContentItemIds);
+        };
+
+        const copyPageFromCurrent = async () => {
+          if (props.disabled || copyingPage.value || loading.value || !pageId.value) return;
+          copyingPage.value = true;
+          error.value = '';
+          info.value = '';
+          const createdBlockItems = [];
+          const createdContentItemIds = [];
+          let targetPageId = '';
+
+          try {
+            const sourcePage = await fetchPageRecord(pageId.value, '*');
+            if (!sourcePage) throw new Error('Source page could not be loaded.');
+
+            const sourceSlug = asString(sourcePage?.slug);
+            const sourceSiteKey = asString(sourcePage?.site_key);
+            const sourceReleaseChannel = toLower(sourcePage?.release_channel);
+            const sourceRefreshTarget = asString(sourcePage?.refresh_target);
+            if (!sourceSlug) throw new Error('Source page slug is required before copying.');
+            if (sourceReleaseChannel !== 'preview' && sourceReleaseChannel !== 'prod') {
+              throw new Error('Set page release channel to preview or prod before copying.');
+            }
+
+            const copyDetails = await promptForPageCopyDetails(sourcePage);
+            if (!copyDetails) return;
+
+            const targetPagePayload = sanitizeClonePayload(sourcePage, {
+              blockedKeys: ['blocks', 'parent'],
+              force: {
+                slug: copyDetails.slug,
+                title: copyDetails.title,
+                status: 'draft',
+                parent: null,
+                site_key: sourceSiteKey || null,
+                release_channel: sourceReleaseChannel,
+              },
+            });
+            const sourceHeadTitle = asString(sourcePage?.head_title);
+            const sourceSeoTitle = asString(sourcePage?.seo_title);
+            const sourceTitle = asString(sourcePage?.title);
+            if (!sourceHeadTitle || sourceHeadTitle === sourceTitle) {
+              targetPagePayload.head_title = copyDetails.title;
+            }
+            if (!sourceSeoTitle || sourceSeoTitle === sourceTitle) {
+              targetPagePayload.seo_title = copyDetails.title;
+            }
+
+            const createdPage = await apiRequest(
+              'POST',
+              `/items/${pagesCollection.value}`,
+              {},
+              targetPagePayload,
+            );
+            targetPageId = parseId(createdPage?.data?.id);
+            if (!targetPageId) {
+              throw new Error('Page copy failed: created page id is missing.');
+            }
+
+            const copiedCount = await copyBlocksToPage({
+              sourcePageId: pageId.value,
+              targetPageId,
+              targetSlug: copyDetails.slug,
+              siteKey: sourceSiteKey,
+              releaseChannel: sourceReleaseChannel,
+              refreshTarget: sourceRefreshTarget,
+              createdBlockItems,
+              createdContentItemIds,
+            });
+
+            info.value = `Created draft page '${copyDetails.slug}' from '${sourceSlug}' with ${copiedCount} block${copiedCount === 1 ? '' : 's'}.`;
+          } catch (requestError) {
+            if (targetPageId) {
+              await cleanupCreatedPageCopy({ targetPageId, createdBlockItems, createdContentItemIds });
+            } else {
+              await deleteCreatedBlockItems(createdBlockItems);
+              await deleteCreatedContentItems(createdContentItemIds);
+            }
+            error.value = requestError?.message || 'Failed to copy page.';
+          } finally {
+            copyingPage.value = false;
+          }
         };
     
         const triggerManualProdRefresh = async ({ siteKey, slug }) => {
@@ -10145,19 +10940,25 @@ data:
                       renderSelectControl({
                         value: addBlockType.value,
                         items: addBlockTypeChoices,
-                        disabled: !pageId.value || !!creatingBlockType.value || loading.value,
+                        disabled: !pageId.value || !!creatingBlockType.value || loading.value || copyingPage.value || promoting.value,
                         onUpdate: (next) => { addBlockType.value = asString(next) || 'content_ref'; },
                       }),
                     ]),
                     renderButtonControl({
                       label: creatingBlockType.value ? `Adding ${creatingAddTypeLabel}...` : `Add ${selectedAddTypeLabel}`,
-                      disabled: !pageId.value || !!creatingBlockType.value || loading.value,
+                      disabled: !pageId.value || !!creatingBlockType.value || loading.value || copyingPage.value,
                       primary: true,
                       onClick: () => { void createPageBlockWithContent(addBlockType.value); },
                     }),
                     renderButtonControl({
+                      label: copyingPage.value ? 'Copying...' : 'Copy Page',
+                      disabled: !pageId.value || !hasPageReleaseChannel.value || copyingPage.value || loading.value || !!creatingBlockType.value || promoting.value,
+                      primary: false,
+                      onClick: () => { void copyPageFromCurrent(); },
+                    }),
+                    renderButtonControl({
                       label: promoting.value ? 'Promoting...' : 'Promote -> Prod',
-                      disabled: !canPromoteToProd.value || promoting.value || loading.value || !!creatingBlockType.value,
+                      disabled: !canPromoteToProd.value || promoting.value || loading.value || !!creatingBlockType.value || copyingPage.value,
                       primary: false,
                       onClick: () => { void promotePreviewToProd(); },
                     }),
