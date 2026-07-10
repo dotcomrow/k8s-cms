@@ -1575,112 +1575,34 @@ data:
 
       _upsert_page_block_slot_field_meta
 
-      _upsert_preset_bookmark_copy_field_meta() {
+      _remove_preset_bookmark_copy_field_meta() {
         _collection="directus_presets"
-        _field="bookmark"
         _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
-        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
 
         _preset_table_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_presets' LIMIT 1;" || true)"
         _preset_table_exists="$(printf '%s' "${_preset_table_exists}" | tr -d '\r')"
         if [ "${_preset_table_exists}" != "1" ]; then
-          echo "  └─ directus_presets table not found; skipping bookmark copy field UX"
+          echo "  └─ directus_presets table not found; skipping bookmark copy field UX cleanup"
           return 0
         fi
 
-        _note="Copy an existing bookmark preset, then edit the copied bookmark as needed."
-        _note_sql="$(printf '%s' "${_note}" | sed "s/'/''/g")"
-        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
-        _exists="$(printf '%s' "${_exists}" | tr -d '\r')"
-
-        if [ "${_exists}" = "1" ]; then
+        if _df_has_col "interface"; then
           SETS=""
-          if _df_has_col "interface"; then SETS="${SETS},interface='cms-preset-bookmark-copy'"; fi
-          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
-          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
-          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
-          if _df_has_col "note"; then SETS="${SETS},note='${_note_sql}'"; fi
+          SETS="${SETS},interface=NULL"
+          if _df_has_col "note"; then SETS="${SETS},note=NULL"; fi
           if [ -n "${SETS}" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
-            echo "✅ Updated directus_presets.bookmark copy field UX"
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='bookmark' AND COALESCE(interface,'')='cms-preset-bookmark-copy';"
           fi
-          return 0
         fi
-
-        FCOLS="collection,field"
-        FVALS="'${_collection_sql}','${_field_sql}'"
-        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-preset-bookmark-copy'"; fi
-        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
-        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
-        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
-        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},1"; fi
-        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
 
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
-        echo "✅ Created directus_presets.bookmark copy field UX"
+          "SET search_path TO directus, public; DELETE FROM directus_fields WHERE collection='${_collection_sql}' AND field='copy_bookmark_action';"
+        echo "✅ Removed field-level bookmark copy UX; use the Bookmark Copy module"
       }
 
-      _upsert_preset_bookmark_copy_action_field_meta() {
-        _collection="directus_presets"
-        _field="copy_bookmark_action"
-        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
-        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
-
-        _preset_table_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_presets' LIMIT 1;" || true)"
-        _preset_table_exists="$(printf '%s' "${_preset_table_exists}" | tr -d '\r')"
-        if [ "${_preset_table_exists}" != "1" ]; then
-          echo "  └─ directus_presets table not found; skipping bookmark copy action UX"
-          return 0
-        fi
-
-        _note="Open an existing bookmark preset and use this action to copy it into a new bookmark preset."
-        _note_sql="$(printf '%s' "${_note}" | sed "s/'/''/g")"
-        _special_sql="$(_df_special_alias_no_data_sql)"
-        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
-        _exists="$(printf '%s' "${_exists}" | tr -d '\r')"
-
-        if [ "${_exists}" = "1" ]; then
-          SETS=""
-          if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
-          if _df_has_col "interface"; then SETS="${SETS},interface='cms-preset-bookmark-copy'"; fi
-          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
-          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
-          if _df_has_col "name"; then SETS="${SETS},name='Copy Bookmark'"; fi
-          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
-          if _df_has_col "sort"; then SETS="${SETS},sort=0"; fi
-          if _df_has_col "note"; then SETS="${SETS},note='${_note_sql}'"; fi
-          if [ -n "${SETS}" ]; then
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
-            echo "✅ Updated directus_presets.copy_bookmark_action UX"
-          fi
-          return 0
-        fi
-
-        FCOLS="collection,field"
-        FVALS="'${_collection_sql}','${_field_sql}'"
-        if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then FCOLS="${FCOLS},special"; FVALS="${FVALS},${_special_sql}"; fi
-        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'cms-preset-bookmark-copy'"; fi
-        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
-        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
-        if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'Copy Bookmark'"; fi
-        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
-        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},0"; fi
-        if _df_has_col "note"; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
-
-        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
-        echo "✅ Created directus_presets.copy_bookmark_action UX"
-      }
-
-      _upsert_preset_bookmark_copy_field_meta
-      _upsert_preset_bookmark_copy_action_field_meta
+      _remove_preset_bookmark_copy_field_meta
       set -e
     else
       echo "  └─ directus_fields metadata table not found; skipping refresh_target UX config"
@@ -8275,7 +8197,7 @@ data:
       echo "ℹ️ DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED=false and DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED=false; skipping Directus settings seed."
     fi
 
-    echo "🧩 Ensuring local extensions are enabled..."
+    echo "🧩 Reconciling local extension registrations..."
     EXT_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
       "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_extensions' LIMIT 1;" || true)"
     if [ "$EXT_TABLE_EXISTS" = "1" ]; then
@@ -8312,6 +8234,33 @@ data:
           fi
         fi
       }
+
+      _ensure_local_ext_disabled() {
+        ext_folder="$1"
+        ext_folder_sql="$(printf '%s' "$ext_folder" | sed "s/'/''/g")"
+
+        if printf '%s\n' "$EXT_COLS" | grep -qx "folder"; then
+          EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT 1 FROM directus.directus_extensions WHERE folder='${ext_folder_sql}' AND source='local' LIMIT 1;" || true)"
+          if [ "$EXISTS" = "1" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=false WHERE folder='${ext_folder_sql}' AND source='local';"
+            echo "✅ ${ext_folder} extension disabled."
+          else
+            echo "  └─ ${ext_folder} extension not registered; skip disable."
+          fi
+        else
+          EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT 1 FROM directus.directus_extensions WHERE name='${ext_folder_sql}' LIMIT 1;" || true)"
+          if [ "$EXISTS" = "1" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_extensions SET enabled=false WHERE name='${ext_folder_sql}';"
+            echo "✅ ${ext_folder} extension disabled."
+          else
+            echo "  └─ ${ext_folder} extension not registered; skip disable."
+          fi
+        fi
+      }
     
       _ensure_local_ext_enabled "github-profile-sync"
       _ensure_local_ext_enabled "ai-provider-access"
@@ -8319,7 +8268,7 @@ data:
       _ensure_local_ext_enabled "cms-keycloak-role-options"
       _ensure_local_ext_enabled "cms-asset-url-picker"
       _ensure_local_ext_enabled "cms-module-props-editor"
-      _ensure_local_ext_enabled "cms-preset-bookmark-copy"
+      _ensure_local_ext_disabled "cms-preset-bookmark-copy"
       _ensure_local_ext_enabled "cms-bookmark-copy"
       _ensure_local_ext_enabled "cms-page-blocks-manager"
     else
