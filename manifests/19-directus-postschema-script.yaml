@@ -8275,10 +8275,21 @@ data:
       echo "⚠️ directus_extensions table not found; skipping extension enable."
     fi
 
-    echo "🧭 Ensuring Copy Bookmarks appears in customized module bars..."
+    echo "🧭 Ensuring Copy Bookmarks appears in the module bar..."
     if ! _psql_yb_retry "DO \$\$
       DECLARE
         _module_bar_type text;
+        _bookmark_module_bar jsonb := '[
+          {"type":"module","id":"content","enabled":true},
+          {"type":"module","id":"visual","enabled":false},
+          {"type":"module","id":"users","enabled":true},
+          {"type":"module","id":"files","enabled":true},
+          {"type":"module","id":"insights","enabled":true},
+          {"type":"module","id":"deployments","enabled":false},
+          {"type":"module","id":"cms-bookmark-copy","enabled":true},
+          {"type":"link","id":"docs","enabled":true,"name":"$t:documentation","icon":"help","url":"https://docs.directus.io"},
+          {"type":"module","id":"settings","enabled":true,"locked":true}
+        ]'::jsonb;
       BEGIN
         IF to_regclass('directus.directus_settings') IS NULL THEN
           RETURN;
@@ -8290,44 +8301,46 @@ data:
          WHERE table_schema='directus'
            AND table_name='directus_settings'
            AND column_name='module_bar'
-         LIMIT 1;
+        LIMIT 1;
 
         IF _module_bar_type = 'jsonb' THEN
           UPDATE directus_settings ds
-             SET module_bar = (
-               SELECT CASE
-                 WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(ds.module_bar::jsonb) elem WHERE jsonb_typeof(elem) = 'object')
-                   THEN ds.module_bar::jsonb || jsonb_build_array(jsonb_build_object('type', 'module', 'id', 'cms-bookmark-copy', 'enabled', true))
-                 ELSE ds.module_bar::jsonb || jsonb_build_array(to_jsonb('cms-bookmark-copy'::text))
-               END
-             )
-           WHERE ds.module_bar IS NOT NULL
-             AND jsonb_typeof(ds.module_bar::jsonb) = 'array'
-             AND NOT EXISTS (
-               SELECT 1
-                 FROM jsonb_array_elements(ds.module_bar::jsonb) elem
-                WHERE (jsonb_typeof(elem) = 'string' AND elem #>> '{}' = 'cms-bookmark-copy')
-                   OR (jsonb_typeof(elem) = 'object' AND elem->>'id' = 'cms-bookmark-copy')
-                   OR (jsonb_typeof(elem) = 'object' AND elem->>'url' IN ('cms-bookmark-copy', '/cms-bookmark-copy', '/admin/cms-bookmark-copy'))
-             );
+             SET module_bar = CASE
+               WHEN ds.module_bar IS NULL THEN _bookmark_module_bar
+               WHEN jsonb_typeof(ds.module_bar::jsonb) = 'array'
+                 THEN ds.module_bar::jsonb || jsonb_build_array(jsonb_build_object('type', 'module', 'id', 'cms-bookmark-copy', 'enabled', true))
+               ELSE ds.module_bar::jsonb
+             END
+           WHERE ds.module_bar IS NULL
+              OR (
+                jsonb_typeof(ds.module_bar::jsonb) = 'array'
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(ds.module_bar::jsonb) = 'array' THEN ds.module_bar::jsonb ELSE '[]'::jsonb END) elem
+                   WHERE (jsonb_typeof(elem) = 'string' AND elem #>> '{}' = 'cms-bookmark-copy')
+                      OR (jsonb_typeof(elem) = 'object' AND elem->>'id' = 'cms-bookmark-copy')
+                      OR (jsonb_typeof(elem) = 'object' AND elem->>'url' IN ('cms-bookmark-copy', '/cms-bookmark-copy', '/admin/cms-bookmark-copy'))
+                )
+              );
         ELSIF _module_bar_type = 'json' THEN
           UPDATE directus_settings ds
-             SET module_bar = (
-               SELECT CASE
-                 WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(ds.module_bar::jsonb) elem WHERE jsonb_typeof(elem) = 'object')
-                   THEN (ds.module_bar::jsonb || jsonb_build_array(jsonb_build_object('type', 'module', 'id', 'cms-bookmark-copy', 'enabled', true)))::json
-                 ELSE (ds.module_bar::jsonb || jsonb_build_array(to_jsonb('cms-bookmark-copy'::text)))::json
-               END
-             )
-           WHERE ds.module_bar IS NOT NULL
-             AND jsonb_typeof(ds.module_bar::jsonb) = 'array'
-             AND NOT EXISTS (
-               SELECT 1
-                 FROM jsonb_array_elements(ds.module_bar::jsonb) elem
-                WHERE (jsonb_typeof(elem) = 'string' AND elem #>> '{}' = 'cms-bookmark-copy')
-                   OR (jsonb_typeof(elem) = 'object' AND elem->>'id' = 'cms-bookmark-copy')
-                   OR (jsonb_typeof(elem) = 'object' AND elem->>'url' IN ('cms-bookmark-copy', '/cms-bookmark-copy', '/admin/cms-bookmark-copy'))
-             );
+             SET module_bar = (CASE
+               WHEN ds.module_bar IS NULL THEN _bookmark_module_bar
+               WHEN jsonb_typeof(ds.module_bar::jsonb) = 'array'
+                 THEN ds.module_bar::jsonb || jsonb_build_array(jsonb_build_object('type', 'module', 'id', 'cms-bookmark-copy', 'enabled', true))
+               ELSE ds.module_bar::jsonb
+             END)::json
+           WHERE ds.module_bar IS NULL
+              OR (
+                jsonb_typeof(ds.module_bar::jsonb) = 'array'
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(ds.module_bar::jsonb) = 'array' THEN ds.module_bar::jsonb ELSE '[]'::jsonb END) elem
+                   WHERE (jsonb_typeof(elem) = 'string' AND elem #>> '{}' = 'cms-bookmark-copy')
+                      OR (jsonb_typeof(elem) = 'object' AND elem->>'id' = 'cms-bookmark-copy')
+                      OR (jsonb_typeof(elem) = 'object' AND elem->>'url' IN ('cms-bookmark-copy', '/cms-bookmark-copy', '/admin/cms-bookmark-copy'))
+                )
+              );
         END IF;
       END
       \$\$;" "ensure Copy Bookmarks module bar item" 12; then

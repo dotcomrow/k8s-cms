@@ -7184,6 +7184,7 @@ data:
       }
     }
   cms-bookmark-copy.index.js: |
+    import { defineModule } from '@directus/extensions-sdk';
     import { defineComponent, h, onMounted, ref, computed, resolveComponent } from 'vue';
 
     const asString = (value) => {
@@ -7604,7 +7605,7 @@ data:
       },
     });
 
-    export default {
+    export default defineModule({
       id: 'cms-bookmark-copy',
       name: 'Copy Bookmarks',
       icon: 'content_copy',
@@ -7616,7 +7617,7 @@ data:
         },
       ],
       hidden: false,
-    };
+    });
 
   cms-page-blocks-manager.package.json: |
     {
