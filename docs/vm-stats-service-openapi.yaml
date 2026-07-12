@@ -1,10 +1,8 @@
 openapi: 3.0.3
 info:
   title: VM Stats Service
-  version: 1.2.2
-  description: |
-    Internal API exposing VM reporting collectors for one or more configured VM targets and Hasura integration.
-    Includes normalized snapshot endpoints for flexible polling by section.
+  version: 1.3.0
+  description: Internal API exposing VM reporting collectors for the oracle-db host and Hasura integration.
 servers:
   - url: http://vm-stats-service.directus.svc.cluster.local:8080
 paths:
@@ -29,11 +27,11 @@ paths:
       description: Enumerates available collectors and reusable snapshot sections.
       responses:
         "200":
-          description: Available collectors and sections
+          description: Available collectors
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CollectorAndSectionListResponse"
+                $ref: '#/components/schemas/CollectorAndSectionListResponse'
   /stats:
     get:
       summary: Fetch VM stats
@@ -44,7 +42,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Collector name (comma-separated supported)
+          description: Collector name (repeatable as comma list)
         - in: query
           name: collectors
           required: false
@@ -52,17 +50,17 @@ paths:
             type: string
           description: Comma-separated collectors
         - in: query
-          name: sections
-          required: false
-          schema:
-            type: string
-          description: Comma-separated sections (quick,storage,processes,services,ports,sessions,logs)
-        - in: query
           name: state
           required: false
           schema:
             type: string
-          description: Service state filter
+          description: Service state filter (default running; use all for every service)
+        - in: query
+          name: sections
+          required: false
+          schema:
+            type: string
+          description: Comma-separated sections (quick,storage,processes,services,hardware,ports,sessions,logs)
         - in: query
           name: scope
           required: false
@@ -82,17 +80,54 @@ paths:
             type: string
           description: Target service name
         - in: query
+          name: hardware_raw
+          required: false
+          schema:
+            type: boolean
+          description: Include verbose raw hardware command output; defaults to true for hardware collector
+        - in: query
           name: lines
           required: false
           schema:
             type: integer
           description: Log lines
         - in: query
+          name: range
+          required: false
+          schema:
+            type: string
+            enum:
+              - today
+              - all
+          description: Log range preset; defaults to today
+        - in: query
+          name: level
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - error
+              - warning
+          description: Log severity filter; error returns errors only
+        - in: query
+          name: errors
+          required: false
+          schema:
+            type: boolean
+          description: Shortcut for level=error
+        - in: query
           name: since
           required: false
           schema:
             type: string
-          description: Log range start
+          description: Log range start; overrides range=today when provided
+        - in: query
+          name: until
+          required: false
+          schema:
+            type: string
+          description: Log range end
         - in: query
           name: system_id
           required: false
@@ -105,13 +140,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StatsResponseEnvelope"
+                $ref: '#/components/schemas/StatsResponseEnvelope'
         "207":
           description: Partial stats; one or more collectors failed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StatsResponseEnvelope"
+                $ref: '#/components/schemas/StatsResponseEnvelope'
   /stats/snapshot:
     get:
       summary: Fetch normalized snapshot for UI
@@ -142,17 +177,54 @@ paths:
             type: string
           description: Target service (for logs section)
         - in: query
+          name: hardware_raw
+          required: false
+          schema:
+            type: boolean
+          description: Include verbose raw hardware command output; defaults to true for hardware collector
+        - in: query
           name: lines
           required: false
           schema:
             type: integer
           description: Log lines when requesting logs section
         - in: query
+          name: range
+          required: false
+          schema:
+            type: string
+            enum:
+              - today
+              - all
+          description: Log range preset; defaults to today
+        - in: query
+          name: level
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - error
+              - warning
+          description: Log severity filter; error returns errors only
+        - in: query
+          name: errors
+          required: false
+          schema:
+            type: boolean
+          description: Shortcut for level=error
+        - in: query
           name: since
           required: false
           schema:
             type: string
-          description: Log range start
+          description: Log start time; overrides range=today when provided
+        - in: query
+          name: until
+          required: false
+          schema:
+            type: string
+          description: Log range end
         - in: query
           name: system_id
           required: false
@@ -165,13 +237,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotEnvelope"
+                $ref: '#/components/schemas/SnapshotEnvelope'
         "207":
           description: Partial snapshot; one or more collectors failed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotEnvelope"
+                $ref: '#/components/schemas/SnapshotEnvelope'
   /stats/sections/{section}:
     get:
       summary: Fetch a single reporting section
@@ -182,7 +254,7 @@ paths:
           required: true
           schema:
             type: string
-          description: Section name (quick, storage, processes, services, ports, sessions, logs, all)
+          description: Section name (quick, storage, processes, services, hardware, ports, sessions, logs, all)
         - in: query
           name: collector
           required: false
@@ -194,7 +266,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Service state filter
+          description: Service state filter (default running; use all for every service)
         - in: query
           name: scope
           required: false
@@ -214,17 +286,54 @@ paths:
             type: string
           description: Target service name
         - in: query
+          name: hardware_raw
+          required: false
+          schema:
+            type: boolean
+          description: Include verbose raw hardware command output; defaults to true for hardware collector
+        - in: query
           name: lines
           required: false
           schema:
             type: integer
           description: Log lines
         - in: query
+          name: range
+          required: false
+          schema:
+            type: string
+            enum:
+              - today
+              - all
+          description: Log range preset; defaults to today
+        - in: query
+          name: level
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - error
+              - warning
+          description: Log severity filter; error returns errors only
+        - in: query
+          name: errors
+          required: false
+          schema:
+            type: boolean
+          description: Shortcut for level=error
+        - in: query
           name: since
           required: false
           schema:
             type: string
-          description: Log range start
+          description: Log range start; overrides range=today when provided
+        - in: query
+          name: until
+          required: false
+          schema:
+            type: string
+          description: Log range end
         - in: query
           name: system_id
           required: false
@@ -237,13 +346,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StatsResponseEnvelope"
+                $ref: '#/components/schemas/StatsResponseEnvelope'
         "207":
           description: Partial section response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StatsResponseEnvelope"
+                $ref: '#/components/schemas/StatsResponseEnvelope'
   /stats/sections/{section}/snapshot:
     get:
       summary: Fetch a normalized section snapshot
@@ -254,7 +363,7 @@ paths:
           required: true
           schema:
             type: string
-          description: Section name (quick, storage, processes, services, ports, sessions, logs, all)
+          description: Section name (quick, storage, processes, services, hardware, ports, sessions, logs, all)
         - in: query
           name: fields
           required: false
@@ -274,17 +383,54 @@ paths:
             type: string
           description: Target service (for logs section)
         - in: query
+          name: hardware_raw
+          required: false
+          schema:
+            type: boolean
+          description: Include verbose raw hardware command output; defaults to true for hardware collector
+        - in: query
           name: lines
           required: false
           schema:
             type: integer
           description: Log lines when requesting logs section
         - in: query
+          name: range
+          required: false
+          schema:
+            type: string
+            enum:
+              - today
+              - all
+          description: Log range preset; defaults to today
+        - in: query
+          name: level
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - error
+              - warning
+          description: Log severity filter; error returns errors only
+        - in: query
+          name: errors
+          required: false
+          schema:
+            type: boolean
+          description: Shortcut for level=error
+        - in: query
           name: since
           required: false
           schema:
             type: string
-          description: Log range start
+          description: Log range start; overrides range=today when provided
+        - in: query
+          name: until
+          required: false
+          schema:
+            type: string
+          description: Log range end
         - in: query
           name: system_id
           required: false
@@ -297,13 +443,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotEnvelope"
+                $ref: '#/components/schemas/SnapshotEnvelope'
         "207":
           description: Partial section snapshot
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SnapshotEnvelope"
+                $ref: '#/components/schemas/SnapshotEnvelope'
   /stats/logs:
     get:
       summary: Fetch logs for one service
@@ -321,31 +467,62 @@ paths:
           schema:
             type: integer
           description: Number of lines
-      - in: query
-        name: since
-        required: false
-        schema:
-          type: string
-        description: Log range start
-      - in: query
-        name: system_id
-        required: false
-        schema:
-          type: string
-        description: System identifier override
-    responses:
+        - in: query
+          name: range
+          required: false
+          schema:
+            type: string
+            enum:
+              - today
+              - all
+          description: Log range preset; defaults to today
+        - in: query
+          name: level
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - error
+              - warning
+          description: Log severity filter; error returns errors only
+        - in: query
+          name: errors
+          required: false
+          schema:
+            type: boolean
+          description: Shortcut for level=error
+        - in: query
+          name: since
+          required: false
+          schema:
+            type: string
+          description: Log range start; overrides range=today when provided
+        - in: query
+          name: until
+          required: false
+          schema:
+            type: string
+          description: Log range end
+        - in: query
+          name: system_id
+          required: false
+          schema:
+            type: string
+          description: System identifier override
+      responses:
         "200":
           description: Service log lines
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ServiceLogResponse"
+                $ref: '#/components/schemas/ServiceLogResponse'
         "207":
           description: Partial logs response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ServiceLogResponse"
+                $ref: '#/components/schemas/ServiceLogResponse'
         "400":
           description: service parameter missing
           content:
@@ -354,7 +531,7 @@ paths:
                 type: object
                 properties:
                   error:
-                    $ref: "#/components/schemas/ErrorResponse"
+                    $ref: '#/components/schemas/ErrorResponse'
   /hasura/actions/stats:
     post:
       summary: Hasura action endpoint for VM reporting
@@ -365,7 +542,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/HasuraActionRequest"
+              $ref: '#/components/schemas/HasuraActionRequest'
       responses:
         "200":
           description: Hasura action stats payload
@@ -373,26 +550,87 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: "#/components/schemas/StatsResponseEnvelope"
-                  - $ref: "#/components/schemas/SystemListResponse"
+                  - $ref: '#/components/schemas/StatsResponseEnvelope'
+                  - $ref: '#/components/schemas/SystemListResponse'
         "207":
           description: Partial stats; one or more collectors failed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/StatsResponseEnvelope"
+                $ref: '#/components/schemas/StatsResponseEnvelope'
 components:
   schemas:
     CollectorSummary:
       type: object
-      required:
-        - id
-        - description
       properties:
         id:
           type: string
         description:
           type: string
+      required:
+        - id
+        - description
+    CollectorListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        enabled:
+          type: boolean
+        collectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorSummary'
+    CollectorAndSectionListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        enabled:
+          type: boolean
+        collectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorSummary'
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectorSection'
+    SystemListResponse:
+      type: object
+      properties:
+        systems:
+          type: array
+          items:
+            $ref: '#/components/schemas/MonitoredSystem'
+    ServiceLogResponse:
+      type: object
+      properties:
+        all_ok:
+          type: boolean
+        ran_at:
+          type: string
+          format: date-time
+        system_id:
+          type: string
+        service:
+          type: string
+        lines_requested:
+          type: integer
+        range:
+          type: string
+        level:
+          type: string
+        since:
+          type: string
+          nullable: true
+        until:
+          type: string
+          nullable: true
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceLogLine'
     CollectorSection:
       type: object
       properties:
@@ -406,51 +644,6 @@ components:
           type: array
           items:
             type: string
-    CollectorListResponse:
-      type: object
-      properties:
-        status:
-          type: string
-        enabled:
-          type: boolean
-        collectors:
-          type: array
-          items:
-            $ref: "#/components/schemas/CollectorSummary"
-    CollectorAndSectionListResponse:
-      allOf:
-        - $ref: "#/components/schemas/CollectorListResponse"
-        - type: object
-          properties:
-            sections:
-              type: array
-              items:
-                $ref: "#/components/schemas/CollectorSection"
-    SystemListResponse:
-      type: object
-      properties:
-        systems:
-          type: array
-          items:
-            $ref: "#/components/schemas/MonitoredSystem"
-    MonitoredSystem:
-      type: object
-      properties:
-        id:
-          type: string
-        name:
-          type: string
-        ssh_host:
-          type: string
-          nullable: true
-        db_host:
-          type: string
-        db_port:
-          type: integer
-        sections:
-          type: array
-          items:
-            $ref: "#/components/schemas/CollectorSection"
     CollectorResult:
       type: object
       properties:
@@ -461,20 +654,6 @@ components:
         payload:
           type: object
           additionalProperties: true
-    StatsTarget:
-      type: object
-      properties:
-        system_id:
-          type: string
-        ssh_host:
-          type: string
-          nullable: true
-        db_host:
-          type: string
-        db_port:
-          type: integer
-        has_db_password:
-          type: boolean
     StatsResponseEnvelope:
       type: object
       properties:
@@ -487,16 +666,39 @@ components:
         ran_at:
           type: string
           format: date-time
-        target:
-          $ref: "#/components/schemas/StatsTarget"
         results:
           type: array
           items:
-            $ref: "#/components/schemas/CollectorResult"
+            $ref: '#/components/schemas/CollectorResult'
         collectors:
           type: array
           items:
-            $ref: "#/components/schemas/CollectorResult"
+            $ref: '#/components/schemas/CollectorResult'
+        target:
+          $ref: '#/components/schemas/StatsTarget'
+    HasuraActionRequest:
+      type: object
+      properties:
+        action:
+          type: object
+          additionalProperties: true
+        input:
+          type: object
+          description: Args passed to /stats in query-style form
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+              - type: array
+                items:
+                  type: string
+        session_variables:
+          type: object
+          additionalProperties:
+            type: string
+        request_query:
+          type: string
     SnapshotEnvelope:
       type: object
       properties:
@@ -510,13 +712,13 @@ components:
           type: string
           format: date-time
         target:
-          $ref: "#/components/schemas/StatsTarget"
+          $ref: '#/components/schemas/StatsTarget'
         snapshot:
-          $ref: "#/components/schemas/StatsSnapshot"
+          $ref: '#/components/schemas/StatsSnapshot'
         collectors:
           type: array
           items:
-            $ref: "#/components/schemas/CollectorResult"
+            $ref: '#/components/schemas/CollectorResult'
     StatsSnapshot:
       type: object
       properties:
@@ -530,12 +732,6 @@ components:
         cpuPercent:
           type: number
           format: float
-        loadAverage:
-          type: number
-          format: float
-        loadAverageDetails:
-          type: object
-          additionalProperties: true
         memoryPercent:
           type: number
           format: float
@@ -568,6 +764,10 @@ components:
           items:
             type: object
             additionalProperties: true
+        hardware:
+          type: object
+          nullable: true
+          additionalProperties: true
         dbSessions:
           type: integer
         sshSessions:
@@ -581,12 +781,10 @@ components:
           type: array
           items:
             type: object
-            additionalProperties: true
         listeningPorts:
           type: array
           items:
             type: object
-            additionalProperties: true
         logFiles:
           type: array
           items:
@@ -597,19 +795,21 @@ components:
           additionalProperties:
             type: array
             items:
-              $ref: "#/components/schemas/ServiceLogLine"
+              $ref: '#/components/schemas/ServiceLogLine'
         serviceLogs:
           type: object
           additionalProperties:
             type: array
             items:
-              $ref: "#/components/schemas/ServiceLogLine"
+              $ref: '#/components/schemas/ServiceLogLine'
+        loadAverage:
+          type: number
+          format: float
+        loadAverageDetails:
+          type: object
+          additionalProperties: true
     ServiceLogLine:
       type: object
-      required:
-        - timestamp
-        - severity
-        - message
       properties:
         timestamp:
           type: string
@@ -620,27 +820,40 @@ components:
         unit:
           type: string
           nullable: true
-    ServiceLogResponse:
+      required:
+        - timestamp
+        - severity
+        - message
+    StatsTarget:
       type: object
       properties:
-        all_ok:
-          type: boolean
-        ran_at:
-          type: string
-          format: date-time
         system_id:
           type: string
-        service:
+        ssh_host:
           type: string
-        lines_requested:
+        db_host:
+          type: string
+        db_port:
           type: integer
-        since:
+        has_db_password:
+          type: boolean
+    MonitoredSystem:
+      type: object
+      properties:
+        id:
           type: string
-          nullable: true
-        logs:
+        name:
+          type: string
+        ssh_host:
+          type: string
+        db_host:
+          type: string
+        db_port:
+          type: integer
+        sections:
           type: array
           items:
-            $ref: "#/components/schemas/ServiceLogLine"
+            $ref: '#/components/schemas/CollectorSection'
     ErrorResponse:
       type: object
       properties:
@@ -648,26 +861,3 @@ components:
           type: string
         status:
           type: integer
-    HasuraActionRequest:
-      type: object
-      properties:
-        action:
-          type: object
-          additionalProperties: true
-        input:
-          type: object
-          description: Args passed to /stats in query-style form
-          additionalProperties:
-            oneOf:
-              - type: string
-              - type: number
-              - type: boolean
-              - type: array
-                items:
-                  type: string
-        session_variables:
-          type: object
-          additionalProperties:
-            type: string
-        request_query:
-          type: string

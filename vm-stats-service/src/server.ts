@@ -360,6 +360,8 @@ type ReportingSectionDefinition = {
 const SSH_SERVICE_NAME = /^[a-zA-Z0-9._@-]+(?:\.service)?$/;
 const SERVICE_STATE_FILTERS = new Set(["all", "active", "activating", "inactive", "deactivating", "failed", "exited", "running"]);
 const SESSION_SCOPE_FILTERS = new Set(["all", "db", "ssh"]);
+const LOG_RANGE_FILTERS = new Set(["today", "all"]);
+const LOG_LEVEL_FILTERS = new Set(["all", "error", "errors", "warning", "warn", "info"]);
 
 const REPORTING_SECTION_DEFINITIONS: ReportingSectionDefinition[] = [
   {
@@ -385,6 +387,12 @@ const REPORTING_SECTION_DEFINITIONS: ReportingSectionDefinition[] = [
     description: "Service units and state",
     collectors: ["services"],
     cadence: "normal"
+  },
+  {
+    id: "hardware",
+    description: "CPU, DMI, PCI, USB, block device, and network interface inventory",
+    collectors: ["hardware"],
+    cadence: "slow"
   },
   {
     id: "ports",
@@ -568,6 +576,49 @@ function classifyPercent(value: number, warn: number, critical: number) {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function asQueryBool(value: string | undefined): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["true", "1", "yes", "on"].includes(normalized);
+}
+
+type LogRangeFilter = "today" | "all";
+type LogLevelFilter = "all" | "error" | "warning";
+
+type ResolvedLogOptions = {
+  range: LogRangeFilter;
+  level: LogLevelFilter;
+  since: string;
+  until: string;
+  priority: string;
+};
+
+function resolveLogOptions(args: ReportQueryArgs): ResolvedLogOptions {
+  const rawRange = String(args.range || args.log_range || args.logRange || args.log_scope || args.logScope || "")
+    .trim()
+    .toLowerCase();
+  const range = LOG_RANGE_FILTERS.has(rawRange) ? (rawRange as LogRangeFilter) : "today";
+  const rawLevel = String(args.level || args.log_level || args.logLevel || args.severity || args.priority || "")
+    .trim()
+    .toLowerCase();
+  const errorOnly =
+    asQueryBool(args.errors) ||
+    asQueryBool(args.error_only) ||
+    asQueryBool(args.errorOnly) ||
+    rawLevel === "error" ||
+    rawLevel === "errors";
+  let level: LogLevelFilter = "all";
+  if (errorOnly) {
+    level = "error";
+  } else if (LOG_LEVEL_FILTERS.has(rawLevel) && (rawLevel === "warn" || rawLevel === "warning")) {
+    level = "warning";
+  }
+  const explicitSince = asString(args.since).trim();
+  const since = explicitSince || (range === "today" ? "today" : "");
+  const until = asString(args.until).trim();
+  const priority = level === "error" ? "0..3" : level === "warning" ? "0..4" : "";
+  return { range, level, since, until, priority };
 }
 
 function parseQueryArgs(query: QueryStringRecord): ReportQueryArgs {
@@ -844,7 +895,7 @@ const PRIORITY_TO_SEVERITY: Record<string, "info" | "warn" | "error"> = {
   "0": "error",
   "1": "error",
   "2": "error",
-  "3": "warn",
+  "3": "error",
   "4": "warn",
   "5": "warn",
   "6": "info",
@@ -956,17 +1007,228 @@ function parseVarLogFileList(raw: string) {
     .filter(Boolean);
 }
 
-function parseVarLogFileLines(raw: string, filePath: string) {
+const SYSLOG_MONTHS: Record<string, number> = {
+  Jan: 0,
+  Feb: 1,
+  Mar: 2,
+  Apr: 3,
+  May: 4,
+  Jun: 5,
+  Jul: 6,
+  Aug: 7,
+  Sep: 8,
+  Oct: 9,
+  Nov: 10,
+  Dec: 11
+};
+
+function inferTextSeverity(line: string): "info" | "warn" | "error" {
+  if (/\b(error|err|fatal|crit|critical|panic|exception|traceback|segfault|failed|failure|denied)\b/i.test(line)) {
+    return "error";
+  }
+  if (/\b(warn|warning|degraded)\b/i.test(line)) return "warn";
+  return "info";
+}
+
+function inferLogLineDate(line: string, now = new Date()): Date | undefined {
+  const isoMatch = line.match(/\b(\d{4}-\d{2}-\d{2})(?:[T\s](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/);
+  if (isoMatch) {
+    const date = new Date(isoMatch[2] ? `${isoMatch[1]}T${isoMatch[2]}` : `${isoMatch[1]}T00:00:00`);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  const syslogMatch = line.match(/^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\b/);
+  if (syslogMatch && syslogMatch[1] in SYSLOG_MONTHS) {
+    const date = new Date(
+      now.getFullYear(),
+      SYSLOG_MONTHS[syslogMatch[1]],
+      Number(syslogMatch[2]),
+      Number(syslogMatch[3]),
+      Number(syslogMatch[4]),
+      Number(syslogMatch[5])
+    );
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+  return undefined;
+}
+
+function isSameLocalDate(left: Date, right: Date) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function logLevelAllows(entrySeverity: "info" | "warn" | "error", level: LogLevelFilter) {
+  if (level === "all") return true;
+  if (level === "error") return entrySeverity === "error";
+  return entrySeverity === "error" || entrySeverity === "warn";
+}
+
+function parseVarLogFileLines(raw: string, filePath: string, options: Pick<ResolvedLogOptions, "range" | "level"> = { range: "today", level: "all" }) {
+  const now = new Date();
   return raw
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) => line.length > 0)
-    .map((line) => ({
-      timestamp: new Date().toISOString(),
-      severity: "info" as const,
-      message: line,
-      file: filePath
-    }));
+    .map((line) => {
+      const parsedDate = inferLogLineDate(line, now);
+      return {
+        timestamp: parsedDate ? parsedDate.toISOString() : now.toISOString(),
+        severity: inferTextSeverity(line),
+        message: line,
+        file: filePath,
+        parsed_timestamp: !!parsedDate
+      };
+    })
+    .filter((entry) => {
+      if (options.range === "today" && entry.parsed_timestamp && !isSameLocalDate(new Date(entry.timestamp), now)) {
+        return false;
+      }
+      return logLevelAllows(entry.severity, options.level);
+    })
+    .map(({ parsed_timestamp: _parsedTimestamp, ...entry }) => entry);
+}
+
+type OptionalCommandCapture = RemoteCommandResult & {
+  ok: boolean;
+  error?: string;
+};
+
+async function captureRemoteOptional(
+  runtime: ReportingRuntime,
+  command: string,
+  timeoutMs: number = REPORTING_COMMAND_TIMEOUT_MS
+): Promise<OptionalCommandCapture> {
+  try {
+    const result = await runtime.runRemote(command, timeoutMs);
+    return { ...result, ok: true };
+  } catch (error: any) {
+    const causes = error?.causes || {};
+    return {
+      command,
+      stdout: String(causes.stdout || ""),
+      stderr: String(causes.stderr || error?.message || ""),
+      exitCode: Number(causes.exitCode || error?.status || 1),
+      timedOut: !!causes.timedOut,
+      ok: false,
+      error: String(error?.message || error)
+    };
+  }
+}
+
+function parseKeyValueLines(raw: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const tabIndex = trimmed.indexOf("\t");
+    const colonIndex = trimmed.indexOf(":");
+    const idx = tabIndex >= 0 ? tabIndex : colonIndex;
+    if (idx < 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    if (key) values[key] = value;
+  }
+  return values;
+}
+
+function parseProcCpuInfo(raw: string) {
+  const records = raw
+    .split(/\n\s*\n/)
+    .map((block) => parseKeyValueLines(block))
+    .filter((entry) => Object.keys(entry).length > 0);
+  const first = records[0] || {};
+  const uniqueValues = (key: string) => [...new Set(records.map((entry) => entry[key]).filter(Boolean))];
+  const physicalIds = uniqueValues("physical id");
+  const coreIds = new Set(records.map((entry) => `${entry["physical id"] || "0"}:${entry["core id"] || entry.processor || ""}`));
+  const flags = String(first.flags || first.Features || "")
+    .split(/\s+/)
+    .map((flag) => flag.trim())
+    .filter(Boolean);
+  const cacheSizes = uniqueValues("cache size");
+  return {
+    logical_cpu_count: records.length,
+    sockets_detected: physicalIds.length || null,
+    cores_detected: coreIds.size || null,
+    vendor_id: first.vendor_id || first["CPU implementer"] || null,
+    model_name: first["model name"] || first.Processor || null,
+    cpu_family: first["cpu family"] || null,
+    model: first.model || null,
+    stepping: first.stepping || null,
+    microcode: first.microcode || null,
+    cpu_mhz: first["cpu MHz"] ? Number(first["cpu MHz"]) : null,
+    cache_sizes: cacheSizes,
+    flags_count: flags.length,
+    flags,
+    bugs: uniqueValues("bugs"),
+    processors: records
+  };
+}
+
+function parseLscpu(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {
+    // Fall through to key/value parsing for older lscpu.
+  }
+  return parseKeyValueLines(trimmed);
+}
+
+function parseLspciMachineReadable(raw: string) {
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const slot = line.split(/\s+/, 1)[0];
+      const quoted = [...line.matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+      return {
+        slot,
+        class: quoted[0] || "",
+        vendor: quoted[1] || "",
+        device: quoted[2] || "",
+        subsystem_vendor: quoted[3] || "",
+        subsystem_device: quoted[4] || ""
+      };
+    });
+}
+
+function parseTsvRows(raw: string, columns: string[]) {
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const values = line.split("\t");
+      return columns.reduce<Record<string, string>>((row, key, idx) => {
+        row[key] = values[idx] || "";
+        return row;
+      }, {});
+    });
+}
+
+function parseJsonOrNull(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function summarizeCommandCapture(capture: OptionalCommandCapture) {
+  return {
+    ok: capture.ok,
+    exit_code: capture.exitCode,
+    timed_out: capture.timedOut,
+    stderr: capture.stderr || undefined,
+    error: capture.error || undefined
+  };
 }
 
 type CpuSample = { total: number; idle: number; timestamp: number };
@@ -1421,6 +1683,154 @@ const reportingCollectors: ReportCollector[] = [
     }
   },
   {
+    id: "hardware",
+    description: "Detailed hardware inventory for CPU, DMI/platform, PCI, USB, block devices, and network adapters",
+    collect: async (args, runtime) => {
+      const includeRaw = !["false", "0", "no", "off"].includes(
+        String(args.hardware_raw || args.include_raw || args.raw || "true").trim().toLowerCase()
+      );
+      const pciSysfsCommand =
+        "for d in /sys/bus/pci/devices/*; do " +
+        "[ -e \"$d\" ] || continue; " +
+        "b=$(basename \"$d\"); driver=\"\"; [ -L \"$d/driver\" ] && driver=$(basename \"$(readlink \"$d/driver\")\"); " +
+        "vendor=$(cat \"$d/vendor\" 2>/dev/null || true); device=$(cat \"$d/device\" 2>/dev/null || true); class=$(cat \"$d/class\" 2>/dev/null || true); " +
+        "subvendor=$(cat \"$d/subsystem_vendor\" 2>/dev/null || true); subdevice=$(cat \"$d/subsystem_device\" 2>/dev/null || true); numa=$(cat \"$d/numa_node\" 2>/dev/null || true); " +
+        "printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"$b\" \"$vendor\" \"$device\" \"$class\" \"$subvendor\" \"$subdevice\" \"$driver\" \"$numa\"; " +
+        "done";
+      const dmiCommand =
+        "for f in bios_date bios_vendor bios_version board_name board_vendor board_version board_serial board_asset_tag chassis_type chassis_vendor chassis_serial product_family product_name product_serial product_uuid product_version sys_vendor; do " +
+        "p=\"/sys/class/dmi/id/$f\"; [ -r \"$p\" ] || continue; v=$(tr '\\000' ' ' < \"$p\" 2>/dev/null | head -c 4096); printf '%s\t%s\n' \"$f\" \"$v\"; " +
+        "done";
+      const netCommand =
+        "for i in /sys/class/net/*; do " +
+        "[ -e \"$i\" ] || continue; iface=$(basename \"$i\"); driver=\"\"; [ -L \"$i/device/driver\" ] && driver=$(basename \"$(readlink \"$i/device/driver\")\"); " +
+        "address=$(cat \"$i/address\" 2>/dev/null || true); operstate=$(cat \"$i/operstate\" 2>/dev/null || true); mtu=$(cat \"$i/mtu\" 2>/dev/null || true); speed=$(cat \"$i/speed\" 2>/dev/null || true); device=\"\"; [ -L \"$i/device\" ] && device=$(basename \"$(readlink \"$i/device\")\"); " +
+        "printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \"$iface\" \"$address\" \"$operstate\" \"$mtu\" \"$speed\" \"$driver\" \"$device\"; " +
+        "done";
+      const vulnerabilityCommand =
+        "for f in /sys/devices/system/cpu/vulnerabilities/*; do [ -r \"$f\" ] || continue; printf '%s\t%s\n' \"$(basename \"$f\")\" \"$(cat \"$f\" 2>/dev/null)\"; done";
+
+      const [
+        cpuInfo,
+        lscpu,
+        lscpuCaches,
+        dmi,
+        pci,
+        pciVerbose,
+        pciSysfs,
+        usb,
+        block,
+        network,
+        vulnerabilities,
+        kernel,
+        modules
+      ] = await Promise.all([
+        captureRemoteOptional(runtime, "cat /proc/cpuinfo 2>/dev/null || true"),
+        captureRemoteOptional(runtime, "if command -v lscpu >/dev/null 2>&1; then lscpu -J 2>/dev/null || lscpu 2>/dev/null || true; fi"),
+        captureRemoteOptional(runtime, "if command -v lscpu >/dev/null 2>&1; then lscpu --caches --json 2>/dev/null || lscpu -C 2>/dev/null || true; fi"),
+        captureRemoteOptional(runtime, dmiCommand),
+        captureRemoteOptional(runtime, "if command -v lspci >/dev/null 2>&1; then lspci -Dnnmm 2>/dev/null || true; fi"),
+        includeRaw
+          ? captureRemoteOptional(runtime, "if command -v lspci >/dev/null 2>&1; then lspci -Dnnvv 2>/dev/null || true; fi", Math.max(REPORTING_COMMAND_TIMEOUT_MS, 45_000))
+          : Promise.resolve({
+              command: "lspci -Dnnvv",
+              stdout: "",
+              stderr: "",
+              exitCode: 0,
+              timedOut: false,
+              ok: true
+            }),
+        captureRemoteOptional(runtime, pciSysfsCommand),
+        captureRemoteOptional(
+          runtime,
+          includeRaw
+            ? "if command -v lsusb >/dev/null 2>&1; then lsusb -v 2>/dev/null || lsusb 2>/dev/null || true; fi"
+            : "if command -v lsusb >/dev/null 2>&1; then lsusb 2>/dev/null || true; fi",
+          Math.max(REPORTING_COMMAND_TIMEOUT_MS, 45_000)
+        ),
+        captureRemoteOptional(
+          runtime,
+          "if command -v lsblk >/dev/null 2>&1; then lsblk -J -O -b 2>/dev/null || lsblk -J -b -o NAME,KNAME,TYPE,SIZE,MODEL,SERIAL,WWN,VENDOR,ROTA,TRAN,HOTPLUG,STATE,MOUNTPOINT,FSTYPE,UUID 2>/dev/null || true; fi"
+        ),
+        captureRemoteOptional(runtime, netCommand),
+        captureRemoteOptional(runtime, vulnerabilityCommand),
+        captureRemoteOptional(runtime, "uname -a 2>/dev/null || true; if command -v systemd-detect-virt >/dev/null 2>&1; then systemd-detect-virt 2>/dev/null || true; fi"),
+        includeRaw ? captureRemoteOptional(runtime, "cat /proc/modules 2>/dev/null || true") : Promise.resolve({
+          command: "cat /proc/modules",
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          ok: true
+        })
+      ]);
+
+      const pciDevices = parseLspciMachineReadable(pci.stdout);
+      const pciSysfsDevices = parseTsvRows(pciSysfs.stdout, [
+        "slot",
+        "vendor_id",
+        "device_id",
+        "class_id",
+        "subsystem_vendor_id",
+        "subsystem_device_id",
+        "driver",
+        "numa_node"
+      ]);
+      const dmiValues = parseKeyValueLines(dmi.stdout);
+      const networkInterfaces = parseTsvRows(network.stdout, ["name", "mac_address", "operstate", "mtu", "speed_mbps", "driver", "device"]);
+      const cpu = parseProcCpuInfo(cpuInfo.stdout);
+      const lscpuParsed = parseLscpu(lscpu.stdout);
+      const lscpuCacheParsed = parseLscpu(lscpuCaches.stdout);
+      const blockInventory = parseJsonOrNull(block.stdout);
+      const vulnerabilityValues = parseKeyValueLines(vulnerabilities.stdout);
+      const kernelLines = kernel.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+      return {
+        generated_at_unix: nowUnix(),
+        include_raw: includeRaw,
+        cpu: {
+          ...cpu,
+          lscpu: lscpuParsed,
+          cache_topology: lscpuCacheParsed,
+          vulnerabilities: vulnerabilityValues
+        },
+        platform: {
+          dmi: dmiValues,
+          kernel: kernelLines[0] || "",
+          virtualization: kernelLines[1] || ""
+        },
+        pci: {
+          count: pciDevices.length || pciSysfsDevices.length,
+          devices: pciDevices,
+          sysfs_devices: pciSysfsDevices,
+          raw_verbose: includeRaw ? pciVerbose.stdout : undefined
+        },
+        usb: {
+          available: usb.stdout.trim().length > 0,
+          raw: usb.stdout
+        },
+        block_devices: blockInventory,
+        network_interfaces: networkInterfaces,
+        kernel_modules: includeRaw ? modules.stdout : undefined,
+        command_status: {
+          cpuinfo: summarizeCommandCapture(cpuInfo),
+          lscpu: summarizeCommandCapture(lscpu),
+          lscpu_caches: summarizeCommandCapture(lscpuCaches),
+          dmi: summarizeCommandCapture(dmi),
+          lspci: summarizeCommandCapture(pci),
+          lspci_verbose: summarizeCommandCapture(pciVerbose),
+          pci_sysfs: summarizeCommandCapture(pciSysfs),
+          lsusb: summarizeCommandCapture(usb),
+          lsblk: summarizeCommandCapture(block),
+          network_sysfs: summarizeCommandCapture(network),
+          vulnerabilities: summarizeCommandCapture(vulnerabilities),
+          kernel: summarizeCommandCapture(kernel),
+          modules: summarizeCommandCapture(modules)
+        }
+      };
+    }
+  },
+  {
     id: "system",
     description: "CPU, memory, swap, and load baseline",
     collect: async (_args, runtime) => {
@@ -1505,8 +1915,8 @@ const reportingCollectors: ReportCollector[] = [
     id: "services",
     description: "Service units and states",
     collect: async (args, runtime) => {
-      const state = (args.state || "all").trim().toLowerCase();
-      const normalizedState = SERVICE_STATE_FILTERS.has(state) ? state : "all";
+      const state = (args.state || "running").trim().toLowerCase();
+      const normalizedState = SERVICE_STATE_FILTERS.has(state) ? state : "running";
       const stateArg = normalizedState === "all" ? "" : ` --state=${normalizedState}`;
       const allArg = normalizedState === "all" ? " --all" : "";
       const out = await runtime.runRemote(`systemctl list-units --type=service${allArg} --no-pager --no-legend${stateArg}`);
@@ -1562,21 +1972,28 @@ const reportingCollectors: ReportCollector[] = [
     description: "Log files under /var/log",
     collect: async (args, runtime) => {
       const filePath = normalizeVarLogPath(asString(args.file));
+      const logOptions = resolveLogOptions(args);
       const lines = asInt(args.lines, REPORTING_DEFAULT_LOG_LINES, 1, REPORTING_MAX_LOG_LINES);
-      const listCommand = "find /var/log -maxdepth 2 -type f -printf '%p\\t%s\\t%T@\\n' 2>/dev/null | sort | head -n 300";
+      const modifiedFilter = logOptions.range === "today" ? " -newermt today" : "";
+      const listCommand = `find /var/log -maxdepth 2 -type f${modifiedFilter} -printf '%p\\t%s\\t%T@\\n' 2>/dev/null | sort | head -n 300`;
       const listOut = await runtime.runRemote(listCommand);
       const files = parseVarLogFileList(listOut.stdout);
       if (!filePath) {
         return {
           root: "/var/log",
+          range: logOptions.range,
+          level: logOptions.level,
           count: files.length,
           files
         };
       }
       const out = await runtime.runRemote(`tail -n ${lines} -- ${shellQuote(filePath)}`);
-      const logs = parseVarLogFileLines(out.stdout, filePath);
+      const logs = parseVarLogFileLines(out.stdout, filePath, logOptions);
       return {
         root: "/var/log",
+        range: logOptions.range,
+        level: logOptions.level,
+        filter_note: logOptions.range === "today" ? "File log date filtering is best-effort based on common timestamp formats." : null,
         count: files.length,
         files,
         file: filePath,
@@ -1590,30 +2007,39 @@ const reportingCollectors: ReportCollector[] = [
     id: "service_logs",
     description: "Latest service logs from journalctl",
     collect: async (args, runtime) => {
+      const logOptions = resolveLogOptions(args);
       const rawService = parseMaybeServiceName(args.service);
       if (!rawService) {
         return {
           service: "",
           lines_requested: 0,
           lines_returned: 0,
+          range: logOptions.range,
+          level: logOptions.level,
           since: null,
+          until: null,
           logs: []
         };
       }
       const service = rawService;
       const lines = asInt(args.lines, REPORTING_DEFAULT_LOG_LINES, 1, REPORTING_MAX_LOG_LINES);
       const tail = `-n ${lines}`;
-      const since = asString(args.since).trim();
+      const since = logOptions.since;
       const sinceArg = since ? ` --since ${shellQuote(since)}` : "";
+      const untilArg = logOptions.until ? ` --until ${shellQuote(logOptions.until)}` : "";
+      const priorityArg = logOptions.priority ? ` -p ${shellQuote(logOptions.priority)}` : "";
       const out = await runtime.runRemote(
-        `journalctl -u ${shellQuote(service)} --no-pager -o json ${tail}${sinceArg}`
+        `journalctl -u ${shellQuote(service)} --no-pager -o json ${tail}${sinceArg}${untilArg}${priorityArg}`
       );
       const logs = parseServiceLogLines(out.stdout);
       return {
         service,
         lines_requested: lines,
         lines_returned: logs.length,
+        range: logOptions.range,
+        level: logOptions.level,
         since: since || null,
+        until: logOptions.until || null,
         logs
       };
     }
@@ -1771,6 +2197,7 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
   const network = asObject("network");
   const sessions = asObject("sessions");
   const services = asObject("services");
+  const hardware = asObject("hardware");
   const ports = asObject("ports");
   const processes = asObject("processes");
   const logs = asObject("service_logs");
@@ -1860,6 +2287,7 @@ function buildSystemSnapshotFromCollectors(collectors: SnapshotCollectorResult[]
     storageTotalGb: Number(((storageSummary.storageTotalBytes || 0) / 1024 ** 3).toFixed(2)),
     storageInodePercent: Number((storageSummary.storageInodePercent || 0).toFixed(2)),
     storageInventory: Array.isArray(storage["all_mounts"]) ? storage["all_mounts"] : [],
+    hardware: Object.keys(hardware).length ? hardware : null,
     networkInMbps: Number(network["network_in_mbps"] || 0),
     networkOutMbps: Number(network["network_out_mbps"] || 0),
     dbSessions: Number(dbSessionSummary.total || 0),
@@ -2103,7 +2531,7 @@ const REPORTING_OPENAPI_SPEC = {
   openapi: "3.0.3",
   info: {
     title: "VM Stats Service",
-    version: "1.2.2",
+    version: "1.3.0",
     description:
       "Internal API exposing VM reporting collectors for the oracle-db host and Hasura integration."
   },
@@ -2161,13 +2589,18 @@ const REPORTING_OPENAPI_SPEC = {
             schema: { type: "string" },
             description: "Comma-separated collectors"
           },
-          { in: "query", name: "state", required: false, schema: { type: "string" }, description: "Service state filter" },
-          { in: "query", name: "sections", required: false, schema: { type: "string" }, description: "Comma-separated sections (quick,storage,processes,services,ports,sessions,logs)" },
+          { in: "query", name: "state", required: false, schema: { type: "string" }, description: "Service state filter (default running; use all for every service)" },
+          { in: "query", name: "sections", required: false, schema: { type: "string" }, description: "Comma-separated sections (quick,storage,processes,services,hardware,ports,sessions,logs)" },
           { in: "query", name: "scope", required: false, schema: { type: "string" }, description: "Session scope filter" },
           { in: "query", name: "limit", required: false, schema: { type: "integer" }, description: "Result limit" },
           { in: "query", name: "service", required: false, schema: { type: "string" }, description: "Target service name" },
+          { in: "query", name: "hardware_raw", required: false, schema: { type: "boolean" }, description: "Include verbose raw hardware command output; defaults to true for hardware collector" },
           { in: "query", name: "lines", required: false, schema: { type: "integer" }, description: "Log lines" },
-          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start" },
+          { in: "query", name: "range", required: false, schema: { type: "string", enum: ["today", "all"] }, description: "Log range preset; defaults to today" },
+          { in: "query", name: "level", required: false, schema: { type: "string", enum: ["all", "error", "warning"] }, description: "Log severity filter; error returns errors only" },
+          { in: "query", name: "errors", required: false, schema: { type: "boolean" }, description: "Shortcut for level=error" },
+          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start; overrides range=today when provided" },
+          { in: "query", name: "until", required: false, schema: { type: "string" }, description: "Log range end" },
           { in: "query", name: "system_id", required: false, schema: { type: "string" }, description: "System identifier override" }
         ],
         responses: {
@@ -2211,8 +2644,13 @@ const REPORTING_OPENAPI_SPEC = {
           },
           { in: "query", name: "collector", required: false, schema: { type: "string" }, description: "Collector override" },
           { in: "query", name: "service", required: false, schema: { type: "string" }, description: "Target service (for logs section)" },
+          { in: "query", name: "hardware_raw", required: false, schema: { type: "boolean" }, description: "Include verbose raw hardware command output; defaults to true for hardware collector" },
           { in: "query", name: "lines", required: false, schema: { type: "integer" }, description: "Log lines when requesting logs section" },
-          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log start time" },
+          { in: "query", name: "range", required: false, schema: { type: "string", enum: ["today", "all"] }, description: "Log range preset; defaults to today" },
+          { in: "query", name: "level", required: false, schema: { type: "string", enum: ["all", "error", "warning"] }, description: "Log severity filter; error returns errors only" },
+          { in: "query", name: "errors", required: false, schema: { type: "boolean" }, description: "Shortcut for level=error" },
+          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log start time; overrides range=today when provided" },
+          { in: "query", name: "until", required: false, schema: { type: "string" }, description: "Log range end" },
           { in: "query", name: "system_id", required: false, schema: { type: "string" }, description: "System identifier override" }
         ],
         responses: {
@@ -2245,7 +2683,7 @@ const REPORTING_OPENAPI_SPEC = {
             name: "section",
             required: true,
             schema: { type: "string" },
-            description: "Section name (quick, storage, processes, services, ports, sessions, logs, all)"
+            description: "Section name (quick, storage, processes, services, hardware, ports, sessions, logs, all)"
           },
           {
             in: "query",
@@ -2254,12 +2692,17 @@ const REPORTING_OPENAPI_SPEC = {
             schema: { type: "string" },
             description: "Collector override"
           },
-          { in: "query", name: "state", required: false, schema: { type: "string" }, description: "Service state filter" },
+          { in: "query", name: "state", required: false, schema: { type: "string" }, description: "Service state filter (default running; use all for every service)" },
           { in: "query", name: "scope", required: false, schema: { type: "string" }, description: "Session scope filter" },
           { in: "query", name: "limit", required: false, schema: { type: "integer" }, description: "Result limit" },
           { in: "query", name: "service", required: false, schema: { type: "string" }, description: "Target service name" },
+          { in: "query", name: "hardware_raw", required: false, schema: { type: "boolean" }, description: "Include verbose raw hardware command output; defaults to true for hardware collector" },
           { in: "query", name: "lines", required: false, schema: { type: "integer" }, description: "Log lines" },
-          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start" },
+          { in: "query", name: "range", required: false, schema: { type: "string", enum: ["today", "all"] }, description: "Log range preset; defaults to today" },
+          { in: "query", name: "level", required: false, schema: { type: "string", enum: ["all", "error", "warning"] }, description: "Log severity filter; error returns errors only" },
+          { in: "query", name: "errors", required: false, schema: { type: "boolean" }, description: "Shortcut for level=error" },
+          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start; overrides range=today when provided" },
+          { in: "query", name: "until", required: false, schema: { type: "string" }, description: "Log range end" },
           { in: "query", name: "system_id", required: false, schema: { type: "string" }, description: "System identifier override" }
         ],
         responses: {
@@ -2292,7 +2735,7 @@ const REPORTING_OPENAPI_SPEC = {
             name: "section",
             required: true,
             schema: { type: "string" },
-            description: "Section name (quick, storage, processes, services, ports, sessions, logs, all)"
+            description: "Section name (quick, storage, processes, services, hardware, ports, sessions, logs, all)"
           },
           {
             in: "query",
@@ -2303,8 +2746,13 @@ const REPORTING_OPENAPI_SPEC = {
           },
           { in: "query", name: "collector", required: false, schema: { type: "string" }, description: "Collector override" },
           { in: "query", name: "service", required: false, schema: { type: "string" }, description: "Target service (for logs section)" },
+          { in: "query", name: "hardware_raw", required: false, schema: { type: "boolean" }, description: "Include verbose raw hardware command output; defaults to true for hardware collector" },
           { in: "query", name: "lines", required: false, schema: { type: "integer" }, description: "Log lines when requesting logs section" },
-          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start" },
+          { in: "query", name: "range", required: false, schema: { type: "string", enum: ["today", "all"] }, description: "Log range preset; defaults to today" },
+          { in: "query", name: "level", required: false, schema: { type: "string", enum: ["all", "error", "warning"] }, description: "Log severity filter; error returns errors only" },
+          { in: "query", name: "errors", required: false, schema: { type: "boolean" }, description: "Shortcut for level=error" },
+          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start; overrides range=today when provided" },
+          { in: "query", name: "until", required: false, schema: { type: "string" }, description: "Log range end" },
           { in: "query", name: "system_id", required: false, schema: { type: "string" }, description: "System identifier override" }
         ],
         responses: {
@@ -2334,7 +2782,12 @@ const REPORTING_OPENAPI_SPEC = {
         parameters: [
           { in: "query", name: "service", required: true, schema: { type: "string" }, description: "Service name (.service optional)" },
           { in: "query", name: "lines", required: false, schema: { type: "integer" }, description: "Number of lines" },
-          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start" }
+          { in: "query", name: "range", required: false, schema: { type: "string", enum: ["today", "all"] }, description: "Log range preset; defaults to today" },
+          { in: "query", name: "level", required: false, schema: { type: "string", enum: ["all", "error", "warning"] }, description: "Log severity filter; error returns errors only" },
+          { in: "query", name: "errors", required: false, schema: { type: "boolean" }, description: "Shortcut for level=error" },
+          { in: "query", name: "since", required: false, schema: { type: "string" }, description: "Log range start; overrides range=today when provided" },
+          { in: "query", name: "until", required: false, schema: { type: "string" }, description: "Log range end" },
+          { in: "query", name: "system_id", required: false, schema: { type: "string" }, description: "System identifier override" }
         ],
         responses: {
           "200": {
@@ -2445,7 +2898,10 @@ const REPORTING_OPENAPI_SPEC = {
           system_id: { type: "string" },
           service: { type: "string" },
           lines_requested: { type: "integer" },
+          range: { type: "string" },
+          level: { type: "string" },
           since: { type: "string", nullable: true },
+          until: { type: "string", nullable: true },
           logs: { type: "array", items: { $ref: "#/components/schemas/ServiceLogLine" } }
         }
       },
@@ -2516,6 +2972,7 @@ const REPORTING_OPENAPI_SPEC = {
           storageUsedPercent: { type: "number", format: "float" },
           storageInodePercent: { type: "number", format: "float" },
           storageInventory: { type: "array", items: { type: "object", additionalProperties: true } },
+          hardware: { type: "object", nullable: true, additionalProperties: true },
           dbSessions: { type: "integer" },
           sshSessions: { type: "integer" },
           processCount: { type: "integer" },
@@ -2852,7 +3309,10 @@ if (IS_STATS_SERVICE) {
           system_id: result.target.system_id,
           service: args.service,
           lines_requested: payload?.lines_requested || null,
+          range: payload?.range || null,
+          level: payload?.level || null,
           since: payload?.since || null,
+          until: payload?.until || null,
           logs: payload?.logs || []
         });
         return;
@@ -2864,7 +3324,10 @@ if (IS_STATS_SERVICE) {
         system_id: result.target.system_id,
         service: args.service,
         lines_requested: payload.lines_requested || null,
+        range: payload.range || null,
+        level: payload.level || null,
         since: payload.since || null,
+        until: payload.until || null,
         logs: payload.logs || []
       });
     } catch (err) {

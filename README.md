@@ -23,11 +23,14 @@ kubectl apply -f manifests/
 
 This service now includes a reporting framework for gathering VM health from one or more configured targets via SSH and Postgres querying.
 
-- `GET /stats` -> gathers all collectors (storage, system, processes, services, ports, sessions, service_logs if args provided).
+- `GET /stats` -> gathers all default collectors (storage, system, hardware, processes, running services, ports, sessions, log files).
 - `GET /stats?collector=storage` -> only the storage collector.
-- `GET /stats?collector=services&state=active` -> service state filtered.
+- `GET /stats?collector=hardware` or `GET /stats/sections/hardware` -> detailed CPU, DMI/platform, PCI, USB, block-device, and NIC inventory (`hardware_raw=false` suppresses verbose raw command output).
+- `GET /stats?collector=services` -> running services by default.
+- `GET /stats?collector=services&state=all` -> all services.
 - `GET /stats?collector=processes&limit=50` -> top 50 processes by CPU.
-- `GET /stats?collector=service_logs&service=directus&lines=200`
+- `GET /stats?collector=service_logs&service=directus&lines=200` -> today's service logs by default.
+- `GET /stats?collector=service_logs&service=directus&range=all&level=error` -> error-only service logs across the available journal.
 - `GET /stats?collector=sessions&scope=db` -> PostgreSQL session stats.
 - `GET /stats?collector=sessions&scope=ssh` -> SSH login/session stats.
 - `GET /stats?collector=all` -> same as no collector param.
@@ -76,8 +79,9 @@ For collector metadata and thresholds, see `vm-stats-service/src/server.ts` env 
 
 - `storage` (storage utilization + threshold state)
 - `system` (load, memory, swap)
+- `hardware` (CPU details, cache/topology, DMI/platform, PCI, USB, block devices, network adapters)
 - `processes` (top processes)
-- `services` (systemd services)
+- `services` (systemd services; default `state=running`, use `state=all` for all units)
 - `ports` (listening ports and process owners)
 - `sessions` (`scope=db|ssh|all`, `limit=<n>`)
-- `service_logs` (`service=<unit>`, `lines=<n>`, `since=<timestamp>`)
+- `service_logs` (`service=<unit>`, `lines=<n>`, `range=today|all`, `level=all|warning|error`, `since=<timestamp>`)
