@@ -8279,17 +8279,17 @@ data:
     if ! _psql_yb_retry "DO \$\$
       DECLARE
         _module_bar_type text;
-        _bookmark_module_bar jsonb := '[
-          {"type":"module","id":"content","enabled":true},
-          {"type":"module","id":"visual","enabled":false},
-          {"type":"module","id":"users","enabled":true},
-          {"type":"module","id":"files","enabled":true},
-          {"type":"module","id":"insights","enabled":true},
-          {"type":"module","id":"deployments","enabled":false},
-          {"type":"module","id":"cms-bookmark-copy","enabled":true},
-          {"type":"link","id":"docs","enabled":true,"name":"\$t:documentation","icon":"help","url":"https://docs.directus.io"},
-          {"type":"module","id":"settings","enabled":true,"locked":true}
-        ]'::jsonb;
+        _bookmark_module_bar jsonb := jsonb_build_array(
+          jsonb_build_object('type', 'module', 'id', 'content', 'enabled', true),
+          jsonb_build_object('type', 'module', 'id', 'visual', 'enabled', false),
+          jsonb_build_object('type', 'module', 'id', 'users', 'enabled', true),
+          jsonb_build_object('type', 'module', 'id', 'files', 'enabled', true),
+          jsonb_build_object('type', 'module', 'id', 'insights', 'enabled', true),
+          jsonb_build_object('type', 'module', 'id', 'deployments', 'enabled', false),
+          jsonb_build_object('type', 'module', 'id', 'cms-bookmark-copy', 'enabled', true),
+          jsonb_build_object('type', 'link', 'id', 'docs', 'enabled', true, 'name', '\$t:documentation', 'icon', 'help', 'url', 'https://docs.directus.io'),
+          jsonb_build_object('type', 'module', 'id', 'settings', 'enabled', true, 'locked', true)
+        );
       BEGIN
         IF to_regclass('directus.directus_settings') IS NULL THEN
           RETURN;
