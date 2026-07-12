@@ -509,6 +509,13 @@ data:
         fi
 
         case "${settings_key}" in
+          module_bar)
+            settings_value_type="$(printf '%s' "${settings_entry}" | jq -r '.value | type')"
+            if [ "${settings_value_type}" = "null" ]; then
+              echo "INFO: Skipping directus_settings.module_bar null; module bar is reconciled separately."
+              continue
+            fi
+            ;;
           *_api_key)
             echo "INFO: Skipping ${settings_key}; Directus runtime encrypts API key settings from Vault."
             continue

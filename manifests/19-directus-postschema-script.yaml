@@ -8287,7 +8287,7 @@ data:
           {"type":"module","id":"insights","enabled":true},
           {"type":"module","id":"deployments","enabled":false},
           {"type":"module","id":"cms-bookmark-copy","enabled":true},
-          {"type":"link","id":"docs","enabled":true,"name":"$t:documentation","icon":"help","url":"https://docs.directus.io"},
+          {"type":"link","id":"docs","enabled":true,"name":"\$t:documentation","icon":"help","url":"https://docs.directus.io"},
           {"type":"module","id":"settings","enabled":true,"locked":true}
         ]'::jsonb;
       BEGIN
