@@ -9012,13 +9012,13 @@ data:
             return ['id', 'status', 'template_key', 'template_id', 'content_item_id', 'props_json'];
           }
           if (key === 'cms_content_items') {
-            return ['id', 'status', 'content_key', 'name', 'default_language_code', 'content_json'];
+            return ['id', 'status', 'content_key', 'name', 'default_language_code', 'content_version', 'content_json'];
           }
           if (key === 'cms_content_templates') {
             return ['id', 'status', 'template_key', 'name', 'html_template', 'css', 'content_schema'];
           }
           if (key === 'cms_content_item_translations') {
-            return ['id', 'content_item_id', 'language_code', 'status', 'content_json'];
+            return ['id', 'content_item_id', 'language_code', 'status', 'source_content_version', 'content_json'];
           }
           if (key === 'cms_block_hero') {
             return ['id', 'status', 'headline', 'subheadline', 'background_image', 'cta_label', 'cta_url'];

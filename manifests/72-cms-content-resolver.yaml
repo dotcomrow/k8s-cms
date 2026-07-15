@@ -1,0 +1,688 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cms-content-resolver
+  namespace: directus
+data:
+  requirements.txt: |
+    confluent-kafka==2.6.1
+    fastapi==0.115.5
+    httpx==0.27.2
+    uvicorn==0.30.6
+  openapi.yaml: |
+    openapi: 3.0.3
+    info:
+      title: CMS Content Resolver API
+      version: 1.0.0
+      description: Resolves CMS content item JSON for a required requested language and queues translation misses.
+    servers:
+      - url: http://cms-content-resolver.directus.svc.cluster.local:8080
+    paths:
+      /healthz:
+        get:
+          responses:
+            "200":
+              description: Service health
+      /content/resolve:
+        post:
+          summary: Resolve content items for a requested language
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/ResolveContentRequest"
+          responses:
+            "200":
+              description: Resolved content items
+              content:
+                application/json:
+                  schema:
+                    $ref: "#/components/schemas/ResolveContentResponse"
+      /content/translations/upsert:
+        post:
+          summary: Upsert a translated content item
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  $ref: "#/components/schemas/UpsertTranslationRequest"
+          responses:
+            "200":
+              description: Translation upsert result
+    components:
+      schemas:
+        ContentItem:
+          type: object
+          required: [id, content_json]
+          properties:
+            id:
+              type: string
+            content_key:
+              type: string
+            name:
+              type: string
+            default_language_code:
+              type: string
+              default: en
+            content_version:
+              type: integer
+            source_hash:
+              type: string
+            content_json:
+              type: object
+        ContentRef:
+          type: object
+          properties:
+            id:
+              type: string
+            content_item_id:
+              type: string
+            page_slug:
+              type: string
+            refresh_target:
+              type: string
+        ResolveContentRequest:
+          type: object
+          required: [language, content_items]
+          properties:
+            language:
+              type: string
+            site_key:
+              type: string
+            release_channel:
+              type: string
+            page_slug:
+              type: string
+            content_items:
+              type: array
+              items:
+                $ref: "#/components/schemas/ContentItem"
+            content_refs:
+              type: array
+              items:
+                $ref: "#/components/schemas/ContentRef"
+        ResolveContentItem:
+          type: object
+          required: [content_item_id, requested_language_code, resolved_language_code, fallback_used, content_json]
+          properties:
+            content_item_id:
+              type: string
+            requested_language_code:
+              type: string
+            resolved_language_code:
+              type: string
+            fallback_used:
+              type: boolean
+            stale:
+              type: boolean
+            source_content_version:
+              type: integer
+            content_json:
+              type: object
+        ResolveContentResponse:
+          type: object
+          required: [ok, language, items]
+          properties:
+            ok:
+              type: boolean
+            language:
+              type: string
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/ResolveContentItem"
+        UpsertTranslationRequest:
+          type: object
+          required: [content_item_id, language_code, source_content_version, content_json]
+          properties:
+            content_item_id:
+              type: string
+            language_code:
+              type: string
+            status:
+              type: string
+              default: published
+            source_content_version:
+              type: integer
+            source_hash:
+              type: string
+            content_json:
+              type: object
+            model:
+              type: string
+            prompt_version:
+              type: string
+            translated_by:
+              type: string
+  app.py: |
+    import json
+    import os
+    import re
+    import threading
+    import time
+    from typing import Any, Dict, List, Optional
+
+    import httpx
+    from confluent_kafka import Producer
+    from fastapi import FastAPI, Header, HTTPException, Request
+    from pydantic import BaseModel, Field, field_validator
+
+    APP_VERSION = "1.0.0"
+    DEFAULT_LANGUAGE = "en"
+    LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
+
+    DIRECTUS_BASE_URL = os.environ.get(
+      "DIRECTUS_BASE_URL",
+      "http://directus-service.directus.svc.cluster.local:8055",
+    ).rstrip("/")
+    DIRECTUS_STATIC_TOKEN = os.environ.get("DIRECTUS_STATIC_TOKEN", "").strip()
+    DIRECTUS_TOKEN_VAULT_PATH = os.environ.get("DIRECTUS_TOKEN_VAULT_PATH", "secret/data/directus/gravitee/openapi/admin")
+    DIRECTUS_TOKEN_VAULT_KEY = os.environ.get("DIRECTUS_TOKEN_VAULT_KEY", "token")
+    VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200").rstrip("/")
+    VAULT_TOKEN_FILE = os.environ.get("VAULT_TOKEN_FILE", "/vault-secrets/vault-token")
+    TOKEN_CACHE_SECONDS = int(os.environ.get("TOKEN_CACHE_SECONDS", "300"))
+
+    KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka.kafka.svc.internal.lan:9092")
+    KAFKA_SECURITY_PROTOCOL = os.environ.get("KAFKA_SECURITY_PROTOCOL", "SASL_PLAINTEXT")
+    KAFKA_SASL_MECHANISM = os.environ.get("KAFKA_SASL_MECHANISM", "SCRAM-SHA-256")
+    KAFKA_USERNAME = os.environ.get("KAFKA_USERNAME", "").strip()
+    KAFKA_PASSWORD = os.environ.get("KAFKA_PASSWORD", "").strip()
+    KAFKA_USERNAME_VAULT_PATH = os.environ.get("KAFKA_USERNAME_VAULT_PATH", "secret/data/kafka-scram-user-cms-content-resolver")
+    KAFKA_USERNAME_VAULT_KEY = os.environ.get("KAFKA_USERNAME_VAULT_KEY", "value")
+    KAFKA_PASSWORD_VAULT_PATH = os.environ.get("KAFKA_PASSWORD_VAULT_PATH", "secret/data/kafka-scram-user-cms-content-resolver-password")
+    KAFKA_PASSWORD_VAULT_KEY = os.environ.get("KAFKA_PASSWORD_VAULT_KEY", "value")
+    KAFKA_TRANSLATION_TOPIC = os.environ.get("KAFKA_TRANSLATION_TOPIC", "batch.cms.content.translation.requests.v1")
+
+    REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "8"))
+    CONTENT_RESOLVER_BEARER_TOKEN = os.environ.get("CONTENT_RESOLVER_BEARER_TOKEN", "").strip()
+
+    _vault_cache: Dict[str, tuple[float, str]] = {}
+    _vault_lock = threading.Lock()
+    _producer: Optional[Producer] = None
+    _producer_lock = threading.Lock()
+
+    app = FastAPI(title="CMS Content Resolver API", version=APP_VERSION)
+
+    def normalize_language(value: str) -> str:
+      candidate = (value or "").strip().replace("_", "-")
+      if not candidate or candidate == "*" or not LANGUAGE_PATTERN.match(candidate):
+        return DEFAULT_LANGUAGE
+      return candidate
+
+    def _read_vault_token() -> str:
+      try:
+        with open(VAULT_TOKEN_FILE, "r", encoding="utf-8") as handle:
+          return handle.read().strip()
+      except FileNotFoundError:
+        return ""
+
+    async def vault_value(path: str, key: str) -> str:
+      cache_key = f"{path}#{key}"
+      now = time.time()
+      with _vault_lock:
+        cached = _vault_cache.get(cache_key)
+        if cached and cached[0] > now:
+          return cached[1]
+      token = _read_vault_token()
+      if not token:
+        return ""
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.get(f"{VAULT_ADDR}/v1/{path}", headers={"X-Vault-Token": token})
+        response.raise_for_status()
+      value = str(response.json().get("data", {}).get("data", {}).get(key, "")).strip()
+      with _vault_lock:
+        _vault_cache[cache_key] = (now + TOKEN_CACHE_SECONDS, value)
+      return value
+
+    async def directus_token() -> str:
+      if DIRECTUS_STATIC_TOKEN:
+        return DIRECTUS_STATIC_TOKEN
+      return await vault_value(DIRECTUS_TOKEN_VAULT_PATH, DIRECTUS_TOKEN_VAULT_KEY)
+
+    async def kafka_credentials() -> tuple[str, str]:
+      username = KAFKA_USERNAME or await vault_value(KAFKA_USERNAME_VAULT_PATH, KAFKA_USERNAME_VAULT_KEY)
+      password = KAFKA_PASSWORD or await vault_value(KAFKA_PASSWORD_VAULT_PATH, KAFKA_PASSWORD_VAULT_KEY)
+      return username, password
+
+    async def kafka_producer() -> Optional[Producer]:
+      global _producer
+      if _producer is not None:
+        return _producer
+      username, password = await kafka_credentials()
+      if not username or not password:
+        return None
+      with _producer_lock:
+        if _producer is None:
+          _producer = Producer({
+            "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+            "security.protocol": KAFKA_SECURITY_PROTOCOL,
+            "sasl.mechanism": KAFKA_SASL_MECHANISM,
+            "sasl.username": username,
+            "sasl.password": password,
+            "client.id": "cms-content-resolver",
+          })
+      return _producer
+
+    class ContentItem(BaseModel):
+      id: str
+      content_key: Optional[str] = None
+      name: Optional[str] = None
+      default_language_code: str = DEFAULT_LANGUAGE
+      content_version: Optional[int] = None
+      source_hash: Optional[str] = None
+      content_json: Dict[str, Any] = Field(default_factory=dict)
+
+      @field_validator("default_language_code")
+      @classmethod
+      def normalize_default_language(cls, value: str) -> str:
+        return normalize_language(value)
+
+    class ContentRef(BaseModel):
+      id: Optional[str] = None
+      content_item_id: Optional[str] = None
+      page_slug: Optional[str] = None
+      refresh_target: Optional[str] = None
+
+    class ResolveContentRequest(BaseModel):
+      language: str
+      site_key: Optional[str] = None
+      release_channel: Optional[str] = None
+      page_slug: Optional[str] = None
+      content_items: List[ContentItem]
+      content_refs: List[ContentRef] = Field(default_factory=list)
+
+      @field_validator("language")
+      @classmethod
+      def normalize_requested_language(cls, value: str) -> str:
+        normalized = normalize_language(value)
+        if not normalized:
+          raise ValueError("language is required")
+        return normalized
+
+    class UpsertTranslationRequest(BaseModel):
+      content_item_id: str
+      language_code: str
+      status: str = "published"
+      source_content_version: int
+      source_hash: Optional[str] = None
+      content_json: Dict[str, Any]
+      model: Optional[str] = None
+      prompt_version: Optional[str] = None
+      translated_by: Optional[str] = None
+
+      @field_validator("language_code")
+      @classmethod
+      def normalize_translation_language(cls, value: str) -> str:
+        return normalize_language(value)
+
+    def fallback_item(item: ContentItem, requested_language: str, stale: bool = False) -> Dict[str, Any]:
+      return {
+        "content_item_id": item.id,
+        "requested_language_code": requested_language,
+        "resolved_language_code": item.default_language_code or DEFAULT_LANGUAGE,
+        "fallback_used": requested_language.lower() != (item.default_language_code or DEFAULT_LANGUAGE).lower(),
+        "stale": stale,
+        "source_content_version": item.content_version,
+        "content_json": item.content_json,
+      }
+
+    async def fetch_translation(item: ContentItem, language: str) -> Optional[Dict[str, Any]]:
+      token = await directus_token()
+      headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"} if token else {"Accept": "application/json"}
+      params = {
+        "filter[content_item_id][_eq]": item.id,
+        "filter[language_code][_eq]": language,
+        "filter[status][_eq]": "published",
+        "fields": "id,content_item_id,language_code,status,content_json,source_content_version,source_hash,model,prompt_version,translated_by",
+        "limit": "1",
+      }
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.get(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations",
+          headers=headers,
+          params=params,
+        )
+        response.raise_for_status()
+      data = response.json().get("data", [])
+      if not data:
+        return None
+      translation = data[0]
+      if translation.get("source_content_version") != item.content_version:
+        return None
+      content_json = translation.get("content_json")
+      if not isinstance(content_json, dict):
+        return None
+      return {
+        "content_item_id": item.id,
+        "requested_language_code": language,
+        "resolved_language_code": language,
+        "fallback_used": False,
+        "stale": False,
+        "source_content_version": item.content_version,
+        "source_hash": translation.get("source_hash"),
+        "model": translation.get("model"),
+        "prompt_version": translation.get("prompt_version"),
+        "translated_by": translation.get("translated_by"),
+        "content_json": content_json,
+      }
+
+    async def directus_headers() -> Dict[str, str]:
+      token = await directus_token()
+      headers = {"Accept": "application/json", "Content-Type": "application/json"}
+      if token:
+        headers["Authorization"] = f"Bearer {token}"
+      return headers
+
+    async def find_translation_id(content_item_id: str, language_code: str) -> Optional[str]:
+      headers = await directus_headers()
+      params = {
+        "filter[content_item_id][_eq]": content_item_id,
+        "filter[language_code][_eq]": language_code,
+        "fields": "id",
+        "limit": "1",
+      }
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.get(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations",
+          headers=headers,
+          params=params,
+        )
+        response.raise_for_status()
+      data = response.json().get("data", [])
+      if not data:
+        return None
+      return str(data[0].get("id") or "").strip() or None
+
+    async def upsert_translation(payload: UpsertTranslationRequest) -> Dict[str, Any]:
+      headers = await directus_headers()
+      body = {
+        "content_item_id": payload.content_item_id,
+        "language_code": payload.language_code,
+        "status": payload.status,
+        "source_content_version": payload.source_content_version,
+        "source_hash": payload.source_hash,
+        "content_json": payload.content_json,
+        "model": payload.model,
+        "prompt_version": payload.prompt_version,
+        "translated_by": payload.translated_by,
+      }
+      existing_id = await find_translation_id(payload.content_item_id, payload.language_code)
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        if existing_id:
+          response = await client.patch(
+            f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations/{existing_id}",
+            headers=headers,
+            json=body,
+          )
+        else:
+          response = await client.post(
+            f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations",
+            headers=headers,
+            json=body,
+          )
+        response.raise_for_status()
+      data = response.json().get("data", {})
+      return {
+        "ok": True,
+        "mode": "update" if existing_id else "create",
+        "id": data.get("id", existing_id),
+        "content_item_id": payload.content_item_id,
+        "language_code": payload.language_code,
+        "source_content_version": payload.source_content_version,
+      }
+
+    async def enqueue_translation_request(payload: ResolveContentRequest, item: ContentItem, reason: str) -> bool:
+      producer = await kafka_producer()
+      if producer is None:
+        return False
+      refs = [ref.model_dump() for ref in payload.content_refs if ref.content_item_id == item.id]
+      message = {
+        "schema_version": "cms-content-translation-request.v1",
+        "reason": reason,
+        "requested_language_code": payload.language,
+        "source_language_code": item.default_language_code or DEFAULT_LANGUAGE,
+        "site_key": payload.site_key,
+        "release_channel": payload.release_channel,
+        "page_slug": payload.page_slug,
+        "content_item": {
+          "id": item.id,
+          "content_key": item.content_key,
+          "name": item.name,
+          "content_version": item.content_version,
+          "source_hash": item.source_hash,
+          "content_json": item.content_json,
+        },
+        "content_refs": refs,
+      }
+      key = f"{item.id}:{payload.language}:{item.content_version or 0}"
+      producer.produce(
+        KAFKA_TRANSLATION_TOPIC,
+        key=key.encode("utf-8"),
+        value=json.dumps(message, separators=(",", ":")).encode("utf-8"),
+      )
+      producer.poll(0)
+      producer.flush(5)
+      return True
+
+    async def require_auth(authorization: Optional[str]) -> None:
+      if not CONTENT_RESOLVER_BEARER_TOKEN:
+        return
+      expected = f"Bearer {CONTENT_RESOLVER_BEARER_TOKEN}"
+      if authorization != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    @app.get("/healthz")
+    async def healthz() -> Dict[str, Any]:
+      return {
+        "ok": True,
+        "version": APP_VERSION,
+        "kafka_topic": KAFKA_TRANSLATION_TOPIC,
+        "has_vault_token": bool(_read_vault_token()),
+      }
+
+    @app.post("/content/resolve")
+    async def resolve_content(payload: ResolveContentRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+      await require_auth(authorization)
+      items: List[Dict[str, Any]] = []
+      for item in payload.content_items:
+        if payload.language.lower() == (item.default_language_code or DEFAULT_LANGUAGE).lower():
+          items.append(fallback_item(item, payload.language, stale=False))
+          continue
+        reason = "missing_or_stale"
+        try:
+          translation = await fetch_translation(item, payload.language)
+        except Exception:
+          translation = None
+          reason = "translation_lookup_failed"
+        if translation:
+          items.append(translation)
+          continue
+        await enqueue_translation_request(payload, item, reason)
+        items.append(fallback_item(item, payload.language, stale=True))
+      return {"ok": True, "language": payload.language, "items": items}
+
+    @app.post("/hasura/actions/resolve-content")
+    async def resolve_content_action(request: Request, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+      await require_auth(authorization)
+      envelope = await request.json()
+      payload = ResolveContentRequest.model_validate(envelope.get("input", envelope))
+      return await resolve_content(payload, authorization)
+
+    @app.post("/content/translations/upsert")
+    async def upsert_content_translation(payload: UpsertTranslationRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+      await require_auth(authorization)
+      return await upsert_translation(payload)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config-cms-content-resolver
+  namespace: directus
+data:
+  vault-agent.hcl: |
+    pid_file = "/vault/agent.pid"
+    exit_after_auth = false
+
+    vault {
+      address = "http://vault.vault.svc.cluster.local:8200"
+    }
+
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "directus"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault-secrets/vault-token"
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cms-content-resolver
+  namespace: directus
+  annotations:
+    reloader.stakater.com/auto: "true"
+  labels:
+    app: cms-content-resolver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cms-content-resolver
+  template:
+    metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
+      labels:
+        app: cms-content-resolver
+    spec:
+      serviceAccountName: directus
+      containers:
+        - name: vault-agent
+          image: hashicorp/vault:1.15.4
+          command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
+          volumeMounts:
+            - name: vault-agent-config
+              mountPath: /vault-config
+            - name: vault-secrets
+              mountPath: /vault-secrets
+        - name: cms-content-resolver
+          image: python:3.11-slim
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DIRECTUS_BASE_URL
+              value: "http://directus-service.directus.svc.cluster.local:8055"
+            - name: DIRECTUS_TOKEN_VAULT_PATH
+              value: "secret/data/directus/gravitee/openapi/admin"
+            - name: DIRECTUS_TOKEN_VAULT_KEY
+              value: "token"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka.kafka.svc.internal.lan:9092"
+            - name: KAFKA_SECURITY_PROTOCOL
+              value: "SASL_PLAINTEXT"
+            - name: KAFKA_SASL_MECHANISM
+              value: "SCRAM-SHA-256"
+            - name: KAFKA_TRANSLATION_TOPIC
+              value: "batch.cms.content.translation.requests.v1"
+            - name: KAFKA_USERNAME_VAULT_PATH
+              value: "secret/data/kafka-scram-user-cms-content-resolver"
+            - name: KAFKA_PASSWORD_VAULT_PATH
+              value: "secret/data/kafka-scram-user-cms-content-resolver-password"
+            - name: CONTENT_RESOLVER_BEARER_TOKEN
+              value: ""
+            - name: REQUEST_TIMEOUT_SECONDS
+              value: "8"
+            - name: VAULT_ADDR
+              value: "http://vault.vault.svc.cluster.local:8200"
+            - name: VAULT_TOKEN_FILE
+              value: "/vault-secrets/vault-token"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --no-cache-dir -r /app/requirements.txt >/dev/null
+              while [ ! -f /vault-secrets/vault-token ]; do
+                sleep 2
+              done
+              python -m uvicorn app:app --app-dir /app --host 0.0.0.0 --port 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: vault-secrets
+              mountPath: /vault-secrets
+      volumes:
+        - name: app
+          configMap:
+            name: cms-content-resolver
+        - name: vault-agent-config
+          configMap:
+            name: vault-agent-config-cms-content-resolver
+        - name: vault-secrets
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cms-content-resolver
+  namespace: directus
+  annotations:
+    gravitee.io/expose: "true"
+    gravitee.io/context-path: "/cms-content-resolver"
+    gravitee.io/auth-required: "directus-token"
+    gravitee.io/approval-required: "admin"
+    gravitee.io/description: "Language-aware CMS content resolver"
+    gravitee.io/version: "latest"
+    gravitee.io/tags: "directus,cms,content,translation"
+    gravitee.io/definition-name: "cms-content-resolver-api"
+    gravitee.io/definition-summary: "Language-aware CMS content resolver"
+    gravitee.io/definition-description: "Resolves CMS content item JSON for requested browser languages and queues translation misses."
+    gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-visibility: "PUBLIC"
+    gravitee.io/definition-state: "STARTED"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
+    gravitee.io/definition-openapi-url: "http://cms-content-resolver.directus.svc.cluster.local:8080/openapi.json"
+    gravitee.io/definition-context-path: "/cms-content-resolver"
+    gravitee.io/definition-version: "latest"
+    gravitee.io/definition-listener-host: "cms-content-resolver.directus.svc.cluster.local"
+    gravitee.io/definition-listener-port: "8080"
+    gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-tags: "directus,cms,content,translation"
+    gravitee.io/definition-path-mappings: "/cms-content-resolver/*"
+    gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"cms-content-resolver-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://cms-content-resolver.directus.svc.cluster.local:8080"},"secondary":false}]}]'
+    gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://cms-content-resolver.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+  labels:
+    app: cms-content-resolver
+spec:
+  selector:
+    app: cms-content-resolver
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

@@ -1503,15 +1503,17 @@ data:
       _upsert_hidden_internal_field_meta "cms_content_items" "site_key" 98
       _upsert_hidden_internal_field_meta "cms_content_items" "release_channel" 99
       _upsert_hidden_internal_field_meta "cms_content_items" "refresh_target" 100
-      _upsert_hidden_internal_field_meta "cms_content_item_translations" "id" 101
-      _upsert_hidden_internal_field_meta "cms_content_item_translations" "source_hash" 102
-      _upsert_hidden_internal_field_meta "cms_content_item_translations" "model" 103
-      _upsert_hidden_internal_field_meta "cms_content_item_translations" "prompt_version" 104
-      _upsert_hidden_internal_field_meta "cms_content_item_translations" "translated_by" 105
-      _upsert_hidden_internal_field_meta "cms_template_functions" "id" 106
-      _upsert_hidden_internal_field_meta "cms_template_functions" "site_key" 107
-      _upsert_hidden_internal_field_meta "cms_template_functions" "release_channel" 108
-      _upsert_hidden_internal_field_meta "cms_template_functions" "refresh_target" 109
+      _upsert_hidden_internal_field_meta "cms_content_items" "content_version" 101
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "id" 102
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "source_content_version" 103
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "source_hash" 104
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "model" 105
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "prompt_version" 106
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "translated_by" 107
+      _upsert_hidden_internal_field_meta "cms_template_functions" "id" 108
+      _upsert_hidden_internal_field_meta "cms_template_functions" "site_key" 109
+      _upsert_hidden_internal_field_meta "cms_template_functions" "release_channel" 110
+      _upsert_hidden_internal_field_meta "cms_template_functions" "refresh_target" 111
       _upsert_hidden_internal_field_meta "cms_template_functions" "date_created" 110
       _upsert_hidden_internal_field_meta "cms_template_functions" "date_updated" 111
       _upsert_hidden_internal_field_meta "cms_layout_templates" "id" 89
@@ -2511,6 +2513,7 @@ data:
          status TEXT NOT NULL DEFAULT 'draft', \
          default_language_code TEXT NOT NULL DEFAULT 'en', \
          content_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         content_version INTEGER NOT NULL DEFAULT 1, \
          site_key TEXT NULL, \
          release_channel TEXT NOT NULL DEFAULT 'preview', \
          refresh_target TEXT NOT NULL DEFAULT 'both', \
@@ -2522,6 +2525,7 @@ data:
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS status TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS default_language_code TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS content_json JSONB; \
+       ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS content_version INTEGER; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
@@ -2530,6 +2534,9 @@ data:
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN default_language_code SET DEFAULT 'en'; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN content_json SET DEFAULT '{}'::jsonb; \
+       UPDATE cms_content_items SET content_version = 1 WHERE content_version IS NULL; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN content_version SET DEFAULT 1; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN content_version SET NOT NULL; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN release_channel SET DEFAULT 'preview'; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN date_created SET DEFAULT now(); \
@@ -2539,6 +2546,7 @@ data:
          language_code TEXT NOT NULL, \
          status TEXT NOT NULL DEFAULT 'draft', \
          content_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         source_content_version INTEGER NULL, \
          source_hash TEXT NULL, \
          model TEXT NULL, \
          prompt_version TEXT NULL, \
@@ -2550,6 +2558,7 @@ data:
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS language_code TEXT; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS status TEXT; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS content_json JSONB; \
+       ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS source_content_version INTEGER; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS source_hash TEXT; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS model TEXT; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS prompt_version TEXT; \
@@ -2642,6 +2651,7 @@ data:
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_items_global_key_unique ON cms_content_items (release_channel, content_key) WHERE content_key IS NOT NULL AND BTRIM(content_key) <> '' AND (site_key IS NULL OR BTRIM(site_key) = ''); \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_items_site_key_unique ON cms_content_items (site_key, release_channel, content_key) WHERE content_key IS NOT NULL AND BTRIM(content_key) <> '' AND site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_item_translations_item_language_unique ON cms_content_item_translations (content_item_id, language_code); \
+       CREATE INDEX IF NOT EXISTS cms_content_item_translations_source_version_idx ON cms_content_item_translations (content_item_id, language_code, source_content_version); \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_global_key_unique ON cms_template_functions (release_channel, token_key) WHERE site_key IS NULL OR BTRIM(site_key) = ''; \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_site_key_unique ON cms_template_functions (site_key, release_channel, token_key) WHERE site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE INDEX IF NOT EXISTS cms_block_content_ref_content_item_idx ON cms_block_content_ref (content_item_id); \
@@ -2884,6 +2894,31 @@ data:
       FOR EACH ROW
       EXECUTE FUNCTION directus.ensure_cms_content_item_content_key();" "ensure cms_content_items.content_key generation" 24; then
       echo "❌ Could not ensure cms_content_items.content_key generation after retries."
+      exit 1
+    fi
+
+    echo "🧱 Ensuring cms_content_items.content_version increments when source JSON changes..."
+    if ! _psql_yb_retry "CREATE OR REPLACE FUNCTION directus.bump_cms_content_item_version()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS \$\$
+      BEGIN
+        IF NEW.content_version IS NULL THEN
+          NEW.content_version := 1;
+        END IF;
+        IF TG_OP = 'UPDATE' AND OLD.content_json IS DISTINCT FROM NEW.content_json THEN
+          NEW.content_version := GREATEST(COALESCE(NEW.content_version, 1), COALESCE(OLD.content_version, 1) + 1);
+        END IF;
+        RETURN NEW;
+      END;
+      \$\$;
+      DROP TRIGGER IF EXISTS cms_content_items_content_version_guard ON cms_content_items;
+      CREATE TRIGGER cms_content_items_content_version_guard
+      BEFORE INSERT OR UPDATE OF content_json, content_version
+      ON cms_content_items
+      FOR EACH ROW
+      EXECUTE FUNCTION directus.bump_cms_content_item_version();" "ensure cms_content_items.content_version bump" 24; then
+      echo "❌ Could not ensure cms_content_items.content_version bump after retries."
       exit 1
     fi
 
@@ -6263,17 +6298,19 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_content_items" "refresh_target" 114
       _upsert_hidden_internal_field_meta_dynamic "cms_content_items" "date_created" 115
       _upsert_hidden_internal_field_meta_dynamic "cms_content_items" "date_updated" 116
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "id" 117
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "source_hash" 118
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "model" 119
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "prompt_version" 120
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "translated_by" 121
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_created" 122
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_updated" 123
-      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "id" 124
-      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "site_key" 125
-      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "release_channel" 126
-      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "refresh_target" 127
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_items" "content_version" 117
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "id" 118
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "source_content_version" 119
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "source_hash" 120
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "model" 121
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "prompt_version" 122
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "translated_by" 123
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_created" 124
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_updated" 125
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "id" 126
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "site_key" 127
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "release_channel" 128
+      _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "refresh_target" 129
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "date_created" 128
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "date_updated" 129
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "id" 101
