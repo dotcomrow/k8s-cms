@@ -184,6 +184,7 @@ data:
     KAFKA_TRANSLATION_TOPIC = os.environ.get("KAFKA_TRANSLATION_TOPIC", "batch.cms.content.translation.requests.v1")
 
     REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "8"))
+    TRANSLATION_VALIDATION_MAX_ERRORS = int(os.environ.get("TRANSLATION_VALIDATION_MAX_ERRORS", "25"))
     CONTENT_RESOLVER_BEARER_TOKEN = os.environ.get("CONTENT_RESOLVER_BEARER_TOKEN", "").strip()
     CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH = os.environ.get(
       "CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH",
@@ -311,6 +312,115 @@ data:
       def normalize_translation_language(cls, value: str) -> str:
         return normalize_language(value)
 
+    class InvalidTranslationContentError(Exception):
+      pass
+
+    def json_kind(value: Any) -> str:
+      if value is None:
+        return "null"
+      if isinstance(value, bool):
+        return "boolean"
+      if isinstance(value, dict):
+        return "object"
+      if isinstance(value, list):
+        return "array"
+      if isinstance(value, str):
+        return "string"
+      if isinstance(value, (int, float)):
+        return "number"
+      return type(value).__name__
+
+    def append_validation_error(errors: List[str], message: str) -> bool:
+      if len(errors) < TRANSLATION_VALIDATION_MAX_ERRORS:
+        errors.append(message)
+      return len(errors) >= TRANSLATION_VALIDATION_MAX_ERRORS
+
+    def collect_content_json_shape_errors(source: Any, translated: Any, path: str = "$", errors: Optional[List[str]] = None) -> List[str]:
+      if errors is None:
+        errors = []
+      if len(errors) >= TRANSLATION_VALIDATION_MAX_ERRORS:
+        return errors
+
+      if isinstance(source, dict):
+        if not isinstance(translated, dict):
+          append_validation_error(errors, f"{path}: expected object, got {json_kind(translated)}")
+          return errors
+        source_keys = set(source.keys())
+        translated_keys = set(translated.keys())
+        for key in sorted(source_keys - translated_keys):
+          if append_validation_error(errors, f"{path}.{key}: missing translated key"):
+            return errors
+        for key in sorted(translated_keys - source_keys):
+          if append_validation_error(errors, f"{path}.{key}: unexpected translated key"):
+            return errors
+        for key in sorted(source_keys & translated_keys):
+          collect_content_json_shape_errors(source[key], translated[key], f"{path}.{key}", errors)
+          if len(errors) >= TRANSLATION_VALIDATION_MAX_ERRORS:
+            return errors
+        return errors
+
+      if isinstance(source, list):
+        if not isinstance(translated, list):
+          append_validation_error(errors, f"{path}: expected array, got {json_kind(translated)}")
+          return errors
+        if len(source) != len(translated):
+          append_validation_error(errors, f"{path}: expected array length {len(source)}, got {len(translated)}")
+          return errors
+        for index, source_item in enumerate(source):
+          collect_content_json_shape_errors(source_item, translated[index], f"{path}[{index}]", errors)
+          if len(errors) >= TRANSLATION_VALIDATION_MAX_ERRORS:
+            return errors
+        return errors
+
+      if isinstance(source, str):
+        if not isinstance(translated, str):
+          append_validation_error(errors, f"{path}: expected string, got {json_kind(translated)}")
+        elif source.strip() and not translated.strip():
+          append_validation_error(errors, f"{path}: translated string is empty")
+        return errors
+
+      if isinstance(source, bool):
+        if not isinstance(translated, bool):
+          append_validation_error(errors, f"{path}: expected boolean, got {json_kind(translated)}")
+        return errors
+
+      if isinstance(source, (int, float)) and not isinstance(source, bool):
+        if not isinstance(translated, (int, float)) or isinstance(translated, bool):
+          append_validation_error(errors, f"{path}: expected number, got {json_kind(translated)}")
+        return errors
+
+      if source is None:
+        return errors
+
+      if type(source) is not type(translated):
+        append_validation_error(errors, f"{path}: expected {json_kind(source)}, got {json_kind(translated)}")
+      return errors
+
+    def validate_translation_content_json(source_content_json: Any, translated_content_json: Any) -> List[str]:
+      if not isinstance(source_content_json, dict):
+        return [f"$: source content_json must be object, got {json_kind(source_content_json)}"]
+      if not isinstance(translated_content_json, dict):
+        return [f"$: translated content_json must be object, got {json_kind(translated_content_json)}"]
+      return collect_content_json_shape_errors(source_content_json, translated_content_json)
+
+    async def fetch_source_content_item(content_item_id: str) -> Optional[Dict[str, Any]]:
+      headers = await directus_headers()
+      params = {
+        "fields": "id,content_json,content_version,source_hash",
+        "limit": "1",
+      }
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.get(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_items/{content_item_id}",
+          headers=headers,
+          params=params,
+        )
+        if response.status_code == 404:
+          return None
+        response.raise_for_status()
+      data = response.json().get("data")
+      return data if isinstance(data, dict) else None
+
     def fallback_item(item: ContentItem, requested_language: str, stale: bool = False) -> Dict[str, Any]:
       return {
         "content_item_id": item.id,
@@ -350,6 +460,15 @@ data:
       content_json = translation.get("content_json")
       if not isinstance(content_json, dict):
         return None
+      validation_errors = validate_translation_content_json(item.content_json, content_json)
+      if validation_errors:
+        print(json.dumps({
+          "event": "translation_content_json_invalid",
+          "content_item_id": item.id,
+          "language_code": language,
+          "errors": validation_errors,
+        }), flush=True)
+        raise InvalidTranslationContentError("translation content_json does not match source content_json")
       return {
         "content_item_id": item.id,
         "requested_language_code": language,
@@ -439,6 +558,38 @@ data:
 
     async def upsert_translation(payload: UpsertTranslationRequest) -> Dict[str, Any]:
       headers = await directus_headers()
+      source_item = await fetch_source_content_item(payload.content_item_id)
+      if source_item is None:
+        raise HTTPException(status_code=422, detail={
+          "error": "source_content_item_not_found",
+          "content_item_id": payload.content_item_id,
+        })
+      source_content_json = source_item.get("content_json")
+      validation_errors = validate_translation_content_json(source_content_json, payload.content_json)
+      if validation_errors:
+        raise HTTPException(status_code=422, detail={
+          "error": "translation_content_json_shape_mismatch",
+          "content_item_id": payload.content_item_id,
+          "language_code": payload.language_code,
+          "errors": validation_errors,
+        })
+      source_content_version = source_item.get("content_version")
+      if source_content_version is not None and payload.source_content_version != source_content_version:
+        raise HTTPException(status_code=409, detail={
+          "error": "translation_source_version_stale",
+          "content_item_id": payload.content_item_id,
+          "language_code": payload.language_code,
+          "expected_source_content_version": source_content_version,
+          "received_source_content_version": payload.source_content_version,
+        })
+      source_hash = str(source_item.get("source_hash") or "").strip()
+      payload_hash = str(payload.source_hash or "").strip()
+      if source_hash and payload_hash and payload_hash != source_hash:
+        raise HTTPException(status_code=409, detail={
+          "error": "translation_source_hash_stale",
+          "content_item_id": payload.content_item_id,
+          "language_code": payload.language_code,
+        })
       body = {
         "content_item_id": payload.content_item_id,
         "language_code": payload.language_code,
@@ -545,6 +696,9 @@ data:
         reason = "missing_or_stale"
         try:
           translation = await fetch_translation(item, payload.language)
+        except InvalidTranslationContentError:
+          translation = None
+          reason = "invalid_translation_content_json"
         except Exception:
           translation = None
           reason = "translation_lookup_failed"
