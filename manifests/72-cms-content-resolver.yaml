@@ -197,6 +197,11 @@ data:
 
     REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "8"))
     CONTENT_RESOLVER_BEARER_TOKEN = os.environ.get("CONTENT_RESOLVER_BEARER_TOKEN", "").strip()
+    CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH = os.environ.get(
+      "CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH",
+      "secret/data/cms-content-resolver",
+    ).strip()
+    CONTENT_RESOLVER_BEARER_TOKEN_VAULT_KEY = os.environ.get("CONTENT_RESOLVER_BEARER_TOKEN_VAULT_KEY", "token").strip()
 
     _vault_cache: Dict[str, tuple[float, str]] = {}
     _vault_lock = threading.Lock()
@@ -466,10 +471,21 @@ data:
       producer.flush(5)
       return True
 
+    async def resolver_bearer_token() -> str:
+      if CONTENT_RESOLVER_BEARER_TOKEN:
+        return CONTENT_RESOLVER_BEARER_TOKEN
+      if CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH:
+        return await vault_value(CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH, CONTENT_RESOLVER_BEARER_TOKEN_VAULT_KEY or "token")
+      return ""
+
     async def require_auth(authorization: Optional[str]) -> None:
-      if not CONTENT_RESOLVER_BEARER_TOKEN:
+      try:
+        token = await resolver_bearer_token()
+      except Exception as exc:
+        raise HTTPException(status_code=503, detail="Resolver auth token unavailable") from exc
+      if not token:
         return
-      expected = f"Bearer {CONTENT_RESOLVER_BEARER_TOKEN}"
+      expected = f"Bearer {token}"
       if authorization != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -480,6 +496,7 @@ data:
         "version": APP_VERSION,
         "kafka_topic": KAFKA_TRANSLATION_TOPIC,
         "has_vault_token": bool(_read_vault_token()),
+        "resolver_auth_configured": bool(CONTENT_RESOLVER_BEARER_TOKEN or CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH),
       }
 
     @app.post("/content/resolve")
@@ -512,7 +529,6 @@ data:
 
     @app.post("/content/translations/upsert")
     async def upsert_content_translation(payload: UpsertTranslationRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
-      await require_auth(authorization)
       return await upsert_translation(payload)
 ---
 apiVersion: v1
@@ -601,6 +617,10 @@ spec:
               value: "secret/data/kafka-scram-user-cms-content-resolver-password"
             - name: CONTENT_RESOLVER_BEARER_TOKEN
               value: ""
+            - name: CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH
+              value: "secret/data/cms-content-resolver"
+            - name: CONTENT_RESOLVER_BEARER_TOKEN_VAULT_KEY
+              value: "token"
             - name: REQUEST_TIMEOUT_SECONDS
               value: "8"
             - name: VAULT_ADDR
@@ -677,6 +697,8 @@ metadata:
     gravitee.io/definition-path-mappings: "/cms-content-resolver/*"
     gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"cms-content-resolver-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://cms-content-resolver.directus.svc.cluster.local:8080"},"secondary":false}]}]'
     gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://cms-content-resolver.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"Resolver API access is enforced by the service bearer token","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"}}'
+    gravitee.io/definition-flows: '[]'
   labels:
     app: cms-content-resolver
 spec:
@@ -687,3 +709,39 @@ spec:
       port: 8080
       targetPort: 8080
   type: ClusterIP
+---
+apiVersion: apisix.apache.org/v2
+kind: ApisixRoute
+metadata:
+  name: cms-content-resolver-external
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  http:
+    - name: cms-content-resolver-healthz
+      match:
+        hosts:
+          - cms-content-resolver.suncoast.systems
+        paths:
+          - /healthz
+      backends:
+        - serviceName: cms-content-resolver
+          servicePort: 8080
+    - name: cms-content-resolver-content-resolve
+      match:
+        hosts:
+          - cms-content-resolver.suncoast.systems
+        paths:
+          - /content/resolve
+      plugins:
+        - name: limit-count
+          enable: true
+          config:
+            count: 120
+            time_window: 60
+            rejected_code: 429
+            key: remote_addr
+      backends:
+        - serviceName: cms-content-resolver
+          servicePort: 8080

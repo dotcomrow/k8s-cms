@@ -103,6 +103,12 @@ spec:
                 TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
                 vault kv put secret/directus/gravitee token="$TOKEN"
               fi
+
+              # Shared bearer token used by the Cloudflare shell worker when calling the CMS content resolver.
+              if ! vault kv get -format=json secret/cms-content-resolver >/dev/null 2>&1; then
+                TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                vault kv put secret/cms-content-resolver token="$TOKEN"
+              fi
               
               # Redis password is already managed in existing Redis instance
 
@@ -178,6 +184,7 @@ spec:
               path "secret/data/directus/gravitee"                 { capabilities = ["read"] }
               path "secret/data/directus/gravitee/clients/*"        { capabilities = ["read"] }
               path "secret/data/directus/gravitee/openapi/*"        { capabilities = ["read"] }
+              path "secret/data/cms-content-resolver"               { capabilities = ["read"] }
               path "secret/data/keycloak-client-id-*"               { capabilities = ["read"] }
               path "secret/data/keycloak-client-secret-*"           { capabilities = ["read"] }
               path "secret/data/kafka-scram-user-cms-content-resolver"          { capabilities = ["read"] }
