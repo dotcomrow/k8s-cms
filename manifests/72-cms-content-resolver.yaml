@@ -406,7 +406,7 @@ data:
     async def fetch_source_content_item(content_item_id: str) -> Optional[Dict[str, Any]]:
       headers = await directus_headers()
       params = {
-        "fields": "id,content_json,content_version,source_hash",
+        "fields": "id,content_json,content_version",
         "limit": "1",
       }
       async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
