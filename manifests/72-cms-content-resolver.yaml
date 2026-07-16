@@ -18,14 +18,11 @@ data:
     servers:
       - url: http://cms-content-resolver.directus.svc.cluster.local:8080
     paths:
-      /healthz:
-        get:
-          responses:
-            "200":
-              description: Service health
-      /content/resolve:
+      /hasura/actions/resolve-content:
         post:
+          operationId: resolve_cms_content
           summary: Resolve content items for a requested language
+          description: Hasura action surface for language-aware CMS content resolution.
           requestBody:
             required: true
             content:
@@ -39,18 +36,6 @@ data:
                 application/json:
                   schema:
                     $ref: "#/components/schemas/ResolveContentResponse"
-      /content/translations/upsert:
-        post:
-          summary: Upsert a translated content item
-          requestBody:
-            required: true
-            content:
-              application/json:
-                schema:
-                  $ref: "#/components/schemas/UpsertTranslationRequest"
-          responses:
-            "200":
-              description: Translation upsert result
     components:
       schemas:
         ContentItem:
@@ -551,9 +536,7 @@ data:
         "resolver_auth_configured": bool(CONTENT_RESOLVER_BEARER_TOKEN or CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH),
       }
 
-    @app.post("/content/resolve")
-    async def resolve_content(payload: ResolveContentRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
-      await require_auth(authorization)
+    async def resolve_content_payload(payload: ResolveContentRequest) -> Dict[str, Any]:
       items: List[Dict[str, Any]] = []
       for item in payload.content_items:
         if payload.language.lower() == (item.default_language_code or DEFAULT_LANGUAGE).lower():
@@ -576,12 +559,16 @@ data:
         items.append(fallback_item(item, payload.language, stale=True))
       return {"ok": True, "language": payload.language, "items": items}
 
+    @app.post("/content/resolve")
+    async def resolve_content(payload: ResolveContentRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+      await require_auth(authorization)
+      return await resolve_content_payload(payload)
+
     @app.post("/hasura/actions/resolve-content")
     async def resolve_content_action(request: Request, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
-      await require_auth(authorization)
       envelope = await request.json()
       payload = ResolveContentRequest.model_validate(envelope.get("input", envelope))
-      return await resolve_content(payload, authorization)
+      return await resolve_content_payload(payload)
 
     @app.post("/content/translations/upsert")
     async def upsert_content_translation(payload: UpsertTranslationRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
@@ -735,7 +722,7 @@ metadata:
     gravitee.io/approval-required: "admin"
     gravitee.io/description: "Language-aware CMS content resolver"
     gravitee.io/version: "latest"
-    gravitee.io/tags: "directus,cms,content,translation"
+    gravitee.io/tags: "directus,cms,hasura,content,translation"
     gravitee.io/definition-name: "cms-content-resolver-api"
     gravitee.io/definition-summary: "Language-aware CMS content resolver"
     gravitee.io/definition-description: "Resolves CMS content item JSON for requested browser languages and queues translation misses."
@@ -749,7 +736,8 @@ metadata:
     gravitee.io/definition-listener-host: "cms-content-resolver.directus.svc.cluster.local"
     gravitee.io/definition-listener-port: "8080"
     gravitee.io/definition-groups: "cms"
-    gravitee.io/definition-tags: "directus,cms,content,translation"
+    gravitee.io/definition-tags: "directus,cms,hasura,content,translation"
+    gravitee.io/definition-labels: "internal,cms,hasura,content,translation"
     gravitee.io/definition-path-mappings: "/cms-content-resolver/*"
     gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"cms-content-resolver-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://cms-content-resolver.directus.svc.cluster.local:8080"},"secondary":false}]}]'
     gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://cms-content-resolver.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
