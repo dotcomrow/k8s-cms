@@ -544,12 +544,25 @@ data:
       }
     }
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cms-content-resolver-kafka-credentials
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+type: Opaque
+stringData:
+  username: "<path:secret/data/kafka-scram-user-cms-content-resolver#value>"
+  password: "<path:secret/data/kafka-scram-user-cms-content-resolver-password#value>"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cms-content-resolver
   namespace: directus
   annotations:
+    argocd.argoproj.io/sync-wave: "1"
     reloader.stakater.com/auto: "true"
   labels:
     app: cms-content-resolver
@@ -594,6 +607,16 @@ spec:
               value: "SCRAM-SHA-256"
             - name: KAFKA_TRANSLATION_TOPIC
               value: "batch.cms.content.translation.requests.v1"
+            - name: KAFKA_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: cms-content-resolver-kafka-credentials
+                  key: username
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cms-content-resolver-kafka-credentials
+                  key: password
             - name: KAFKA_USERNAME_VAULT_PATH
               value: "secret/data/kafka-scram-user-cms-content-resolver"
             - name: KAFKA_PASSWORD_VAULT_PATH
