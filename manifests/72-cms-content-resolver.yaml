@@ -144,6 +144,7 @@ data:
             translated_by:
               type: string
   app.py: |
+    import asyncio
     import json
     import os
     import re
@@ -157,7 +158,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request
     from pydantic import BaseModel, Field, field_validator
 
-    APP_VERSION = "1.2.0"
+    APP_VERSION = "1.2.1"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     SYNTHETIC_BLOCK_CONTENT_KEY_PREFIX = "cms_block_"
@@ -549,6 +550,15 @@ data:
         if str(row.get("status") or "").strip().lower() in ACTIVE_TRANSLATION_JOB_STATUSES
       ]
 
+    async def find_active_translation_jobs_with_retry(content_item_id: str, language_code: str, source_content_version: int, attempts: int = 4) -> List[Dict[str, Any]]:
+      total_attempts = max(1, attempts)
+      for attempt in range(total_attempts):
+        jobs = await find_active_translation_jobs(content_item_id, language_code, source_content_version)
+        if jobs or attempt == total_attempts - 1:
+          return jobs
+        await asyncio.sleep(0.25 * (attempt + 1))
+      return []
+
     async def create_translation_job(payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str) -> tuple[bool, Optional[str]]:
       source_content_version = source_version_for_job(item)
       existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
@@ -580,12 +590,20 @@ data:
           json=body,
         )
       if response.status_code >= 400:
-        existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
+        existing_jobs = await find_active_translation_jobs_with_retry(item.id, payload.language, source_content_version)
         if existing_jobs:
           await expire_stale_translation_jobs_safely(existing_jobs)
-          existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
+          existing_jobs = await find_active_translation_jobs_with_retry(item.id, payload.language, source_content_version)
         if existing_jobs:
           return False, str(existing_jobs[0].get("id") or "").strip() or None
+        print(json.dumps({
+          "event": "translation_job_claim_failed_no_existing_job",
+          "content_item_id": item.id,
+          "language_code": payload.language,
+          "source_content_version": source_content_version,
+          "directus_status_code": response.status_code,
+          "directus_response": response.text[:1000],
+        }), flush=True)
         response.raise_for_status()
       data = response.json().get("data", {})
       return True, str(data.get("id") or "").strip() or None
@@ -630,7 +648,16 @@ data:
         await patch_translation_job_safely(job_id, "failed", "translation_job_active_timeout")
 
     async def mark_active_translation_jobs(content_item_id: str, language_code: str, source_content_version: int, status: str, last_error: Optional[str] = None) -> None:
-      jobs = await find_active_translation_jobs(content_item_id, language_code, source_content_version)
+      jobs = await find_active_translation_jobs_with_retry(content_item_id, language_code, source_content_version)
+      if not jobs:
+        print(json.dumps({
+          "event": "translation_job_update_no_active_job",
+          "content_item_id": content_item_id,
+          "language_code": language_code,
+          "source_content_version": source_content_version,
+          "status": status,
+        }), flush=True)
+        return
       for job in jobs:
         await patch_translation_job(str(job.get("id") or "").strip(), status, last_error)
 
