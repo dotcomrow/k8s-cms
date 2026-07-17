@@ -57,6 +57,25 @@ data:
               type: string
             source_kind:
               type: string
+            site_key:
+              type: string
+            release_channel:
+              type: string
+            translation_enabled:
+              type: boolean
+              default: true
+            translation_excluded_languages:
+              type: array
+              items:
+                type: string
+            translation_prewarm_languages:
+              type: array
+              items:
+                type: string
+            translation_rules:
+              type: array
+              items:
+                type: object
             content_json:
               type: object
         ContentRef:
@@ -106,6 +125,8 @@ data:
             fallback_used:
               type: boolean
             stale:
+              type: boolean
+            translation_blocked:
               type: boolean
             source_content_version:
               type: integer
@@ -161,7 +182,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request
     from pydantic import BaseModel, Field, field_validator
 
-    APP_VERSION = "1.2.6"
+    APP_VERSION = "1.3.0"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$")
@@ -215,6 +236,145 @@ data:
       if not candidate or candidate == "*" or not LANGUAGE_PATTERN.match(candidate):
         return DEFAULT_LANGUAGE
       return candidate
+
+    def normalize_optional_language(value: Any) -> Optional[str]:
+      candidate = str(value or "").strip().replace("_", "-")
+      if not candidate or candidate == "*" or not LANGUAGE_PATTERN.match(candidate):
+        return None
+      return candidate
+
+    def normalize_language_list(value: Any) -> List[str]:
+      if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+          raw_items: List[Any] = []
+        else:
+          try:
+            parsed = json.loads(stripped)
+          except json.JSONDecodeError:
+            parsed = re.split(r"[,\s]+", stripped)
+          raw_items = parsed if isinstance(parsed, list) else [parsed]
+      elif isinstance(value, list):
+        raw_items = value
+      else:
+        raw_items = []
+      languages: List[str] = []
+      for raw_item in raw_items:
+        language = normalize_optional_language(raw_item)
+        if language and language not in languages:
+          languages.append(language)
+      return languages
+
+    def language_is_configured(configured_languages: Any, requested_language: str) -> bool:
+      requested = normalize_optional_language(requested_language)
+      if not requested:
+        return False
+      requested_lower = requested.lower()
+      for configured in normalize_language_list(configured_languages):
+        configured_lower = configured.lower()
+        if requested_lower == configured_lower or requested_lower.startswith(f"{configured_lower}-"):
+          return True
+      return False
+
+    def coerce_json_object_array(value: Any) -> List[Dict[str, Any]]:
+      if isinstance(value, str):
+        try:
+          value = json.loads(value)
+        except json.JSONDecodeError:
+          return []
+      if not isinstance(value, list):
+        return []
+      return [item for item in value if isinstance(item, dict)]
+
+    def parse_json_path(path: Any) -> Optional[List[Any]]:
+      text = str(path or "").strip()
+      if not text:
+        return None
+      if text == "$":
+        return []
+      if not text.startswith("$"):
+        return None
+      segments: List[Any] = []
+      index = 1
+      while index < len(text):
+        char = text[index]
+        if char == ".":
+          index += 1
+          start = index
+          while index < len(text) and text[index] not in ".[":
+            index += 1
+          key = text[start:index].strip()
+          if not key:
+            return None
+          segments.append(key)
+          continue
+        if char == "[":
+          close_index = text.find("]", index + 1)
+          if close_index < 0:
+            return None
+          token = text[index + 1:close_index].strip()
+          if token.isdigit():
+            segments.append(int(token))
+          elif (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
+            key = token[1:-1]
+            if not key:
+              return None
+            segments.append(key)
+          else:
+            return None
+          index = close_index + 1
+          continue
+        return None
+      return segments
+
+    def get_json_path_value(root: Any, segments: List[Any]) -> tuple[bool, Any]:
+      current = root
+      for segment in segments:
+        if isinstance(segment, int):
+          if not isinstance(current, list) or segment < 0 or segment >= len(current):
+            return False, None
+          current = current[segment]
+        else:
+          if not isinstance(current, dict) or segment not in current:
+            return False, None
+          current = current[segment]
+      return True, current
+
+    def normalize_translation_rules(value: Any) -> List[Dict[str, Any]]:
+      rules: List[Dict[str, Any]] = []
+      for raw_rule in coerce_json_object_array(value):
+        path = str(raw_rule.get("path") or raw_rule.get("json_path") or "").strip()
+        segments = parse_json_path(path)
+        if segments is None:
+          continue
+        translation_enabled = raw_rule.get("translation_enabled")
+        if not isinstance(translation_enabled, bool):
+          translation_enabled = raw_rule.get("translate")
+        rules.append({
+          "path": path,
+          "segments": segments,
+          "translation_enabled": translation_enabled if isinstance(translation_enabled, bool) else None,
+          "excluded_languages": normalize_language_list(
+            raw_rule.get("excluded_languages")
+            or raw_rule.get("exclude_languages")
+            or raw_rule.get("do_not_translate_languages")
+          ),
+          "prewarm_languages": normalize_language_list(
+            raw_rule.get("prewarm_languages")
+            or raw_rule.get("translate_immediately_languages")
+            or raw_rule.get("translate_now_languages")
+          ),
+        })
+      return rules
+
+    def protected_translation_rules(translation_rules: Any, language: str) -> List[Dict[str, Any]]:
+      protected: List[Dict[str, Any]] = []
+      for rule in normalize_translation_rules(translation_rules):
+        disabled = rule.get("translation_enabled") is False
+        excluded = language_is_configured(rule.get("excluded_languages"), language)
+        if disabled or excluded:
+          protected.append(rule)
+      return protected
 
     def normalize_model(value: Optional[str]) -> Optional[str]:
       candidate = str(value or "").strip()
@@ -302,12 +462,28 @@ data:
       content_version: Optional[int] = None
       source_hash: Optional[str] = None
       source_kind: Optional[str] = None
+      site_key: Optional[str] = None
+      release_channel: Optional[str] = None
+      translation_enabled: bool = True
+      translation_excluded_languages: List[str] = Field(default_factory=list)
+      translation_prewarm_languages: List[str] = Field(default_factory=list)
+      translation_rules: List[Dict[str, Any]] = Field(default_factory=list)
       content_json: Dict[str, Any] = Field(default_factory=dict)
 
       @field_validator("default_language_code")
       @classmethod
       def normalize_default_language(cls, value: str) -> str:
         return normalize_language(value)
+
+      @field_validator("translation_excluded_languages", "translation_prewarm_languages", mode="before")
+      @classmethod
+      def normalize_translation_language_array(cls, value: Any) -> List[str]:
+        return normalize_language_list(value)
+
+      @field_validator("translation_rules", mode="before")
+      @classmethod
+      def normalize_translation_rule_array(cls, value: Any) -> List[Dict[str, Any]]:
+        return coerce_json_object_array(value)
 
     class ContentRef(BaseModel):
       id: Optional[str] = None
@@ -357,6 +533,29 @@ data:
       @classmethod
       def normalize_translation_language(cls, value: str) -> str:
         return normalize_language(value)
+
+    class PrewarmTranslationRequest(BaseModel):
+      content_item_id: str
+      site_key: Optional[str] = None
+      release_channel: Optional[str] = None
+      page_slug: Optional[str] = None
+      model: Optional[str] = None
+      languages: List[str] = Field(default_factory=list)
+
+      @field_validator("languages", mode="before")
+      @classmethod
+      def normalize_prewarm_languages(cls, value: Any) -> List[str]:
+        return normalize_language_list(value)
+
+      @field_validator("model")
+      @classmethod
+      def normalize_requested_model(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or str(value).strip() == "":
+          return None
+        normalized = normalize_model(value)
+        if not normalized:
+          raise ValueError("model must be a valid Ollama/OpenWebUI model id")
+        return normalized
 
     class InvalidTranslationContentError(Exception):
       pass
@@ -442,17 +641,74 @@ data:
         append_validation_error(errors, f"{path}: expected {json_kind(source)}, got {json_kind(translated)}")
       return errors
 
-    def validate_translation_content_json(source_content_json: Any, translated_content_json: Any) -> List[str]:
+    def content_item_translation_blocked(item: ContentItem, language: str) -> bool:
+      if not item.translation_enabled:
+        return True
+      if language_is_configured(item.translation_excluded_languages, language):
+        return True
+      return any(rule.get("segments") == [] for rule in protected_translation_rules(item.translation_rules, language))
+
+    def translation_policy_payload(item: ContentItem) -> Dict[str, Any]:
+      return {
+        "translation_enabled": item.translation_enabled,
+        "translation_excluded_languages": item.translation_excluded_languages,
+        "translation_prewarm_languages": item.translation_prewarm_languages,
+        "translation_rules": item.translation_rules,
+      }
+
+    def prewarm_languages_for_item(item: ContentItem) -> List[str]:
+      languages = normalize_language_list(item.translation_prewarm_languages)
+      for rule in normalize_translation_rules(item.translation_rules):
+        for language in normalize_language_list(rule.get("prewarm_languages")):
+          if language not in languages:
+            languages.append(language)
+      return languages
+
+    def collect_protected_path_errors(source: Any, translated: Any, translation_rules: Any, language: str) -> List[str]:
+      errors: List[str] = []
+      seen_paths: set[str] = set()
+      for rule in protected_translation_rules(translation_rules, language):
+        path = str(rule.get("path") or "$")
+        if path in seen_paths:
+          continue
+        seen_paths.add(path)
+        segments = rule.get("segments")
+        if not isinstance(segments, list):
+          continue
+        source_exists, source_value = get_json_path_value(source, segments)
+        if not source_exists:
+          continue
+        translated_exists, translated_value = get_json_path_value(translated, segments)
+        if not translated_exists:
+          if append_validation_error(errors, f"{path}: protected path missing from translated content"):
+            return errors
+          continue
+        if translated_value != source_value:
+          if append_validation_error(errors, f"{path}: protected path changed by translation"):
+            return errors
+      return errors
+
+    def validate_translation_content_json(
+      source_content_json: Any,
+      translated_content_json: Any,
+      translation_rules: Any = None,
+      language: Optional[str] = None,
+    ) -> List[str]:
       if not isinstance(source_content_json, dict):
         return [f"$: source content_json must be object, got {json_kind(source_content_json)}"]
       if not isinstance(translated_content_json, dict):
         return [f"$: translated content_json must be object, got {json_kind(translated_content_json)}"]
-      return collect_content_json_shape_errors(source_content_json, translated_content_json)
+      errors = collect_content_json_shape_errors(source_content_json, translated_content_json)
+      if len(errors) >= TRANSLATION_VALIDATION_MAX_ERRORS:
+        return errors
+      if translation_rules is not None and language:
+        errors.extend(collect_protected_path_errors(source_content_json, translated_content_json, translation_rules, language))
+      return errors[:TRANSLATION_VALIDATION_MAX_ERRORS]
 
     async def fetch_source_content_item(content_item_id: str) -> Optional[Dict[str, Any]]:
       headers = await directus_headers()
       params = {
-        "fields": "id,content_json,content_version",
+        "fields": "id,content_key,name,default_language_code,content_json,content_version,site_key,release_channel,translation_enabled,translation_excluded_languages,translation_prewarm_languages,translation_rules",
         "limit": "1",
       }
       async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
@@ -467,13 +723,14 @@ data:
       data = response.json().get("data")
       return data if isinstance(data, dict) else None
 
-    def fallback_item(item: ContentItem, requested_language: str, stale: bool = False) -> Dict[str, Any]:
+    def fallback_item(item: ContentItem, requested_language: str, stale: bool = False, translation_blocked: bool = False) -> Dict[str, Any]:
       return {
         "content_item_id": item.id,
         "requested_language_code": requested_language,
         "resolved_language_code": item.default_language_code or DEFAULT_LANGUAGE,
         "fallback_used": requested_language.lower() != (item.default_language_code or DEFAULT_LANGUAGE).lower(),
         "stale": stale,
+        "translation_blocked": translation_blocked,
         "source_content_version": item.content_version,
         "content_json": item.content_json,
       }
@@ -508,7 +765,7 @@ data:
       content_json = translation.get("content_json")
       if not isinstance(content_json, dict):
         return None
-      validation_errors = validate_translation_content_json(item.content_json, content_json)
+      validation_errors = validate_translation_content_json(item.content_json, content_json, item.translation_rules, language)
       if validation_errors:
         print(json.dumps({
           "event": "translation_content_json_invalid",
@@ -841,6 +1098,10 @@ data:
         "name": item.name or item.content_key or item.id,
         "default_language_code": item.default_language_code or DEFAULT_LANGUAGE,
         "content_version": item.content_version,
+        "translation_enabled": item.translation_enabled,
+        "translation_excluded_languages": item.translation_excluded_languages,
+        "translation_prewarm_languages": item.translation_prewarm_languages,
+        "translation_rules": item.translation_rules,
         "content_json": item.content_json,
         "site_key": payload.site_key,
         "release_channel": payload.release_channel,
@@ -932,8 +1193,27 @@ data:
           "error": "source_content_item_not_found",
           "content_item_id": payload.content_item_id,
         })
+      source_policy_item = ContentItem.model_validate(source_item)
+      if content_item_translation_blocked(source_policy_item, payload.language_code):
+        await mark_translation_jobs_safely(
+          payload.content_item_id,
+          payload.language_code,
+          payload.source_content_version,
+          "failed",
+          "translation_disabled_by_policy",
+        )
+        raise HTTPException(status_code=422, detail={
+          "error": "translation_disabled_by_policy",
+          "content_item_id": payload.content_item_id,
+          "language_code": payload.language_code,
+        })
       source_content_json = source_item.get("content_json")
-      validation_errors = validate_translation_content_json(source_content_json, payload.content_json)
+      validation_errors = validate_translation_content_json(
+        source_content_json,
+        payload.content_json,
+        source_policy_item.translation_rules,
+        payload.language_code,
+      )
       if validation_errors:
         await mark_translation_jobs_safely(
           payload.content_item_id,
@@ -1037,6 +1317,13 @@ data:
       }
 
     async def enqueue_translation_request(payload: ResolveContentRequest, item: ContentItem, reason: str, model: Optional[str]) -> bool:
+      if content_item_translation_blocked(item, payload.language):
+        print(json.dumps({
+          "event": "translation_request_blocked_by_policy",
+          "content_item_id": item.id,
+          "language_code": payload.language,
+        }), flush=True)
+        return False
       key = translation_job_key(item, payload.language)
       try:
         job_created, job_id = await create_translation_job(payload, item, reason, key, model)
@@ -1078,8 +1365,13 @@ data:
           "name": item.name,
           "content_version": item.content_version,
           "source_hash": item.source_hash,
+          "translation_enabled": item.translation_enabled,
+          "translation_excluded_languages": item.translation_excluded_languages,
+          "translation_prewarm_languages": item.translation_prewarm_languages,
+          "translation_rules": item.translation_rules,
           "content_json": item.content_json,
         },
+        "translation_policy": translation_policy_payload(item),
         "content_refs": refs,
       }
       if model:
@@ -1134,6 +1426,9 @@ data:
         if payload.language.lower() == (item.default_language_code or DEFAULT_LANGUAGE).lower():
           items.append(fallback_item(item, payload.language, stale=False))
           continue
+        if content_item_translation_blocked(item, payload.language):
+          items.append(fallback_item(item, payload.language, stale=False, translation_blocked=True))
+          continue
         reason = "missing_or_stale"
         try:
           translation = await fetch_translation(item, payload.language)
@@ -1158,13 +1453,77 @@ data:
         items.append(fallback_item(item, payload.language, stale=True))
       return {"ok": True, "language": payload.language, "items": items}
 
+    async def prewarm_content_item_translations(payload: PrewarmTranslationRequest) -> Dict[str, Any]:
+      source_item = await fetch_source_content_item(payload.content_item_id)
+      if source_item is None:
+        raise HTTPException(status_code=404, detail={
+          "error": "source_content_item_not_found",
+          "content_item_id": payload.content_item_id,
+        })
+      item = ContentItem.model_validate(source_item)
+      languages = payload.languages or prewarm_languages_for_item(item)
+      results: List[Dict[str, Any]] = []
+      for language in languages:
+        if language.lower() == (item.default_language_code or DEFAULT_LANGUAGE).lower():
+          results.append({"language_code": language, "status": "skipped_default_language"})
+          continue
+        if content_item_translation_blocked(item, language):
+          results.append({"language_code": language, "status": "blocked_by_policy"})
+          continue
+        try:
+          existing_translation = await fetch_translation(item, language)
+        except InvalidTranslationContentError:
+          existing_translation = None
+        except Exception as exc:
+          print(json.dumps({
+            "event": "translation_prewarm_lookup_failed",
+            "content_item_id": item.id,
+            "language_code": language,
+            "error": str(exc),
+          }), flush=True)
+          existing_translation = None
+        if existing_translation:
+          results.append({"language_code": language, "status": "already_translated"})
+          continue
+        request_payload = ResolveContentRequest(
+          language=language,
+          site_key=payload.site_key or item.site_key,
+          release_channel=payload.release_channel or item.release_channel,
+          page_slug=payload.page_slug,
+          model=payload.model,
+          content_items=[item],
+          content_refs=[],
+        )
+        translation_model = await resolve_translation_model(request_payload)
+        queued = await enqueue_translation_request(
+          request_payload,
+          item,
+          "prewarm_configured_language",
+          translation_model,
+        )
+        results.append({
+          "language_code": language,
+          "status": "queued" if queued else "already_in_progress_or_unavailable",
+          "model": translation_model,
+        })
+      return {
+        "ok": True,
+        "content_item_id": item.id,
+        "languages": languages,
+        "results": results,
+      }
+
     @app.post("/hasura/actions/resolve-content")
     async def resolve_content_action(request: Request, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
       envelope = await request.json()
       payload = ResolveContentRequest.model_validate(envelope.get("input", envelope))
       return await resolve_content_payload(payload)
 
-    @app.post("/content/translations/upsert")
+    @app.post("/content/translations/prewarm", include_in_schema=False)
+    async def prewarm_content_translation(payload: PrewarmTranslationRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+      return await prewarm_content_item_translations(payload)
+
+    @app.post("/content/translations/upsert", include_in_schema=False)
     async def upsert_content_translation(payload: UpsertTranslationRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
       return await upsert_translation(payload)
 ---

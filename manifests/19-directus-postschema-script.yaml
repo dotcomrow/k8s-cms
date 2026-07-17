@@ -301,7 +301,7 @@ data:
       done
     }
 
-    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-02-23.1}"
+    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-07-17.1}"
     DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW="${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE:-false}"
     case "$(printf '%s' "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW}" | tr '[:upper:]' '[:lower:]')" in
       1|true|yes|on) DIRECTUS_POSTSCHEMA_FORCE_RECONCILE="true" ;;
@@ -389,6 +389,27 @@ data:
       if [ -z "${FLOW_COUNT:-}" ] || [ "${FLOW_COUNT}" = "0" ]; then
         RECON_FLOW_HEALTHY="0"
         echo "⚠️ directus_flows is empty; forcing reconcile despite checksum match."
+      fi
+      if [ "${RECON_FLOW_HEALTHY}" = "1" ]; then
+        PREWARM_FLOW_MISSING_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "WITH required(name) AS ( \
+             VALUES \
+               ('CMS Content Translation Prewarm - Create'), \
+               ('CMS Content Translation Prewarm - Update') \
+           ) \
+           SELECT COUNT(*) \
+           FROM required r \
+           WHERE NOT EXISTS ( \
+             SELECT 1 \
+             FROM directus.directus_flows f \
+             WHERE f.name = r.name \
+               AND COALESCE(f.status, '') = 'active' \
+           );" || true)"
+        PREWARM_FLOW_MISSING_COUNT="$(printf '%s' "${PREWARM_FLOW_MISSING_COUNT:-0}" | tr -d '\r')"
+        if [ -n "${PREWARM_FLOW_MISSING_COUNT:-}" ] && [ "${PREWARM_FLOW_MISSING_COUNT}" != "0" ]; then
+          RECON_FLOW_HEALTHY="0"
+          echo "⚠️ Translation prewarm flows are missing/inactive (${PREWARM_FLOW_MISSING_COUNT}); forcing reconcile despite checksum match."
+        fi
       fi
     fi
 
@@ -527,6 +548,10 @@ data:
              ('cms_content_templates','html_template'), \
              ('cms_content_items','default_language_code'), \
              ('cms_content_items','content_json'), \
+             ('cms_content_items','translation_enabled'), \
+             ('cms_content_items','translation_excluded_languages'), \
+             ('cms_content_items','translation_prewarm_languages'), \
+             ('cms_content_items','translation_rules'), \
              ('cms_content_item_translations','content_item_id'), \
              ('cms_content_item_translations','language_code'), \
              ('cms_content_item_translations','content_json'), \
@@ -2535,6 +2560,10 @@ data:
          default_language_code TEXT NOT NULL DEFAULT 'en', \
          content_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          content_version INTEGER NOT NULL DEFAULT 1, \
+         translation_enabled BOOLEAN NOT NULL DEFAULT true, \
+         translation_excluded_languages JSONB NOT NULL DEFAULT '[]'::jsonb, \
+         translation_prewarm_languages JSONB NOT NULL DEFAULT '[]'::jsonb, \
+         translation_rules JSONB NOT NULL DEFAULT '[]'::jsonb, \
          site_key TEXT NULL, \
          release_channel TEXT NOT NULL DEFAULT 'preview', \
          refresh_target TEXT NOT NULL DEFAULT 'both', \
@@ -2547,6 +2576,10 @@ data:
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS default_language_code TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS content_json JSONB; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS content_version INTEGER; \
+       ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS translation_enabled BOOLEAN; \
+       ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS translation_excluded_languages JSONB; \
+       ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS translation_prewarm_languages JSONB; \
+       ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS translation_rules JSONB; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
@@ -2558,6 +2591,31 @@ data:
        UPDATE cms_content_items SET content_version = 1 WHERE content_version IS NULL; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN content_version SET DEFAULT 1; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN content_version SET NOT NULL; \
+       UPDATE cms_content_items SET translation_enabled = true WHERE translation_enabled IS NULL; \
+       UPDATE cms_content_items SET translation_excluded_languages = '[]'::jsonb WHERE translation_excluded_languages IS NULL OR jsonb_typeof(translation_excluded_languages) <> 'array'; \
+       UPDATE cms_content_items SET translation_prewarm_languages = '[]'::jsonb WHERE translation_prewarm_languages IS NULL OR jsonb_typeof(translation_prewarm_languages) <> 'array'; \
+       UPDATE cms_content_items SET translation_rules = '[]'::jsonb WHERE translation_rules IS NULL OR jsonb_typeof(translation_rules) <> 'array'; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_enabled SET DEFAULT true; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_enabled SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_excluded_languages SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_excluded_languages SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_prewarm_languages SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_prewarm_languages SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_rules SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN translation_rules SET NOT NULL; \
+       DO \$\$ BEGIN \
+         IF to_regclass('directus.cms_content_items') IS NOT NULL THEN \
+           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_content_items_translation_excluded_languages_array') THEN \
+             ALTER TABLE cms_content_items ADD CONSTRAINT cms_content_items_translation_excluded_languages_array CHECK (jsonb_typeof(translation_excluded_languages) = 'array'); \
+           END IF; \
+           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_content_items_translation_prewarm_languages_array') THEN \
+             ALTER TABLE cms_content_items ADD CONSTRAINT cms_content_items_translation_prewarm_languages_array CHECK (jsonb_typeof(translation_prewarm_languages) = 'array'); \
+           END IF; \
+           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_content_items_translation_rules_array') THEN \
+             ALTER TABLE cms_content_items ADD CONSTRAINT cms_content_items_translation_rules_array CHECK (jsonb_typeof(translation_rules) = 'array'); \
+           END IF; \
+         END IF; \
+       END \$\$; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN release_channel SET DEFAULT 'preview'; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN date_created SET DEFAULT now(); \
@@ -3091,7 +3149,7 @@ data:
       exit 1
     fi
 
-    echo "🧱 Ensuring cms_content_items.content_version is DB-managed from source JSON changes..."
+    echo "🧱 Ensuring cms_content_items.content_version is DB-managed from source JSON and translation policy changes..."
     if ! _psql_yb_retry "CREATE OR REPLACE FUNCTION directus.bump_cms_content_item_version()
       RETURNS trigger
       LANGUAGE plpgsql
@@ -3102,7 +3160,10 @@ data:
           RETURN NEW;
         END IF;
 
-        IF TG_OP = 'UPDATE' AND OLD.content_json IS DISTINCT FROM NEW.content_json THEN
+        IF TG_OP = 'UPDATE' AND (OLD.content_json IS DISTINCT FROM NEW.content_json
+          OR OLD.translation_enabled IS DISTINCT FROM NEW.translation_enabled
+          OR OLD.translation_excluded_languages IS DISTINCT FROM NEW.translation_excluded_languages
+          OR OLD.translation_rules IS DISTINCT FROM NEW.translation_rules) THEN
           NEW.content_version := COALESCE(OLD.content_version, 1) + 1;
         ELSE
           NEW.content_version := COALESCE(OLD.content_version, 1);
@@ -3113,7 +3174,7 @@ data:
       \$\$;
       DROP TRIGGER IF EXISTS cms_content_items_content_version_guard ON cms_content_items;
       CREATE TRIGGER cms_content_items_content_version_guard
-      BEFORE INSERT OR UPDATE OF content_json, content_version
+      BEFORE INSERT OR UPDATE OF content_json, content_version, translation_enabled, translation_excluded_languages, translation_rules
       ON cms_content_items
       FOR EACH ROW
       EXECUTE FUNCTION directus.bump_cms_content_item_version();" "ensure cms_content_items.content_version bump" 24; then
@@ -4275,6 +4336,8 @@ data:
       template_function_reviewed_by_display_options_json="$(jq -nc --argjson choices "${template_function_reviewed_by_choices_json}" '{choices:$choices}')"
       template_function_config_options_json="$(jq -nc '{language:"json",lineNumber:true,placeholder:"{\n  \"value\": \"Text for static_text\",\n  \"timezone\": \"UTC\"\n}"}')"
       template_function_source_options_json="$(jq -nc '{language:"javascript",lineNumber:true,placeholder:"return new Date(now).getFullYear();"}')"
+      translation_language_tags_options_json="$(jq -nc '{placeholder:"Add language codes, e.g. es, fr-CA",allowOther:true,allowDuplicates:false}')"
+      translation_rules_options_json="$(jq -nc '{language:"json",lineNumber:true,placeholder:"[\n  { \"path\": \"$.brandName\", \"translation_enabled\": false },\n  { \"path\": \"$.cta.label\", \"excluded_languages\": [\"ja\"] }\n]"}')"
       template_function_builtin_only_conditions_json="$(jq -nc '[{"name":"Built-in functions only","rule":{"function_kind":{"_neq":"builtin"}},"hidden":true}]')"
       template_function_javascript_only_conditions_json="$(jq -nc '[{"name":"JavaScript functions only","rule":{"function_kind":{"_neq":"javascript"}},"hidden":true}]')"
       template_function_config_conditions_json="$(jq -nc '[{"name":"JavaScript or static text config only","rule":{"_and":[{"function_kind":{"_neq":"javascript"}},{"handler_key":{"_neq":"static_text"}}]},"hidden":true}]')"
@@ -4287,6 +4350,14 @@ data:
       theme_selector_dock_position_display_options_json="$(jq -nc --argjson choices "${theme_selector_dock_position_choices_json}" '{choices:$choices}')"
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
+      translation_enabled_note="Disable to always return default-language content for this content item and skip translation jobs."
+      translation_excluded_languages_note="Language codes that should fall back to default-language content for this item, such as es or fr-CA."
+      translation_prewarm_languages_note="Language codes to enqueue for translation after this item is saved. This does not change the content version."
+      translation_rules_note="JSON array of field rules. Use path plus translation_enabled, excluded_languages, or prewarm_languages."
+      translation_enabled_note_sql="$(printf '%s' "${translation_enabled_note}" | sed "s/'/''/g")"
+      translation_excluded_languages_note_sql="$(printf '%s' "${translation_excluded_languages_note}" | sed "s/'/''/g")"
+      translation_prewarm_languages_note_sql="$(printf '%s' "${translation_prewarm_languages_note}" | sed "s/'/''/g")"
+      translation_rules_note_sql="$(printf '%s' "${translation_rules_note}" | sed "s/'/''/g")"
       widget_dock_dependent_readonly_conditions_json="$(jq -nc '[{"name":"Widget dock disabled","rule":{"widget_dock_enabled":{"_neq":true}},"readonly":true}]')"
       required_role_for_page_access_hidden_conditions_json="$(jq -nc '[{"name":"Force login + site key required","rule":{"_or":[{"force_login_for_page_access":{"_neq":true}},{"site_key":{"_empty":true}}]},"hidden":true}]')"
       openobserve_config_readonly_conditions_json="$(jq -nc '[{"name":"OpenObserve URL required","rule":{"_or":[{"analytics_openobserve_rum_script_url":{"_null":true}},{"analytics_openobserve_rum_script_url":{"_eq":""}}]},"readonly":true}]')"
@@ -6006,6 +6077,131 @@ data:
         echo "✅ Created status field UX on ${_collection}"
       }
 
+      _upsert_content_item_translation_group_field_meta() {
+        _collection="cms_content_items"
+        _field="_section_translation"
+        _label="Translation"
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _label_sql="$(printf '%s' "${_label}" | sed "s/'/''/g")"
+        _options_json="$(jq -nc --arg header "${_label}" '{header:$header,icon:"translate",start:"open"}')"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
+        _special_sql="$(_df_special_group_sql)"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='group-detail'"; fi
+          if _df_has_col "name"; then SETS="${SETS},name='${_label_sql}'"; fi
+          if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
+          if _df_has_col "options"; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=false"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='full'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=30"; fi
+          if _df_has_col "group"; then SETS="${SETS},\"group\"=NULL"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated translation group UX on ${_collection}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'group-detail'"; fi
+        if _df_has_col "name"; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'${_label_sql}'"; fi
+        if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then FCOLS="${FCOLS},special"; FVALS="${FVALS},${_special_sql}"; fi
+        if _df_has_col "options"; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},false"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'full'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},30"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created translation group UX on ${_collection}"
+      }
+
+      _upsert_content_item_translation_field_meta() {
+        _field="$1"
+        _interface="$2"
+        _width="${3:-half}"
+        _sort="${4:-31}"
+        _note_sql="${5:-}"
+        _options_json="${6:-}"
+        _required="${7:-false}"
+        _collection="cms_content_items"
+        if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _interface_sql="$(printf '%s' "${_interface}" | sed "s/'/''/g")"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='${_interface_sql}'"; fi
+          if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=${_required}"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='${_width}'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then SETS="${SETS},note='${_note_sql}'"; fi
+          if _df_has_col "group"; then SETS="${SETS},\"group\"='_section_translation'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated translation policy UX on ${_collection}.${_field}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'${_interface_sql}'"; fi
+        if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},${_required}"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'${_width}'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
+        if _df_has_col "group"; then FCOLS="${FCOLS},\"group\""; FVALS="${FVALS},'_section_translation'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created translation policy UX on ${_collection}.${_field}"
+      }
+
       _upsert_template_function_input_field_meta() {
         _field="$1"
         _sort="${2:-50}"
@@ -6360,6 +6556,11 @@ data:
       _upsert_status_dropdown_field_meta "cms_block_content_ref" 1
       _upsert_status_dropdown_field_meta "cms_content_templates" 1
       _upsert_status_dropdown_field_meta "cms_content_items" 1
+      _upsert_content_item_translation_group_field_meta
+      _upsert_content_item_translation_field_meta "translation_enabled" "boolean" "half" 31 "${translation_enabled_note_sql}" "" true
+      _upsert_content_item_translation_field_meta "translation_excluded_languages" "tags" "half" 32 "${translation_excluded_languages_note_sql}" "${translation_language_tags_options_json}" false
+      _upsert_content_item_translation_field_meta "translation_prewarm_languages" "tags" "half" 33 "${translation_prewarm_languages_note_sql}" "${translation_language_tags_options_json}" false
+      _upsert_content_item_translation_field_meta "translation_rules" "input-code" "full" 34 "${translation_rules_note_sql}" "${translation_rules_options_json}" false
       _upsert_status_dropdown_field_meta "cms_content_item_translations" 1
       _upsert_status_dropdown_field_meta "cms_content_translation_jobs" 1
       _upsert_status_dropdown_field_meta "cms_translation_languages" 1
@@ -7057,6 +7258,54 @@ data:
           echo "⚠️ Failed to persist links for operation '${_op_id}' (resolve='${_resolve}', reject='${_reject}') after retries"
           return 0
         }
+
+        _upsert_translation_prewarm_flow() {
+          _flow_name="$1"
+          _scope="$2"
+          _trigger_key_template="$3"
+          _event_name="$4"
+          _position_y="${5:-201}"
+          _collections_json='["cms_content_items"]'
+          _description="Queues configured translation prewarm languages for CMS content items after ${_event_name}."
+          _flow_payload="$(jq -nc \
+            --arg name "${_flow_name}" \
+            --arg scope "${_scope}" \
+            --arg desc "${_description}" \
+            --argjson collections "${_collections_json}" \
+            '{name:$name,trigger:"event",status:"active",accountability:"all",icon:"translate",color:"#1565C0",description:$desc,options:{type:"action",scope:[$scope],collections:$collections}}')"
+
+          _flow_id="$(_directus_find_flow_id_by_name "${_flow_name}")"
+          if [ -n "${_flow_id:-}" ] && [ "${_flow_id}" != "null" ]; then
+            _directus_api_write "PATCH" "/flows/${_flow_id}" "${_flow_payload}" >/tmp/directus-flow-upsert.json 2>/dev/null || true
+          else
+            _created_flow="$(_directus_api_write "POST" "/flows" "${_flow_payload}" 2>/dev/null || true)"
+            _flow_id="$(printf '%s' "${_created_flow}" | jq -r '.data.id // empty' 2>/dev/null || true)"
+          fi
+
+          _directus_deactivate_duplicate_flow_names "${_flow_name}" "${_flow_id}"
+          if [ -z "${_flow_id:-}" ] || [ "${_flow_id}" = "null" ]; then
+            echo "⚠️ Failed to ensure translation prewarm flow '${_flow_name}'"
+            return 0
+          fi
+
+          _request_options="$(jq -nc \
+            --arg event "${_event_name}" \
+            --arg key "${_trigger_key_template}" \
+            '{method:"POST",url:"http://cms-content-resolver.directus.svc.cluster.local:8080/content/translations/prewarm",timeout:120000,headers:[{header:"Content-Type",value:"application/json"},{header:"Accept",value:"application/json"}],body:{source:"directus",event:$event,collection:"{{ $trigger.collection }}",content_item_id:$key}}')"
+          _request_op_id="$(_directus_upsert_operation "${_flow_id}" "queue_translation_prewarm" "request" "Queue Translation Prewarm" 19 "${_position_y}" "${_request_options}")"
+          _directus_set_operation_links "${_request_op_id}" "" ""
+          if [ -n "${_request_op_id:-}" ] && [ "${_request_op_id}" != "null" ]; then
+            _directus_api_write "PATCH" "/flows/${_flow_id}" \
+              "$(jq -nc --arg operation "${_request_op_id}" '{operation:$operation,status:"active"}')" \
+              >/tmp/directus-flow-upsert.json 2>/dev/null || true
+            echo "✅ Reconciled translation prewarm flow '${_flow_name}'"
+          else
+            echo "⚠️ Failed to ensure translation prewarm operation for '${_flow_name}'"
+          fi
+        }
+
+        _upsert_translation_prewarm_flow "CMS Content Translation Prewarm - Create" "items.create" "{{ $trigger.key }}" "items.create" 201
+        _upsert_translation_prewarm_flow "CMS Content Translation Prewarm - Update" "items.update" "{{ $trigger.keys[0] }}" "items.update" 241
     
         _vault_kv_read_field() {
           _path="$1"

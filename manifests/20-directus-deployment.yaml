@@ -1260,7 +1260,7 @@ spec:
           - name: DIRECTUS_POSTSCHEMA_LAYOUT_THEME_SEED_ENABLED
             value: "no"
           - name: DIRECTUS_POSTSCHEMA_RECONCILE_VERSION
-            value: "2026-04-29.1"
+            value: "2026-07-17.1"
           - name: DIRECTUS_POSTSCHEMA_FORCE_RECONCILE
             value: "false"
           - name: DIRECTUS_DB_LEAF_SECRETS_ONLY
