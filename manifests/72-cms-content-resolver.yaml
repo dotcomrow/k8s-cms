@@ -1019,11 +1019,6 @@ data:
         items.append(fallback_item(item, payload.language, stale=True))
       return {"ok": True, "language": payload.language, "items": items}
 
-    @app.post("/content/resolve")
-    async def resolve_content(payload: ResolveContentRequest, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
-      await require_auth(authorization)
-      return await resolve_content_payload(payload)
-
     @app.post("/hasura/actions/resolve-content")
     async def resolve_content_action(request: Request, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
       envelope = await request.json()
@@ -1215,31 +1210,3 @@ spec:
       port: 8080
       targetPort: 8080
   type: ClusterIP
----
-apiVersion: apisix.apache.org/v2
-kind: ApisixRoute
-metadata:
-  name: cms-content-resolver-external
-  namespace: directus
-  annotations:
-    argocd.argoproj.io/sync-wave: "2"
-spec:
-  http:
-    - name: cms-content-resolver-healthz
-      match:
-        hosts:
-          - cms-content-resolver.suncoast.systems
-        paths:
-          - /healthz
-      backends:
-        - serviceName: cms-content-resolver
-          servicePort: 8080
-    - name: cms-content-resolver-content-resolve
-      match:
-        hosts:
-          - cms-content-resolver.suncoast.systems
-        paths:
-          - /content/resolve
-      backends:
-        - serviceName: cms-content-resolver
-          servicePort: 8080
