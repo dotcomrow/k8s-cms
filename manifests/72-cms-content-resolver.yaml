@@ -161,7 +161,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request
     from pydantic import BaseModel, Field, field_validator
 
-    APP_VERSION = "1.2.5"
+    APP_VERSION = "1.2.6"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$")
@@ -897,6 +897,26 @@ data:
         return None
       return str(data[0].get("id") or "").strip() or None
 
+    async def find_translation_id_with_retry(content_item_id: str, language_code: str, attempts: int = 6) -> Optional[str]:
+      total_attempts = max(1, attempts)
+      for attempt in range(total_attempts):
+        translation_id = await find_translation_id(content_item_id, language_code)
+        if translation_id or attempt == total_attempts - 1:
+          return translation_id
+        await asyncio.sleep(0.2 * (attempt + 1))
+      return None
+
+    def log_directus_upsert_failure(payload: UpsertTranslationRequest, response: httpx.Response, mode: str) -> None:
+      print(json.dumps({
+        "event": "translation_upsert_directus_failed",
+        "mode": mode,
+        "content_item_id": payload.content_item_id,
+        "language_code": payload.language_code,
+        "source_content_version": payload.source_content_version,
+        "directus_status_code": response.status_code,
+        "directus_response": response.text[:2000],
+      }), flush=True)
+
     async def upsert_translation(payload: UpsertTranslationRequest) -> Dict[str, Any]:
       headers = await directus_headers()
       source_item = await fetch_source_content_item(payload.content_item_id)
@@ -970,7 +990,7 @@ data:
         "prompt_version": payload.prompt_version,
         "translated_by": payload.translated_by,
       }
-      existing_id = await find_translation_id(payload.content_item_id, payload.language_code)
+      existing_id = await find_translation_id_with_retry(payload.content_item_id, payload.language_code, attempts=3)
       async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         if existing_id:
           response = await client.patch(
@@ -978,6 +998,8 @@ data:
             headers=headers,
             json=body,
           )
+          if response.status_code >= 400:
+            log_directus_upsert_failure(payload, response, "patch_existing_translation")
         else:
           response = await client.post(
             f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations",
@@ -985,7 +1007,7 @@ data:
             json=body,
           )
           if response.status_code >= 400:
-            duplicate_id = await find_translation_id(payload.content_item_id, payload.language_code)
+            duplicate_id = await find_translation_id_with_retry(payload.content_item_id, payload.language_code)
             if duplicate_id:
               existing_id = duplicate_id
               response = await client.patch(
@@ -993,6 +1015,10 @@ data:
                 headers=headers,
                 json=body,
               )
+              if response.status_code >= 400:
+                log_directus_upsert_failure(payload, response, "patch_after_duplicate_create")
+            else:
+              log_directus_upsert_failure(payload, response, "create_translation")
         response.raise_for_status()
       data = response.json().get("data", {})
       await mark_translation_jobs_safely(
