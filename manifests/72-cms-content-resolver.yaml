@@ -158,7 +158,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request
     from pydantic import BaseModel, Field, field_validator
 
-    APP_VERSION = "1.2.1"
+    APP_VERSION = "1.2.4"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     SYNTHETIC_BLOCK_CONTENT_KEY_PREFIX = "cms_block_"
@@ -459,7 +459,9 @@ data:
       translation = data[0]
       if translation.get("source_content_version") != item.content_version:
         return None
-      if item.source_hash and str(translation.get("source_hash") or "").strip() != item.source_hash:
+      item_source_hash = str(item.source_hash or "").strip()
+      translation_source_hash = str(translation.get("source_hash") or "").strip()
+      if item_source_hash and translation_source_hash and translation_source_hash != item_source_hash:
         return None
       content_json = translation.get("content_json")
       if not isinstance(content_json, dict):
@@ -480,7 +482,7 @@ data:
         "fallback_used": False,
         "stale": False,
         "source_content_version": item.content_version,
-        "source_hash": translation.get("source_hash"),
+        "source_hash": translation_source_hash or item_source_hash or None,
         "model": translation.get("model"),
         "prompt_version": translation.get("prompt_version"),
         "translated_by": translation.get("translated_by"),
@@ -525,7 +527,7 @@ data:
       age_seconds = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
       return age_seconds > TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS
 
-    async def find_active_translation_jobs(content_item_id: str, language_code: str, source_content_version: int) -> List[Dict[str, Any]]:
+    async def find_translation_jobs(content_item_id: str, language_code: str, source_content_version: int) -> List[Dict[str, Any]]:
       headers = await directus_headers()
       params = {
         "filter[content_item_id][_eq]": content_item_id,
@@ -545,15 +547,21 @@ data:
       rows = response.json().get("data", [])
       if not isinstance(rows, list):
         return []
+      return rows
+
+    def active_translation_jobs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
       return [
         row for row in rows
         if str(row.get("status") or "").strip().lower() in ACTIVE_TRANSLATION_JOB_STATUSES
       ]
 
-    async def find_active_translation_jobs_with_retry(content_item_id: str, language_code: str, source_content_version: int, attempts: int = 4) -> List[Dict[str, Any]]:
+    async def find_active_translation_jobs(content_item_id: str, language_code: str, source_content_version: int) -> List[Dict[str, Any]]:
+      return active_translation_jobs(await find_translation_jobs(content_item_id, language_code, source_content_version))
+
+    async def find_translation_jobs_with_retry(content_item_id: str, language_code: str, source_content_version: int, attempts: int = 4) -> List[Dict[str, Any]]:
       total_attempts = max(1, attempts)
       for attempt in range(total_attempts):
-        jobs = await find_active_translation_jobs(content_item_id, language_code, source_content_version)
+        jobs = await find_translation_jobs(content_item_id, language_code, source_content_version)
         if jobs or attempt == total_attempts - 1:
           return jobs
         await asyncio.sleep(0.25 * (attempt + 1))
@@ -561,12 +569,19 @@ data:
 
     async def create_translation_job(payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str) -> tuple[bool, Optional[str]]:
       source_content_version = source_version_for_job(item)
-      existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
-      if existing_jobs:
-        await expire_stale_translation_jobs_safely(existing_jobs)
-        existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
-      if existing_jobs:
-        return False, str(existing_jobs[0].get("id") or "").strip() or None
+      existing_jobs = await find_translation_jobs(item.id, payload.language, source_content_version)
+      active_jobs = active_translation_jobs(existing_jobs)
+      if active_jobs:
+        await expire_stale_translation_jobs_safely(active_jobs)
+        existing_jobs = await find_translation_jobs(item.id, payload.language, source_content_version)
+        active_jobs = active_translation_jobs(existing_jobs)
+      if active_jobs:
+        return False, str(active_jobs[0].get("id") or "").strip() or None
+      reusable_jobs = [job for job in existing_jobs if str(job.get("id") or "").strip()]
+      if reusable_jobs:
+        job_id = str(reusable_jobs[0].get("id") or "").strip()
+        await requeue_translation_job(job_id, payload, item, reason, kafka_key)
+        return True, job_id
       headers = await directus_headers()
       body = {
         "content_item_id": item.id,
@@ -590,12 +605,19 @@ data:
           json=body,
         )
       if response.status_code >= 400:
-        existing_jobs = await find_active_translation_jobs_with_retry(item.id, payload.language, source_content_version)
-        if existing_jobs:
-          await expire_stale_translation_jobs_safely(existing_jobs)
-          existing_jobs = await find_active_translation_jobs_with_retry(item.id, payload.language, source_content_version)
-        if existing_jobs:
-          return False, str(existing_jobs[0].get("id") or "").strip() or None
+        existing_jobs = await find_translation_jobs_with_retry(item.id, payload.language, source_content_version)
+        active_jobs = active_translation_jobs(existing_jobs)
+        if active_jobs:
+          await expire_stale_translation_jobs_safely(active_jobs)
+          existing_jobs = await find_translation_jobs_with_retry(item.id, payload.language, source_content_version)
+          active_jobs = active_translation_jobs(existing_jobs)
+        if active_jobs:
+          return False, str(active_jobs[0].get("id") or "").strip() or None
+        reusable_jobs = [job for job in existing_jobs if str(job.get("id") or "").strip()]
+        if reusable_jobs:
+          job_id = str(reusable_jobs[0].get("id") or "").strip()
+          await requeue_translation_job(job_id, payload, item, reason, kafka_key)
+          return True, job_id
         print(json.dumps({
           "event": "translation_job_claim_failed_no_existing_job",
           "content_item_id": item.id,
@@ -608,6 +630,32 @@ data:
       data = response.json().get("data", {})
       return True, str(data.get("id") or "").strip() or None
 
+    async def requeue_translation_job(job_id: str, payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str) -> None:
+      if not job_id:
+        return
+      headers = await directus_headers()
+      now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+      body: Dict[str, Any] = {
+        "status": "queued",
+        "reason": reason,
+        "site_key": payload.site_key,
+        "release_channel": payload.release_channel,
+        "page_slug": payload.page_slug,
+        "kafka_topic": KAFKA_TRANSLATION_TOPIC,
+        "kafka_key": kafka_key,
+        "date_updated": now,
+        "date_completed": None,
+        "last_error": None,
+      }
+      body = {key: value for key, value in body.items() if value is not None or key in {"date_completed", "last_error"}}
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.patch(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_translation_jobs/{job_id}",
+          headers=headers,
+          json=body,
+        )
+        response.raise_for_status()
+
     async def patch_translation_job(job_id: str, status: str, last_error: Optional[str] = None) -> None:
       if not job_id:
         return
@@ -617,10 +665,14 @@ data:
         "status": status,
         "date_updated": now,
       }
-      if status not in ACTIVE_TRANSLATION_JOB_STATUSES:
+      if status in ACTIVE_TRANSLATION_JOB_STATUSES:
+        body["date_completed"] = None
+      else:
         body["date_completed"] = now
       if last_error:
         body["last_error"] = last_error[:2000]
+      elif status == "succeeded":
+        body["last_error"] = None
       async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         response = await client.patch(
           f"{DIRECTUS_BASE_URL}/items/cms_content_translation_jobs/{job_id}",
@@ -648,7 +700,7 @@ data:
         await patch_translation_job_safely(job_id, "failed", "translation_job_active_timeout")
 
     async def mark_active_translation_jobs(content_item_id: str, language_code: str, source_content_version: int, status: str, last_error: Optional[str] = None) -> None:
-      jobs = await find_active_translation_jobs_with_retry(content_item_id, language_code, source_content_version)
+      jobs = active_translation_jobs(await find_translation_jobs_with_retry(content_item_id, language_code, source_content_version))
       if not jobs:
         print(json.dumps({
           "event": "translation_job_update_no_active_job",
@@ -956,6 +1008,7 @@ data:
           translation = None
           reason = "translation_lookup_failed"
         if translation:
+          await mark_translation_jobs_safely(item.id, payload.language, source_version_for_job(item), "succeeded")
           items.append(translation)
           continue
         try:
