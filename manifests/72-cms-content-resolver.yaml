@@ -82,6 +82,9 @@ data:
               type: string
             page_slug:
               type: string
+            model:
+              type: string
+              description: Optional request-level translation model override. If omitted, the resolver uses cms_translation_languages.
             content_items:
               type: array
               items:
@@ -158,9 +161,10 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request
     from pydantic import BaseModel, Field, field_validator
 
-    APP_VERSION = "1.2.4"
+    APP_VERSION = "1.2.5"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
+    MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$")
     SYNTHETIC_BLOCK_CONTENT_KEY_PREFIX = "cms_block_"
 
     DIRECTUS_BASE_URL = os.environ.get(
@@ -188,6 +192,7 @@ data:
     REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "8"))
     TRANSLATION_VALIDATION_MAX_ERRORS = int(os.environ.get("TRANSLATION_VALIDATION_MAX_ERRORS", "25"))
     TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS = int(os.environ.get("TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS", "3600"))
+    TRANSLATION_MODEL_CACHE_SECONDS = int(os.environ.get("TRANSLATION_MODEL_CACHE_SECONDS", "0"))
     ACTIVE_TRANSLATION_JOB_STATUSES = {"queued", "processing"}
     CONTENT_RESOLVER_BEARER_TOKEN = os.environ.get("CONTENT_RESOLVER_BEARER_TOKEN", "").strip()
     CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH = os.environ.get(
@@ -198,6 +203,8 @@ data:
 
     _vault_cache: Dict[str, tuple[float, str]] = {}
     _vault_lock = threading.Lock()
+    _translation_model_cache: Dict[str, tuple[float, Optional[str]]] = {}
+    _translation_model_lock = threading.Lock()
     _producer: Optional[Producer] = None
     _producer_lock = threading.Lock()
 
@@ -208,6 +215,30 @@ data:
       if not candidate or candidate == "*" or not LANGUAGE_PATTERN.match(candidate):
         return DEFAULT_LANGUAGE
       return candidate
+
+    def normalize_model(value: Optional[str]) -> Optional[str]:
+      candidate = str(value or "").strip()
+      if not candidate:
+        return None
+      if not MODEL_PATTERN.match(candidate):
+        return None
+      return candidate
+
+    def language_model_candidates(language: str) -> List[str]:
+      normalized = normalize_language(language)
+      candidates: List[str] = []
+
+      def add(candidate: str) -> None:
+        if candidate and candidate not in candidates:
+          candidates.append(candidate)
+
+      add(normalized)
+      add(normalized.lower())
+      if "-" in normalized:
+        base_language = normalized.split("-", 1)[0]
+        add(base_language)
+        add(base_language.lower())
+      return candidates
 
     def _read_vault_token() -> str:
       try:
@@ -289,6 +320,7 @@ data:
       site_key: Optional[str] = None
       release_channel: Optional[str] = None
       page_slug: Optional[str] = None
+      model: Optional[str] = None
       content_items: List[ContentItem]
       content_refs: List[ContentRef] = Field(default_factory=list)
 
@@ -298,6 +330,16 @@ data:
         normalized = normalize_language(value)
         if not normalized:
           raise ValueError("language is required")
+        return normalized
+
+      @field_validator("model")
+      @classmethod
+      def normalize_requested_model(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or str(value).strip() == "":
+          return None
+        normalized = normalize_model(value)
+        if not normalized:
+          raise ValueError("model must be a valid Ollama/OpenWebUI model id")
         return normalized
 
     class UpsertTranslationRequest(BaseModel):
@@ -496,6 +538,67 @@ data:
         headers["Authorization"] = f"Bearer {token}"
       return headers
 
+    async def fetch_configured_translation_model(language: str) -> Optional[str]:
+      candidates = language_model_candidates(language)
+      cache_key = "|".join(candidates)
+      now = time.time()
+      if TRANSLATION_MODEL_CACHE_SECONDS > 0:
+        with _translation_model_lock:
+          cached = _translation_model_cache.get(cache_key)
+          if cached and cached[0] > now:
+            return cached[1]
+
+      selected_model: Optional[str] = None
+      cacheable = True
+      headers = await directus_headers()
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        for candidate in candidates:
+          params = {
+            "filter[language_code][_eq]": candidate,
+            "filter[status][_eq]": "published",
+            "fields": "language_code,model",
+            "limit": "1",
+          }
+          response = await client.get(
+            f"{DIRECTUS_BASE_URL}/items/cms_translation_languages",
+            headers=headers,
+            params=params,
+          )
+          if response.status_code == 403 or response.status_code == 404:
+            cacheable = False
+            break
+          response.raise_for_status()
+          rows = response.json().get("data", [])
+          if not isinstance(rows, list) or not rows:
+            continue
+          raw_model = rows[0].get("model")
+          selected_model = normalize_model(raw_model)
+          if raw_model and not selected_model:
+            print(json.dumps({
+              "event": "translation_language_model_invalid",
+              "language_code": candidate,
+              "model": str(raw_model)[:128],
+            }), flush=True)
+          break
+
+      if cacheable and TRANSLATION_MODEL_CACHE_SECONDS > 0:
+        with _translation_model_lock:
+          _translation_model_cache[cache_key] = (now + TRANSLATION_MODEL_CACHE_SECONDS, selected_model)
+      return selected_model
+
+    async def resolve_translation_model(payload: ResolveContentRequest) -> Optional[str]:
+      if payload.model:
+        return payload.model
+      try:
+        return await fetch_configured_translation_model(payload.language)
+      except Exception as exc:
+        print(json.dumps({
+          "event": "translation_language_model_lookup_failed",
+          "language_code": payload.language,
+          "error": str(exc),
+        }), flush=True)
+        return None
+
     def source_version_for_job(item: ContentItem) -> int:
       return int(item.content_version or 0)
 
@@ -567,7 +670,7 @@ data:
         await asyncio.sleep(0.25 * (attempt + 1))
       return []
 
-    async def create_translation_job(payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str) -> tuple[bool, Optional[str]]:
+    async def create_translation_job(payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str, model: Optional[str]) -> tuple[bool, Optional[str]]:
       source_content_version = source_version_for_job(item)
       existing_jobs = await find_translation_jobs(item.id, payload.language, source_content_version)
       active_jobs = active_translation_jobs(existing_jobs)
@@ -580,7 +683,7 @@ data:
       reusable_jobs = [job for job in existing_jobs if str(job.get("id") or "").strip()]
       if reusable_jobs:
         job_id = str(reusable_jobs[0].get("id") or "").strip()
-        await requeue_translation_job(job_id, payload, item, reason, kafka_key)
+        await requeue_translation_job(job_id, payload, item, reason, kafka_key, model)
         return True, job_id
       headers = await directus_headers()
       body = {
@@ -595,6 +698,7 @@ data:
         "page_slug": payload.page_slug,
         "kafka_topic": KAFKA_TRANSLATION_TOPIC,
         "kafka_key": kafka_key,
+        "model": model,
         "attempt_count": 0,
       }
       body = {key: value for key, value in body.items() if value is not None}
@@ -616,7 +720,7 @@ data:
         reusable_jobs = [job for job in existing_jobs if str(job.get("id") or "").strip()]
         if reusable_jobs:
           job_id = str(reusable_jobs[0].get("id") or "").strip()
-          await requeue_translation_job(job_id, payload, item, reason, kafka_key)
+          await requeue_translation_job(job_id, payload, item, reason, kafka_key, model)
           return True, job_id
         print(json.dumps({
           "event": "translation_job_claim_failed_no_existing_job",
@@ -630,7 +734,7 @@ data:
       data = response.json().get("data", {})
       return True, str(data.get("id") or "").strip() or None
 
-    async def requeue_translation_job(job_id: str, payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str) -> None:
+    async def requeue_translation_job(job_id: str, payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str, model: Optional[str]) -> None:
       if not job_id:
         return
       headers = await directus_headers()
@@ -643,6 +747,7 @@ data:
         "page_slug": payload.page_slug,
         "kafka_topic": KAFKA_TRANSLATION_TOPIC,
         "kafka_key": kafka_key,
+        "model": model,
         "date_updated": now,
         "date_completed": None,
         "last_error": None,
@@ -905,10 +1010,10 @@ data:
         "source_content_version": payload.source_content_version,
       }
 
-    async def enqueue_translation_request(payload: ResolveContentRequest, item: ContentItem, reason: str) -> bool:
+    async def enqueue_translation_request(payload: ResolveContentRequest, item: ContentItem, reason: str, model: Optional[str]) -> bool:
       key = translation_job_key(item, payload.language)
       try:
-        job_created, job_id = await create_translation_job(payload, item, reason, key)
+        job_created, job_id = await create_translation_job(payload, item, reason, key, model)
       except Exception as exc:
         print(json.dumps({
           "event": "translation_job_claim_failed",
@@ -951,6 +1056,9 @@ data:
         },
         "content_refs": refs,
       }
+      if model:
+        message["model"] = model
+        message["translation_model"] = model
       try:
         producer.produce(
           KAFKA_TRANSLATION_TOPIC,
@@ -994,6 +1102,8 @@ data:
 
     async def resolve_content_payload(payload: ResolveContentRequest) -> Dict[str, Any]:
       items: List[Dict[str, Any]] = []
+      translation_model_resolved = False
+      translation_model: Optional[str] = None
       for item in payload.content_items:
         if payload.language.lower() == (item.default_language_code or DEFAULT_LANGUAGE).lower():
           items.append(fallback_item(item, payload.language, stale=False))
@@ -1015,7 +1125,10 @@ data:
           await ensure_synthetic_content_item(payload, item)
         except Exception:
           reason = f"{reason}_source_sync_failed"
-        await enqueue_translation_request(payload, item, reason)
+        if not translation_model_resolved:
+          translation_model = await resolve_translation_model(payload)
+          translation_model_resolved = True
+        await enqueue_translation_request(payload, item, reason, translation_model)
         items.append(fallback_item(item, payload.language, stale=True))
       return {"ok": True, "language": payload.language, "items": items}
 
@@ -1123,6 +1236,8 @@ spec:
               value: "8"
             - name: TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS
               value: "3600"
+            - name: TRANSLATION_MODEL_CACHE_SECONDS
+              value: "0"
             - name: VAULT_ADDR
               value: "http://vault.vault.svc.cluster.local:8200"
             - name: VAULT_TOKEN_FILE

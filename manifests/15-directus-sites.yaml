@@ -186,6 +186,13 @@ data:
               _and:
                 - status:
                     _eq: published
+          - collection: cms_translation_languages
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
           - collection: cms_modules
             fields:
               - "*"
@@ -378,6 +385,13 @@ data:
                     - site_key:
                         _eq: external
           - collection: cms_content_item_translations
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+          - collection: cms_translation_languages
             fields:
               - "*"
             permissions:

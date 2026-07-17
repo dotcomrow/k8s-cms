@@ -477,6 +477,7 @@ data:
            ('cms_content_items'), \
            ('cms_content_item_translations'), \
            ('cms_content_translation_jobs'), \
+           ('cms_translation_languages'), \
            ('cms_template_functions'), \
            ('cms_block_content_ref'), \
            ('cms_layout_templates'), \
@@ -532,7 +533,11 @@ data:
              ('cms_content_translation_jobs','content_item_id'), \
              ('cms_content_translation_jobs','language_code'), \
              ('cms_content_translation_jobs','source_content_version'), \
+             ('cms_content_translation_jobs','model'), \
              ('cms_content_translation_jobs','status'), \
+             ('cms_translation_languages','language_code'), \
+             ('cms_translation_languages','model'), \
+             ('cms_translation_languages','status'), \
              ('cms_template_functions','token_key'), \
              ('cms_template_functions','handler_key'), \
              ('cms_template_functions','function_kind'), \
@@ -1515,6 +1520,9 @@ data:
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "model" 105
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "prompt_version" 106
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "translated_by" 107
+      _upsert_hidden_internal_field_meta "cms_translation_languages" "id" 108
+      _upsert_hidden_internal_field_meta "cms_translation_languages" "date_created" 109
+      _upsert_hidden_internal_field_meta "cms_translation_languages" "date_updated" 110
       _upsert_hidden_internal_field_meta "cms_template_functions" "id" 108
       _upsert_hidden_internal_field_meta "cms_template_functions" "site_key" 109
       _upsert_hidden_internal_field_meta "cms_template_functions" "release_channel" 110
@@ -1685,6 +1693,14 @@ data:
         if [ "${cache_targets_exists}" = "1" ]; then
           cache_targets_tabular_fields_json='["site_key","target_key","enabled","endpoint","date_updated"]'
           _upsert_global_list_preset "cms_cache_refresh_targets" "link" "${cache_targets_tabular_fields_json}" '["site_key","target_key"]'
+        fi
+
+        translation_languages_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='cms_translation_languages' LIMIT 1;" || true)"
+        translation_languages_exists="$(printf '%s' "${translation_languages_exists}" | tr -d '\r')"
+        if [ "${translation_languages_exists}" = "1" ]; then
+          translation_languages_tabular_fields_json='["language_code","name","model","status","date_updated"]'
+          _upsert_global_list_preset "cms_translation_languages" "translate" "${translation_languages_tabular_fields_json}" '["language_code"]'
         fi
 
         cms_page_blocks_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -2573,6 +2589,30 @@ data:
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN content_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN date_created SET DEFAULT now(); \
+       CREATE TABLE IF NOT EXISTS cms_translation_languages ( \
+         id UUID PRIMARY KEY, \
+         language_code TEXT NOT NULL, \
+         name TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'published', \
+         model TEXT NULL, \
+         description TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_translation_languages ADD COLUMN IF NOT EXISTS language_code TEXT; \
+       ALTER TABLE IF EXISTS cms_translation_languages ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS cms_translation_languages ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_translation_languages ADD COLUMN IF NOT EXISTS model TEXT; \
+       ALTER TABLE IF EXISTS cms_translation_languages ADD COLUMN IF NOT EXISTS description TEXT; \
+       ALTER TABLE IF EXISTS cms_translation_languages ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_translation_languages ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_translation_languages ALTER COLUMN status SET DEFAULT 'published'; \
+       ALTER TABLE IF EXISTS cms_translation_languages ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_translation_languages SET status = 'published' WHERE status IS NULL; \
+       UPDATE cms_translation_languages SET date_created = now() WHERE date_created IS NULL; \
+       ALTER TABLE IF EXISTS cms_translation_languages ALTER COLUMN language_code SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_translation_languages ALTER COLUMN status SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_translation_languages ALTER COLUMN date_created SET NOT NULL; \
        CREATE TABLE IF NOT EXISTS cms_content_translation_jobs ( \
          id UUID PRIMARY KEY, \
          content_item_id UUID NOT NULL, \
@@ -2586,6 +2626,7 @@ data:
          page_slug TEXT NULL, \
          kafka_topic TEXT NULL, \
          kafka_key TEXT NULL, \
+         model TEXT NULL, \
          attempt_count INTEGER NOT NULL DEFAULT 0, \
          last_error TEXT NULL, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
@@ -2603,6 +2644,7 @@ data:
        ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS page_slug TEXT; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS kafka_topic TEXT; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS kafka_key TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS model TEXT; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS last_error TEXT; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
@@ -2707,6 +2749,8 @@ data:
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_translation_jobs_active_unique ON cms_content_translation_jobs (content_item_id, language_code, source_content_version) WHERE status IN ('queued', 'processing'); \
        CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_lookup_idx ON cms_content_translation_jobs (content_item_id, language_code, source_content_version, status); \
        CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_status_idx ON cms_content_translation_jobs (status, date_created); \
+       CREATE UNIQUE INDEX IF NOT EXISTS cms_translation_languages_language_code_unique ON cms_translation_languages (lower(language_code)); \
+       CREATE INDEX IF NOT EXISTS cms_translation_languages_status_language_idx ON cms_translation_languages (status, lower(language_code)); \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_global_key_unique ON cms_template_functions (release_channel, token_key) WHERE site_key IS NULL OR BTRIM(site_key) = ''; \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_site_key_unique ON cms_template_functions (site_key, release_channel, token_key) WHERE site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE INDEX IF NOT EXISTS cms_block_content_ref_content_item_idx ON cms_block_content_ref (content_item_id); \
@@ -2902,6 +2946,9 @@ data:
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_content_translation_jobs' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_content_translation_jobs ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_translation_languages' AND column_name='id' AND udt_name='uuid') THEN
+          ALTER TABLE cms_translation_languages ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_template_functions' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_template_functions ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
@@ -6238,6 +6285,7 @@ data:
       _upsert_status_dropdown_field_meta "cms_content_items" 1
       _upsert_status_dropdown_field_meta "cms_content_item_translations" 1
       _upsert_status_dropdown_field_meta "cms_content_translation_jobs" 1
+      _upsert_status_dropdown_field_meta "cms_translation_languages" 1
       _upsert_status_dropdown_field_meta "cms_template_functions" 1
       _upsert_template_function_input_field_meta "token_key" 2 "half" false "${template_function_token_key_note_sql}" "${template_function_token_key_options_json}" "input" true
       _upsert_template_function_select_field_meta "handler_key" 3 "half" true "${template_function_handler_key_note_sql}" "${template_function_handler_key_options_json}" "${template_function_handler_key_display_options_json}"
@@ -6393,6 +6441,9 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_created" 133
       _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_updated" 134
       _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_completed" 135
+      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "id" 136
+      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "date_created" 137
+      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "date_updated" 138
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "id" 126
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "site_key" 127
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "release_channel" 128
