@@ -476,6 +476,7 @@ data:
            ('cms_content_templates'), \
            ('cms_content_items'), \
            ('cms_content_item_translations'), \
+           ('cms_content_translation_jobs'), \
            ('cms_template_functions'), \
            ('cms_block_content_ref'), \
            ('cms_layout_templates'), \
@@ -528,6 +529,10 @@ data:
              ('cms_content_item_translations','content_item_id'), \
              ('cms_content_item_translations','language_code'), \
              ('cms_content_item_translations','content_json'), \
+             ('cms_content_translation_jobs','content_item_id'), \
+             ('cms_content_translation_jobs','language_code'), \
+             ('cms_content_translation_jobs','source_content_version'), \
+             ('cms_content_translation_jobs','status'), \
              ('cms_template_functions','token_key'), \
              ('cms_template_functions','handler_key'), \
              ('cms_template_functions','function_kind'), \
@@ -2568,6 +2573,53 @@ data:
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN content_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN date_created SET DEFAULT now(); \
+       CREATE TABLE IF NOT EXISTS cms_content_translation_jobs ( \
+         id UUID PRIMARY KEY, \
+         content_item_id UUID NOT NULL, \
+         language_code TEXT NOT NULL, \
+         source_content_version INTEGER NOT NULL, \
+         source_hash TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'queued', \
+         reason TEXT NULL, \
+         site_key TEXT NULL, \
+         release_channel TEXT NULL, \
+         page_slug TEXT NULL, \
+         kafka_topic TEXT NULL, \
+         kafka_key TEXT NULL, \
+         attempt_count INTEGER NOT NULL DEFAULT 0, \
+         last_error TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL, \
+         date_completed TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS content_item_id UUID; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS language_code TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS source_content_version INTEGER; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS source_hash TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS reason TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS release_channel TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS kafka_topic TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS kafka_key TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS attempt_count INTEGER; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS last_error TEXT; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ADD COLUMN IF NOT EXISTS date_completed TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN status SET DEFAULT 'queued'; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN attempt_count SET DEFAULT 0; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_content_translation_jobs SET status = 'queued' WHERE status IS NULL; \
+       UPDATE cms_content_translation_jobs SET attempt_count = 0 WHERE attempt_count IS NULL; \
+       UPDATE cms_content_translation_jobs SET date_created = now() WHERE date_created IS NULL; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN content_item_id SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN language_code SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN source_content_version SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN status SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN attempt_count SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN date_created SET NOT NULL; \
        CREATE TABLE IF NOT EXISTS cms_template_functions ( \
          id UUID PRIMARY KEY, \
          token_key TEXT NOT NULL, \
@@ -2652,6 +2704,9 @@ data:
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_items_site_key_unique ON cms_content_items (site_key, release_channel, content_key) WHERE content_key IS NOT NULL AND BTRIM(content_key) <> '' AND site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_content_item_translations_item_language_unique ON cms_content_item_translations (content_item_id, language_code); \
        CREATE INDEX IF NOT EXISTS cms_content_item_translations_source_version_idx ON cms_content_item_translations (content_item_id, language_code, source_content_version); \
+       CREATE UNIQUE INDEX IF NOT EXISTS cms_content_translation_jobs_active_unique ON cms_content_translation_jobs (content_item_id, language_code, source_content_version) WHERE status IN ('queued', 'processing'); \
+       CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_lookup_idx ON cms_content_translation_jobs (content_item_id, language_code, source_content_version, status); \
+       CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_status_idx ON cms_content_translation_jobs (status, date_created); \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_global_key_unique ON cms_template_functions (release_channel, token_key) WHERE site_key IS NULL OR BTRIM(site_key) = ''; \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_site_key_unique ON cms_template_functions (site_key, release_channel, token_key) WHERE site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE INDEX IF NOT EXISTS cms_block_content_ref_content_item_idx ON cms_block_content_ref (content_item_id); \
@@ -2671,6 +2726,23 @@ data:
            ) THEN \
            BEGIN \
              ALTER TABLE cms_content_item_translations ADD CONSTRAINT cms_content_item_translations_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES cms_content_items(id) ON DELETE CASCADE; \
+           EXCEPTION WHEN duplicate_object THEN \
+             NULL; \
+           END; \
+         END IF; \
+         IF to_regclass('directus.cms_content_translation_jobs') IS NOT NULL \
+           AND to_regclass('directus.cms_content_items') IS NOT NULL \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM pg_constraint c \
+             JOIN pg_class t ON t.oid = c.conrelid \
+             JOIN pg_namespace tn ON tn.oid = t.relnamespace \
+             WHERE c.contype='f' \
+               AND tn.nspname='directus' \
+               AND t.relname='cms_content_translation_jobs' \
+               AND pg_get_constraintdef(c.oid) LIKE '%(content_item_id)%REFERENCES directus.cms_content_items(id)%' \
+           ) THEN \
+           BEGIN \
+             ALTER TABLE cms_content_translation_jobs ADD CONSTRAINT cms_content_translation_jobs_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES cms_content_items(id) ON DELETE CASCADE; \
            EXCEPTION WHEN duplicate_object THEN \
              NULL; \
            END; \
@@ -2827,6 +2899,9 @@ data:
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_content_item_translations' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_content_item_translations ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_content_translation_jobs' AND column_name='id' AND udt_name='uuid') THEN
+          ALTER TABLE cms_content_translation_jobs ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_template_functions' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_template_functions ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
@@ -6162,6 +6237,7 @@ data:
       _upsert_status_dropdown_field_meta "cms_content_templates" 1
       _upsert_status_dropdown_field_meta "cms_content_items" 1
       _upsert_status_dropdown_field_meta "cms_content_item_translations" 1
+      _upsert_status_dropdown_field_meta "cms_content_translation_jobs" 1
       _upsert_status_dropdown_field_meta "cms_template_functions" 1
       _upsert_template_function_input_field_meta "token_key" 2 "half" false "${template_function_token_key_note_sql}" "${template_function_token_key_options_json}" "input" true
       _upsert_template_function_select_field_meta "handler_key" 3 "half" true "${template_function_handler_key_note_sql}" "${template_function_handler_key_options_json}" "${template_function_handler_key_display_options_json}"
@@ -6307,6 +6383,16 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "translated_by" 123
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_created" 124
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_updated" 125
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "id" 126
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "content_item_id" 127
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "source_content_version" 128
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "source_hash" 129
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "kafka_topic" 130
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "kafka_key" 131
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "last_error" 132
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_created" 133
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_updated" 134
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_completed" 135
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "id" 126
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "site_key" 127
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "release_channel" 128
@@ -7458,6 +7544,9 @@ data:
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_items" "create" "${PROMOTE_PERMISSIONS_JSON}"
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_items" "update" "${PROMOTE_PERMISSIONS_JSON}"
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_item_translations" "create" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "read" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "create" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+              _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "update" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
 
               FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_key}/prod) - Manual"
               FLOW_TRIGGER_NAME_SITE="CMS Cache Refresh (${site_key}) - Manual"

@@ -149,6 +149,7 @@ data:
     import re
     import threading
     import time
+    from datetime import datetime, timezone
     from typing import Any, Dict, List, Optional
 
     import httpx
@@ -156,7 +157,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request
     from pydantic import BaseModel, Field, field_validator
 
-    APP_VERSION = "1.1.0"
+    APP_VERSION = "1.2.0"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     SYNTHETIC_BLOCK_CONTENT_KEY_PREFIX = "cms_block_"
@@ -185,6 +186,8 @@ data:
 
     REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "8"))
     TRANSLATION_VALIDATION_MAX_ERRORS = int(os.environ.get("TRANSLATION_VALIDATION_MAX_ERRORS", "25"))
+    TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS = int(os.environ.get("TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS", "3600"))
+    ACTIVE_TRANSLATION_JOB_STATUSES = {"queued", "processing"}
     CONTENT_RESOLVER_BEARER_TOKEN = os.environ.get("CONTENT_RESOLVER_BEARER_TOKEN", "").strip()
     CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH = os.environ.get(
       "CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH",
@@ -490,6 +493,160 @@ data:
         headers["Authorization"] = f"Bearer {token}"
       return headers
 
+    def source_version_for_job(item: ContentItem) -> int:
+      return int(item.content_version or 0)
+
+    def translation_job_key(item: ContentItem, language: str) -> str:
+      return f"{item.id}:{language}:{source_version_for_job(item)}"
+
+    def parse_directus_datetime(value: Any) -> Optional[datetime]:
+      if not value:
+        return None
+      candidate = str(value).strip()
+      if not candidate:
+        return None
+      if candidate.endswith("Z"):
+        candidate = f"{candidate[:-1]}+00:00"
+      try:
+        parsed = datetime.fromisoformat(candidate)
+      except ValueError:
+        return None
+      if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+      return parsed
+
+    def translation_job_is_expired(job: Dict[str, Any]) -> bool:
+      if TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS <= 0:
+        return False
+      timestamp = parse_directus_datetime(job.get("date_updated") or job.get("date_created"))
+      if timestamp is None:
+        return False
+      age_seconds = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
+      return age_seconds > TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS
+
+    async def find_active_translation_jobs(content_item_id: str, language_code: str, source_content_version: int) -> List[Dict[str, Any]]:
+      headers = await directus_headers()
+      params = {
+        "filter[content_item_id][_eq]": content_item_id,
+        "filter[language_code][_eq]": language_code,
+        "filter[source_content_version][_eq]": str(source_content_version),
+        "fields": "id,status,attempt_count,date_created,date_updated,date_completed",
+        "sort": "-date_created",
+        "limit": "10",
+      }
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.get(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_translation_jobs",
+          headers=headers,
+          params=params,
+        )
+        response.raise_for_status()
+      rows = response.json().get("data", [])
+      if not isinstance(rows, list):
+        return []
+      return [
+        row for row in rows
+        if str(row.get("status") or "").strip().lower() in ACTIVE_TRANSLATION_JOB_STATUSES
+      ]
+
+    async def create_translation_job(payload: ResolveContentRequest, item: ContentItem, reason: str, kafka_key: str) -> tuple[bool, Optional[str]]:
+      source_content_version = source_version_for_job(item)
+      existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
+      if existing_jobs:
+        await expire_stale_translation_jobs_safely(existing_jobs)
+        existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
+      if existing_jobs:
+        return False, str(existing_jobs[0].get("id") or "").strip() or None
+      headers = await directus_headers()
+      body = {
+        "content_item_id": item.id,
+        "language_code": payload.language,
+        "source_content_version": source_content_version,
+        "source_hash": item.source_hash,
+        "status": "queued",
+        "reason": reason,
+        "site_key": payload.site_key,
+        "release_channel": payload.release_channel,
+        "page_slug": payload.page_slug,
+        "kafka_topic": KAFKA_TRANSLATION_TOPIC,
+        "kafka_key": kafka_key,
+        "attempt_count": 0,
+      }
+      body = {key: value for key, value in body.items() if value is not None}
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.post(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_translation_jobs",
+          headers=headers,
+          json=body,
+        )
+      if response.status_code >= 400:
+        existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
+        if existing_jobs:
+          await expire_stale_translation_jobs_safely(existing_jobs)
+          existing_jobs = await find_active_translation_jobs(item.id, payload.language, source_content_version)
+        if existing_jobs:
+          return False, str(existing_jobs[0].get("id") or "").strip() or None
+        response.raise_for_status()
+      data = response.json().get("data", {})
+      return True, str(data.get("id") or "").strip() or None
+
+    async def patch_translation_job(job_id: str, status: str, last_error: Optional[str] = None) -> None:
+      if not job_id:
+        return
+      headers = await directus_headers()
+      now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+      body: Dict[str, Any] = {
+        "status": status,
+        "date_updated": now,
+      }
+      if status not in ACTIVE_TRANSLATION_JOB_STATUSES:
+        body["date_completed"] = now
+      if last_error:
+        body["last_error"] = last_error[:2000]
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.patch(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_translation_jobs/{job_id}",
+          headers=headers,
+          json=body,
+        )
+        response.raise_for_status()
+
+    async def patch_translation_job_safely(job_id: Optional[str], status: str, last_error: Optional[str] = None) -> None:
+      try:
+        await patch_translation_job(job_id or "", status, last_error)
+      except Exception as exc:
+        print(json.dumps({
+          "event": "translation_job_status_update_failed",
+          "translation_job_id": job_id,
+          "status": status,
+          "error": str(exc),
+        }), flush=True)
+
+    async def expire_stale_translation_jobs_safely(jobs: List[Dict[str, Any]]) -> None:
+      for job in jobs:
+        if not translation_job_is_expired(job):
+          continue
+        job_id = str(job.get("id") or "").strip()
+        await patch_translation_job_safely(job_id, "failed", "translation_job_active_timeout")
+
+    async def mark_active_translation_jobs(content_item_id: str, language_code: str, source_content_version: int, status: str, last_error: Optional[str] = None) -> None:
+      jobs = await find_active_translation_jobs(content_item_id, language_code, source_content_version)
+      for job in jobs:
+        await patch_translation_job(str(job.get("id") or "").strip(), status, last_error)
+
+    async def mark_translation_jobs_safely(content_item_id: str, language_code: str, source_content_version: int, status: str, last_error: Optional[str] = None) -> None:
+      try:
+        await mark_active_translation_jobs(content_item_id, language_code, source_content_version, status, last_error)
+      except Exception as exc:
+        print(json.dumps({
+          "event": "translation_job_status_update_failed",
+          "content_item_id": content_item_id,
+          "language_code": language_code,
+          "source_content_version": source_content_version,
+          "status": status,
+          "error": str(exc),
+        }), flush=True)
+
     def is_synthetic_block_content_item(item: ContentItem) -> bool:
       return item.source_kind == "cms_block" and bool((item.content_key or "").startswith(SYNTHETIC_BLOCK_CONTENT_KEY_PREFIX))
 
@@ -560,6 +717,13 @@ data:
       headers = await directus_headers()
       source_item = await fetch_source_content_item(payload.content_item_id)
       if source_item is None:
+        await mark_translation_jobs_safely(
+          payload.content_item_id,
+          payload.language_code,
+          payload.source_content_version,
+          "failed",
+          "source_content_item_not_found",
+        )
         raise HTTPException(status_code=422, detail={
           "error": "source_content_item_not_found",
           "content_item_id": payload.content_item_id,
@@ -567,6 +731,13 @@ data:
       source_content_json = source_item.get("content_json")
       validation_errors = validate_translation_content_json(source_content_json, payload.content_json)
       if validation_errors:
+        await mark_translation_jobs_safely(
+          payload.content_item_id,
+          payload.language_code,
+          payload.source_content_version,
+          "failed",
+          "translation_content_json_shape_mismatch",
+        )
         raise HTTPException(status_code=422, detail={
           "error": "translation_content_json_shape_mismatch",
           "content_item_id": payload.content_item_id,
@@ -575,6 +746,13 @@ data:
         })
       source_content_version = source_item.get("content_version")
       if source_content_version is not None and payload.source_content_version != source_content_version:
+        await mark_translation_jobs_safely(
+          payload.content_item_id,
+          payload.language_code,
+          payload.source_content_version,
+          "failed",
+          "translation_source_version_stale",
+        )
         raise HTTPException(status_code=409, detail={
           "error": "translation_source_version_stale",
           "content_item_id": payload.content_item_id,
@@ -585,6 +763,13 @@ data:
       source_hash = str(source_item.get("source_hash") or "").strip()
       payload_hash = str(payload.source_hash or "").strip()
       if source_hash and payload_hash and payload_hash != source_hash:
+        await mark_translation_jobs_safely(
+          payload.content_item_id,
+          payload.language_code,
+          payload.source_content_version,
+          "failed",
+          "translation_source_hash_stale",
+        )
         raise HTTPException(status_code=409, detail={
           "error": "translation_source_hash_stale",
           "content_item_id": payload.content_item_id,
@@ -615,8 +800,23 @@ data:
             headers=headers,
             json=body,
           )
+          if response.status_code >= 400:
+            duplicate_id = await find_translation_id(payload.content_item_id, payload.language_code)
+            if duplicate_id:
+              existing_id = duplicate_id
+              response = await client.patch(
+                f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations/{duplicate_id}",
+                headers=headers,
+                json=body,
+              )
         response.raise_for_status()
       data = response.json().get("data", {})
+      await mark_translation_jobs_safely(
+        payload.content_item_id,
+        payload.language_code,
+        payload.source_content_version,
+        "succeeded",
+      )
       return {
         "ok": True,
         "mode": "update" if existing_id else "create",
@@ -627,13 +827,36 @@ data:
       }
 
     async def enqueue_translation_request(payload: ResolveContentRequest, item: ContentItem, reason: str) -> bool:
+      key = translation_job_key(item, payload.language)
+      try:
+        job_created, job_id = await create_translation_job(payload, item, reason, key)
+      except Exception as exc:
+        print(json.dumps({
+          "event": "translation_job_claim_failed",
+          "content_item_id": item.id,
+          "language_code": payload.language,
+          "source_content_version": source_version_for_job(item),
+          "error": str(exc),
+        }), flush=True)
+        return False
+      if not job_created:
+        print(json.dumps({
+          "event": "translation_request_already_in_progress",
+          "content_item_id": item.id,
+          "language_code": payload.language,
+          "source_content_version": source_version_for_job(item),
+          "translation_job_id": job_id,
+        }), flush=True)
+        return False
       producer = await kafka_producer()
       if producer is None:
+        await patch_translation_job_safely(job_id, "failed", "kafka_producer_unavailable")
         return False
       refs = [ref.model_dump() for ref in payload.content_refs if ref.content_item_id == item.id]
       message = {
         "schema_version": "cms-content-translation-request.v1",
         "reason": reason,
+        "translation_job_id": job_id,
         "requested_language_code": payload.language,
         "source_language_code": item.default_language_code or DEFAULT_LANGUAGE,
         "site_key": payload.site_key,
@@ -649,14 +872,17 @@ data:
         },
         "content_refs": refs,
       }
-      key = f"{item.id}:{payload.language}:{item.content_version or 0}"
-      producer.produce(
-        KAFKA_TRANSLATION_TOPIC,
-        key=key.encode("utf-8"),
-        value=json.dumps(message, separators=(",", ":")).encode("utf-8"),
-      )
-      producer.poll(0)
-      producer.flush(5)
+      try:
+        producer.produce(
+          KAFKA_TRANSLATION_TOPIC,
+          key=key.encode("utf-8"),
+          value=json.dumps(message, separators=(",", ":")).encode("utf-8"),
+        )
+        producer.poll(0)
+        producer.flush(5)
+      except Exception as exc:
+        await patch_translation_job_safely(job_id, "failed", f"kafka_publish_failed: {exc}")
+        return False
       return True
 
     async def resolver_bearer_token() -> str:
@@ -820,6 +1046,8 @@ spec:
               value: "token"
             - name: REQUEST_TIMEOUT_SECONDS
               value: "8"
+            - name: TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS
+              value: "3600"
             - name: VAULT_ADDR
               value: "http://vault.vault.svc.cluster.local:8200"
             - name: VAULT_TOKEN_FILE
