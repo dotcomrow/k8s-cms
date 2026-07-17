@@ -3091,18 +3091,23 @@ data:
       exit 1
     fi
 
-    echo "🧱 Ensuring cms_content_items.content_version increments when source JSON changes..."
+    echo "🧱 Ensuring cms_content_items.content_version is DB-managed from source JSON changes..."
     if ! _psql_yb_retry "CREATE OR REPLACE FUNCTION directus.bump_cms_content_item_version()
       RETURNS trigger
       LANGUAGE plpgsql
       AS \$\$
       BEGIN
-        IF NEW.content_version IS NULL THEN
+        IF TG_OP = 'INSERT' THEN
           NEW.content_version := 1;
+          RETURN NEW;
         END IF;
+
         IF TG_OP = 'UPDATE' AND OLD.content_json IS DISTINCT FROM NEW.content_json THEN
-          NEW.content_version := GREATEST(COALESCE(NEW.content_version, 1), COALESCE(OLD.content_version, 1) + 1);
+          NEW.content_version := COALESCE(OLD.content_version, 1) + 1;
+        ELSE
+          NEW.content_version := COALESCE(OLD.content_version, 1);
         END IF;
+
         RETURN NEW;
       END;
       \$\$;
