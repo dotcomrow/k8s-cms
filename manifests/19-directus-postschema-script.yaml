@@ -2973,6 +2973,78 @@ data:
       echo "⚠️ Could not ensure UUID defaults for CMS collection IDs after retries; continuing startup and retrying on next reconcile."
     fi
 
+    echo "🌐 Seeding CMS translation language model defaults..."
+    if ! _psql_yb_retry "WITH seed(language_code, name, model, description) AS (
+        VALUES
+          ('es','Spanish','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('de','German','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ja','Japanese','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('fr','French','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('pt','Portuguese','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ru','Russian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('it','Italian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('nl','Dutch','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('pl','Polish','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('tr','Turkish','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('zh','Chinese','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('id','Indonesian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('cs','Czech','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('vi','Vietnamese','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ko','Korean','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('fa','Persian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('uk','Ukrainian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('hu','Hungarian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ar','Arabic','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('sv','Swedish','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ro','Romanian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('el','Greek','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('da','Danish','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('fi','Finnish','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('he','Hebrew','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('sk','Slovak','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('th','Thai','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('bg','Bulgarian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('hr','Croatian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('nb','Norwegian Bokmal','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('no','Norwegian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('sr','Serbian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('lt','Lithuanian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('sl','Slovenian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ca','Catalan','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('et','Estonian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('lv','Latvian','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('bn','Bengali','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('hi','Hindi','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ur','Urdu','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ta','Tamil','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('te','Telugu','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('ms','Malay','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.'),
+          ('fil','Filipino','qwen3:14b','Manifest-seeded popular online language model for JSON-preserving CMS translation.')
+      ),
+      updated AS (
+        UPDATE cms_translation_languages target
+           SET name = seed.name,
+               status = 'published',
+               model = seed.model,
+               description = seed.description,
+               date_updated = now()
+          FROM seed
+         WHERE lower(target.language_code) = lower(seed.language_code)
+         RETURNING lower(target.language_code) AS language_code
+      )
+      INSERT INTO cms_translation_languages (language_code, name, status, model, description, date_created, date_updated)
+      SELECT seed.language_code, seed.name, 'published', seed.model, seed.description, now(), now()
+        FROM seed
+       WHERE NOT EXISTS (
+               SELECT 1 FROM updated WHERE updated.language_code = lower(seed.language_code)
+             )
+         AND NOT EXISTS (
+               SELECT 1 FROM cms_translation_languages existing WHERE lower(existing.language_code) = lower(seed.language_code)
+             );" "seed cms_translation_languages popular-language model defaults" 24; then
+      echo "❌ Could not seed cms_translation_languages after retries."
+      exit 1
+    fi
+
     echo "🧱 Ensuring cms_content_items.content_key is generated when blank..."
     if ! _psql_yb_retry "CREATE OR REPLACE FUNCTION directus.generate_cms_content_key(_name TEXT, _id UUID)
       RETURNS TEXT
