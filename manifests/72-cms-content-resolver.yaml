@@ -384,7 +384,7 @@ data:
         return None
       return candidate
 
-    def language_model_candidates(language: str) -> List[str]:
+    def language_lookup_candidates(language: str) -> List[str]:
       normalized = normalize_language(language)
       candidates: List[str] = []
 
@@ -399,6 +399,9 @@ data:
         add(base_language)
         add(base_language.lower())
       return candidates
+
+    def language_model_candidates(language: str) -> List[str]:
+      return language_lookup_candidates(language)
 
     def _read_vault_token() -> str:
       try:
@@ -738,55 +741,63 @@ data:
     async def fetch_translation(item: ContentItem, language: str) -> Optional[Dict[str, Any]]:
       token = await directus_token()
       headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"} if token else {"Accept": "application/json"}
-      params = {
-        "filter[content_item_id][_eq]": item.id,
-        "filter[language_code][_eq]": language,
-        "filter[status][_eq]": "published",
-        "fields": "id,content_item_id,language_code,status,content_json,source_content_version,source_hash,model,prompt_version,translated_by",
-        "limit": "1",
-      }
+      invalid_translation_found = False
       async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-        response = await client.get(
-          f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations",
-          headers=headers,
-          params=params,
-        )
-        response.raise_for_status()
-      data = response.json().get("data", [])
-      if not data:
-        return None
-      translation = data[0]
-      if translation.get("source_content_version") != item.content_version:
-        return None
-      item_source_hash = str(item.source_hash or "").strip()
-      translation_source_hash = str(translation.get("source_hash") or "").strip()
-      if item_source_hash and translation_source_hash and translation_source_hash != item_source_hash:
-        return None
-      content_json = translation.get("content_json")
-      if not isinstance(content_json, dict):
-        return None
-      validation_errors = validate_translation_content_json(item.content_json, content_json, item.translation_rules, language)
-      if validation_errors:
-        print(json.dumps({
-          "event": "translation_content_json_invalid",
-          "content_item_id": item.id,
-          "language_code": language,
-          "errors": validation_errors,
-        }), flush=True)
+        for candidate in language_lookup_candidates(language):
+          params = {
+            "filter[content_item_id][_eq]": item.id,
+            "filter[language_code][_eq]": candidate,
+            "filter[status][_eq]": "published",
+            "fields": "id,content_item_id,language_code,status,content_json,source_content_version,source_hash,model,prompt_version,translated_by",
+            "limit": "1",
+          }
+          response = await client.get(
+            f"{DIRECTUS_BASE_URL}/items/cms_content_item_translations",
+            headers=headers,
+            params=params,
+          )
+          response.raise_for_status()
+          data = response.json().get("data", [])
+          if not data:
+            continue
+          translation = data[0]
+          resolved_language = str(translation.get("language_code") or candidate).strip() or candidate
+          if translation.get("source_content_version") != item.content_version:
+            continue
+          item_source_hash = str(item.source_hash or "").strip()
+          translation_source_hash = str(translation.get("source_hash") or "").strip()
+          if item_source_hash and translation_source_hash and translation_source_hash != item_source_hash:
+            continue
+          content_json = translation.get("content_json")
+          if not isinstance(content_json, dict):
+            continue
+          validation_errors = validate_translation_content_json(item.content_json, content_json, item.translation_rules, language)
+          if validation_errors:
+            invalid_translation_found = True
+            print(json.dumps({
+              "event": "translation_content_json_invalid",
+              "content_item_id": item.id,
+              "requested_language_code": language,
+              "language_code": resolved_language,
+              "errors": validation_errors,
+            }), flush=True)
+            continue
+          return {
+            "content_item_id": item.id,
+            "requested_language_code": language,
+            "resolved_language_code": resolved_language,
+            "fallback_used": False,
+            "stale": False,
+            "source_content_version": item.content_version,
+            "source_hash": translation_source_hash or item_source_hash or None,
+            "model": translation.get("model"),
+            "prompt_version": translation.get("prompt_version"),
+            "translated_by": translation.get("translated_by"),
+            "content_json": content_json,
+          }
+      if invalid_translation_found:
         raise InvalidTranslationContentError("translation content_json does not match source content_json")
-      return {
-        "content_item_id": item.id,
-        "requested_language_code": language,
-        "resolved_language_code": language,
-        "fallback_used": False,
-        "stale": False,
-        "source_content_version": item.content_version,
-        "source_hash": translation_source_hash or item_source_hash or None,
-        "model": translation.get("model"),
-        "prompt_version": translation.get("prompt_version"),
-        "translated_by": translation.get("translated_by"),
-        "content_json": content_json,
-      }
+      return None
 
     async def directus_headers() -> Dict[str, str]:
       token = await directus_token()
@@ -887,6 +898,12 @@ data:
       age_seconds = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
       return age_seconds > TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS
 
+    def directus_response_is_record_not_unique(response: httpx.Response) -> bool:
+      if response.status_code != 400:
+        return False
+      body = response.text
+      return "RECORD_NOT_UNIQUE" in body or "has to be unique" in body
+
     async def find_translation_jobs(content_item_id: str, language_code: str, source_content_version: int) -> List[Dict[str, Any]]:
       headers = await directus_headers()
       params = {
@@ -979,6 +996,8 @@ data:
           job_id = str(reusable_jobs[0].get("id") or "").strip()
           await requeue_translation_job(job_id, payload, item, reason, kafka_key, model)
           return True, job_id
+        if directus_response_is_record_not_unique(response):
+          return False, None
         print(json.dumps({
           "event": "translation_job_claim_failed_no_existing_job",
           "content_item_id": item.id,

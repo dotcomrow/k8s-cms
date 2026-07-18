@@ -7390,8 +7390,8 @@ data:
           fi
         }
 
-        _upsert_translation_prewarm_flow "CMS Content Translation Prewarm - Create" "items.create" "{{ $trigger.key }}" "items.create" 201
-        _upsert_translation_prewarm_flow "CMS Content Translation Prewarm - Update" "items.update" "{{ $trigger.keys[0] }}" "items.update" 241
+        _upsert_translation_prewarm_flow "CMS Content Translation Prewarm - Create" "items.create" '{{ $trigger.key }}' "items.create" 201
+        _upsert_translation_prewarm_flow "CMS Content Translation Prewarm - Update" "items.update" '{{ $trigger.keys[0] }}' "items.update" 241
     
         _vault_kv_read_field() {
           _path="$1"
