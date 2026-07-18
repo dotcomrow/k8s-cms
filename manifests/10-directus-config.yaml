@@ -7920,6 +7920,7 @@ data:
         const deleting = ref({});
         const creatingBlockType = ref('');
         const addBlockType = ref('content_ref');
+        const addSharedContentItemId = ref('');
         const promoting = ref(false);
         const copyingPage = ref(false);
         const error = ref('');
@@ -7935,6 +7936,8 @@ data:
         const slotsByTemplateKey = ref({});
         const contentTemplateChoices = ref([]);
         const contentTemplateChoicesLoading = ref(false);
+        const sharedContentChoices = ref([]);
+        const sharedContentChoicesLoading = ref(false);
         const blocks = ref([]);
         const moduleRegistryModules = ref([]);
         const drafts = ref({});
@@ -8014,7 +8017,8 @@ data:
           return Math.min(configured, 3600000);
         });
         const addBlockTypeChoices = [
-          { text: 'Content', value: 'content_ref' },
+          { text: 'New Content', value: 'content_ref' },
+          { text: 'Shared Content', value: 'shared_content' },
           { text: 'Hero', value: 'hero' },
           { text: 'Image', value: 'image' },
           { text: 'Module', value: 'module' },
@@ -8486,6 +8490,10 @@ data:
           const templateRootBlockId = parseId(row?.template_root_block_id);
           const templateNearestBlockId = parseId(row?.template_nearest_block_id);
           const contentTemplateKey = asString(row?.content_template_key);
+          const contentItemId = parseId(row?.content_item_id);
+          const contentItemName = asString(row?.content_item_name);
+          const contentItemKey = asString(row?.content_item_key);
+          const contentReuseStrategy = toLower(row?.content_reuse_strategy);
           const contextToken = templateNearestBlockId ? buildTemplateContextId(templateNearestBlockId) : PAGE_CONTEXT_ID;
           const hierarchyToken = parentBlockId ? 'nested-child' : 'page-child';
           const searchTokens = [
@@ -8504,6 +8512,10 @@ data:
             hierarchyToken,
             pageSlug,
             contentTemplateKey,
+            contentItemId,
+            contentItemName,
+            contentItemKey,
+            contentReuseStrategy,
             ...(status ? [status] : []),
           ]
             .map((entry) => toLower(entry))
@@ -8526,7 +8538,10 @@ data:
             template_nearest_block_id: templateNearestBlockId,
             page_slug: pageSlug,
             content_template_key: asString(row?.content_template_key),
-            content_item_id: parseId(row?.content_item_id),
+            content_item_id: contentItemId,
+            content_item_name: contentItemName,
+            content_item_key: contentItemKey,
+            content_reuse_strategy: contentReuseStrategy,
             _context_id: contextToken,
             _search_text: searchTokens.join(' '),
           };
@@ -8772,6 +8787,82 @@ data:
           return choices;
         };
 
+        const loadSharedContentChoices = async () => {
+          const releaseChannel = toLower(pageContext.value?.release_channel);
+          if (releaseChannel !== 'preview' && releaseChannel !== 'prod') {
+            sharedContentChoices.value = [];
+            return;
+          }
+
+          sharedContentChoicesLoading.value = true;
+          try {
+            const siteKey = asString(pageContext.value?.site_key);
+            const filter = {
+              _and: [
+                { status: { _eq: 'published' } },
+                { reuse_strategy: { _eq: 'shared' } },
+                { release_channel: { _eq: releaseChannel } },
+                siteKey
+                  ? {
+                      _or: [
+                        { site_key: { _empty: true } },
+                        { site_key: { _eq: siteKey } },
+                      ],
+                    }
+                  : { site_key: { _empty: true } },
+              ],
+            };
+            const response = await apiRequest('GET', '/items/cms_content_items', {
+              fields: 'id,name,content_key,site_key,release_channel,default_language_code,content_version',
+              limit: -1,
+              sort: 'site_key,name,content_key',
+              filter: JSON.stringify(filter),
+            });
+            sharedContentChoices.value = normalizeRows(response)
+              .map((row) => {
+                const id = parseId(row?.id);
+                const name = asString(row?.name);
+                const contentKey = asString(row?.content_key);
+                const rowSiteKey = asString(row?.site_key);
+                const language = asString(row?.default_language_code) || 'en';
+                const version = asInteger(row?.content_version);
+                const scope = rowSiteKey ? `site:${rowSiteKey}` : 'global';
+                const label = name || contentKey || id;
+                if (!id || !label) return null;
+                return {
+                  text: `${label} (${contentKey || id}, ${scope}, ${language}, v${version ?? 1})`,
+                  value: id,
+                  name,
+                  content_key: contentKey,
+                  reuse_strategy: 'shared',
+                };
+              })
+              .filter(Boolean)
+              .sort((left, right) => left.text.localeCompare(right.text));
+          } finally {
+            sharedContentChoicesLoading.value = false;
+          }
+        };
+
+        const sharedContentChoiceItemsForRow = (row) => {
+          const currentId = parseId(row?.content_item_id);
+          const choices = Array.isArray(sharedContentChoices.value) ? [...sharedContentChoices.value] : [];
+          if (currentId && !choices.some((choice) => parseId(choice?.value) === currentId)) {
+            const currentName = asString(row?.content_item_name);
+            const currentKey = asString(row?.content_item_key);
+            const currentStrategy = toLower(row?.content_reuse_strategy) || 'copy';
+            const label = currentName || currentKey || currentId;
+            choices.unshift({
+              text: `${label} (${currentKey || currentId}, current ${currentStrategy})`,
+              value: currentId,
+              name: currentName,
+              content_key: currentKey,
+              reuse_strategy: currentStrategy,
+            });
+          }
+          return choices;
+        };
+
         const hydrateContentRefRows = async (rows) => {
           const contentRefIds = uniqueNonEmpty(
             (rows || [])
@@ -8790,14 +8881,34 @@ data:
             const id = parseId(row?.id);
             if (id) contentRefById.set(id, row);
           }
+          const contentItemIds = uniqueNonEmpty(
+            Array.from(contentRefById.values()).map((row) => parseId(row?.content_item_id)),
+          );
+          const contentItemById = new Map();
+          if (contentItemIds.length > 0) {
+            const itemResponse = await apiRequest('GET', '/items/cms_content_items', {
+              fields: 'id,name,content_key,reuse_strategy,content_version,status,default_language_code',
+              limit: -1,
+              filter: JSON.stringify({ id: { _in: contentItemIds } }),
+            });
+            for (const item of normalizeRows(itemResponse)) {
+              const id = parseId(item?.id);
+              if (id) contentItemById.set(id, item);
+            }
+          }
           return (rows || []).map((row) => {
             if (toLower(row?.collection) !== 'cms_block_content_ref') return row;
             const contentRef = contentRefById.get(parseId(row?.item));
             if (!contentRef) return row;
+            const contentItemId = parseId(contentRef?.content_item_id);
+            const contentItem = contentItemById.get(contentItemId);
             return {
               ...row,
               content_template_key: asString(contentRef?.template_key),
-              content_item_id: parseId(contentRef?.content_item_id),
+              content_item_id: contentItemId,
+              content_item_name: asString(contentItem?.name),
+              content_item_key: asString(contentItem?.content_key),
+              content_reuse_strategy: toLower(contentItem?.reuse_strategy),
             };
           });
         };
@@ -8845,6 +8956,7 @@ data:
             await loadPageContext();
             await loadModuleRegistryModules();
             await loadContentTemplateChoices();
+            await loadSharedContentChoices();
             await loadBlocks();
             await preloadSlotsForKnownTemplates();
           } catch (requestError) {
@@ -8988,6 +9100,45 @@ data:
             info.value = `Updated content template to ${templateKey}. Save the page to publish and trigger refresh.`;
           } catch (requestError) {
             error.value = requestError?.message || 'Failed to update content template.';
+          } finally {
+            markSaving(rowId, false);
+          }
+        };
+
+        const updateContentBlockSharedItem = async (row, nextContentItemId) => {
+          if (props.disabled) return;
+          const rowId = parseId(row?.id);
+          const contentRefId = parseId(row?.item);
+          const contentItemId = parseId(nextContentItemId);
+          if (!rowId || !contentRefId || !contentItemId) return;
+          if (contentItemId === parseId(row?.content_item_id)) return;
+
+          markSaving(rowId, true);
+          info.value = '';
+          error.value = '';
+          try {
+            await apiRequest(
+              'PATCH',
+              `/items/cms_block_content_ref/${encodeURIComponent(contentRefId)}`,
+              {},
+              { content_item_id: contentItemId },
+            );
+            const selected = sharedContentChoices.value.find((choice) => parseId(choice?.value) === contentItemId) || {};
+            blocks.value = blocks.value.map((candidate) => (
+              candidate.id === rowId
+                ? {
+                    ...candidate,
+                    content_item_id: contentItemId,
+                    content_item_name: asString(selected?.name),
+                    content_item_key: asString(selected?.content_key),
+                    content_reuse_strategy: toLower(selected?.reuse_strategy) || 'shared',
+                  }
+                : candidate
+            ));
+            emit('input', buildRelationManagerValue());
+            info.value = 'Updated shared content item. Save the page to publish and trigger refresh.';
+          } catch (requestError) {
+            error.value = requestError?.message || 'Failed to update shared content item.';
           } finally {
             markSaving(rowId, false);
           }
@@ -9475,6 +9626,31 @@ data:
               const contentItemId = parseId(createdContentItem?.data?.id);
               if (!contentItemId) {
                 throw new Error('Content item created but id was missing.');
+              }
+              contentCollection = 'cms_block_content_ref';
+              contentPayload = {
+                status: 'published',
+                template_key: contentTemplateKey,
+                content_item_id: contentItemId,
+                props_json: {},
+              };
+              preferredEditorCollection = 'cms_content_items';
+              preferredEditorId = contentItemId;
+            } else if (type === 'shared_content') {
+              const sharedItems = Array.isArray(sharedContentChoices.value) ? sharedContentChoices.value : [];
+              const requestedContentItemId = parseId(addSharedContentItemId.value);
+              const contentItemId = (
+                requestedContentItemId
+                && sharedItems.some((choice) => parseId(choice?.value) === requestedContentItemId)
+              )
+                ? requestedContentItemId
+                : parseId(sharedItems?.[0]?.value);
+              if (!contentItemId) {
+                throw new Error('No shared content items are available for this site/channel.');
+              }
+              const contentTemplateKey = await resolveDefaultPublishedContentTemplateKey('rich-text-body-v1');
+              if (!contentTemplateKey) {
+                throw new Error('No published content templates are available for this site context.');
               }
               contentCollection = 'cms_block_content_ref';
               contentPayload = {
@@ -11069,11 +11245,20 @@ data:
             const rowTemplateKey = asString(row?.template_group_key);
             const contentTemplateItems = isContentRefBlock ? contentTemplateChoiceItemsForRow(row) : [];
             const currentContentTemplateKey = asString(row?.content_template_key);
+            const sharedContentItems = isContentRefBlock ? sharedContentChoiceItemsForRow(row) : [];
+            const currentContentItemId = parseId(row?.content_item_id);
+            const currentContentReuseStrategy = toLower(row?.content_reuse_strategy);
             const renderedContentTemplateItems = contentTemplateItems.length > 0
               ? contentTemplateItems
               : [{
                   text: contentTemplateChoicesLoading.value ? 'Loading templates' : 'No published templates',
                   value: currentContentTemplateKey,
+                }];
+            const renderedSharedContentItems = sharedContentItems.length > 0
+              ? sharedContentItems
+              : [{
+                  text: sharedContentChoicesLoading.value ? 'Loading shared content' : 'No shared content items',
+                  value: currentContentItemId,
                 }];
             return h('li', { key: rowId }, [
               h('article', { class: 'cms-page-blocks-manager__tree-node-card', style: styles.treeNodeCard }, [
@@ -11127,6 +11312,7 @@ data:
                   ...(asString(row?.group_tag) ? [renderMetaChip(`group:${asString(row.group_tag)}`)] : []),
                   ...(rowTemplateKey && rowTemplateKey !== 'page-root' ? [renderMetaChip(`tpl:${rowTemplateKey}`)] : []),
                   ...(currentContentTemplateKey ? [renderMetaChip(`html:${currentContentTemplateKey}`)] : []),
+                  ...(currentContentReuseStrategy ? [renderMetaChip(`reuse:${currentContentReuseStrategy}`)] : []),
                   ...(isTemplateNode ? [renderMetaChip(`children:${childRows.length}`)] : []),
                 ]),
                 ...(isContentRefBlock
@@ -11143,6 +11329,18 @@ data:
                           }),
                         ]),
                       ]),
+                      h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
+                        h('span', { style: styles.treeNodeFieldLabel }, 'Shared content'),
+                        h('div', { style: { minWidth: '260px', flex: '1 1 260px' } }, [
+                          renderSelectControl({
+                            value: currentContentItemId,
+                            items: renderedSharedContentItems,
+                            disabled: props.disabled || rowBusy || sharedContentChoicesLoading.value || sharedContentItems.length === 0,
+                            style: { width: '100%' },
+                            onUpdate: (next) => { void updateContentBlockSharedItem(row, next); },
+                          }),
+                        ]),
+                      ]),
                     ]
                   : []),
               ]),
@@ -11156,6 +11354,22 @@ data:
           const rootExpanded = isNodeExpanded('__root', true);
           const selectedAddTypeLabel = addBlockTypeChoices.find((item) => item.value === addBlockType.value)?.text || 'Block';
           const creatingAddTypeLabel = addBlockTypeChoices.find((item) => item.value === creatingBlockType.value)?.text || 'Block';
+          const sharedAddChoices = Array.isArray(sharedContentChoices.value) ? sharedContentChoices.value : [];
+          const requestedSharedAddValue = parseId(addSharedContentItemId.value);
+          const selectedSharedAddValue = (
+            requestedSharedAddValue
+            && sharedAddChoices.some((choice) => parseId(choice?.value) === requestedSharedAddValue)
+          )
+            ? requestedSharedAddValue
+            : parseId(sharedAddChoices?.[0]?.value);
+          const renderedSharedAddItems = sharedAddChoices.length > 0
+            ? sharedAddChoices
+            : [{
+                text: sharedContentChoicesLoading.value ? 'Loading shared content' : 'No shared content items',
+                value: selectedSharedAddValue,
+              }];
+          const addingSharedContent = addBlockType.value === 'shared_content';
+          const sharedAddDisabled = addingSharedContent && (sharedContentChoicesLoading.value || sharedAddChoices.length === 0);
     
           const children = [
             renderCard({
@@ -11202,9 +11416,21 @@ data:
                         onUpdate: (next) => { addBlockType.value = asString(next) || 'content_ref'; },
                       }),
                     ]),
+                    ...(addingSharedContent
+                      ? [
+                          h('div', { style: { minWidth: '260px', flex: '1 1 260px' } }, [
+                            renderSelectControl({
+                              value: selectedSharedAddValue,
+                              items: renderedSharedAddItems,
+                              disabled: !pageId.value || sharedContentChoicesLoading.value || sharedAddChoices.length === 0 || !!creatingBlockType.value || loading.value || copyingPage.value || promoting.value,
+                              onUpdate: (next) => { addSharedContentItemId.value = parseId(next); },
+                            }),
+                          ]),
+                        ]
+                      : []),
                     renderButtonControl({
                       label: creatingBlockType.value ? `Adding ${creatingAddTypeLabel}...` : `Add ${selectedAddTypeLabel}`,
-                      disabled: !pageId.value || !!creatingBlockType.value || loading.value || copyingPage.value,
+                      disabled: !pageId.value || !!creatingBlockType.value || loading.value || copyingPage.value || sharedAddDisabled,
                       primary: true,
                       onClick: () => { void createPageBlockWithContent(addBlockType.value); },
                     }),
