@@ -7893,6 +7893,7 @@ data:
     const PROMOTE_SOURCE_CHANNEL = 'preview';
     const PROMOTE_TARGET_CHANNEL = 'prod';
     const PROMOTE_TARGET_REFRESH = 'prod';
+    const CREATE_NEW_CONTENT_ITEM_VALUE = '__create_new_content_item__';
     
     const getBlocksManagerRegistry = () => {
       if (typeof window === 'undefined') return null;
@@ -8018,7 +8019,7 @@ data:
         });
         const addBlockTypeChoices = [
           { text: 'New Content', value: 'content_ref' },
-          { text: 'Shared Content', value: 'shared_content' },
+          { text: 'Existing Content', value: 'shared_content' },
           { text: 'Hero', value: 'hero' },
           { text: 'Image', value: 'image' },
           { text: 'Module', value: 'module' },
@@ -8493,6 +8494,7 @@ data:
           const contentItemId = parseId(row?.content_item_id);
           const contentItemName = asString(row?.content_item_name);
           const contentItemKey = asString(row?.content_item_key);
+          const contentItemTemplateKey = asString(row?.content_item_template_key);
           const contentReuseStrategy = toLower(row?.content_reuse_strategy);
           const contextToken = templateNearestBlockId ? buildTemplateContextId(templateNearestBlockId) : PAGE_CONTEXT_ID;
           const hierarchyToken = parentBlockId ? 'nested-child' : 'page-child';
@@ -8515,6 +8517,7 @@ data:
             contentItemId,
             contentItemName,
             contentItemKey,
+            contentItemTemplateKey,
             contentReuseStrategy,
             ...(status ? [status] : []),
           ]
@@ -8541,6 +8544,7 @@ data:
             content_item_id: contentItemId,
             content_item_name: contentItemName,
             content_item_key: contentItemKey,
+            content_item_template_key: contentItemTemplateKey,
             content_reuse_strategy: contentReuseStrategy,
             _context_id: contextToken,
             _search_text: searchTokens.join(' '),
@@ -8813,9 +8817,9 @@ data:
               ],
             };
             const response = await apiRequest('GET', '/items/cms_content_items', {
-              fields: 'id,name,content_key,site_key,release_channel,default_language_code,content_version',
+              fields: 'id,name,content_key,content_template_key,site_key,release_channel,default_language_code,content_version',
               limit: -1,
-              sort: 'site_key,name,content_key',
+              sort: 'site_key,content_template_key,name,content_key',
               filter: JSON.stringify(filter),
             });
             sharedContentChoices.value = normalizeRows(response)
@@ -8823,17 +8827,19 @@ data:
                 const id = parseId(row?.id);
                 const name = asString(row?.name);
                 const contentKey = asString(row?.content_key);
+                const contentTemplateKey = asString(row?.content_template_key);
                 const rowSiteKey = asString(row?.site_key);
                 const language = asString(row?.default_language_code) || 'en';
                 const version = asInteger(row?.content_version);
                 const scope = rowSiteKey ? `site:${rowSiteKey}` : 'global';
                 const label = name || contentKey || id;
-                if (!id || !label) return null;
+                if (!id || !label || !contentTemplateKey) return null;
                 return {
-                  text: `${label} (${contentKey || id}, ${scope}, ${language}, v${version ?? 1})`,
+                  text: `${label} (${contentTemplateKey}, ${contentKey || id}, ${scope}, ${language}, v${version ?? 1})`,
                   value: id,
                   name,
                   content_key: contentKey,
+                  content_template_key: contentTemplateKey,
                   reuse_strategy: 'shared',
                 };
               })
@@ -8846,20 +8852,35 @@ data:
 
         const sharedContentChoiceItemsForRow = (row) => {
           const currentId = parseId(row?.content_item_id);
-          const choices = Array.isArray(sharedContentChoices.value) ? [...sharedContentChoices.value] : [];
+          const selectedTemplateKey = asString(row?.content_template_key);
+          if (!selectedTemplateKey) return [];
+          const choices = selectedTemplateKey
+            ? (Array.isArray(sharedContentChoices.value) ? sharedContentChoices.value : [])
+                .filter((choice) => asString(choice?.content_template_key) === selectedTemplateKey)
+            : [];
           if (currentId && !choices.some((choice) => parseId(choice?.value) === currentId)) {
             const currentName = asString(row?.content_item_name);
             const currentKey = asString(row?.content_item_key);
+            const currentTemplateKey = asString(row?.content_item_template_key);
             const currentStrategy = toLower(row?.content_reuse_strategy) || 'copy';
             const label = currentName || currentKey || currentId;
-            choices.unshift({
-              text: `${label} (${currentKey || currentId}, current ${currentStrategy})`,
-              value: currentId,
-              name: currentName,
-              content_key: currentKey,
-              reuse_strategy: currentStrategy,
-            });
+            const currentMatchesTemplate = !selectedTemplateKey || currentTemplateKey === selectedTemplateKey;
+            if (currentStrategy !== 'shared' || currentMatchesTemplate) {
+              choices.unshift({
+                text: `${label} (${currentKey || currentId}, current ${currentStrategy})`,
+                value: currentId,
+                name: currentName,
+                content_key: currentKey,
+                content_template_key: currentTemplateKey,
+                reuse_strategy: currentStrategy,
+              });
+            }
           }
+          choices.push({
+            text: 'Create new content item',
+            value: CREATE_NEW_CONTENT_ITEM_VALUE,
+            reuse_strategy: 'copy',
+          });
           return choices;
         };
 
@@ -8887,7 +8908,7 @@ data:
           const contentItemById = new Map();
           if (contentItemIds.length > 0) {
             const itemResponse = await apiRequest('GET', '/items/cms_content_items', {
-              fields: 'id,name,content_key,reuse_strategy,content_version,status,default_language_code',
+              fields: 'id,name,content_key,content_template_key,reuse_strategy,content_version,status,default_language_code',
               limit: -1,
               filter: JSON.stringify({ id: { _in: contentItemIds } }),
             });
@@ -8908,6 +8929,7 @@ data:
               content_item_id: contentItemId,
               content_item_name: asString(contentItem?.name),
               content_item_key: asString(contentItem?.content_key),
+              content_item_template_key: asString(contentItem?.content_template_key),
               content_reuse_strategy: toLower(contentItem?.reuse_strategy),
             };
           });
@@ -9028,6 +9050,35 @@ data:
           else delete next[rowId];
           deleting.value = next;
         };
+
+        const createDefaultContentItem = async ({ name = 'New content block', contentTemplateKey = '' } = {}) => {
+          const normalizedName = asString(name) || 'New content block';
+          const normalizedTemplateKey = asString(contentTemplateKey);
+          const createdContentItem = await apiRequest('POST', '/items/cms_content_items', {}, {
+            status: 'published',
+            name: normalizedName,
+            default_language_code: 'en',
+            reuse_strategy: 'copy',
+            content_template_key: normalizedTemplateKey || null,
+            content_json: {
+              body_html: `<p>${normalizedName}</p>`,
+            },
+            site_key: asString(pageContext.value?.site_key) || null,
+            release_channel: sourcePageReleaseChannel.value,
+            refresh_target: 'both',
+          });
+          const contentItemId = parseId(createdContentItem?.data?.id);
+          if (!contentItemId) {
+            throw new Error('Content item created but id was missing.');
+          }
+          return {
+            id: contentItemId,
+            name: asString(createdContentItem?.data?.name) || normalizedName,
+            content_key: asString(createdContentItem?.data?.content_key),
+            content_template_key: asString(createdContentItem?.data?.content_template_key) || normalizedTemplateKey,
+            reuse_strategy: 'copy',
+          };
+        };
     
         const saveRow = async (row) => {
           if (props.disabled || isSaving(row.id)) return;
@@ -9091,9 +9142,23 @@ data:
               {},
               { template_key: templateKey },
             );
+            if (parseId(row?.content_item_id) && toLower(row?.content_reuse_strategy) !== 'shared') {
+              await apiRequest(
+                'PATCH',
+                `/items/cms_content_items/${encodeURIComponent(parseId(row.content_item_id))}`,
+                {},
+                { content_template_key: templateKey },
+              );
+            }
             blocks.value = blocks.value.map((candidate) => (
               candidate.id === rowId
-                ? { ...candidate, content_template_key: templateKey }
+                ? {
+                    ...candidate,
+                    content_template_key: templateKey,
+                    ...(toLower(candidate?.content_reuse_strategy) !== 'shared'
+                      ? { content_item_template_key: templateKey }
+                      : {}),
+                  }
                 : candidate
             ));
             emit('input', buildRelationManagerValue());
@@ -9105,40 +9170,64 @@ data:
           }
         };
 
-        const updateContentBlockSharedItem = async (row, nextContentItemId) => {
+        const updateContentBlockItem = async (row, nextContentItemId) => {
           if (props.disabled) return;
           const rowId = parseId(row?.id);
           const contentRefId = parseId(row?.item);
           const contentItemId = parseId(nextContentItemId);
+          const contentTemplateKey = asString(row?.content_template_key);
           if (!rowId || !contentRefId || !contentItemId) return;
           if (contentItemId === parseId(row?.content_item_id)) return;
+          if (!contentTemplateKey) {
+            error.value = 'Select an HTML template before choosing content.';
+            return;
+          }
 
           markSaving(rowId, true);
           info.value = '';
           error.value = '';
           try {
+            let selected = {};
+            let selectedContentItemId = contentItemId;
+            if (contentItemId === CREATE_NEW_CONTENT_ITEM_VALUE) {
+              selected = await createDefaultContentItem({ contentTemplateKey });
+              selectedContentItemId = parseId(selected?.id);
+              if (!selectedContentItemId) {
+                throw new Error('Content item created but id was missing.');
+              }
+            } else {
+              selected = sharedContentChoices.value.find((choice) => parseId(choice?.value) === contentItemId) || {};
+              if (asString(selected?.content_template_key) !== contentTemplateKey) {
+                throw new Error('Selected content is not associated with the selected HTML template.');
+              }
+            }
             await apiRequest(
               'PATCH',
               `/items/cms_block_content_ref/${encodeURIComponent(contentRefId)}`,
               {},
-              { content_item_id: contentItemId },
+              { content_item_id: selectedContentItemId },
             );
-            const selected = sharedContentChoices.value.find((choice) => parseId(choice?.value) === contentItemId) || {};
             blocks.value = blocks.value.map((candidate) => (
               candidate.id === rowId
                 ? {
                     ...candidate,
-                    content_item_id: contentItemId,
+                    content_item_id: selectedContentItemId,
                     content_item_name: asString(selected?.name),
                     content_item_key: asString(selected?.content_key),
-                    content_reuse_strategy: toLower(selected?.reuse_strategy) || 'shared',
+                    content_item_template_key: asString(selected?.content_template_key),
+                    content_reuse_strategy: toLower(selected?.reuse_strategy) || 'copy',
                   }
                 : candidate
             ));
             emit('input', buildRelationManagerValue());
-            info.value = 'Updated shared content item. Save the page to publish and trigger refresh.';
+            if (contentItemId === CREATE_NEW_CONTENT_ITEM_VALUE) {
+              info.value = 'Created new content item. Save the page to publish and trigger refresh.';
+              openDrawerItem('cms_content_items', selectedContentItemId);
+            } else {
+              info.value = 'Updated content item. Save the page to publish and trigger refresh.';
+            }
           } catch (requestError) {
-            error.value = requestError?.message || 'Failed to update shared content item.';
+            error.value = requestError?.message || 'Failed to update content item.';
           } finally {
             markSaving(rowId, false);
           }
@@ -9332,6 +9421,7 @@ data:
               'name',
               'default_language_code',
               'reuse_strategy',
+              'content_template_key',
               'content_version',
               'translation_enabled',
               'translation_excluded_languages',
@@ -9611,22 +9701,8 @@ data:
               if (!contentTemplateKey) {
                 throw new Error('No published content templates are available for this site context.');
               }
-              const createdContentItem = await apiRequest('POST', '/items/cms_content_items', {}, {
-                status: 'published',
-                name: 'New content block',
-                default_language_code: 'en',
-                reuse_strategy: 'copy',
-                content_json: {
-                  body_html: '<p>New content block</p>',
-                },
-                site_key: asString(pageContext.value?.site_key) || null,
-                release_channel: sourcePageReleaseChannel.value,
-                refresh_target: 'both',
-              });
-              const contentItemId = parseId(createdContentItem?.data?.id);
-              if (!contentItemId) {
-                throw new Error('Content item created but id was missing.');
-              }
+              const createdContentItem = await createDefaultContentItem({ contentTemplateKey });
+              const contentItemId = parseId(createdContentItem?.id);
               contentCollection = 'cms_block_content_ref';
               contentPayload = {
                 status: 'published',
@@ -9648,7 +9724,9 @@ data:
               if (!contentItemId) {
                 throw new Error('No shared content items are available for this site/channel.');
               }
-              const contentTemplateKey = await resolveDefaultPublishedContentTemplateKey('rich-text-body-v1');
+              const selectedSharedContentItem = sharedItems.find((choice) => parseId(choice?.value) === contentItemId) || {};
+              const contentTemplateKey = asString(selectedSharedContentItem?.content_template_key)
+                || await resolveDefaultPublishedContentTemplateKey('rich-text-body-v1');
               if (!contentTemplateKey) {
                 throw new Error('No published content templates are available for this site context.');
               }
@@ -11257,7 +11335,9 @@ data:
             const renderedSharedContentItems = sharedContentItems.length > 0
               ? sharedContentItems
               : [{
-                  text: sharedContentChoicesLoading.value ? 'Loading shared content' : 'No shared content items',
+                  text: !currentContentTemplateKey
+                    ? 'Select HTML template first'
+                    : (sharedContentChoicesLoading.value ? 'Loading content' : 'Create new content item'),
                   value: currentContentItemId,
                 }];
             return h('li', { key: rowId }, [
@@ -11330,14 +11410,14 @@ data:
                         ]),
                       ]),
                       h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
-                        h('span', { style: styles.treeNodeFieldLabel }, 'Shared content'),
+                        h('span', { style: styles.treeNodeFieldLabel }, 'Content'),
                         h('div', { style: { minWidth: '260px', flex: '1 1 260px' } }, [
                           renderSelectControl({
                             value: currentContentItemId,
                             items: renderedSharedContentItems,
-                            disabled: props.disabled || rowBusy || sharedContentChoicesLoading.value || sharedContentItems.length === 0,
+                            disabled: props.disabled || rowBusy || !currentContentTemplateKey || sharedContentChoicesLoading.value || sharedContentItems.length === 0,
                             style: { width: '100%' },
-                            onUpdate: (next) => { void updateContentBlockSharedItem(row, next); },
+                            onUpdate: (next) => { void updateContentBlockItem(row, next); },
                           }),
                         ]),
                       ]),
@@ -11365,7 +11445,7 @@ data:
           const renderedSharedAddItems = sharedAddChoices.length > 0
             ? sharedAddChoices
             : [{
-                text: sharedContentChoicesLoading.value ? 'Loading shared content' : 'No shared content items',
+                text: sharedContentChoicesLoading.value ? 'Loading existing content' : 'No shared content items',
                 value: selectedSharedAddValue,
               }];
           const addingSharedContent = addBlockType.value === 'shared_content';
