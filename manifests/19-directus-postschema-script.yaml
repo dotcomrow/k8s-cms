@@ -4336,8 +4336,11 @@ data:
       template_function_reviewed_by_display_options_json="$(jq -nc --argjson choices "${template_function_reviewed_by_choices_json}" '{choices:$choices}')"
       template_function_config_options_json="$(jq -nc '{language:"json",lineNumber:true,placeholder:"{\n  \"value\": \"Text for static_text\",\n  \"timezone\": \"UTC\"\n}"}')"
       template_function_source_options_json="$(jq -nc '{language:"javascript",lineNumber:true,placeholder:"return new Date(now).getFullYear();"}')"
+      content_item_content_key_options_json="$(jq -nc '{empty_text:"Generated on save"}')"
+      content_item_language_code_options_json="$(jq -nc '{placeholder:"en",visible_ch:6,max_length:16}')"
       translation_language_tags_options_json="$(jq -nc '{placeholder:"Add language codes, e.g. es, fr-CA",allowOther:true,allowDuplicates:false}')"
-      translation_rules_options_json="$(jq -nc '{language:"json",lineNumber:true,placeholder:"[\n  { \"path\": \"$.brandName\", \"translation_enabled\": false },\n  { \"path\": \"$.cta.label\", \"excluded_languages\": [\"ja\"] }\n]"}')"
+      translation_rules_placeholder_json="$(jq -n '[{"path":"$.brandName","translation_enabled":false},{"path":"$.cta.label","excluded_languages":["ja","ko"]},{"path":"$.hero.headline","prewarm_languages":["es","fr-CA"]},{"path":"$.legal.disclaimer","translation_enabled":true,"excluded_languages":["zh-CN"],"prewarm_languages":["de"]},{"path":"$","excluded_languages":["ar"]}]')"
+      translation_rules_options_json="$(jq -nc --arg placeholder "${translation_rules_placeholder_json}" '{language:"json",lineNumber:true,placeholder:$placeholder}')"
       template_function_builtin_only_conditions_json="$(jq -nc '[{"name":"Built-in functions only","rule":{"function_kind":{"_neq":"builtin"}},"hidden":true}]')"
       template_function_javascript_only_conditions_json="$(jq -nc '[{"name":"JavaScript functions only","rule":{"function_kind":{"_neq":"javascript"}},"hidden":true}]')"
       template_function_config_conditions_json="$(jq -nc '[{"name":"JavaScript or static text config only","rule":{"_and":[{"function_kind":{"_neq":"javascript"}},{"handler_key":{"_neq":"static_text"}}]},"hidden":true}]')"
@@ -4350,10 +4353,14 @@ data:
       theme_selector_dock_position_display_options_json="$(jq -nc --argjson choices "${theme_selector_dock_position_choices_json}" '{choices:$choices}')"
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
+      content_item_content_key_note="Generated from the content item name on save."
+      content_item_language_code_note="Default source language code, usually en."
       translation_enabled_note="Disable to always return default-language content for this content item and skip translation jobs."
       translation_excluded_languages_note="Language codes that should fall back to default-language content for this item, such as es or fr-CA."
       translation_prewarm_languages_note="Language codes to enqueue for translation after this item is saved. This does not change the content version."
-      translation_rules_note="JSON array of field rules. Use path plus translation_enabled, excluded_languages, or prewarm_languages."
+      translation_rules_note="JSON array of field rules. Empty stores [] and the editor example is display-only. Use path plus translation_enabled, excluded_languages, or prewarm_languages."
+      content_item_content_key_note_sql="$(printf '%s' "${content_item_content_key_note}" | sed "s/'/''/g")"
+      content_item_language_code_note_sql="$(printf '%s' "${content_item_language_code_note}" | sed "s/'/''/g")"
       translation_enabled_note_sql="$(printf '%s' "${translation_enabled_note}" | sed "s/'/''/g")"
       translation_excluded_languages_note_sql="$(printf '%s' "${translation_excluded_languages_note}" | sed "s/'/''/g")"
       translation_prewarm_languages_note_sql="$(printf '%s' "${translation_prewarm_languages_note}" | sed "s/'/''/g")"
@@ -6077,6 +6084,76 @@ data:
         echo "✅ Created status field UX on ${_collection}"
       }
 
+      _upsert_content_item_field_meta() {
+        _field="$1"
+        _interface="$2"
+        _width="${3:-half}"
+        _sort="${4:-10}"
+        _note_sql="${5:-}"
+        _options_json="${6:-}"
+        _required="${7:-false}"
+        _readonly="${8:-false}"
+        _collection="cms_content_items"
+        if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _interface_sql="$(printf '%s' "${_interface}" | sed "s/'/''/g")"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='${_interface_sql}'"; fi
+          if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=${_required}"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=${_readonly}"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='${_width}'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then SETS="${SETS},note='${_note_sql}'"; fi
+          if _df_has_col "group"; then SETS="${SETS},\"group\"=NULL"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated content item field UX on ${_collection}.${_field}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'${_interface_sql}'"; fi
+        if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},${_required}"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},${_readonly}"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'${_width}'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
+        if _df_has_col "group"; then FCOLS="${FCOLS},\"group\""; FVALS="${FVALS},NULL"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created content item field UX on ${_collection}.${_field}"
+      }
+
       _upsert_content_item_translation_group_field_meta() {
         _collection="cms_content_items"
         _field="_section_translation"
@@ -6556,6 +6633,8 @@ data:
       _upsert_status_dropdown_field_meta "cms_block_content_ref" 1
       _upsert_status_dropdown_field_meta "cms_content_templates" 1
       _upsert_status_dropdown_field_meta "cms_content_items" 1
+      _upsert_content_item_field_meta "content_key" "cms-readonly-value" "half" 2 "${content_item_content_key_note_sql}" "${content_item_content_key_options_json}" false true
+      _upsert_content_item_field_meta "default_language_code" "cms-language-code-input" "half" 4 "${content_item_language_code_note_sql}" "${content_item_language_code_options_json}" true false
       _upsert_content_item_translation_group_field_meta
       _upsert_content_item_translation_field_meta "translation_enabled" "boolean" "half" 31 "${translation_enabled_note_sql}" "" true
       _upsert_content_item_translation_field_meta "translation_excluded_languages" "tags" "half" 32 "${translation_excluded_languages_note_sql}" "${translation_language_tags_options_json}" false

@@ -24,7 +24,7 @@ spec:
         app: directus
       annotations:
         reloader.stakater.com/auto: "true"
-        directus.suncoast.systems/extensions-seed-revision: "2026-07-12.2"
+        directus.suncoast.systems/extensions-seed-revision: "2026-07-17.1"
         # Init containers must reach Oracle VM (SSH 22 / Postgres 5432) before
         # linkerd-proxy is running. Skip proxy redirection for these ports.
         config.linkerd.io/skip-outbound-ports: "22,5432,5433"
@@ -116,6 +116,14 @@ spec:
                 path: cms-asset-url-picker/package.json
               - key: cms-asset-url-picker.index.js
                 path: cms-asset-url-picker/index.js
+              - key: cms-readonly-value.package.json
+                path: cms-readonly-value/package.json
+              - key: cms-readonly-value.index.js
+                path: cms-readonly-value/index.js
+              - key: cms-language-code-input.package.json
+                path: cms-language-code-input/package.json
+              - key: cms-language-code-input.index.js
+                path: cms-language-code-input/index.js
               - key: cms-module-props-editor.package.json
                 path: cms-module-props-editor/package.json
               - key: cms-module-props-editor.index.js
@@ -180,7 +188,7 @@ spec:
               mkdir -p /directus/extensions
 
               # Keep our GitOps-managed extensions deterministic on every start.
-              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-keycloak-role-options /directus/extensions/cms-asset-url-picker /directus/extensions/cms-module-props-editor /directus/extensions/cms-preset-bookmark-copy /directus/extensions/cms-bookmark-copy /directus/extensions/cms-page-blocks-manager
+              rm -rf /directus/extensions/github-profile-sync /directus/extensions/ai-provider-access /directus/extensions/cms-content-model-select /directus/extensions/cms-keycloak-role-options /directus/extensions/cms-asset-url-picker /directus/extensions/cms-readonly-value /directus/extensions/cms-language-code-input /directus/extensions/cms-module-props-editor /directus/extensions/cms-preset-bookmark-copy /directus/extensions/cms-bookmark-copy /directus/extensions/cms-page-blocks-manager
               # ConfigMap volumes use symlinks; dereference so we copy real files into the PVC.
               cp -RL /extensions-seed/* /directus/extensions/
 

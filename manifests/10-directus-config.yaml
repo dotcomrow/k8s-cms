@@ -3521,6 +3521,168 @@ data:
         { field: 'limit', name: 'Library Limit', type: 'integer', meta: { width: 'half', interface: 'input' }, schema: { default_value: 40 } },
       ],
     });
+  cms-readonly-value.package.json: |
+    {
+      "name": "directus-extension-cms-readonly-value",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "interface",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+  cms-readonly-value.index.js: |
+    import { defineInterface } from '@directus/extensions-sdk';
+    import { defineComponent, h, computed } from 'vue';
+
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const InterfaceComponent = defineComponent({
+      props: {
+        value: { type: [String, Number], default: '' },
+        options: { type: Object, default: () => ({}) },
+      },
+      setup(props) {
+        const displayValue = computed(() => asString(props.value));
+        return () => h(
+          'div',
+          {
+            class: 'cms-readonly-value',
+            style: {
+              minHeight: '40px',
+              display: 'flex',
+              alignItems: 'center',
+              color: displayValue.value ? 'var(--theme--foreground)' : 'var(--theme--foreground-subdued)',
+              fontFamily: 'var(--theme--fonts--monospace--font-family, monospace)',
+              overflowWrap: 'anywhere',
+            },
+          },
+          displayValue.value || asString(props.options?.empty_text) || 'Generated on save',
+        );
+      },
+    });
+
+    export default defineInterface({
+      id: 'cms-readonly-value',
+      name: 'CMS Readonly Value',
+      icon: 'visibility',
+      description: 'Displays a generated value without rendering an editable input.',
+      component: InterfaceComponent,
+      types: ['string', 'uuid', 'integer', 'bigInteger'],
+      localTypes: ['string', 'uuid', 'integer', 'bigInteger'],
+      group: 'presentation',
+      options: [
+        {
+          field: 'empty_text',
+          name: 'Empty Text',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'Generated on save' },
+        },
+      ],
+    });
+  cms-language-code-input.package.json: |
+    {
+      "name": "directus-extension-cms-language-code-input",
+      "version": "1.0.0",
+      "type": "module",
+      "directus:extension": {
+        "type": "interface",
+        "path": "index.js",
+        "source": "index.js",
+        "host": "^11.0.0"
+      }
+    }
+  cms-language-code-input.index.js: |
+    import { defineInterface } from '@directus/extensions-sdk';
+    import { defineComponent, h, computed } from 'vue';
+
+    const asString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value);
+    };
+
+    const asInteger = (value, fallback) => {
+      const parsed = Number.parseInt(asString(value), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    };
+
+    const InterfaceComponent = defineComponent({
+      props: {
+        value: { type: String, default: '' },
+        disabled: { type: Boolean, default: false },
+        options: { type: Object, default: () => ({}) },
+      },
+      emits: ['input'],
+      setup(props, { emit }) {
+        const visibleCh = computed(() => asInteger(props.options?.visible_ch, 6));
+        const maxLength = computed(() => asInteger(props.options?.max_length, 16));
+        return () => h('input', {
+          class: 'cms-language-code-input',
+          value: asString(props.value),
+          disabled: props.disabled,
+          maxlength: maxLength.value,
+          placeholder: asString(props.options?.placeholder) || 'en',
+          autocapitalize: 'none',
+          autocomplete: 'off',
+          spellcheck: 'false',
+          style: {
+            width: `${visibleCh.value}ch`,
+            maxWidth: '10ch',
+            minWidth: '5ch',
+            height: '40px',
+            padding: '0 10px',
+            border: '1px solid var(--theme--form--field--input--border-color, var(--border-normal))',
+            borderRadius: 'var(--theme--border-radius, 6px)',
+            background: 'var(--theme--form--field--input--background, var(--background-normal))',
+            color: 'var(--theme--foreground)',
+            font: 'inherit',
+          },
+          onInput: (event) => {
+            emit('input', asString(event?.target?.value).trim());
+          },
+        });
+      },
+    });
+
+    export default defineInterface({
+      id: 'cms-language-code-input',
+      name: 'CMS Language Code Input',
+      icon: 'translate',
+      description: 'Compact single-line language code input.',
+      component: InterfaceComponent,
+      types: ['string'],
+      localTypes: ['string'],
+      group: 'standard',
+      options: [
+        {
+          field: 'placeholder',
+          name: 'Placeholder',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'en' },
+        },
+        {
+          field: 'visible_ch',
+          name: 'Visible Width',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 6 },
+        },
+        {
+          field: 'max_length',
+          name: 'Max Length',
+          type: 'integer',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 16 },
+        },
+      ],
+    });
   cms-module-props-editor.package.json: |
     {
       "name": "directus-extension-cms-module-props-editor",
