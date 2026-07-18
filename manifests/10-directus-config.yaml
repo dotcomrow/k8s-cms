@@ -9180,6 +9180,7 @@ data:
               'content_key',
               'name',
               'default_language_code',
+              'reuse_strategy',
               'content_version',
               'translation_enabled',
               'translation_excluded_languages',
@@ -9463,6 +9464,7 @@ data:
                 status: 'published',
                 name: 'New content block',
                 default_language_code: 'en',
+                reuse_strategy: 'copy',
                 content_json: {
                   body_html: '<p>New content block</p>',
                 },
@@ -9624,6 +9626,11 @@ data:
         const isNotFoundError = (message) => {
           const normalized = toLower(message);
           return normalized.includes('not found') || normalized.includes('does not exist');
+        };
+
+        const contentItemReuseStrategy = (contentItem) => {
+          const normalized = toLower(contentItem?.reuse_strategy || contentItem?.content_reuse_strategy);
+          return normalized === 'shared' ? 'shared' : 'copy';
         };
     
         const fetchPageRecord = async (targetPageId, fields = '*') => {
@@ -9918,6 +9925,9 @@ data:
           const sourceContentItem = sourceResponse?.data || null;
           if (!sourceContentItem) {
             throw new Error(`Content item ${normalizedSourceId} could not be loaded for copy.`);
+          }
+          if (contentItemReuseStrategy(sourceContentItem) === 'shared') {
+            return normalizedSourceId;
           }
 
           const targetContentPayload = sanitizeClonePayload(sourceContentItem, {

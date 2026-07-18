@@ -2560,6 +2560,7 @@ data:
          default_language_code TEXT NOT NULL DEFAULT 'en', \
          content_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          content_version INTEGER NOT NULL DEFAULT 1, \
+         reuse_strategy TEXT NOT NULL DEFAULT 'shared', \
          translation_enabled BOOLEAN NOT NULL DEFAULT true, \
          translation_excluded_languages JSONB NOT NULL DEFAULT '[]'::jsonb, \
          translation_prewarm_languages JSONB NOT NULL DEFAULT '[]'::jsonb, \
@@ -2576,6 +2577,7 @@ data:
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS default_language_code TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS content_json JSONB; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS content_version INTEGER; \
+       ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS reuse_strategy TEXT; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS translation_enabled BOOLEAN; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS translation_excluded_languages JSONB; \
        ALTER TABLE IF EXISTS cms_content_items ADD COLUMN IF NOT EXISTS translation_prewarm_languages JSONB; \
@@ -2591,6 +2593,9 @@ data:
        UPDATE cms_content_items SET content_version = 1 WHERE content_version IS NULL; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN content_version SET DEFAULT 1; \
        ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN content_version SET NOT NULL; \
+       UPDATE cms_content_items SET reuse_strategy = 'copy' WHERE reuse_strategy IS NULL OR BTRIM(reuse_strategy) = '' OR reuse_strategy NOT IN ('shared','copy'); \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN reuse_strategy SET DEFAULT 'shared'; \
+       ALTER TABLE IF EXISTS cms_content_items ALTER COLUMN reuse_strategy SET NOT NULL; \
        UPDATE cms_content_items SET translation_enabled = true WHERE translation_enabled IS NULL; \
        UPDATE cms_content_items SET translation_excluded_languages = '[]'::jsonb WHERE translation_excluded_languages IS NULL OR jsonb_typeof(translation_excluded_languages) <> 'array'; \
        UPDATE cms_content_items SET translation_prewarm_languages = '[]'::jsonb WHERE translation_prewarm_languages IS NULL OR jsonb_typeof(translation_prewarm_languages) <> 'array'; \
@@ -2613,6 +2618,9 @@ data:
            END IF; \
            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_content_items_translation_rules_array') THEN \
              ALTER TABLE cms_content_items ADD CONSTRAINT cms_content_items_translation_rules_array CHECK (jsonb_typeof(translation_rules) = 'array'); \
+           END IF; \
+           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_content_items_reuse_strategy_valid') THEN \
+             ALTER TABLE cms_content_items ADD CONSTRAINT cms_content_items_reuse_strategy_valid CHECK (reuse_strategy IN ('shared','copy')); \
            END IF; \
          END IF; \
        END \$\$; \
@@ -3179,6 +3187,47 @@ data:
       FOR EACH ROW
       EXECUTE FUNCTION directus.bump_cms_content_item_version();" "ensure cms_content_items.content_version bump" 24; then
       echo "❌ Could not ensure cms_content_items.content_version bump after retries."
+      exit 1
+    fi
+
+    echo "🧹 Ensuring stale CMS content translations are removed when source content changes..."
+    if ! _psql_yb_retry "CREATE OR REPLACE FUNCTION directus.cleanup_stale_cms_content_item_translations()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS \$\$
+      BEGIN
+        IF TG_OP = 'UPDATE' AND OLD.content_version IS DISTINCT FROM NEW.content_version THEN
+          DELETE FROM cms_content_item_translations
+          WHERE content_item_id = NEW.id
+            AND source_content_version IS DISTINCT FROM NEW.content_version;
+        END IF;
+
+        RETURN NULL;
+      END;
+      \$\$;
+      DROP TRIGGER IF EXISTS cms_content_items_translation_cleanup ON cms_content_items;
+      CREATE TRIGGER cms_content_items_translation_cleanup
+      AFTER UPDATE OF content_version
+      ON cms_content_items
+      FOR EACH ROW
+      WHEN (OLD.content_version IS DISTINCT FROM NEW.content_version)
+      EXECUTE FUNCTION directus.cleanup_stale_cms_content_item_translations();
+      DO \$\$
+      DECLARE
+        _deleted_count INTEGER := 0;
+      BEGIN
+        IF to_regclass('directus.cms_content_item_translations') IS NOT NULL
+          AND to_regclass('directus.cms_content_items') IS NOT NULL THEN
+          DELETE FROM cms_content_item_translations t
+          USING cms_content_items i
+          WHERE t.content_item_id = i.id
+            AND t.source_content_version IS DISTINCT FROM i.content_version;
+          GET DIAGNOSTICS _deleted_count = ROW_COUNT;
+          RAISE NOTICE 'Deleted % stale cms_content_item_translations rows', _deleted_count;
+        END IF;
+      END
+      \$\$;" "ensure stale CMS content translation cleanup" 24; then
+      echo "❌ Could not ensure stale CMS content translation cleanup after retries."
       exit 1
     fi
 
@@ -4338,6 +4387,8 @@ data:
       template_function_source_options_json="$(jq -nc '{language:"javascript",lineNumber:true,placeholder:"return new Date(now).getFullYear();"}')"
       content_item_content_key_options_json="$(jq -nc '{empty_text:"Generated on save"}')"
       content_item_language_code_options_json="$(jq -nc '{placeholder:"en",visible_ch:6,max_length:16}')"
+      content_item_reuse_strategy_choices_json="$(jq -nc '[{text:"Shared component",value:"shared"},{text:"Copy per page",value:"copy"}]')"
+      content_item_reuse_strategy_options_json="$(jq -nc --argjson choices "${content_item_reuse_strategy_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       translation_readonly_value_options_json="$(jq -nc '{empty_text:"Managed by translation workflow"}')"
       translation_language_tags_options_json="$(jq -nc '{placeholder:"Add language codes, e.g. es, fr-CA",allowOther:true,allowDuplicates:false}')"
       translation_rules_placeholder_json="$(jq -n '[{"path":"$.brandName","translation_enabled":false},{"path":"$.cta.label","excluded_languages":["ja","ko"]},{"path":"$.hero.headline","prewarm_languages":["es","fr-CA"]},{"path":"$.legal.disclaimer","translation_enabled":true,"excluded_languages":["zh-CN"],"prewarm_languages":["de"]},{"path":"$","excluded_languages":["ar"]}]')"
@@ -4356,6 +4407,7 @@ data:
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       content_item_content_key_note="Generated from the content item name on save."
       content_item_language_code_note="Default source language code, usually en."
+      content_item_reuse_strategy_note="Shared component reuses this same content item and translations when pages are copied. Copy per page creates a separate content item for each copied page."
       translation_content_item_id_note="Source content item id for this translation; managed by the translation workflow."
       translation_language_code_note="Target language code for this translation; managed by the translation workflow."
       translation_enabled_note="Disable to always return default-language content for this content item and skip translation jobs."
@@ -4364,6 +4416,7 @@ data:
       translation_rules_note="JSON array of field rules. Empty stores [] and the editor example is display-only. Use path plus translation_enabled, excluded_languages, or prewarm_languages."
       content_item_content_key_note_sql="$(printf '%s' "${content_item_content_key_note}" | sed "s/'/''/g")"
       content_item_language_code_note_sql="$(printf '%s' "${content_item_language_code_note}" | sed "s/'/''/g")"
+      content_item_reuse_strategy_note_sql="$(printf '%s' "${content_item_reuse_strategy_note}" | sed "s/'/''/g")"
       translation_content_item_id_note_sql="$(printf '%s' "${translation_content_item_id_note}" | sed "s/'/''/g")"
       translation_language_code_note_sql="$(printf '%s' "${translation_language_code_note}" | sed "s/'/''/g")"
       translation_enabled_note_sql="$(printf '%s' "${translation_enabled_note}" | sed "s/'/''/g")"
@@ -6640,6 +6693,7 @@ data:
       _upsert_status_dropdown_field_meta "cms_content_items" 1
       _upsert_content_item_field_meta "content_key" "cms-readonly-value" "half" 2 "${content_item_content_key_note_sql}" "${content_item_content_key_options_json}" false true
       _upsert_content_item_field_meta "default_language_code" "cms-language-code-input" "half" 4 "${content_item_language_code_note_sql}" "${content_item_language_code_options_json}" true false
+      _upsert_content_item_field_meta "reuse_strategy" "select-dropdown" "half" 5 "${content_item_reuse_strategy_note_sql}" "${content_item_reuse_strategy_options_json}" true false
       _upsert_content_item_translation_group_field_meta
       _upsert_content_item_translation_field_meta "translation_enabled" "boolean" "half" 31 "${translation_enabled_note_sql}" "" true
       _upsert_content_item_translation_field_meta "translation_excluded_languages" "tags" "half" 32 "${translation_excluded_languages_note_sql}" "${translation_language_tags_options_json}" false
