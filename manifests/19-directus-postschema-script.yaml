@@ -4338,6 +4338,7 @@ data:
       template_function_source_options_json="$(jq -nc '{language:"javascript",lineNumber:true,placeholder:"return new Date(now).getFullYear();"}')"
       content_item_content_key_options_json="$(jq -nc '{empty_text:"Generated on save"}')"
       content_item_language_code_options_json="$(jq -nc '{placeholder:"en",visible_ch:6,max_length:16}')"
+      translation_readonly_value_options_json="$(jq -nc '{empty_text:"Managed by translation workflow"}')"
       translation_language_tags_options_json="$(jq -nc '{placeholder:"Add language codes, e.g. es, fr-CA",allowOther:true,allowDuplicates:false}')"
       translation_rules_placeholder_json="$(jq -n '[{"path":"$.brandName","translation_enabled":false},{"path":"$.cta.label","excluded_languages":["ja","ko"]},{"path":"$.hero.headline","prewarm_languages":["es","fr-CA"]},{"path":"$.legal.disclaimer","translation_enabled":true,"excluded_languages":["zh-CN"],"prewarm_languages":["de"]},{"path":"$","excluded_languages":["ar"]}]')"
       translation_rules_options_json="$(jq -nc --arg placeholder "${translation_rules_placeholder_json}" '{language:"json",lineNumber:true,placeholder:$placeholder}')"
@@ -4355,12 +4356,16 @@ data:
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
       content_item_content_key_note="Generated from the content item name on save."
       content_item_language_code_note="Default source language code, usually en."
+      translation_content_item_id_note="Source content item id for this translation; managed by the translation workflow."
+      translation_language_code_note="Target language code for this translation; managed by the translation workflow."
       translation_enabled_note="Disable to always return default-language content for this content item and skip translation jobs."
       translation_excluded_languages_note="Language codes that should fall back to default-language content for this item, such as es or fr-CA."
       translation_prewarm_languages_note="Language codes to enqueue for translation after this item is saved. This does not change the content version."
       translation_rules_note="JSON array of field rules. Empty stores [] and the editor example is display-only. Use path plus translation_enabled, excluded_languages, or prewarm_languages."
       content_item_content_key_note_sql="$(printf '%s' "${content_item_content_key_note}" | sed "s/'/''/g")"
       content_item_language_code_note_sql="$(printf '%s' "${content_item_language_code_note}" | sed "s/'/''/g")"
+      translation_content_item_id_note_sql="$(printf '%s' "${translation_content_item_id_note}" | sed "s/'/''/g")"
+      translation_language_code_note_sql="$(printf '%s' "${translation_language_code_note}" | sed "s/'/''/g")"
       translation_enabled_note_sql="$(printf '%s' "${translation_enabled_note}" | sed "s/'/''/g")"
       translation_excluded_languages_note_sql="$(printf '%s' "${translation_excluded_languages_note}" | sed "s/'/''/g")"
       translation_prewarm_languages_note_sql="$(printf '%s' "${translation_prewarm_languages_note}" | sed "s/'/''/g")"
@@ -6093,7 +6098,7 @@ data:
         _options_json="${6:-}"
         _required="${7:-false}"
         _readonly="${8:-false}"
-        _collection="cms_content_items"
+        _collection="${9:-cms_content_items}"
         if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
           return 0
         fi
@@ -6641,6 +6646,8 @@ data:
       _upsert_content_item_translation_field_meta "translation_prewarm_languages" "tags" "half" 33 "${translation_prewarm_languages_note_sql}" "${translation_language_tags_options_json}" false
       _upsert_content_item_translation_field_meta "translation_rules" "input-code" "full" 34 "${translation_rules_note_sql}" "${translation_rules_options_json}" false
       _upsert_status_dropdown_field_meta "cms_content_item_translations" 1
+      _upsert_content_item_field_meta "content_item_id" "cms-readonly-value" "full" 2 "${translation_content_item_id_note_sql}" "${translation_readonly_value_options_json}" true true "cms_content_item_translations"
+      _upsert_content_item_field_meta "language_code" "cms-readonly-value" "half" 3 "${translation_language_code_note_sql}" "${translation_readonly_value_options_json}" true true "cms_content_item_translations"
       _upsert_status_dropdown_field_meta "cms_content_translation_jobs" 1
       _upsert_status_dropdown_field_meta "cms_translation_languages" 1
       _upsert_status_dropdown_field_meta "cms_template_functions" 1
