@@ -54,6 +54,10 @@ data:
                    analytics_google_measurement_id = NULLIF(BTRIM(analytics_google_measurement_id), ''),
                    analytics_openobserve_rum_script_url = NULLIF(BTRIM(analytics_openobserve_rum_script_url), ''),
                    analytics_openobserve_rum_config = CASE WHEN analytics_openobserve_rum_config IS NULL OR jsonb_typeof(analytics_openobserve_rum_config) IS DISTINCT FROM 'object' THEN '{}'::jsonb ELSE analytics_openobserve_rum_config END,
+                   page_cache_enabled = COALESCE(page_cache_enabled, false),
+                   page_cache_browser_max_age_seconds = LEAST(86400, GREATEST(0, COALESCE(page_cache_browser_max_age_seconds, 0))),
+                   page_cache_cdn_max_age_seconds = LEAST(604800, GREATEST(0, COALESCE(page_cache_cdn_max_age_seconds, 60))),
+                   page_cache_stale_while_revalidate_seconds = LEAST(604800, GREATEST(0, COALESCE(page_cache_stale_while_revalidate_seconds, 300))),
                    head_title = NULLIF(BTRIM(head_title), ''),
                    head_description = NULLIF(BTRIM(head_description), ''),
                    head_theme_color = CASE WHEN NULLIF(BTRIM(head_theme_color), '') IS NULL THEN NULL WHEN LOWER(NULLIF(BTRIM(head_theme_color), '')) ~ '^#[0-9a-f]{3}([0-9a-f]{3}|[0-9a-f]{5})?$' THEN LOWER(NULLIF(BTRIM(head_theme_color), '')) ELSE NULL END,
@@ -216,6 +220,10 @@ data:
             ALTER TABLE cms_pages ALTER COLUMN widget_dock_direction SET DEFAULT 'vertical';
             ALTER TABLE cms_pages ALTER COLUMN theme_selector_dock_position SET DEFAULT 'start';
             ALTER TABLE cms_pages ALTER COLUMN analytics_openobserve_rum_config SET DEFAULT '{}'::jsonb;
+            ALTER TABLE cms_pages ALTER COLUMN page_cache_enabled SET DEFAULT false;
+            ALTER TABLE cms_pages ALTER COLUMN page_cache_browser_max_age_seconds SET DEFAULT 0;
+            ALTER TABLE cms_pages ALTER COLUMN page_cache_cdn_max_age_seconds SET DEFAULT 60;
+            ALTER TABLE cms_pages ALTER COLUMN page_cache_stale_while_revalidate_seconds SET DEFAULT 300;
             ALTER TABLE cms_pages ALTER COLUMN force_login_for_page_access SET DEFAULT false;
             IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_refresh_target_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
               ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_refresh_target_check CHECK (refresh_target IN ('preview','prod','both'));
@@ -225,6 +233,15 @@ data:
             END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_theme_mode_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
               ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_theme_mode_check CHECK (theme_mode IN ('auto','light','dark'));
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_page_cache_browser_max_age_seconds_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
+              ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_page_cache_browser_max_age_seconds_check CHECK (page_cache_browser_max_age_seconds IS NULL OR (page_cache_browser_max_age_seconds >= 0 AND page_cache_browser_max_age_seconds <= 86400));
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_page_cache_cdn_max_age_seconds_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
+              ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_page_cache_cdn_max_age_seconds_check CHECK (page_cache_cdn_max_age_seconds IS NULL OR (page_cache_cdn_max_age_seconds >= 0 AND page_cache_cdn_max_age_seconds <= 604800));
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_page_cache_stale_while_revalidate_seconds_check' AND conrelid = to_regclass('directus.cms_pages')) THEN
+              ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_page_cache_stale_while_revalidate_seconds_check CHECK (page_cache_stale_while_revalidate_seconds IS NULL OR (page_cache_stale_while_revalidate_seconds >= 0 AND page_cache_stale_while_revalidate_seconds <= 604800));
             END IF;
           END IF;
 

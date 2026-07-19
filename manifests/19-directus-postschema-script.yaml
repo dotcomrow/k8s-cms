@@ -527,6 +527,10 @@ data:
              ('cms_pages','layout_template_key'), \
              ('cms_pages','layout_chrome'), \
              ('cms_pages','theme_package_key'), \
+             ('cms_pages','page_cache_enabled'), \
+             ('cms_pages','page_cache_browser_max_age_seconds'), \
+             ('cms_pages','page_cache_cdn_max_age_seconds'), \
+             ('cms_pages','page_cache_stale_while_revalidate_seconds'), \
              ('cms_page_blocks','page_id'), \
              ('cms_page_blocks','collection'), \
              ('cms_page_blocks','item'), \
@@ -862,6 +866,10 @@ data:
          analytics_google_measurement_id TEXT NULL, \
          analytics_openobserve_rum_script_url TEXT NULL, \
          analytics_openobserve_rum_config JSONB NULL, \
+         page_cache_enabled BOOLEAN NULL, \
+         page_cache_browser_max_age_seconds INTEGER NULL, \
+         page_cache_cdn_max_age_seconds INTEGER NULL, \
+         page_cache_stale_while_revalidate_seconds INTEGER NULL, \
          head_title TEXT NULL, \
          head_description TEXT NULL, \
          head_theme_color TEXT NULL, \
@@ -1066,6 +1074,10 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS analytics_google_measurement_id TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS analytics_openobserve_rum_script_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS analytics_openobserve_rum_config JSONB; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS page_cache_enabled BOOLEAN; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS page_cache_browser_max_age_seconds INTEGER; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS page_cache_cdn_max_age_seconds INTEGER; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS page_cache_stale_while_revalidate_seconds INTEGER; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_title TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_description TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_theme_color TEXT; \
@@ -4323,6 +4335,10 @@ data:
       analytics_google_measurement_id_note="Optional: Google Analytics 4 measurement id (example: G-XXXXXXXXXX). Leave empty to disable GA."
       analytics_openobserve_rum_script_url_note="Optional: OpenObserve browser RUM script URL. Leave empty to disable OpenObserve RUM for this page."
       analytics_openobserve_rum_config_note="Optional JSON object passed to OpenObserve RUM init. Used only when OpenObserve script URL is set."
+      page_cache_enabled_note="Enable public HTML response caching for this page. Only use for public pages with no per-user HTML. The shell ignores this when Force Login For Page Access is enabled."
+      page_cache_browser_max_age_seconds_note="Browser Cache-Control max-age in seconds. Use 0 to make browsers revalidate while Cloudflare can still cache."
+      page_cache_cdn_max_age_seconds_note="Cloudflare CDN s-maxage in seconds. Use 0 to disable CDN HTML caching even when page caching is enabled. If this page varies by Accept-Language, Cloudflare Cache Rules must vary on Accept-Language."
+      page_cache_stale_while_revalidate_seconds_note="Cloudflare stale-while-revalidate window in seconds after CDN max-age expires."
       seo_title_note="Primary default title for SEO/browser metadata. Recommended: set SEO Title + SEO Description, then leave Head Title/Description empty unless override is needed."
       seo_description_note="Primary default description for SEO/browser metadata. Recommended: set this once and only use Head Description when a page-specific override is needed."
       head_title_note="Override only: set when browser title must differ from SEO Title. Leave empty to use SEO Title, then page Title."
@@ -4468,6 +4484,7 @@ data:
       widget_dock_dependent_readonly_conditions_json="$(jq -nc '[{"name":"Widget dock disabled","rule":{"widget_dock_enabled":{"_neq":true}},"readonly":true}]')"
       required_role_for_page_access_hidden_conditions_json="$(jq -nc '[{"name":"Force login + site key required","rule":{"_or":[{"force_login_for_page_access":{"_neq":true}},{"site_key":{"_empty":true}}]},"hidden":true}]')"
       openobserve_config_readonly_conditions_json="$(jq -nc '[{"name":"OpenObserve URL required","rule":{"_or":[{"analytics_openobserve_rum_script_url":{"_null":true}},{"analytics_openobserve_rum_script_url":{"_eq":""}}]},"readonly":true}]')"
+      page_cache_dependent_readonly_conditions_json="$(jq -nc '[{"name":"Page cache disabled","rule":{"page_cache_enabled":{"_neq":true}},"readonly":true}]')"
       hero_background_asset_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,store_file_id:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
       template_note_sql="$(printf '%s' "${template_note}" | sed "s/'/''/g")"
@@ -4484,6 +4501,10 @@ data:
       analytics_google_measurement_id_note_sql="$(printf '%s' "${analytics_google_measurement_id_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_script_url_note_sql="$(printf '%s' "${analytics_openobserve_rum_script_url_note}" | sed "s/'/''/g")"
       analytics_openobserve_rum_config_note_sql="$(printf '%s' "${analytics_openobserve_rum_config_note}" | sed "s/'/''/g")"
+      page_cache_enabled_note_sql="$(printf '%s' "${page_cache_enabled_note}" | sed "s/'/''/g")"
+      page_cache_browser_max_age_seconds_note_sql="$(printf '%s' "${page_cache_browser_max_age_seconds_note}" | sed "s/'/''/g")"
+      page_cache_cdn_max_age_seconds_note_sql="$(printf '%s' "${page_cache_cdn_max_age_seconds_note}" | sed "s/'/''/g")"
+      page_cache_stale_while_revalidate_seconds_note_sql="$(printf '%s' "${page_cache_stale_while_revalidate_seconds_note}" | sed "s/'/''/g")"
       seo_title_note_sql="$(printf '%s' "${seo_title_note}" | sed "s/'/''/g")"
       seo_description_note_sql="$(printf '%s' "${seo_description_note}" | sed "s/'/''/g")"
       head_title_note_sql="$(printf '%s' "${head_title_note}" | sed "s/'/''/g")"
@@ -4524,6 +4545,10 @@ data:
       head_canonical_url_name_sql="$(printf '%s' "Canonical URL" | sed "s/'/''/g")"
       head_robots_name_sql="$(printf '%s' "Robots" | sed "s/'/''/g")"
       head_generator_name_sql="$(printf '%s' "Generator" | sed "s/'/''/g")"
+      page_cache_enabled_name_sql="$(printf '%s' "Enable Page Cache" | sed "s/'/''/g")"
+      page_cache_browser_max_age_seconds_name_sql="$(printf '%s' "Browser Max Age Seconds" | sed "s/'/''/g")"
+      page_cache_cdn_max_age_seconds_name_sql="$(printf '%s' "CDN Max Age Seconds" | sed "s/'/''/g")"
+      page_cache_stale_while_revalidate_seconds_name_sql="$(printf '%s' "Stale While Revalidate Seconds" | sed "s/'/''/g")"
       force_login_for_page_access_name_sql="$(printf '%s' "Force Login For Page Access" | sed "s/'/''/g")"
       required_role_for_page_access_name_sql="$(printf '%s' "Required Role For Page Access" | sed "s/'/''/g")"
       layout_chrome_name_sql="$(printf '%s' "Layout Chrome" | sed "s/'/''/g")"
@@ -6714,6 +6739,10 @@ data:
       _upsert_page_theme_selector_dock_position_field_meta
       _upsert_page_head_input_field_meta "force_login_for_page_access" 12 "half" "${force_login_for_page_access_note_sql}" "boolean" "" "${force_login_for_page_access_name_sql}"
       _upsert_page_head_input_field_meta "required_role_for_page_access" 13 "half" "${required_role_for_page_access_note_sql}" "cms-content-model-select" "${role_interface_options_json}" "${required_role_for_page_access_name_sql}"
+      _upsert_page_head_input_field_meta "page_cache_enabled" 1 "half" "${page_cache_enabled_note_sql}" "boolean" "" "${page_cache_enabled_name_sql}"
+      _upsert_page_head_input_field_meta "page_cache_browser_max_age_seconds" 2 "half" "${page_cache_browser_max_age_seconds_note_sql}" "input" "" "${page_cache_browser_max_age_seconds_name_sql}"
+      _upsert_page_head_input_field_meta "page_cache_cdn_max_age_seconds" 3 "half" "${page_cache_cdn_max_age_seconds_note_sql}" "input" "" "${page_cache_cdn_max_age_seconds_name_sql}"
+      _upsert_page_head_input_field_meta "page_cache_stale_while_revalidate_seconds" 4 "half" "${page_cache_stale_while_revalidate_seconds_note_sql}" "input" "" "${page_cache_stale_while_revalidate_seconds_name_sql}"
       _upsert_page_head_input_field_meta "seo_title" 9 "full" "${seo_title_note_sql}" "input" "" "${seo_title_name_sql}"
       _upsert_page_head_input_field_meta "seo_description" 10 "full" "${seo_description_note_sql}" "input-multiline" "" "${seo_description_name_sql}"
       _upsert_page_head_input_field_meta "head_title" 11 "half" "${head_title_note_sql}" "input" "" "${head_title_name_sql}"
@@ -6781,13 +6810,14 @@ data:
       _set_content_item_field_conditions "content_template_key" "${content_item_template_conditions_json}"
       _upsert_status_dropdown_field_meta "cms_modules" 1
       _upsert_page_section_group_field_meta "_section_page_settings" "Page (Core Settings)" 1 "article"
-      _upsert_page_section_group_field_meta "_section_layout" "Section Layout" 8 "dashboard_customize"
+      _upsert_page_section_group_field_meta "_section_layout" "Section Layout" 9 "dashboard_customize"
       _upsert_page_section_group_field_meta "_section_theme" "Theme (Family + Mode)" 3 "palette"
       _upsert_page_section_group_field_meta "_section_widget_dock" "Widget Dock (UI Controls)" 4 "widgets"
       _upsert_page_section_group_field_meta "_section_analytics" "Analytics + Monitoring (Optional)" 5 "insights"
       _upsert_page_section_group_field_meta "_section_seo" "SEO (Primary Defaults)" 6 "manage_search"
       _upsert_page_section_group_field_meta "_section_meta" "Head + Icons (Optional Overrides)" 7 "flag"
-      _upsert_page_section_group_field_meta "_section_blocks" "Section Blocks" 9 "account_tree"
+      _upsert_page_section_group_field_meta "_section_cache" "Page Cache (HTML Delivery)" 8 "cached"
+      _upsert_page_section_group_field_meta "_section_blocks" "Section Blocks" 10 "account_tree"
       _assign_page_field_group "site_key" "_section_page_settings"
       _assign_page_field_group "date_created" "_section_page_settings"
       _assign_page_field_group "date_updated" "_section_page_settings"
@@ -6810,6 +6840,10 @@ data:
       _assign_page_field_group "analytics_google_measurement_id" "_section_analytics"
       _assign_page_field_group "analytics_openobserve_rum_script_url" "_section_analytics"
       _assign_page_field_group "analytics_openobserve_rum_config" "_section_analytics"
+      _assign_page_field_group "page_cache_enabled" "_section_cache"
+      _assign_page_field_group "page_cache_browser_max_age_seconds" "_section_cache"
+      _assign_page_field_group "page_cache_cdn_max_age_seconds" "_section_cache"
+      _assign_page_field_group "page_cache_stale_while_revalidate_seconds" "_section_cache"
       _assign_page_field_group "seo_title" "_section_seo"
       _assign_page_field_group "seo_description" "_section_seo"
       _assign_page_field_group "head_title" "_section_meta"
@@ -6842,6 +6876,10 @@ data:
       _set_page_field_note "refresh_target" "${refresh_note_sql}"
       _set_page_field_note "force_login_for_page_access" "${force_login_for_page_access_note_sql}"
       _set_page_field_note "required_role_for_page_access" "${required_role_for_page_access_note_sql}"
+      _set_page_field_note "page_cache_enabled" "${page_cache_enabled_note_sql}"
+      _set_page_field_note "page_cache_browser_max_age_seconds" "${page_cache_browser_max_age_seconds_note_sql}"
+      _set_page_field_note "page_cache_cdn_max_age_seconds" "${page_cache_cdn_max_age_seconds_note_sql}"
+      _set_page_field_note "page_cache_stale_while_revalidate_seconds" "${page_cache_stale_while_revalidate_seconds_note_sql}"
       _set_page_field_note "layout_template_key" "${template_note_sql}"
       _set_page_field_note "layout_chrome" "${layout_chrome_note_sql}"
       _set_page_field_note "theme_package_key" "${theme_note_sql}"
@@ -6851,6 +6889,9 @@ data:
       _set_page_field_conditions "widget_dock_direction" "${widget_dock_dependent_readonly_conditions_json}"
       _set_page_field_conditions "theme_selector_dock_position" "${widget_dock_dependent_readonly_conditions_json}"
       _set_page_field_conditions "analytics_openobserve_rum_config" "${openobserve_config_readonly_conditions_json}"
+      _set_page_field_conditions "page_cache_browser_max_age_seconds" "${page_cache_dependent_readonly_conditions_json}"
+      _set_page_field_conditions "page_cache_cdn_max_age_seconds" "${page_cache_dependent_readonly_conditions_json}"
+      _set_page_field_conditions "page_cache_stale_while_revalidate_seconds" "${page_cache_dependent_readonly_conditions_json}"
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "template_group_key" 72
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "template_root_block_id" 73
       _upsert_hidden_internal_field_meta_dynamic "cms_page_blocks" "template_ancestor_block_ids" 74
