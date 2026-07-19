@@ -527,6 +527,7 @@ data:
       status: str = "published"
       source_content_version: int
       source_hash: Optional[str] = None
+      translation_job_id: Optional[str] = None
       content_json: Dict[str, Any]
       model: Optional[str] = None
       prompt_version: Optional[str] = None
@@ -1107,6 +1108,30 @@ data:
           "error": str(exc),
         }), flush=True)
 
+    async def mark_upsert_translation_job_safely(payload: UpsertTranslationRequest, status: str, last_error: Optional[str] = None) -> None:
+      job_id = str(payload.translation_job_id or "").strip()
+      if job_id:
+        try:
+          await patch_translation_job(job_id, status, last_error)
+          return
+        except Exception as exc:
+          print(json.dumps({
+            "event": "translation_job_id_status_update_failed",
+            "translation_job_id": job_id,
+            "content_item_id": payload.content_item_id,
+            "language_code": payload.language_code,
+            "source_content_version": payload.source_content_version,
+            "status": status,
+            "error": str(exc),
+          }), flush=True)
+      await mark_translation_jobs_safely(
+        payload.content_item_id,
+        payload.language_code,
+        payload.source_content_version,
+        status,
+        last_error,
+      )
+
     def is_synthetic_block_content_item(item: ContentItem) -> bool:
       return item.source_kind == "cms_block" and bool((item.content_key or "").startswith(SYNTHETIC_BLOCK_CONTENT_KEY_PREFIX))
 
@@ -1201,10 +1226,8 @@ data:
       headers = await directus_headers()
       source_item = await fetch_source_content_item(payload.content_item_id)
       if source_item is None:
-        await mark_translation_jobs_safely(
-          payload.content_item_id,
-          payload.language_code,
-          payload.source_content_version,
+        await mark_upsert_translation_job_safely(
+          payload,
           "failed",
           "source_content_item_not_found",
         )
@@ -1214,10 +1237,8 @@ data:
         })
       source_policy_item = ContentItem.model_validate(source_item)
       if content_item_translation_blocked(source_policy_item, payload.language_code):
-        await mark_translation_jobs_safely(
-          payload.content_item_id,
-          payload.language_code,
-          payload.source_content_version,
+        await mark_upsert_translation_job_safely(
+          payload,
           "failed",
           "translation_disabled_by_policy",
         )
@@ -1234,10 +1255,8 @@ data:
         payload.language_code,
       )
       if validation_errors:
-        await mark_translation_jobs_safely(
-          payload.content_item_id,
-          payload.language_code,
-          payload.source_content_version,
+        await mark_upsert_translation_job_safely(
+          payload,
           "failed",
           "translation_content_json_shape_mismatch",
         )
@@ -1249,10 +1268,8 @@ data:
         })
       source_content_version = source_item.get("content_version")
       if source_content_version is not None and payload.source_content_version != source_content_version:
-        await mark_translation_jobs_safely(
-          payload.content_item_id,
-          payload.language_code,
-          payload.source_content_version,
+        await mark_upsert_translation_job_safely(
+          payload,
           "failed",
           "translation_source_version_stale",
         )
@@ -1266,10 +1283,8 @@ data:
       source_hash = str(source_item.get("source_hash") or "").strip()
       payload_hash = str(payload.source_hash or "").strip()
       if source_hash and payload_hash and payload_hash != source_hash:
-        await mark_translation_jobs_safely(
-          payload.content_item_id,
-          payload.language_code,
-          payload.source_content_version,
+        await mark_upsert_translation_job_safely(
+          payload,
           "failed",
           "translation_source_hash_stale",
         )
@@ -1320,10 +1335,8 @@ data:
               log_directus_upsert_failure(payload, response, "create_translation")
         response.raise_for_status()
       data = response.json().get("data", {})
-      await mark_translation_jobs_safely(
-        payload.content_item_id,
-        payload.language_code,
-        payload.source_content_version,
+      await mark_upsert_translation_job_safely(
+        payload,
         "succeeded",
       )
       return {
