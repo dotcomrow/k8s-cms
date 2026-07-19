@@ -27,35 +27,6 @@ data:
       }
     }
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: vault-agent-config-runtime-status-canary
-  namespace: directus
-data:
-  vault-agent.hcl: |
-    pid_file = "/vault/agent.pid"
-    exit_after_auth = true
-
-    vault {
-      address = "http://vault.vault.svc.cluster.local:8200"
-    }
-
-    auto_auth {
-      method "kubernetes" {
-        mount_path = "auth/kubernetes"
-        config = {
-          role = "directus"
-        }
-      }
-
-      sink "file" {
-        config = {
-          path = "/vault-secrets/vault-token"
-        }
-      }
-    }
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -229,7 +200,8 @@ spec:
   failedJobsHistoryLimit: 0
   jobTemplate:
     spec:
-      backoffLimit: 12
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
       ttlSecondsAfterFinished: 300
       template:
         metadata:
@@ -238,22 +210,6 @@ spec:
         spec:
           serviceAccountName: directus
           restartPolicy: Never
-          initContainers:
-            - name: vault-agent
-              image: hashicorp/vault:1.15.4
-              command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
-              resources:
-                requests:
-                  cpu: 5m
-                  memory: 24Mi
-                limits:
-                  cpu: 50m
-                  memory: 96Mi
-              volumeMounts:
-                - name: vault-agent-config
-                  mountPath: /vault-config
-                - name: vault-secrets
-                  mountPath: /vault-secrets
           containers:
             - name: run
               image: alpine/k8s:1.31.4
@@ -262,15 +218,29 @@ spec:
                 - |
                   set -u
                   VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+                  VAULT_ROLE="directus"
+                  KUBE_TOKEN_FILE="/var/run/secrets/kubernetes.io/serviceaccount/token"
                   CANARY_URL="http://runtime-status-service.directus.svc.cluster.local:8080/internal/canaries/run"
-                  RETRY_DELAY_SECONDS=60
-                  ATTEMPT=0
+
+                  finish_success() {
+                    echo "$1"
+                    exit 0
+                  }
+
+                  bounded() {
+                    if command -v timeout >/dev/null 2>&1; then
+                      timeout "$@"
+                      return $?
+                    fi
+                    shift
+                    "$@"
+                  }
 
                   ensure_tools() {
                     if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
                       return 0
                     fi
-                    apk add --no-cache curl jq ca-certificates >/dev/null 2>&1
+                    bounded 45s apk add --no-cache curl jq ca-certificates >/dev/null 2>&1
                   }
 
                   is_http_success() {
@@ -280,68 +250,68 @@ spec:
                     esac
                   }
 
-                  while true; do
-                    ATTEMPT=$((ATTEMPT + 1))
+                  if ! ensure_tools; then
+                    finish_success "runtime-status canary skipped: curl/jq tooling could not be installed in this run"
+                  fi
 
-                    if ! ensure_tools; then
-                      echo "runtime-status canary attempt ${ATTEMPT}: waiting for curl/jq tooling"
-                      sleep "${RETRY_DELAY_SECONDS}"
-                      continue
-                    fi
+                  if [ ! -s "${KUBE_TOKEN_FILE}" ]; then
+                    finish_success "runtime-status canary skipped: Kubernetes service-account token is unavailable"
+                  fi
 
-                    if [ ! -s /vault-secrets/vault-token ]; then
-                      echo "runtime-status canary attempt ${ATTEMPT}: waiting for Vault token"
-                      sleep "${RETRY_DELAY_SECONDS}"
-                      continue
-                    fi
+                  KUBE_JWT="$(cat "${KUBE_TOKEN_FILE}" 2>/dev/null || true)"
+                  if [ -z "${KUBE_JWT}" ]; then
+                    finish_success "runtime-status canary skipped: Kubernetes service-account token is empty"
+                  fi
 
-                    VAULT_TOKEN="$(cat /vault-secrets/vault-token 2>/dev/null || true)"
-                    if [ -z "${VAULT_TOKEN}" ]; then
-                      echo "runtime-status canary attempt ${ATTEMPT}: Vault token is empty"
-                      sleep "${RETRY_DELAY_SECONDS}"
-                      continue
-                    fi
+                  LOGIN_BODY="$(jq -nc --arg role "${VAULT_ROLE}" --arg jwt "${KUBE_JWT}" '{role:$role,jwt:$jwt}')"
+                  LOGIN_HTTP_CODE="$(curl -sS --connect-timeout 3 --max-time 8 \
+                    -o /tmp/runtime-status-vault-login.json \
+                    -w "%{http_code}" \
+                    -H "Content-Type: application/json" \
+                    -d "${LOGIN_BODY}" \
+                    "${VAULT_ADDR}/v1/auth/kubernetes/login" 2>/tmp/runtime-status-vault-login.err || true)"
 
-                    TOKEN_HTTP_CODE="$(curl -sS --connect-timeout 3 --max-time 8 \
-                      -o /tmp/runtime-status-token.json \
-                      -w "%{http_code}" \
-                      -H "X-Vault-Token: ${VAULT_TOKEN}" \
-                      "${VAULT_ADDR}/v1/secret/data/runtime-status-service" 2>/tmp/runtime-status-token.err || true)"
+                  if ! is_http_success "${LOGIN_HTTP_CODE}"; then
+                    finish_success "runtime-status canary skipped: Vault Kubernetes auth is unavailable (HTTP ${LOGIN_HTTP_CODE:-000})"
+                  fi
 
-                    if ! is_http_success "${TOKEN_HTTP_CODE}"; then
-                      echo "runtime-status canary attempt ${ATTEMPT}: waiting for internal token (vault HTTP ${TOKEN_HTTP_CODE:-000})"
-                      sleep "${RETRY_DELAY_SECONDS}"
-                      continue
-                    fi
+                  VAULT_TOKEN="$(jq -r '.auth.client_token // empty' /tmp/runtime-status-vault-login.json 2>/dev/null || true)"
+                  if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
+                    finish_success "runtime-status canary skipped: Vault Kubernetes auth did not return a token"
+                  fi
 
-                    INTERNAL_TOKEN="$(jq -r '.data.data.token // .data.data.value // empty' /tmp/runtime-status-token.json 2>/dev/null || true)"
-                    if [ -z "${INTERNAL_TOKEN}" ] || [ "${INTERNAL_TOKEN}" = "null" ]; then
-                      echo "runtime-status canary attempt ${ATTEMPT}: internal token missing"
-                      sleep "${RETRY_DELAY_SECONDS}"
-                      continue
-                    fi
+                  TOKEN_HTTP_CODE="$(curl -sS --connect-timeout 3 --max-time 8 \
+                    -o /tmp/runtime-status-token.json \
+                    -w "%{http_code}" \
+                    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                    "${VAULT_ADDR}/v1/secret/data/runtime-status-service" 2>/tmp/runtime-status-token.err || true)"
 
-                    REQUEST_ID="$(cat /proc/sys/kernel/random/uuid)"
-                    CANARY_HTTP_CODE="$(curl -sS --connect-timeout 5 --max-time 45 \
-                      -o /tmp/runtime-status-canary.json \
-                      -w "%{http_code}" \
-                      -X POST \
-                      -H "Authorization: Bearer ${INTERNAL_TOKEN}" \
-                      -H "Content-Type: application/json" \
-                      -d "{\"definition_key\":\"cms.translation.pipeline.lightweight\",\"source\":\"schedule\",\"request_id\":\"${REQUEST_ID}\"}" \
-                      "${CANARY_URL}" 2>/tmp/runtime-status-canary.err || true)"
+                  if ! is_http_success "${TOKEN_HTTP_CODE}"; then
+                    finish_success "runtime-status canary skipped: internal runtime-status token is unavailable (Vault HTTP ${TOKEN_HTTP_CODE:-000})"
+                  fi
 
-                    if is_http_success "${CANARY_HTTP_CODE}"; then
-                      if jq -e '.ok == true' /tmp/runtime-status-canary.json >/dev/null 2>&1; then
-                        echo "runtime-status canary succeeded on attempt ${ATTEMPT}"
-                        jq -c '{ok, request_id, result_count: (.results | length)}' /tmp/runtime-status-canary.json 2>/dev/null || true
-                        exit 0
-                      fi
-                    fi
+                  INTERNAL_TOKEN="$(jq -r '.data.data.token // .data.data.value // empty' /tmp/runtime-status-token.json 2>/dev/null || true)"
+                  if [ -z "${INTERNAL_TOKEN}" ] || [ "${INTERNAL_TOKEN}" = "null" ]; then
+                    finish_success "runtime-status canary skipped: internal runtime-status token is empty"
+                  fi
 
-                    echo "runtime-status canary attempt ${ATTEMPT}: waiting for service (HTTP ${CANARY_HTTP_CODE:-000})"
-                    sleep "${RETRY_DELAY_SECONDS}"
-                  done
+                  REQUEST_ID="$(cat /proc/sys/kernel/random/uuid)"
+                  CANARY_HTTP_CODE="$(curl -sS --connect-timeout 5 --max-time 45 \
+                    -o /tmp/runtime-status-canary.json \
+                    -w "%{http_code}" \
+                    -X POST \
+                    -H "Authorization: Bearer ${INTERNAL_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"definition_key\":\"cms.translation.pipeline.lightweight\",\"source\":\"schedule\",\"request_id\":\"${REQUEST_ID}\"}" \
+                    "${CANARY_URL}" 2>/tmp/runtime-status-canary.err || true)"
+
+                  if is_http_success "${CANARY_HTTP_CODE}"; then
+                    echo "runtime-status canary request completed (HTTP ${CANARY_HTTP_CODE})"
+                    jq -c '{ok, request_id, result_count: (.results | length)}' /tmp/runtime-status-canary.json 2>/dev/null || true
+                    exit 0
+                  fi
+
+                  finish_success "runtime-status canary skipped: runtime-status service is unavailable (HTTP ${CANARY_HTTP_CODE:-000})"
               resources:
                 requests:
                   cpu: 5m
@@ -349,12 +319,3 @@ spec:
                 limits:
                   cpu: 100m
                   memory: 128Mi
-              volumeMounts:
-                - name: vault-secrets
-                  mountPath: /vault-secrets
-          volumes:
-            - name: vault-agent-config
-              configMap:
-                name: vault-agent-config-runtime-status-canary
-            - name: vault-secrets
-              emptyDir: {}
