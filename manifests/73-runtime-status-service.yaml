@@ -23,6 +23,7 @@ data:
       sink "file" {
         config = {
           path = "/vault-secrets/vault-token"
+          mode = 0644
         }
       }
     }
@@ -201,10 +202,12 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 180
       ttlSecondsAfterFinished: 300
       template:
         metadata:
+          annotations:
+            linkerd.io/inject: "disabled"
           labels:
             app: runtime-status-lightweight-canary
         spec:
@@ -240,7 +243,7 @@ spec:
                     if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
                       return 0
                     fi
-                    bounded 45s apk add --no-cache curl jq ca-certificates >/dev/null 2>&1
+                    bounded 45 apk add --no-cache curl jq ca-certificates >/dev/null 2>&1
                   }
 
                   is_http_success() {
