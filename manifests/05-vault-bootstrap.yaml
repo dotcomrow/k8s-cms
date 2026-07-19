@@ -109,6 +109,12 @@ spec:
                 TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
                 vault kv put secret/cms-content-resolver token="$TOKEN"
               fi
+
+              # Internal bearer token used by the runtime canary CronJob when calling runtime-status-service.
+              if ! vault kv get -format=json secret/runtime-status-service >/dev/null 2>&1; then
+                TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+                vault kv put secret/runtime-status-service token="$TOKEN"
+              fi
               
               # Redis password is already managed in existing Redis instance
 
@@ -185,6 +191,7 @@ spec:
               path "secret/data/directus/gravitee/clients/*"        { capabilities = ["read"] }
               path "secret/data/directus/gravitee/openapi/*"        { capabilities = ["read"] }
               path "secret/data/cms-content-resolver"               { capabilities = ["read"] }
+              path "secret/data/runtime-status-service"              { capabilities = ["read"] }
               path "secret/data/keycloak-client-id-*"               { capabilities = ["read"] }
               path "secret/data/keycloak-client-secret-*"           { capabilities = ["read"] }
               path "secret/data/kafka-scram-user-cms-content-resolver"          { capabilities = ["read"] }

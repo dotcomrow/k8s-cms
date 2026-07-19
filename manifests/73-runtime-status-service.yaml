@@ -1,0 +1,296 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config-runtime-status-service
+  namespace: directus
+data:
+  vault-agent.hcl: |
+    pid_file = "/vault/agent.pid"
+    exit_after_auth = false
+
+    vault {
+      address = "http://vault.vault.svc.cluster.local:8200"
+    }
+
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "directus"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault-secrets/vault-token"
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config-runtime-status-canary
+  namespace: directus
+data:
+  vault-agent.hcl: |
+    pid_file = "/vault/agent.pid"
+    exit_after_auth = true
+
+    vault {
+      address = "http://vault.vault.svc.cluster.local:8200"
+    }
+
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "directus"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault-secrets/vault-token"
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-status-service
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    reloader.stakater.com/auto: "true"
+  labels:
+    app: runtime-status-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: runtime-status-service
+  template:
+    metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
+      labels:
+        app: runtime-status-service
+    spec:
+      serviceAccountName: directus
+      containers:
+        - name: vault-agent
+          image: hashicorp/vault:1.15.4
+          command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 24Mi
+            limits:
+              cpu: 50m
+              memory: 96Mi
+          volumeMounts:
+            - name: vault-agent-config
+              mountPath: /vault-config
+            - name: vault-secrets
+              mountPath: /vault-secrets
+        - name: runtime-status-service
+          image: "ghcr.io/dotcomrow/runtime-status-service:latest"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DIRECTUS_BASE_URL
+              value: "http://directus-service.directus.svc.cluster.local:8055"
+            - name: DIRECTUS_HEALTH_PATH
+              value: "/server/health"
+            - name: DIRECTUS_TOKEN_VAULT_PATH
+              value: "secret/data/directus/gravitee/openapi/admin"
+            - name: DIRECTUS_TOKEN_VAULT_KEY
+              value: "token"
+            - name: INTERNAL_TOKEN_VAULT_PATH
+              value: "secret/data/runtime-status-service"
+            - name: INTERNAL_TOKEN_VAULT_KEY
+              value: "token"
+            - name: VAULT_ADDR
+              value: "http://vault.vault.svc.cluster.local:8200"
+            - name: VAULT_TOKEN_FILE
+              value: "/vault-secrets/vault-token"
+            - name: OPENAPI_SERVER_URL
+              value: "http://runtime-status-service.directus.svc.cluster.local:8080"
+            - name: REQUEST_TIMEOUT_MS
+              value: "8000"
+            - name: RUN_TIMEOUT_MS
+              value: "30000"
+            - name: RATE_MAX
+              value: "90"
+          resources:
+            requests:
+              cpu: 20m
+              memory: 96Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault-secrets
+      volumes:
+        - name: vault-agent-config
+          configMap:
+            name: vault-agent-config-runtime-status-service
+        - name: vault-secrets
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime-status-service
+  namespace: directus
+  annotations:
+    gravitee.io/expose: "true"
+    gravitee.io/context-path: "/runtime-status"
+    gravitee.io/auth-required: "directus-token"
+    gravitee.io/approval-required: "admin"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
+    gravitee.io/description: "Runtime canary status and low-impact platform checks"
+    gravitee.io/version: "latest"
+    gravitee.io/tags: "directus,cms,hasura,canary,runtime,status"
+    gravitee.io/definition-name: "runtime-status-api"
+    gravitee.io/definition-summary: "Runtime status canary API"
+    gravitee.io/definition-description: "Stores canary definitions and run history, and exposes low-impact runtime status through Hasura actions."
+    gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-visibility: "PUBLIC"
+    gravitee.io/definition-state: "STARTED"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
+    gravitee.io/definition-openapi-url: "http://runtime-status-service.directus.svc.cluster.local:8080/openapi.json"
+    gravitee.io/definition-context-path: "/runtime-status"
+    gravitee.io/definition-version: "latest"
+    gravitee.io/definition-listener-host: "runtime-status-service.directus.svc.cluster.local"
+    gravitee.io/definition-listener-port: "8080"
+    gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-tags: "directus,cms,hasura,canary,runtime,status"
+    gravitee.io/definition-labels: "internal,cms,hasura,canary,status"
+    gravitee.io/definition-categories: "infra"
+    gravitee.io/definition-path-mappings: "/runtime-status/*"
+    gravitee.io/definition-metadata: '{"owner":"infra","service":"runtime-status","slack":"#infra"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
+    gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":15000,"readTimeout":60000,"idleTimeout":60000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":10}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"runtime-status-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://runtime-status-service.directus.svc.cluster.local:8080"},"secondary":false}]}]'
+    gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://runtime-status-service.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+    gravitee.io/definition-resources: '[]'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"Runtime status API access is enforced by GraphQL/Gravitee auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"}}'
+    gravitee.io/definition-flows: '[]'
+    gravitee.io/definition-response-templates: '{}'
+    gravitee.io/definition-analytics: '{"enabled":true,"logging":{"condition":"true","content":{"headers":true,"payload":false,"messageHeaders":false,"messageMetadata":false,"messagePayload":false},"mode":{"entrypoint":true,"endpoint":true},"phase":{"request":true,"response":true}}}'
+    gravitee.io/definition-entrypoints: '[]'
+  labels:
+    app: runtime-status-service
+spec:
+  selector:
+    app: runtime-status-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: runtime-status-lightweight-canary
+  namespace: directus
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 90
+      template:
+        metadata:
+          labels:
+            app: runtime-status-lightweight-canary
+        spec:
+          serviceAccountName: directus
+          restartPolicy: Never
+          initContainers:
+            - name: vault-agent
+              image: hashicorp/vault:1.15.4
+              command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 24Mi
+                limits:
+                  cpu: 50m
+                  memory: 96Mi
+              volumeMounts:
+                - name: vault-agent-config
+                  mountPath: /vault-config
+                - name: vault-secrets
+                  mountPath: /vault-secrets
+          containers:
+            - name: run
+              image: alpine/k8s:1.31.4
+              command: ["/bin/sh", "-lc"]
+              args:
+                - |
+                  set -eu
+                  if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+                    apk add --no-cache curl jq ca-certificates >/dev/null
+                  fi
+                  VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+                  VAULT_TOKEN="$(cat /vault-secrets/vault-token)"
+                  INTERNAL_TOKEN="$(curl -sS --connect-timeout 3 --max-time 8 -H "X-Vault-Token: ${VAULT_TOKEN}" "${VAULT_ADDR}/v1/secret/data/runtime-status-service" | jq -r '.data.data.token // .data.data.value // empty')"
+                  if [ -z "${INTERNAL_TOKEN}" ] || [ "${INTERNAL_TOKEN}" = "null" ]; then
+                    echo "runtime-status-service internal token missing"
+                    exit 1
+                  fi
+                  REQUEST_ID="$(cat /proc/sys/kernel/random/uuid)"
+                  curl -sS --connect-timeout 5 --max-time 45 \
+                    -X POST \
+                    -H "Authorization: Bearer ${INTERNAL_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"definition_key\":\"cms.translation.pipeline.lightweight\",\"source\":\"schedule\",\"request_id\":\"${REQUEST_ID}\"}" \
+                    "http://runtime-status-service.directus.svc.cluster.local:8080/internal/canaries/run"
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 24Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+              volumeMounts:
+                - name: vault-secrets
+                  mountPath: /vault-secrets
+          volumes:
+            - name: vault-agent-config
+              configMap:
+                name: vault-agent-config-runtime-status-canary
+            - name: vault-secrets
+              emptyDir: {}

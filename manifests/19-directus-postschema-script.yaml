@@ -499,6 +499,9 @@ data:
            ('cms_content_item_translations'), \
            ('cms_content_translation_jobs'), \
            ('cms_translation_languages'), \
+           ('runtime_canary_definitions'), \
+           ('runtime_canary_runs'), \
+           ('runtime_canary_run_steps'), \
            ('cms_template_functions'), \
            ('cms_block_content_ref'), \
            ('cms_layout_templates'), \
@@ -568,6 +571,15 @@ data:
              ('cms_translation_languages','language_code'), \
              ('cms_translation_languages','model'), \
              ('cms_translation_languages','status'), \
+             ('runtime_canary_definitions','key'), \
+             ('runtime_canary_definitions','enabled'), \
+             ('runtime_canary_definitions','config_json'), \
+             ('runtime_canary_runs','definition_key'), \
+             ('runtime_canary_runs','status'), \
+             ('runtime_canary_runs','started_at'), \
+             ('runtime_canary_run_steps','run_id'), \
+             ('runtime_canary_run_steps','step_key'), \
+             ('runtime_canary_run_steps','status'), \
              ('cms_template_functions','token_key'), \
              ('cms_template_functions','handler_key'), \
              ('cms_template_functions','function_kind'), \
@@ -2743,6 +2755,168 @@ data:
        ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN status SET NOT NULL; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN attempt_count SET NOT NULL; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN date_created SET NOT NULL; \
+       CREATE TABLE IF NOT EXISTS runtime_canary_definitions ( \
+         id UUID PRIMARY KEY, \
+         key TEXT NOT NULL, \
+         name TEXT NOT NULL, \
+         domain TEXT NOT NULL DEFAULT 'platform', \
+         status TEXT NOT NULL DEFAULT 'published', \
+         description TEXT NULL, \
+         enabled BOOLEAN NOT NULL DEFAULT true, \
+         impact_level TEXT NOT NULL DEFAULT 'low', \
+         schedule_hint TEXT NULL, \
+         max_frequency_seconds INTEGER NOT NULL DEFAULT 900, \
+         timeout_ms INTEGER NOT NULL DEFAULT 8000, \
+         config_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         sort INTEGER NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS key TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS domain TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS description TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS enabled BOOLEAN; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS impact_level TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS schedule_hint TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS max_frequency_seconds INTEGER; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS timeout_ms INTEGER; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS config_json JSONB; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN domain SET DEFAULT 'platform'; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN status SET DEFAULT 'published'; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN enabled SET DEFAULT true; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN impact_level SET DEFAULT 'low'; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN max_frequency_seconds SET DEFAULT 900; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN timeout_ms SET DEFAULT 8000; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN config_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE runtime_canary_definitions SET domain = 'platform' WHERE domain IS NULL OR BTRIM(domain) = ''; \
+       UPDATE runtime_canary_definitions SET status = 'published' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE runtime_canary_definitions SET enabled = true WHERE enabled IS NULL; \
+       UPDATE runtime_canary_definitions SET impact_level = 'low' WHERE impact_level IS NULL OR BTRIM(impact_level) = ''; \
+       UPDATE runtime_canary_definitions SET max_frequency_seconds = 900 WHERE max_frequency_seconds IS NULL OR max_frequency_seconds < 60; \
+       UPDATE runtime_canary_definitions SET timeout_ms = 8000 WHERE timeout_ms IS NULL OR timeout_ms < 1000; \
+       UPDATE runtime_canary_definitions SET config_json = '{}'::jsonb WHERE config_json IS NULL OR jsonb_typeof(config_json) <> 'object'; \
+       UPDATE runtime_canary_definitions SET date_created = now() WHERE date_created IS NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN key SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN name SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN domain SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN status SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN enabled SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN impact_level SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN max_frequency_seconds SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN timeout_ms SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN config_json SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_definitions ALTER COLUMN date_created SET NOT NULL; \
+       CREATE TABLE IF NOT EXISTS runtime_canary_runs ( \
+         id UUID PRIMARY KEY, \
+         definition_key TEXT NOT NULL, \
+         trigger_source TEXT NOT NULL DEFAULT 'schedule', \
+         status TEXT NOT NULL DEFAULT 'running', \
+         severity TEXT NOT NULL DEFAULT 'unknown', \
+         started_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         completed_at TIMESTAMPTZ NULL, \
+         duration_ms INTEGER NULL, \
+         summary TEXT NULL, \
+         details_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         evidence_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         error TEXT NULL, \
+         request_id TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS definition_key TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS trigger_source TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS severity TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS duration_ms INTEGER; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS summary TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS details_json JSONB; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS evidence_json JSONB; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS error TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS request_id TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN trigger_source SET DEFAULT 'schedule'; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN status SET DEFAULT 'running'; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN severity SET DEFAULT 'unknown'; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN started_at SET DEFAULT now(); \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN details_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN evidence_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE runtime_canary_runs SET trigger_source = 'schedule' WHERE trigger_source IS NULL OR BTRIM(trigger_source) = ''; \
+       UPDATE runtime_canary_runs SET status = 'running' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE runtime_canary_runs SET severity = 'unknown' WHERE severity IS NULL OR BTRIM(severity) = ''; \
+       UPDATE runtime_canary_runs SET started_at = now() WHERE started_at IS NULL; \
+       UPDATE runtime_canary_runs SET details_json = '{}'::jsonb WHERE details_json IS NULL OR jsonb_typeof(details_json) <> 'object'; \
+       UPDATE runtime_canary_runs SET evidence_json = '{}'::jsonb WHERE evidence_json IS NULL OR jsonb_typeof(evidence_json) <> 'object'; \
+       UPDATE runtime_canary_runs SET date_created = now() WHERE date_created IS NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN definition_key SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN trigger_source SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN status SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN severity SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN started_at SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN details_json SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN evidence_json SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_runs ALTER COLUMN date_created SET NOT NULL; \
+       CREATE TABLE IF NOT EXISTS runtime_canary_run_steps ( \
+         id UUID PRIMARY KEY, \
+         run_id UUID NOT NULL, \
+         definition_key TEXT NOT NULL, \
+         step_key TEXT NOT NULL, \
+         name TEXT NOT NULL, \
+         status TEXT NOT NULL DEFAULT 'running', \
+         severity TEXT NOT NULL DEFAULT 'unknown', \
+         started_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         completed_at TIMESTAMPTZ NULL, \
+         duration_ms INTEGER NULL, \
+         summary TEXT NULL, \
+         details_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         error TEXT NULL, \
+         sort INTEGER NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS run_id UUID; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS definition_key TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS step_key TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS severity TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS duration_ms INTEGER; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS summary TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS details_json JSONB; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS error TEXT; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN status SET DEFAULT 'running'; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN severity SET DEFAULT 'unknown'; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN started_at SET DEFAULT now(); \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN details_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE runtime_canary_run_steps SET status = 'running' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE runtime_canary_run_steps SET severity = 'unknown' WHERE severity IS NULL OR BTRIM(severity) = ''; \
+       UPDATE runtime_canary_run_steps SET started_at = now() WHERE started_at IS NULL; \
+       UPDATE runtime_canary_run_steps SET details_json = '{}'::jsonb WHERE details_json IS NULL OR jsonb_typeof(details_json) <> 'object'; \
+       UPDATE runtime_canary_run_steps SET date_created = now() WHERE date_created IS NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN run_id SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN definition_key SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN step_key SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN name SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN status SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN severity SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN started_at SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN details_json SET NOT NULL; \
+       ALTER TABLE IF EXISTS runtime_canary_run_steps ALTER COLUMN date_created SET NOT NULL; \
        CREATE TABLE IF NOT EXISTS cms_template_functions ( \
          id UUID PRIMARY KEY, \
          token_key TEXT NOT NULL, \
@@ -2845,6 +3019,13 @@ data:
        CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_status_idx ON cms_content_translation_jobs (status, date_created); \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_translation_languages_language_code_unique ON cms_translation_languages (lower(language_code)); \
        CREATE INDEX IF NOT EXISTS cms_translation_languages_status_language_idx ON cms_translation_languages (status, lower(language_code)); \
+       CREATE UNIQUE INDEX IF NOT EXISTS runtime_canary_definitions_key_unique ON runtime_canary_definitions (key); \
+       CREATE INDEX IF NOT EXISTS runtime_canary_definitions_enabled_idx ON runtime_canary_definitions (enabled, domain, sort, key); \
+       CREATE UNIQUE INDEX IF NOT EXISTS runtime_canary_runs_active_unique ON runtime_canary_runs (definition_key) WHERE status = 'running'; \
+       CREATE INDEX IF NOT EXISTS runtime_canary_runs_definition_started_idx ON runtime_canary_runs (definition_key, started_at DESC); \
+       CREATE INDEX IF NOT EXISTS runtime_canary_runs_status_started_idx ON runtime_canary_runs (status, started_at DESC); \
+       CREATE INDEX IF NOT EXISTS runtime_canary_run_steps_run_sort_idx ON runtime_canary_run_steps (run_id, sort, started_at); \
+       CREATE INDEX IF NOT EXISTS runtime_canary_run_steps_definition_status_idx ON runtime_canary_run_steps (definition_key, status, started_at DESC); \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_global_key_unique ON cms_template_functions (release_channel, token_key) WHERE site_key IS NULL OR BTRIM(site_key) = ''; \
        CREATE UNIQUE INDEX IF NOT EXISTS cms_template_functions_site_key_unique ON cms_template_functions (site_key, release_channel, token_key) WHERE site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE INDEX IF NOT EXISTS cms_block_content_ref_content_item_idx ON cms_block_content_ref (content_item_id); \
@@ -2881,6 +3062,23 @@ data:
            ) THEN \
            BEGIN \
              ALTER TABLE cms_content_translation_jobs ADD CONSTRAINT cms_content_translation_jobs_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES cms_content_items(id) ON DELETE CASCADE; \
+           EXCEPTION WHEN duplicate_object THEN \
+             NULL; \
+           END; \
+         END IF; \
+         IF to_regclass('directus.runtime_canary_run_steps') IS NOT NULL \
+           AND to_regclass('directus.runtime_canary_runs') IS NOT NULL \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM pg_constraint c \
+             JOIN pg_class t ON t.oid = c.conrelid \
+             JOIN pg_namespace tn ON tn.oid = t.relnamespace \
+             WHERE c.contype='f' \
+               AND tn.nspname='directus' \
+               AND t.relname='runtime_canary_run_steps' \
+               AND pg_get_constraintdef(c.oid) LIKE '%(run_id)%REFERENCES directus.runtime_canary_runs(id)%' \
+           ) THEN \
+           BEGIN \
+             ALTER TABLE runtime_canary_run_steps ADD CONSTRAINT runtime_canary_run_steps_run_id_fkey FOREIGN KEY (run_id) REFERENCES runtime_canary_runs(id) ON DELETE CASCADE; \
            EXCEPTION WHEN duplicate_object THEN \
              NULL; \
            END; \
@@ -3044,6 +3242,15 @@ data:
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_translation_languages' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_translation_languages ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
         END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='runtime_canary_definitions' AND column_name='id' AND udt_name='uuid') THEN
+          ALTER TABLE runtime_canary_definitions ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='runtime_canary_runs' AND column_name='id' AND udt_name='uuid') THEN
+          ALTER TABLE runtime_canary_runs ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='runtime_canary_run_steps' AND column_name='id' AND udt_name='uuid') THEN
+          ALTER TABLE runtime_canary_run_steps ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
+        END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_template_functions' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_template_functions ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
         END IF;
@@ -3136,6 +3343,51 @@ data:
                SELECT 1 FROM cms_translation_languages existing WHERE lower(existing.language_code) = lower(seed.language_code)
              );" "seed cms_translation_languages popular-language model defaults" 24; then
       echo "❌ Could not seed cms_translation_languages after retries."
+      exit 1
+    fi
+
+    echo "🌱 Ensuring default lightweight runtime canary definition exists..."
+    if ! _psql_yb_retry "WITH seed AS (
+      SELECT
+        'cms.translation.pipeline.lightweight'::text AS key,
+        'CMS Translation Pipeline Readiness'::text AS name,
+        'cms.translation'::text AS domain,
+        'published'::text AS status,
+        'Low-impact readiness check for Directus, the CMS content resolver, and the CMS translation service. This does not generate translated content.'::text AS description,
+        true::boolean AS enabled,
+        'low'::text AS impact_level,
+        'Every 15 minutes via runtime-status-lightweight-canary CronJob.'::text AS schedule_hint,
+        900::integer AS max_frequency_seconds,
+        8000::integer AS timeout_ms,
+        jsonb_build_object(
+          'steps',
+          jsonb_build_array(
+            jsonb_build_object('key','directus.health','name','Directus API health','type','http','method','GET','url','http://directus-service.directus.svc.cluster.local:8055/server/health','auth','directus','expect_status',jsonb_build_array(200),'timeout_ms',5000),
+            jsonb_build_object('key','resolver.health','name','CMS content resolver health','type','http','method','GET','url','http://cms-content-resolver.directus.svc.cluster.local:8080/healthz','expect_status',jsonb_build_array(200),'timeout_ms',5000),
+            jsonb_build_object('key','resolver.ready','name','CMS content resolver readiness','type','http','method','GET','url','http://cms-content-resolver.directus.svc.cluster.local:8080/readyz','expect_status',jsonb_build_array(200),'timeout_ms',8000),
+            jsonb_build_object('key','translation.health','name','CMS translation service health','type','http','method','GET','url','http://cms-translation-service.ollama.svc.cluster.local:8080/healthz','expect_status',jsonb_build_array(200),'timeout_ms',5000),
+            jsonb_build_object('key','translation.ready','name','CMS translation service readiness','type','http','method','GET','url','http://cms-translation-service.ollama.svc.cluster.local:8080/readyz','expect_status',jsonb_build_array(200),'timeout_ms',8000)
+          )
+        ) AS config_json,
+        10::integer AS sort
+    )
+    INSERT INTO runtime_canary_definitions (key, name, domain, status, description, enabled, impact_level, schedule_hint, max_frequency_seconds, timeout_ms, config_json, sort, date_created, date_updated)
+    SELECT key, name, domain, status, description, enabled, impact_level, schedule_hint, max_frequency_seconds, timeout_ms, config_json, sort, now(), now()
+      FROM seed
+    ON CONFLICT (key) DO UPDATE
+      SET name = EXCLUDED.name,
+          domain = EXCLUDED.domain,
+          status = EXCLUDED.status,
+          description = EXCLUDED.description,
+          enabled = EXCLUDED.enabled,
+          impact_level = EXCLUDED.impact_level,
+          schedule_hint = EXCLUDED.schedule_hint,
+          max_frequency_seconds = EXCLUDED.max_frequency_seconds,
+          timeout_ms = EXCLUDED.timeout_ms,
+          config_json = EXCLUDED.config_json,
+          sort = EXCLUDED.sort,
+          date_updated = now();" "seed default runtime canary definition" 24; then
+      echo "❌ Could not seed runtime canary definitions after retries."
       exit 1
     fi
 
