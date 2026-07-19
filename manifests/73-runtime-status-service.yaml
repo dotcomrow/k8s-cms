@@ -194,16 +194,18 @@ kind: CronJob
 metadata:
   name: runtime-status-lightweight-canary
   namespace: directus
+  annotations:
+    suncoast.systems/execution-backend: "flink"
 spec:
   schedule: "*/15 * * * *"
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 0
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 180
-      ttlSecondsAfterFinished: 300
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 900
       template:
         metadata:
           annotations:
@@ -214,111 +216,34 @@ spec:
           serviceAccountName: directus
           restartPolicy: Never
           containers:
-            - name: run
-              image: alpine/k8s:1.31.4
-              command: ["/bin/sh", "-lc"]
-              args:
-                - |
-                  set -u
-                  VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
-                  VAULT_ROLE="directus"
-                  KUBE_TOKEN_FILE="/var/run/secrets/kubernetes.io/serviceaccount/token"
-                  CANARY_URL="http://runtime-status-service.directus.svc.cluster.local:8080/internal/canaries/run"
-
-                  finish_success() {
-                    echo "$1"
-                    exit 0
-                  }
-
-                  bounded() {
-                    if command -v timeout >/dev/null 2>&1; then
-                      timeout "$@"
-                      return $?
-                    fi
-                    shift
-                    "$@"
-                  }
-
-                  ensure_tools() {
-                    if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-                      return 0
-                    fi
-                    bounded 45 apk add --no-cache curl jq ca-certificates >/dev/null 2>&1
-                  }
-
-                  is_http_success() {
-                    case "${1:-}" in
-                      2??) return 0 ;;
-                      *) return 1 ;;
-                    esac
-                  }
-
-                  if ! ensure_tools; then
-                    finish_success "runtime-status canary skipped: curl/jq tooling could not be installed in this run"
-                  fi
-
-                  if [ ! -s "${KUBE_TOKEN_FILE}" ]; then
-                    finish_success "runtime-status canary skipped: Kubernetes service-account token is unavailable"
-                  fi
-
-                  KUBE_JWT="$(cat "${KUBE_TOKEN_FILE}" 2>/dev/null || true)"
-                  if [ -z "${KUBE_JWT}" ]; then
-                    finish_success "runtime-status canary skipped: Kubernetes service-account token is empty"
-                  fi
-
-                  LOGIN_BODY="$(jq -nc --arg role "${VAULT_ROLE}" --arg jwt "${KUBE_JWT}" '{role:$role,jwt:$jwt}')"
-                  LOGIN_HTTP_CODE="$(curl -sS --connect-timeout 3 --max-time 8 \
-                    -o /tmp/runtime-status-vault-login.json \
-                    -w "%{http_code}" \
-                    -H "Content-Type: application/json" \
-                    -d "${LOGIN_BODY}" \
-                    "${VAULT_ADDR}/v1/auth/kubernetes/login" 2>/tmp/runtime-status-vault-login.err || true)"
-
-                  if ! is_http_success "${LOGIN_HTTP_CODE}"; then
-                    finish_success "runtime-status canary skipped: Vault Kubernetes auth is unavailable (HTTP ${LOGIN_HTTP_CODE:-000})"
-                  fi
-
-                  VAULT_TOKEN="$(jq -r '.auth.client_token // empty' /tmp/runtime-status-vault-login.json 2>/dev/null || true)"
-                  if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
-                    finish_success "runtime-status canary skipped: Vault Kubernetes auth did not return a token"
-                  fi
-
-                  TOKEN_HTTP_CODE="$(curl -sS --connect-timeout 3 --max-time 8 \
-                    -o /tmp/runtime-status-token.json \
-                    -w "%{http_code}" \
-                    -H "X-Vault-Token: ${VAULT_TOKEN}" \
-                    "${VAULT_ADDR}/v1/secret/data/runtime-status-service" 2>/tmp/runtime-status-token.err || true)"
-
-                  if ! is_http_success "${TOKEN_HTTP_CODE}"; then
-                    finish_success "runtime-status canary skipped: internal runtime-status token is unavailable (Vault HTTP ${TOKEN_HTTP_CODE:-000})"
-                  fi
-
-                  INTERNAL_TOKEN="$(jq -r '.data.data.token // .data.data.value // empty' /tmp/runtime-status-token.json 2>/dev/null || true)"
-                  if [ -z "${INTERNAL_TOKEN}" ] || [ "${INTERNAL_TOKEN}" = "null" ]; then
-                    finish_success "runtime-status canary skipped: internal runtime-status token is empty"
-                  fi
-
-                  REQUEST_ID="$(cat /proc/sys/kernel/random/uuid)"
-                  CANARY_HTTP_CODE="$(curl -sS --connect-timeout 5 --max-time 45 \
-                    -o /tmp/runtime-status-canary.json \
-                    -w "%{http_code}" \
-                    -X POST \
-                    -H "Authorization: Bearer ${INTERNAL_TOKEN}" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"definition_key\":\"cms.translation.pipeline.lightweight\",\"source\":\"schedule\",\"request_id\":\"${REQUEST_ID}\"}" \
-                    "${CANARY_URL}" 2>/tmp/runtime-status-canary.err || true)"
-
-                  if is_http_success "${CANARY_HTTP_CODE}"; then
-                    echo "runtime-status canary request completed (HTTP ${CANARY_HTTP_CODE})"
-                    jq -c '{ok, request_id, result_count: (.results | length)}' /tmp/runtime-status-canary.json 2>/dev/null || true
-                    exit 0
-                  fi
-
-                  finish_success "runtime-status canary skipped: runtime-status service is unavailable (HTTP ${CANARY_HTTP_CODE:-000})"
+            - name: submit-flink-job
+              image: ghcr.io/dotcomrow/runtime-status-flink-job:latest
+              imagePullPolicy: Always
+              env:
+                - name: FLINK_REST_TARGET
+                  value: "flink-rest.kafka.svc.cluster.local:8081"
+                - name: RUNTIME_STATUS_URL
+                  value: "http://runtime-status-service.directus.svc.cluster.local:8080"
+                - name: CANARY_DEFINITION_KEY
+                  value: "cms.translation.pipeline.lightweight"
+                - name: CANARY_SOURCE
+                  value: "flink"
+                - name: ENDPOINT_MODE
+                  value: "action"
+                - name: CONNECT_TIMEOUT_MS
+                  value: "5000"
+                - name: HTTP_TIMEOUT_MS
+                  value: "60000"
+                - name: FAIL_ON_WARNING
+                  value: "false"
+                - name: FAIL_ON_SKIPPED
+                  value: "false"
+                - name: REQUIRE_STEPS
+                  value: "true"
               resources:
                 requests:
-                  cpu: 5m
-                  memory: 24Mi
+                  cpu: 50m
+                  memory: 256Mi
                 limits:
-                  cpu: 100m
-                  memory: 128Mi
+                  cpu: 500m
+                  memory: 768Mi

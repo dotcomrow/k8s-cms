@@ -576,7 +576,7 @@ async function runDefinition(definition: CanaryDefinition, triggerSource: string
     }
   }
 
-  if (triggerSource === "manual" && definition.impact_level !== "low" && !DEFAULT_MANUAL_HIGH_IMPACT_ALLOWED) {
+  if (triggerSource !== "schedule" && definition.impact_level !== "low" && !DEFAULT_MANUAL_HIGH_IMPACT_ALLOWED) {
     return {
       run: {
         id: randomUUID(),
@@ -587,7 +587,7 @@ async function runDefinition(definition: CanaryDefinition, triggerSource: string
         started_at: new Date().toISOString(),
         completed_at: new Date().toISOString(),
         duration_ms: 0,
-        summary: "Manual run skipped because this canary is not low impact.",
+        summary: "Run skipped because this canary is not low impact.",
         details_json: { impact_level: definition.impact_level },
         evidence_json: {},
         request_id: requestId
@@ -722,7 +722,10 @@ async function handleAction(input: JsonRecord): Promise<unknown> {
     if (!definition) {
       throw Object.assign(new Error(`Canary definition '${definitionKey}' was not found`), { status: 404 });
     }
-    const result = await runDefinition(definition, "manual", randomUUID());
+    const requestedSource = asString(input.source, "manual").toLowerCase();
+    const triggerSource = requestedSource === "flink" ? "flink" : "manual";
+    const requestId = asString(input.request_id) || asString(input.requestId) || randomUUID();
+    const result = await runDefinition(definition, triggerSource, requestId);
     return { ok: true, run: result.run, steps: result.steps, result };
   }
 
@@ -778,6 +781,8 @@ const openApiSpec = {
                       action: { type: "string", enum: ["summary", "definitions", "runs", "run_detail", "trigger"] },
                       definition_key: { type: "string" },
                       run_id: { type: "string" },
+                      source: { type: "string", enum: ["manual", "flink"] },
+                      request_id: { type: "string" },
                       limit: { type: "integer" }
                     }
                   }
