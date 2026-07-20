@@ -9486,7 +9486,7 @@ data:
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
                   --argjson headers "${target_headers_effective_json}" \
-                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",keycloak_realm:$realm,app_key:$app,site_key:$site,target:$target,event:"manual.run",reason:"directus-manual-flow",collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",slug:"{{ $trigger.slug }}",page_slug:"{{ $trigger.page_slug }}"}}')"
+                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",keycloak_realm:$realm,app_key:$app,site_key:$site,target:$target,event:"manual.run",reason:"directus-manual-flow",collection:"{{ $trigger.body.collection }}",key:"{{ $trigger.body.key }}",slug:"{{ $trigger.body.slug }}",page_slug:"{{ $trigger.body.page_slug }}"}}')"
                 manual_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
                 manual_token_options="$(jq -nc \
                   --arg url "${refresh_auth_token_url}" \

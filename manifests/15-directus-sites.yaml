@@ -11,10 +11,10 @@ data:
     # Bootstrap cache refresh endpoints for initial platform_apps rows.
     # Long-term app refresh URLs are managed on platform_apps in Directus.
     cache_refresh_endpoint_templates:
-      internal_prod_refresh_url: &cache_refresh_internal_prod_refresh_url "https://internal.suncoast.systems/api/cache/refresh?mode=refresh"
-      internal_preview_refresh_url: &cache_refresh_internal_preview_refresh_url "https://internal-preview.suncoast.systems/api/cache/refresh?mode=refresh"
-      external_prod_refresh_url: &cache_refresh_external_prod_refresh_url "https://www.suncoast.systems/api/cache/refresh?mode=refresh"
-      external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=refresh"
+      internal_prod_refresh_url: &cache_refresh_internal_prod_refresh_url "https://internal.suncoast.systems/api/cache/refresh?mode=purge-and-refresh&slug=home"
+      internal_preview_refresh_url: &cache_refresh_internal_preview_refresh_url "https://internal-preview.suncoast.systems/api/cache/refresh?mode=purge-and-refresh&slug=home"
+      external_prod_refresh_url: &cache_refresh_external_prod_refresh_url "https://www.suncoast.systems/api/cache/refresh?mode=purge-and-refresh&slug=home"
+      external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=purge-and-refresh&slug=home"
 
     sites:
       # Every Directus content scope needs one site entry. platform_apps rows

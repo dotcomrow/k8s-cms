@@ -10515,7 +10515,10 @@ data:
     
         const triggerManualProdRefresh = async ({ siteKey, slug }) => {
           const normalizedSite = asString(siteKey);
+          const normalizedRealm = normalizedSite || 'external';
+          const normalizedApp = normalizedSite || normalizedRealm;
           const flowNameCandidates = [
+            normalizedRealm && normalizedApp ? `CMS Cache Refresh (${normalizedRealm}/${normalizedApp}/prod) - Manual` : '',
             normalizedSite ? `CMS Cache Refresh (${normalizedSite}/prod) - Manual` : '',
             normalizedSite ? `CMS Cache Refresh (${normalizedSite}) - Manual` : '',
           ].filter(Boolean);
@@ -10536,6 +10539,7 @@ data:
               reason: 'promote-preview-to-prod',
               site_key: normalizedSite || null,
               slug: asString(slug) || null,
+              page_slug: asString(slug) || null,
             };
             if (pageTriggerKey) {
               triggerPayload.keys = [pageTriggerKey];
