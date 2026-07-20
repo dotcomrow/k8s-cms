@@ -4637,7 +4637,17 @@ data:
       date_updated_note="System-managed timestamp for the last page update."
       status_note="Publishing control for this record."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
-      site_key_choices_json="$(jq -nc '[ {"text":"Internal","value":"internal","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"External","value":"external","foreground":"#065F46","background":"#D1FAE5"} ]')"
+      site_key_choices_json="$(
+        if [ -f "${SITES_FILE:-/directus-sites/sites.yaml}" ]; then
+          yq -o=json '.sites // []' "${SITES_FILE:-/directus-sites/sites.yaml}" 2>/dev/null \
+            | jq -c '[.[] | {text: ((.display_name // .name // .site_key // .key) | tostring), value: ((.site_key // .key) | tostring), realm: ((.realm // .keycloak_realm // "") | tostring)} | select(.value != "" and .value != "null") | . + (if .realm == "internal" then {foreground:"#1D4ED8",background:"#DBEAFE"} else {foreground:"#065F46",background:"#D1FAE5"} end) | del(.realm)]' 2>/dev/null \
+            || true
+        fi
+      )"
+      site_key_choices_json="$(printf '%s' "${site_key_choices_json:-}" | tr -d '\r\n')"
+      if [ -z "${site_key_choices_json:-}" ] || [ "${site_key_choices_json}" = "null" ] || [ "${site_key_choices_json}" = "[]" ]; then
+        site_key_choices_json="$(jq -nc '[ {"text":"Internal","value":"internal","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"External","value":"external","foreground":"#065F46","background":"#D1FAE5"} ]')"
+      fi
       release_channel_choices_json="$(jq -nc '[ {"text":"Preview","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Prod","value":"prod","foreground":"#92400E","background":"#FEF3C7"} ]')"
       theme_mode_choices_json="$(jq -nc '[ {"text":"Auto (System)","value":"auto","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Light","value":"light","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Dark","value":"dark","foreground":"#92400E","background":"#FEF3C7"} ]')"
       layout_chrome_choices_json="$(jq -nc '[ {"text":"Carded panels","value":"carded","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"Bare sections","value":"bare","foreground":"#065F46","background":"#D1FAE5"} ]')"
@@ -4672,7 +4682,7 @@ data:
       theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
       asset_url_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
-      site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:true,allowNone:false,placeholder:"Use the deployed app/site key"}')"
       site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
       release_channel_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       release_channel_display_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices}')"

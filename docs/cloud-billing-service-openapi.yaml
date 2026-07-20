@@ -1,0 +1,244 @@
+openapi: 3.0.3
+info:
+  title: Cloud Billing Service
+  version: 1.0.0
+  description: Normalized cloud billing aggregation API for internal operations and Hasura actions.
+servers:
+  - url: http://cloud-billing-service.directus.svc.cluster.local:8080
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: healthz
+      responses:
+        "200":
+          description: Service health
+  /readyz:
+    get:
+      summary: Readiness check
+      operationId: readyz
+      responses:
+        "200":
+          description: Service readiness
+  /billing/services:
+    get:
+      summary: List configured billing service metadata
+      operationId: listBillingServices
+      responses:
+        "200":
+          description: Configured services
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  services:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BillingServiceMetadata"
+  /billing/summary:
+    get:
+      summary: Fetch normalized cloud billing summary
+      operationId: getBillingSummary
+      parameters:
+        - in: query
+          name: serviceIds
+          required: false
+          schema:
+            type: string
+          description: Comma-separated billing service ID allowlist.
+        - in: query
+          name: currency
+          required: false
+          schema:
+            type: string
+          description: Display currency, defaults to USD.
+        - in: query
+          name: from
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Inclusive current-period start date.
+        - in: query
+          name: to
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Exclusive-ish current-period end date used for provider APIs.
+      responses:
+        "200":
+          description: Billing summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingSummary"
+  /hasura/actions/billing:
+    post:
+      summary: Hasura action endpoint for cloud billing
+      operationId: hasuraFetchCloudBilling
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HasuraActionRequest"
+      responses:
+        "200":
+          description: Billing action payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingSummary"
+components:
+  schemas:
+    HasuraActionRequest:
+      type: object
+      properties:
+        action:
+          type: object
+          additionalProperties: true
+        input:
+          type: object
+          properties:
+            action:
+              type: string
+              enum:
+                - summary
+                - services
+            serviceIds:
+              type: string
+            service_ids:
+              type: string
+            currency:
+              type: string
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+        session_variables:
+          type: object
+          additionalProperties: true
+    BillingServiceMetadata:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        provider:
+          type: string
+          enum:
+            - aws
+            - azure
+            - gcp
+            - oci
+            - mock
+            - generic
+            - other
+        providerLabel:
+          type: string
+          description: Display label for generic or branded providers such as ServerPronto.
+        provider_label:
+          type: string
+        accountRef:
+          type: string
+        region:
+          type: string
+        environment:
+          type: string
+        owner:
+          type: string
+        currency:
+          type: string
+        budgetMonthly:
+          type: number
+    BillingBreakdown:
+      type: object
+      properties:
+        label:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
+        percent:
+          type: number
+    BillingServiceCost:
+      allOf:
+        - $ref: "#/components/schemas/BillingServiceMetadata"
+        - type: object
+          properties:
+            serviceId:
+              type: string
+            periodStart:
+              type: string
+              format: date
+            periodEnd:
+              type: string
+              format: date
+            monthToDateCost:
+              type: number
+            forecastCost:
+              type: number
+            previousMonthCost:
+              type: number
+            dailyAverageCost:
+              type: number
+            costChangePercent:
+              type: number
+            status:
+              type: string
+              enum:
+                - healthy
+                - watch
+                - over-budget
+                - unknown
+            lastUpdated:
+              type: string
+              format: date-time
+            breakdown:
+              type: array
+              items:
+                $ref: "#/components/schemas/BillingBreakdown"
+            warnings:
+              type: array
+              items:
+                type: string
+    BillingSummary:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        generatedAt:
+          type: string
+          format: date-time
+        currency:
+          type: string
+        periodStart:
+          type: string
+          format: date
+        periodEnd:
+          type: string
+          format: date
+        totals:
+          type: object
+          additionalProperties: true
+        providerTotals:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillingServiceCost"
+        warnings:
+          type: array
+          items:
+            type: string

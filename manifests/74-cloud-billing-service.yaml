@@ -1,0 +1,317 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloud-billing-service-config
+  namespace: directus
+data:
+  BILLING_SERVICES_JSON: |
+    [
+      {
+        "id": "oci-directus-db",
+        "name": "Directus Database VM",
+        "provider": "oci",
+        "accountRef": "oci-prod-tenancy",
+        "region": "us-ashburn-1",
+        "environment": "Production",
+        "owner": "Platform Ops",
+        "budgetMonthly": 1250,
+        "currency": "USD",
+        "oci": {
+          "region": "us-ashburn-1",
+          "groupBy": ["service"],
+          "compartmentDepth": 6
+        }
+      },
+      {
+        "id": "aws-edge-services",
+        "name": "Edge and Registry Services",
+        "provider": "aws",
+        "accountRef": "aws-shared-prod",
+        "region": "us-east-1",
+        "environment": "Production",
+        "owner": "Platform Ops",
+        "budgetMonthly": 900,
+        "currency": "USD",
+        "aws": {
+          "region": "us-east-1",
+          "metric": "UnblendedCost",
+          "tagFilters": {
+            "platform": ["internal-app"]
+          }
+        }
+      },
+      {
+        "id": "gcp-observability",
+        "name": "Observability and Analytics",
+        "provider": "gcp",
+        "accountRef": "gcp-platform-observability",
+        "region": "US",
+        "environment": "Shared",
+        "owner": "Data Platform",
+        "budgetMonthly": 700,
+        "currency": "USD",
+        "gcp": {
+          "projectId": "billing-export-project",
+          "billingTable": "billing_export.gcp_billing_export_v1_XXXXXX",
+          "serviceAccountJsonEnv": "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+        }
+      },
+      {
+        "id": "azure-identity",
+        "name": "Identity Integration",
+        "provider": "azure",
+        "accountRef": "azure-platform-subscription",
+        "region": "global",
+        "environment": "Shared",
+        "owner": "Security",
+        "budgetMonthly": 320,
+        "currency": "USD",
+        "azure": {
+          "subscriptionId": "00000000-0000-0000-0000-000000000000",
+          "tenantIdEnv": "AZURE_TENANT_ID",
+          "clientIdEnv": "AZURE_CLIENT_ID",
+          "clientSecretEnv": "AZURE_CLIENT_SECRET"
+        }
+      },
+      {
+        "id": "serverpronto-miami-colocation",
+        "name": "ServerPronto Miami Colocation",
+        "provider": "generic",
+        "providerLabel": "ServerPronto",
+        "adapter": "generic",
+        "accountRef": "serverpronto-miami",
+        "region": "Miami, FL",
+        "environment": "Production",
+        "owner": "Platform Ops",
+        "budgetMonthly": 0,
+        "currency": "USD",
+        "generic": {
+          "source": "manual",
+          "monthlyRecurringCostEnv": "SERVERPRONTO_MONTHLY_RECURRING_COST",
+          "monthToDateCostEnv": "SERVERPRONTO_MONTH_TO_DATE_COST",
+          "previousMonthCostEnv": "SERVERPRONTO_PREVIOUS_MONTH_COST",
+          "breakdownJsonEnv": "SERVERPRONTO_BILLING_BREAKDOWN_JSON",
+          "defaultLineItemLabel": "Colocation recurring charge"
+        }
+      }
+    ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-billing-service
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    reloader.stakater.com/auto: "true"
+  labels:
+    app: cloud-billing-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloud-billing-service
+  template:
+    metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
+      labels:
+        app: cloud-billing-service
+    spec:
+      serviceAccountName: directus
+      containers:
+        - name: cloud-billing-service
+          image: "ghcr.io/dotcomrow/cloud-billing-service:latest"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: OPENAPI_SERVER_URL
+              value: "http://cloud-billing-service.directus.svc.cluster.local:8080"
+            - name: TRUST_PROXY_HOPS
+              value: "1"
+            - name: REQUEST_TIMEOUT_MS
+              value: "45000"
+            - name: CACHE_TTL_SECONDS
+              value: "300"
+            - name: DEFAULT_CURRENCY
+              value: "USD"
+            - name: BILLING_SERVICES_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: cloud-billing-service-config
+                  key: BILLING_SERVICES_JSON
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-aws
+                  key: access-key-id
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-aws
+                  key: secret-access-key
+                  optional: true
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-aws
+                  key: session-token
+                  optional: true
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-azure
+                  key: tenant-id
+                  optional: true
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-azure
+                  key: client-id
+                  optional: true
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-azure
+                  key: client-secret
+                  optional: true
+            - name: GOOGLE_APPLICATION_CREDENTIALS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-gcp
+                  key: service-account-json
+                  optional: true
+            - name: OCI_TENANCY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-oci
+                  key: tenancy-id
+                  optional: true
+            - name: OCI_USER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-oci
+                  key: user-id
+                  optional: true
+            - name: OCI_FINGERPRINT
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-oci
+                  key: fingerprint
+                  optional: true
+            - name: OCI_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-oci
+                  key: private-key
+                  optional: true
+            - name: SERVERPRONTO_MONTHLY_RECURRING_COST
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-serverpronto
+                  key: monthly-recurring-cost
+                  optional: true
+            - name: SERVERPRONTO_MONTH_TO_DATE_COST
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-serverpronto
+                  key: month-to-date-cost
+                  optional: true
+            - name: SERVERPRONTO_PREVIOUS_MONTH_COST
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-serverpronto
+                  key: previous-month-cost
+                  optional: true
+            - name: SERVERPRONTO_BILLING_BREAKDOWN_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-billing-service-serverpronto
+                  key: billing-breakdown-json
+                  optional: true
+          resources:
+            requests:
+              cpu: 20m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloud-billing-service
+  namespace: directus
+  annotations:
+    gravitee.io/expose: "true"
+    gravitee.io/context-path: "/cloud-billing"
+    gravitee.io/auth-required: "directus-token"
+    gravitee.io/approval-required: "admin"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
+    gravitee.io/description: "Cloud billing aggregation API for internal operations"
+    gravitee.io/version: "latest"
+    gravitee.io/tags: "directus,cms,hasura,billing,cloud,cost"
+    gravitee.io/definition-name: "cloud-billing-api"
+    gravitee.io/definition-summary: "Cloud billing aggregation API"
+    gravitee.io/definition-description: "Normalizes cloud provider billing data and exposes it to the internal operations MFE through REST and Hasura actions."
+    gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-visibility: "PUBLIC"
+    gravitee.io/definition-state: "STARTED"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
+    gravitee.io/definition-openapi-url: "http://cloud-billing-service.directus.svc.cluster.local:8080/openapi.json"
+    gravitee.io/definition-context-path: "/cloud-billing"
+    gravitee.io/definition-version: "latest"
+    gravitee.io/definition-listener-host: "cloud-billing-service.directus.svc.cluster.local"
+    gravitee.io/definition-listener-port: "8080"
+    gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-tags: "directus,cms,hasura,billing,cloud,cost"
+    gravitee.io/definition-labels: "internal,cms,hasura,billing,cloud"
+    gravitee.io/definition-categories: "infra"
+    gravitee.io/definition-path-mappings: "/cloud-billing/*"
+    gravitee.io/definition-metadata: '{"owner":"infra","service":"cloud-billing","slack":"#infra"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
+    gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":120000,"idleTimeout":120000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":10}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"cloud-billing-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://cloud-billing-service.directus.svc.cluster.local:8080"},"secondary":false}]}]'
+    gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://cloud-billing-service.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+    gravitee.io/definition-resources: '[]'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"Billing API access is enforced by GraphQL/Gravitee auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"}}'
+    gravitee.io/definition-flows: '[]'
+    gravitee.io/definition-response-templates: '{}'
+    gravitee.io/definition-analytics: '{"enabled":true,"logging":{"condition":"true","content":{"headers":true,"payload":false,"messageHeaders":false,"messageMetadata":false,"messagePayload":false},"mode":{"entrypoint":true,"endpoint":true},"phase":{"request":true,"response":true}}}'
+    gravitee.io/definition-entrypoints: '[]'
+  labels:
+    app: cloud-billing-service
+spec:
+  selector:
+    app: cloud-billing-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

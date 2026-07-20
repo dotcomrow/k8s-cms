@@ -7,12 +7,19 @@ Suncoast Systems CMS system
 kubectl apply -f manifests/
 ```
 
+## Shell App Site Keys
+
+Each deployed shell app should use a stable `DIRECTUS_CONTENT_SITE_KEY`, and that value must match the `site_key` on its Directus content rows. Site entries in `manifests/15-directus-sites.yaml` drive Directus read policies, service-token binding, and cache-refresh targets for those keys.
+
+Multiple external apps can share `realm: external` while using different `site_key` values. Add a matching entry to `sites.yaml` before deploying a shell app with a new site key, or have the future Organization Management flow generate the equivalent config.
+
 ## Docs
 
 - `docs/directus-dynamic-selectors.md` - pattern for live Directus template/slot dropdowns used by pages/blocks.
 - `docs/directus-db-change-management.md` - runbook for safe Directus DB schema/data/flow changes through GitOps.
 - `docs/directus-image-action-openapi.yaml` - OpenAPI spec for the in-cluster image service used by Hasura actions.
 - `docs/vm-stats-service-openapi.yaml` - OpenAPI spec for the VM stats reporting endpoints.
+- `docs/cloud-billing-service-openapi.yaml` - OpenAPI spec for the cloud billing aggregation API and Hasura action.
 - `docs/ui-module-contract.md` - universal module contract for page components and MFEs with mandatory async configuration.
 - `docs/schemas/ui-module-definition.schema.json` - JSON Schema for module definition manifests produced by module repos.
 - `docs/schemas/ui-module-instance.schema.json` - JSON Schema for per-page module instances stored in CMS.
@@ -85,3 +92,36 @@ For collector metadata and thresholds, see `vm-stats-service/src/server.ts` env 
 - `ports` (listening ports and process owners)
 - `sessions` (`scope=db|ssh|all`, `limit=<n>`)
 - `service_logs` (`service=<unit>`, `lines=<n>`, `range=today|all`, `level=all|warning|error`, `since=<timestamp>`)
+
+## Cloud billing service
+
+The cloud billing backend for the Internal Operations MFE lives in `cloud-billing-service/` and is deployed by `manifests/74-cloud-billing-service.yaml`.
+
+- REST summary: `GET /billing/summary`
+- Service metadata: `GET /billing/services`
+- Hasura action: `POST /hasura/actions/billing`
+- OpenAPI: `GET /openapi.json`
+- Gravitee context path: `/cloud-billing`
+
+Billing service definitions are stored in the `cloud-billing-service-config` ConfigMap as `BILLING_SERVICES_JSON`. Provider credentials are injected through optional Kubernetes Secrets:
+
+- `cloud-billing-service-aws`
+- `cloud-billing-service-azure`
+- `cloud-billing-service-gcp`
+- `cloud-billing-service-oci`
+- `cloud-billing-service-serverpronto`
+
+Billing runtime env vars:
+
+- `BILLING_SERVICES_JSON` or `BILLING_CONFIG_FILE` - configurable service definitions.
+- `BILLING_SHARED_BEARER_TOKEN` - optional shared bearer token for direct service calls.
+- `CACHE_TTL_SECONDS`, `REQUEST_TIMEOUT_MS`, `DEFAULT_CURRENCY`, `CORS_ALLOW_ORIGIN`, `OPENAPI_SERVER_URL` - runtime behavior and API metadata.
+
+Generic providers without billing APIs use `adapter: "generic"` and can read costs from direct config values or env-backed Secret keys. The ServerPronto Miami colocation entry reads:
+
+- `monthly-recurring-cost` -> `SERVERPRONTO_MONTHLY_RECURRING_COST`
+- `month-to-date-cost` -> `SERVERPRONTO_MONTH_TO_DATE_COST`
+- `previous-month-cost` -> `SERVERPRONTO_PREVIOUS_MONTH_COST`
+- `billing-breakdown-json` -> `SERVERPRONTO_BILLING_BREAKDOWN_JSON`
+
+For portal-only vendors, keep browser automation or AI screen parsing in a scheduled ingestion job that writes these generic billing values. Do not put portal scraping in the request path for `/billing/summary`.

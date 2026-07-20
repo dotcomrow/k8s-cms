@@ -17,8 +17,12 @@ data:
       external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=refresh"
 
     sites:
+      # Every deployed shell app needs one site entry whose site_key matches
+      # DIRECTUS_CONTENT_SITE_KEY in that app deployment. Multiple external apps
+      # can share realm: external while still using distinct site_key values.
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
+        realm: internal
         homepage_slug: home
         homepage_release_channel: preview
         homepage_layout_template_key: spa-default
@@ -217,6 +221,7 @@ data:
 
       # External site (Cloudflare Worker service client)
       - site_key: external
+        realm: external
         homepage_slug: home
         homepage_release_channel: preview
         homepage_layout_template_key: spa-default

@@ -52,6 +52,8 @@ data:
   DIRECTUS_KC_INTERNAL_CLIENT_SECRET: "<path:secret/data/keycloak-client-secret-cms-site-internal#value>"
   DIRECTUS_KC_EXTERNAL_CLIENT_ID: "<path:secret/data/keycloak-client-id-cms-site-external#value>"
   DIRECTUS_KC_EXTERNAL_CLIENT_SECRET: "<path:secret/data/keycloak-client-secret-cms-site-external#value>"
+  DIRECTUS_KC_SITE_REALM_MAP: 'json:{"internal":"internal","external":"external"}'
+  DIRECTUS_KC_DEFAULT_REALM: "external"
   # --- GitHub OAuth (Directus reads these envs) ---
   AUTH_GITHUB_DRIVER: "oauth2"
   AUTH_GITHUB_AUTHORIZE_URL: "https://github.com/login/oauth/authorize"
@@ -2921,23 +2923,51 @@ data:
       }
     };
 
-    const inferRealmFromSiteKey = (value) => {
+    const normalizeRealmKey = (value) => {
       const normalized = asString(value).toLowerCase();
-      if (!normalized) return '';
+      return normalized === 'internal' || normalized === 'external' ? normalized : '';
+    };
+
+    const parseSiteRealmMap = (value) => {
+      let raw = asString(value);
+      if (!raw) return {};
+      if (raw.startsWith('json:')) raw = raw.slice(5);
+
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return {};
+      }
+
+      const entries = Array.isArray(parsed)
+        ? parsed.map((row) => [row?.site_key ?? row?.site ?? row?.key, row?.realm ?? row?.keycloak_realm ?? row?.value])
+        : Object.entries(parsed);
+      const map = {};
+      for (const [siteKeyRaw, realmRaw] of entries) {
+        const siteKey = asString(siteKeyRaw).toLowerCase();
+        const realm = normalizeRealmKey(realmRaw);
+        if (siteKey && realm) map[siteKey] = realm;
+      }
+      return map;
+    };
+
+    const inferRealmFromSiteKey = (value, siteRealmMap = {}, defaultRealm = '') => {
+      const normalized = asString(value).toLowerCase();
+      if (normalized && siteRealmMap[normalized]) return siteRealmMap[normalized];
+      if (!normalized) return normalizeRealmKey(defaultRealm);
       const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
       if (tokens.includes('internal')) return 'internal';
       if (tokens.includes('external')) return 'external';
       if (normalized.includes('internal')) return 'internal';
       if (normalized.includes('external')) return 'external';
-      return '';
+      return normalizeRealmKey(defaultRealm);
     };
 
-    const normalizeRealmSelection = (requestedRealm, siteKey) => {
-      const requested = asString(requestedRealm).toLowerCase();
-      if (requested === 'internal' || requested === 'external') return requested;
-      const inferred = inferRealmFromSiteKey(siteKey);
-      if (inferred === 'internal' || inferred === 'external') return inferred;
-      return '';
+    const normalizeRealmSelection = (requestedRealm, siteKey, siteRealmMap = {}, defaultRealm = '') => {
+      const requested = normalizeRealmKey(requestedRealm);
+      if (requested) return requested;
+      return inferRealmFromSiteKey(siteKey, siteRealmMap, defaultRealm);
     };
 
     const createErrorPayload = (message, code = 'ROLE_OPTIONS_ERROR') => ({
@@ -3023,6 +3053,8 @@ data:
       const internalRealmName = asString(env.DIRECTUS_KC_INTERNAL_REALM || 'internal') || 'internal';
       const externalRealmName = asString(env.DIRECTUS_KC_EXTERNAL_REALM || 'external') || 'external';
       const roleListMax = Math.min(asInteger(env.DIRECTUS_KC_ROLE_LIST_MAX, 1000), 5000);
+      const siteRealmMap = parseSiteRealmMap(env.DIRECTUS_KC_SITE_REALM_MAP || '');
+      const defaultRealmSelection = normalizeRealmKey(env.DIRECTUS_KC_DEFAULT_REALM || 'external');
 
       const credentialsByRealm = {
         internal: {
@@ -3039,11 +3071,11 @@ data:
 
       router.get('/roles', async (req, res) => {
         const siteKey = asString(req?.query?.site_key);
-        const realmSelection = normalizeRealmSelection(req?.query?.realm, siteKey);
+        const realmSelection = normalizeRealmSelection(req?.query?.realm, siteKey, siteRealmMap, defaultRealmSelection);
         if (!realmSelection) {
           res.status(400).json(
             createErrorPayload(
-              "Unable to determine Keycloak realm. Set Site Key to 'internal' or 'external' first.",
+              "Unable to determine Keycloak realm for this site key. Configure DIRECTUS_KC_SITE_REALM_MAP or pass realm=internal|external.",
               'ROLE_OPTIONS_REALM_REQUIRED',
             ),
           );
