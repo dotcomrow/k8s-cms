@@ -424,7 +424,7 @@ data:
           "SELECT COUNT(*) FROM ( \
              SELECT f.name \
              FROM directus.directus_flows f \
-             WHERE f.name LIKE 'CMS Cache Refresh (%/%) - %' \
+             WHERE f.name LIKE 'CMS Cache Refresh (%/%/%) - %' \
              GROUP BY f.name \
              HAVING COUNT(*) > 1 \
            ) d;" || true)"
@@ -437,18 +437,24 @@ data:
         if [ "${RECON_FLOW_HEALTHY}" = "1" ]; then
           FLOW_TARGET_MISMATCH_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
             "WITH targets AS ( \
-               SELECT site_key, target_key, enabled, endpoint, \
-                      ('CMS Cache Refresh (' || site_key || '/' || target_key || ') - Create') AS create_name, \
-                      ('CMS Cache Refresh (' || site_key || '/' || target_key || ') - Update') AS update_name, \
-                      ('CMS Cache Refresh (' || site_key || '/' || target_key || ') - Manual') AS manual_name \
+               SELECT site_key, \
+                      COALESCE(NULLIF(BTRIM(keycloak_realm), ''), 'external') AS keycloak_realm, \
+                      COALESCE(NULLIF(BTRIM(app_key), ''), site_key) AS app_key, \
+                      target_key, \
+                      enabled, \
+                      endpoint, \
+                      ('CMS Cache Refresh (' || COALESCE(NULLIF(BTRIM(keycloak_realm), ''), 'external') || '/' || COALESCE(NULLIF(BTRIM(app_key), ''), site_key) || '/' || target_key || ') - Create') AS create_name, \
+                      ('CMS Cache Refresh (' || COALESCE(NULLIF(BTRIM(keycloak_realm), ''), 'external') || '/' || COALESCE(NULLIF(BTRIM(app_key), ''), site_key) || '/' || target_key || ') - Update') AS update_name, \
+                      ('CMS Cache Refresh (' || COALESCE(NULLIF(BTRIM(keycloak_realm), ''), 'external') || '/' || COALESCE(NULLIF(BTRIM(app_key), ''), site_key) || '/' || target_key || ') - Manual') AS manual_name \
                FROM directus.cms_cache_refresh_targets \
              ), expected AS ( \
-               SELECT site_key, target_key, endpoint, \
-                      CASE WHEN enabled THEN 'active' ELSE 'inactive' END AS expected_status, \
+               SELECT site_key, keycloak_realm, app_key, target_key, endpoint, \
+                      CASE WHEN enabled AND BTRIM(COALESCE(endpoint, '')) <> '' THEN 'active' ELSE 'inactive' END AS expected_status, \
+                      '{{ refresh_target_config.endpoint }}'::text AS expected_operation_url, \
                       unnest(ARRAY[create_name, update_name, manual_name]) AS flow_name \
                FROM targets \
              ), current_flows AS ( \
-               SELECT e.flow_name, e.endpoint, e.expected_status, \
+               SELECT e.flow_name, e.endpoint, e.expected_status, e.expected_operation_url, \
                       f.id AS flow_id, \
                       COALESCE(f.status, '') AS flow_status, \
                       COALESCE(( \
@@ -474,7 +480,7 @@ data:
              FROM current_flows \
              WHERE flow_id IS NULL \
                 OR flow_status IS DISTINCT FROM expected_status \
-                OR (expected_status = 'active' AND op_url IS DISTINCT FROM endpoint);" || true)"
+                OR (expected_status = 'active' AND op_url IS DISTINCT FROM expected_operation_url);" || true)"
           FLOW_TARGET_MISMATCH_COUNT="$(printf '%s' "${FLOW_TARGET_MISMATCH_COUNT:-0}" | tr -d '\r')"
           if [ -n "${FLOW_TARGET_MISMATCH_COUNT:-}" ] && [ "${FLOW_TARGET_MISMATCH_COUNT}" != "0" ]; then
             RECON_FLOW_HEALTHY="0"
@@ -597,6 +603,8 @@ data:
              ('cms_theme_packages','css_light'), \
              ('cms_modules','module_key'), \
              ('cms_cache_refresh_targets','site_key'), \
+             ('cms_cache_refresh_targets','app_key'), \
+             ('cms_cache_refresh_targets','keycloak_realm'), \
              ('cms_cache_refresh_targets','target_key'), \
              ('platform_organizations','organization_key'), \
              ('platform_organizations','name'), \
@@ -1755,8 +1763,8 @@ data:
           "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='cms_cache_refresh_targets' LIMIT 1;" || true)"
         cache_targets_exists="$(printf '%s' "${cache_targets_exists}" | tr -d '\r')"
         if [ "${cache_targets_exists}" = "1" ]; then
-          cache_targets_tabular_fields_json='["site_key","target_key","enabled","endpoint","date_updated"]'
-          _upsert_global_list_preset "cms_cache_refresh_targets" "link" "${cache_targets_tabular_fields_json}" '["site_key","target_key"]'
+          cache_targets_tabular_fields_json='["keycloak_realm","app_key","site_key","target_key","enabled","endpoint","date_updated"]'
+          _upsert_global_list_preset "cms_cache_refresh_targets" "link" "${cache_targets_tabular_fields_json}" '["keycloak_realm","app_key","target_key"]'
         fi
 
         translation_languages_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -2553,6 +2561,8 @@ data:
       "SET search_path TO directus, public; \
        CREATE TABLE IF NOT EXISTS cms_cache_refresh_targets ( \
          id UUID PRIMARY KEY, \
+         app_key TEXT NOT NULL, \
+         keycloak_realm TEXT NOT NULL DEFAULT 'external', \
          site_key TEXT NOT NULL, \
          target_key TEXT NOT NULL, \
          enabled BOOLEAN NOT NULL DEFAULT false, \
@@ -2560,40 +2570,77 @@ data:
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
          date_updated TIMESTAMPTZ NULL \
        ); \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS app_key TEXT; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS keycloak_realm TEXT; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS target_key TEXT; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS enabled BOOLEAN; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS endpoint TEXT; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN keycloak_realm SET DEFAULT 'external'; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN enabled SET DEFAULT false; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN endpoint SET DEFAULT ''; \
        ALTER TABLE IF EXISTS cms_cache_refresh_targets ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_cache_refresh_targets t \
+          SET app_key = p.app_key \
+         FROM platform_apps p \
+        WHERE (t.app_key IS NULL OR BTRIM(t.app_key) = '') \
+          AND t.site_key = p.site_key \
+          AND p.app_key IS NOT NULL \
+          AND BTRIM(p.app_key) <> ''; \
+       UPDATE cms_cache_refresh_targets t \
+          SET keycloak_realm = p.keycloak_realm \
+         FROM platform_apps p \
+        WHERE (t.keycloak_realm IS NULL OR BTRIM(t.keycloak_realm) = '') \
+          AND t.site_key = p.site_key \
+          AND p.keycloak_realm IS NOT NULL \
+          AND BTRIM(p.keycloak_realm) <> ''; \
+       UPDATE cms_cache_refresh_targets \
+          SET app_key = LOWER(COALESCE(NULLIF(BTRIM(app_key), ''), NULLIF(BTRIM(site_key), ''), 'app')) \
+        WHERE app_key IS NULL OR BTRIM(app_key) = '' OR app_key <> LOWER(app_key); \
+       UPDATE cms_cache_refresh_targets \
+          SET keycloak_realm = CASE \
+            WHEN LOWER(COALESCE(NULLIF(BTRIM(keycloak_realm), ''), '')) IN ('internal','external') THEN LOWER(BTRIM(keycloak_realm)) \
+            WHEN LOWER(COALESCE(NULLIF(BTRIM(site_key), ''), '')) = 'internal' THEN 'internal' \
+            ELSE 'external' \
+          END \
+        WHERE keycloak_realm IS NULL \
+           OR BTRIM(keycloak_realm) = '' \
+           OR keycloak_realm <> LOWER(keycloak_realm) \
+           OR LOWER(BTRIM(keycloak_realm)) NOT IN ('internal','external'); \
+       UPDATE cms_cache_refresh_targets \
+          SET target_key = LOWER(COALESCE(NULLIF(BTRIM(target_key), ''), 'prod')) \
+        WHERE target_key IS NULL OR BTRIM(target_key) = '' OR target_key <> LOWER(target_key); \
+       DROP INDEX IF EXISTS cms_cache_refresh_targets_site_target_unique; \
        DO \$\$ \
        BEGIN \
          IF EXISTS ( \
            SELECT 1 FROM pg_indexes \
            WHERE schemaname = 'directus' \
-             AND indexname = 'cms_cache_refresh_targets_site_target_unique' \
+             AND indexname = 'cms_cache_refresh_targets_realm_app_target_unique' \
          ) THEN \
            RETURN; \
          END IF; \
          IF NOT EXISTS ( \
            SELECT 1 \
            FROM ( \
-             SELECT site_key, target_key, COUNT(*) AS c \
+             SELECT keycloak_realm, app_key, target_key, COUNT(*) AS c \
              FROM cms_cache_refresh_targets \
-             GROUP BY site_key, target_key \
+             GROUP BY keycloak_realm, app_key, target_key \
              HAVING COUNT(*) > 1 \
            ) dups \
          ) THEN \
-           CREATE UNIQUE INDEX cms_cache_refresh_targets_site_target_unique \
-           ON cms_cache_refresh_targets (site_key, target_key); \
+           CREATE UNIQUE INDEX cms_cache_refresh_targets_realm_app_target_unique \
+           ON cms_cache_refresh_targets (keycloak_realm, app_key, target_key); \
          ELSE \
-           RAISE NOTICE 'Skipping cms_cache_refresh_targets_site_target_unique due to duplicate (site_key,target_key) rows'; \
+           RAISE NOTICE 'Skipping cms_cache_refresh_targets_realm_app_target_unique due to duplicate (keycloak_realm,app_key,target_key) rows'; \
          END IF; \
        END \
        \$\$;"
+    if command -v _upsert_collection_meta >/dev/null 2>&1; then
+      _upsert_collection_meta "cms_cache_refresh_targets" "link" "App-scoped cache refresh endpoints used by Directus flows after CMS content changes." "{{keycloak_realm}}/{{app_key}}/{{target_key}}"
+    fi
 
     echo "🧱 Ensuring cms_cache_refresh_targets syncs Directus refresh-flow endpoints..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
@@ -2604,6 +2651,8 @@ data:
        AS \$\$ \
        DECLARE \
          v_site_key TEXT; \
+         v_app_key TEXT; \
+         v_keycloak_realm TEXT; \
          v_target_key TEXT; \
          v_enabled BOOLEAN; \
          v_endpoint TEXT; \
@@ -2612,25 +2661,35 @@ data:
          v_create_name TEXT; \
          v_update_name TEXT; \
          v_manual_name TEXT; \
+         v_legacy_create_name TEXT; \
+         v_legacy_update_name TEXT; \
+         v_legacy_manual_name TEXT; \
          v_flow_id UUID; \
          v_options_type TEXT; \
        BEGIN \
          IF TG_OP = 'DELETE' THEN \
            v_site_key := LOWER(COALESCE(NULLIF(BTRIM(OLD.site_key), ''), '')); \
+           v_app_key := LOWER(COALESCE(NULLIF(BTRIM(OLD.app_key), ''), NULLIF(BTRIM(OLD.site_key), ''), '')); \
+           v_keycloak_realm := LOWER(COALESCE(NULLIF(BTRIM(OLD.keycloak_realm), ''), 'external')); \
            v_target_key := LOWER(COALESCE(NULLIF(BTRIM(OLD.target_key), ''), '')); \
            v_enabled := false; \
            v_endpoint := ''; \
          ELSE \
            v_site_key := LOWER(COALESCE(NULLIF(BTRIM(NEW.site_key), ''), '')); \
+           v_app_key := LOWER(COALESCE(NULLIF(BTRIM(NEW.app_key), ''), NULLIF(BTRIM(NEW.site_key), ''), '')); \
+           v_keycloak_realm := LOWER(COALESCE(NULLIF(BTRIM(NEW.keycloak_realm), ''), 'external')); \
            v_target_key := LOWER(COALESCE(NULLIF(BTRIM(NEW.target_key), ''), '')); \
            v_enabled := COALESCE(NEW.enabled, false); \
            v_endpoint := BTRIM(COALESCE(NEW.endpoint, '')); \
          END IF; \
-         IF v_site_key = '' OR v_target_key = '' THEN \
+         IF v_site_key = '' OR v_app_key = '' OR v_target_key = '' THEN \
            IF TG_OP = 'DELETE' THEN \
              RETURN OLD; \
            END IF; \
            RETURN NEW; \
+         END IF; \
+         IF v_keycloak_realm NOT IN ('internal', 'external') THEN \
+           v_keycloak_realm := 'external'; \
          END IF; \
          IF to_regclass('directus.directus_flows') IS NULL \
             OR to_regclass('directus.directus_operations') IS NULL THEN \
@@ -2645,9 +2704,12 @@ data:
            v_flow_status := 'inactive'; \
          END IF; \
          v_effective_endpoint := '{{ refresh_target_config.endpoint }}'; \
-         v_create_name := FORMAT('CMS Cache Refresh (%s/%s) - Create', v_site_key, v_target_key); \
-         v_update_name := FORMAT('CMS Cache Refresh (%s/%s) - Update', v_site_key, v_target_key); \
-         v_manual_name := FORMAT('CMS Cache Refresh (%s/%s) - Manual', v_site_key, v_target_key); \
+         v_create_name := FORMAT('CMS Cache Refresh (%s/%s/%s) - Create', v_keycloak_realm, v_app_key, v_target_key); \
+         v_update_name := FORMAT('CMS Cache Refresh (%s/%s/%s) - Update', v_keycloak_realm, v_app_key, v_target_key); \
+         v_manual_name := FORMAT('CMS Cache Refresh (%s/%s/%s) - Manual', v_keycloak_realm, v_app_key, v_target_key); \
+         v_legacy_create_name := FORMAT('CMS Cache Refresh (%s/%s) - Create', v_site_key, v_target_key); \
+         v_legacy_update_name := FORMAT('CMS Cache Refresh (%s/%s) - Update', v_site_key, v_target_key); \
+         v_legacy_manual_name := FORMAT('CMS Cache Refresh (%s/%s) - Manual', v_site_key, v_target_key); \
          SELECT c.data_type INTO v_options_type \
          FROM information_schema.columns c \
          WHERE c.table_schema = 'directus' \
@@ -2657,6 +2719,9 @@ data:
          UPDATE directus_flows \
          SET status = v_flow_status \
          WHERE name IN (v_create_name, v_update_name, v_manual_name); \
+         UPDATE directus_flows \
+         SET status = 'inactive' \
+         WHERE name IN (v_legacy_create_name, v_legacy_update_name, v_legacy_manual_name); \
          FOR v_flow_id IN \
            SELECT f.id \
            FROM directus_flows f \
@@ -2687,7 +2752,7 @@ data:
          IF to_regclass('directus.cms_cache_refresh_targets') IS NOT NULL THEN \
            DROP TRIGGER IF EXISTS cms_cache_refresh_targets_sync_flow_config_upsert_trg ON cms_cache_refresh_targets; \
            CREATE TRIGGER cms_cache_refresh_targets_sync_flow_config_upsert_trg \
-           AFTER INSERT OR UPDATE OF site_key, target_key, enabled, endpoint \
+           AFTER INSERT OR UPDATE OF keycloak_realm, app_key, site_key, target_key, enabled, endpoint \
            ON cms_cache_refresh_targets \
            FOR EACH ROW \
            EXECUTE FUNCTION directus.sync_cache_refresh_target_flow_config(); \
@@ -5019,6 +5084,7 @@ data:
       platform_deployment_strategy_choices_json="$(jq -nc '[{"text":"Terraform Cloud","value":"terraform_cloud","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Local Terraform","value":"local_terraform","foreground":"#1D4ED8","background":"#DBEAFE"}]')"
       platform_operation_type_choices_json="$(jq -nc '[{"text":"Create","value":"create","foreground":"#065F46","background":"#D1FAE5"},{"text":"Update","value":"update","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Redeploy","value":"redeploy","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Delete","value":"delete","foreground":"#991B1B","background":"#FEE2E2"},{"text":"Destroy","value":"destroy","foreground":"#92400E","background":"#FEF3C7"}]')"
       platform_operation_status_choices_json="$(jq -nc '[{"text":"Queued","value":"queued","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Running","value":"running","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Succeeded","value":"succeeded","foreground":"#065F46","background":"#D1FAE5"},{"text":"Failed","value":"failed","foreground":"#991B1B","background":"#FEE2E2"},{"text":"Canceled","value":"canceled","foreground":"#4B5563","background":"#F3F4F6"}]')"
+      cache_refresh_target_choices_json="$(jq -nc '[{"text":"Production","value":"prod","foreground":"#92400E","background":"#FEF3C7"},{"text":"Preview","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"}]')"
       platform_org_status_options_json="$(jq -nc --argjson choices "${platform_org_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_app_status_options_json="$(jq -nc --argjson choices "${platform_app_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_deployment_status_options_json="$(jq -nc --argjson choices "${platform_deployment_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
@@ -5027,6 +5093,7 @@ data:
       platform_deployment_strategy_options_json="$(jq -nc --argjson choices "${platform_deployment_strategy_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_operation_type_options_json="$(jq -nc --argjson choices "${platform_operation_type_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_operation_status_options_json="$(jq -nc --argjson choices "${platform_operation_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      cache_refresh_target_options_json="$(jq -nc --argjson choices "${cache_refresh_target_choices_json}" '{choices:$choices,allowOther:true,allowNone:false}')"
       platform_org_relation_options_json="$(jq -nc '{template:"{{name}} ({{organization_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
       platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{site_key}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_user_relation_options_json="$(jq -nc '{template:"{{first_name}} {{last_name}} <{{email}}>",enableCreate:false,enableSelect:true,enableLink:true}')"
@@ -5053,6 +5120,12 @@ data:
       platform_operation_requested_by_note_sql="$(printf '%s' 'Directus user that requested the operation.' | sed "s/'/''/g")"
       platform_operation_json_note_sql="$(printf '%s' 'Operation payload/result metadata. Do not store secrets here.' | sed "s/'/''/g")"
       platform_operation_log_note_sql="$(printf '%s' 'Short non-secret log excerpt for review/debugging.' | sed "s/'/''/g")"
+      cache_refresh_app_key_note_sql="$(printf '%s' 'Deployed app slug whose cache endpoint should be refreshed.' | sed "s/'/''/g")"
+      cache_refresh_realm_note_sql="$(printf '%s' 'Keycloak realm for the deployed app. Multiple apps can share a realm.' | sed "s/'/''/g")"
+      cache_refresh_site_key_note_sql="$(printf '%s' 'Directus content site key whose content changes should trigger this app refresh.' | sed "s/'/''/g")"
+      cache_refresh_target_key_note_sql="$(printf '%s' 'Deployment target for this app refresh endpoint.' | sed "s/'/''/g")"
+      cache_refresh_enabled_note_sql="$(printf '%s' 'Enables the generated Directus refresh flows when an endpoint is configured.' | sed "s/'/''/g")"
+      cache_refresh_endpoint_note_sql="$(printf '%s' 'Non-secret app cache refresh URL for this target.' | sed "s/'/''/g")"
       content_item_content_key_note="Generated from the content item name on save."
       content_item_language_code_note="Default source language code, usually en."
       content_item_reuse_strategy_note="Shared component reuses this same content item and translations when pages are copied. Copy per page creates a separate content item for each copied page."
@@ -7438,6 +7511,12 @@ data:
       _set_template_function_field_conditions "reviewed_at" "${template_function_javascript_only_conditions_json}"
       _set_content_item_field_conditions "content_template_key" "${content_item_template_conditions_json}"
       _upsert_status_dropdown_field_meta "cms_modules" 1
+      _upsert_content_item_field_meta "keycloak_realm" "select-dropdown" "half" 1 "${cache_refresh_realm_note_sql}" "${platform_realm_options_json}" true false "cms_cache_refresh_targets"
+      _upsert_content_item_field_meta "app_key" "input" "half" 2 "${cache_refresh_app_key_note_sql}" "" true false "cms_cache_refresh_targets"
+      _upsert_content_item_field_meta "site_key" "select-dropdown" "half" 3 "${cache_refresh_site_key_note_sql}" "${site_key_options_json}" true false "cms_cache_refresh_targets"
+      _upsert_content_item_field_meta "target_key" "select-dropdown" "half" 4 "${cache_refresh_target_key_note_sql}" "${cache_refresh_target_options_json}" true false "cms_cache_refresh_targets"
+      _upsert_content_item_field_meta "enabled" "boolean" "half" 5 "${cache_refresh_enabled_note_sql}" "" true false "cms_cache_refresh_targets"
+      _upsert_content_item_field_meta "endpoint" "input" "full" 6 "${cache_refresh_endpoint_note_sql}" "" true false "cms_cache_refresh_targets"
       _upsert_content_item_field_meta "organization_key" "input" "half" 1 "${platform_org_key_note_sql}" "" true false "platform_organizations"
       _upsert_content_item_field_meta "name" "input" "half" 2 "${platform_org_name_note_sql}" "" true false "platform_organizations"
       _upsert_content_item_field_meta "status" "select-dropdown" "half" 3 "${status_note_sql}" "${platform_org_status_options_json}" true false "platform_organizations"
@@ -8540,6 +8619,8 @@ data:
 
         printf '%s' "$SITES_JSON" | jq -c '.sites[]' | while IFS= read -r site; do
           site_key="$(printf '%s' "$site" | jq -r '.site_key // .key // empty')"
+          site_app_key="$(printf '%s' "$site" | jq -r '.app_key // .app // .name // .site_key // .key // empty' 2>/dev/null || true)"
+          site_realm_raw="$(printf '%s' "$site" | jq -r '.realm // .keycloak_realm // empty' 2>/dev/null || true)"
           homepage_slug="$(printf '%s' "$site" | jq -r '.homepage_slug // "home"')"
           homepage_release_channel_raw="$(printf '%s' "$site" | jq -r '.homepage_release_channel // .release_channel // "preview"')"
           homepage_layout_template_key="$(printf '%s' "$site" | jq -r '.homepage_layout_template_key // .layout_template_key // "spa-default"')"
@@ -8555,6 +8636,23 @@ data:
           fi
           if [ -z "${role_name:-}" ] || [ "${role_name}" = "null" ]; then
             role_name="$client_key"
+          fi
+          site_app_key="$(printf '%s' "${site_app_key:-}" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+          if [ -z "${site_app_key:-}" ] || [ "${site_app_key}" = "null" ]; then
+            site_app_key="$(printf '%s' "${site_key:-}" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+          fi
+          site_realm="$(printf '%s' "${site_realm_raw:-}" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+          case "${site_realm}" in
+            internal|external) ;;
+            *) site_realm="external" ;;
+          esac
+          if [ -z "${site_app_key:-}" ] || [ "${site_app_key}" = "null" ]; then
+            echo "⚠️  site entry missing app_key/site_key for cache refresh identity; skipping (client_key=${client_key})"
+            continue
+          fi
+          if ! printf '%s' "$site_app_key" | grep -Eq '^[a-z0-9][a-z0-9._-]{0,127}$'; then
+            echo "⚠️  invalid app_key '${site_app_key}' (site_key=${site_key}); skipping"
+            continue
           fi
           if ! printf '%s' "$client_key" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
             echo "⚠️  invalid client_key '${client_key}' (site_key=${site_key}); skipping"
@@ -8851,9 +8949,11 @@ data:
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "create" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "update" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
 
-              FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_key}/prod) - Manual"
+              FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_realm}/${site_app_key}/prod) - Manual"
+              FLOW_TRIGGER_NAME_PREVIEW="CMS Cache Refresh (${site_realm}/${site_app_key}/preview) - Manual"
+              FLOW_TRIGGER_NAME_LEGACY_PROD="CMS Cache Refresh (${site_key}/prod) - Manual"
               FLOW_TRIGGER_NAME_SITE="CMS Cache Refresh (${site_key}) - Manual"
-              FLOW_TRIGGER_PERMISSIONS_JSON="$(jq -nc --arg prod "${FLOW_TRIGGER_NAME_PROD}" --arg site "${FLOW_TRIGGER_NAME_SITE}" '{name:{_in:[$prod,$site]}}')"
+              FLOW_TRIGGER_PERMISSIONS_JSON="$(jq -nc --arg prod "${FLOW_TRIGGER_NAME_PROD}" --arg preview "${FLOW_TRIGGER_NAME_PREVIEW}" --arg legacy_prod "${FLOW_TRIGGER_NAME_LEGACY_PROD}" --arg site "${FLOW_TRIGGER_NAME_SITE}" '{name:{_in:[$prod,$preview,$legacy_prod,$site]}}')"
               FLOW_OPERATIONS_PERMISSIONS_JSON="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
               _upsert_policy_action_permission "${POLICY_ID}" "directus_flows" "read" "${FLOW_TRIGGER_PERMISSIONS_JSON}"
               _upsert_policy_action_permission "${POLICY_ID}" "directus_flows" "trigger" "${FLOW_TRIGGER_PERMISSIONS_JSON}"
@@ -9010,6 +9110,7 @@ data:
     
             printf '%s' "${refresh_targets_json}" | jq -c 'sort_by((if (.enabled // false) then 0 else 1 end), .target_key)[]' | while IFS= read -r target; do
               target_key="$(printf '%s' "$target" | jq -r '.target_key // empty' 2>/dev/null || true)"
+              target_key="$(printf '%s' "${target_key:-}" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
               target_enabled_raw="$(printf '%s' "$target" | jq -r '.enabled // false' 2>/dev/null || true)"
               target_endpoint_raw="$(printf '%s' "$target" | jq -r '.endpoint // empty' 2>/dev/null || true)"
               target_method_raw="$(printf '%s' "$target" | jq -r '.method // "POST"' 2>/dev/null || true)"
@@ -9028,6 +9129,8 @@ data:
               # UI-managed endpoint registry:
               # Read effective enabled/endpoint from Directus DB. Rebuild seed mode can create missing rows from sites.yaml defaults.
               target_site_sql="$(printf '%s' "${site_key}" | sed "s/'/''/g")"
+              target_app_sql="$(printf '%s' "${site_app_key}" | sed "s/'/''/g")"
+              target_realm_sql="$(printf '%s' "${site_realm}" | sed "s/'/''/g")"
               target_key_sql="$(printf '%s' "${target_key}" | sed "s/'/''/g")"
               target_endpoint_seed="$(printf '%s' "${target_endpoint_raw:-}" | tr -d '\r')"
               target_endpoint_seed_sql="$(printf '%s' "${target_endpoint_seed}" | sed "s/'/''/g")"
@@ -9038,30 +9141,44 @@ data:
               esac
 
               target_cfg_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                "SELECT id FROM directus.cms_cache_refresh_targets WHERE site_key='${target_site_sql}' AND target_key='${target_key_sql}' LIMIT 1;" || true)"
+                "SELECT id FROM directus.cms_cache_refresh_targets WHERE keycloak_realm='${target_realm_sql}' AND app_key='${target_app_sql}' AND target_key='${target_key_sql}' LIMIT 1;" || true)"
               target_cfg_id="$(printf '%s' "${target_cfg_id}" | tr -d '\r')"
               if [ -z "${target_cfg_id:-}" ] || [ "${target_cfg_id}" = "null" ]; then
                 if [ "${DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED}" = "true" ]; then
                   target_cfg_id="$(cat /proc/sys/kernel/random/uuid)"
                   target_cfg_id_sql="$(printf '%s' "${target_cfg_id}" | sed "s/'/''/g")"
-                  if ! _psql_yb_retry "INSERT INTO cms_cache_refresh_targets (id, site_key, target_key, enabled, endpoint, date_created, date_updated)
-                    VALUES ('${target_cfg_id_sql}', '${target_site_sql}', '${target_key_sql}', ${target_enabled_seed}, '${target_endpoint_seed_sql}', now(), now())
-                    ON CONFLICT (site_key, target_key) DO NOTHING;" "seed cache refresh target registry for ${site_key}/${target_key}" 12; then
-                    echo "⚠️ failed to seed cache refresh target registry for site_key='${site_key}', target='${target_key}'"
+                  if ! _psql_yb_retry "INSERT INTO cms_cache_refresh_targets (id, keycloak_realm, app_key, site_key, target_key, enabled, endpoint, date_created, date_updated)
+                    SELECT '${target_cfg_id_sql}', '${target_realm_sql}', '${target_app_sql}', '${target_site_sql}', '${target_key_sql}', ${target_enabled_seed}, '${target_endpoint_seed_sql}', now(), now()
+                    WHERE NOT EXISTS (
+                      SELECT 1
+                      FROM cms_cache_refresh_targets
+                      WHERE keycloak_realm='${target_realm_sql}'
+                        AND app_key='${target_app_sql}'
+                        AND target_key='${target_key_sql}'
+                    );" "seed cache refresh target registry for ${site_realm}/${site_app_key}/${target_key}" 12; then
+                    echo "⚠️ failed to seed cache refresh target registry for realm='${site_realm}', app='${site_app_key}', site_key='${site_key}', target='${target_key}'"
                     continue
                   fi
                 else
-                  echo "INFO: No Directus-managed cache refresh target row for ${site_key}/${target_key}; skipping flow target."
+                  echo "INFO: No Directus-managed cache refresh target row for ${site_realm}/${site_app_key}/${target_key} (site_key=${site_key}); skipping flow target."
                   continue
                 fi
+              fi
+              target_cfg_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT id FROM directus.cms_cache_refresh_targets WHERE keycloak_realm='${target_realm_sql}' AND app_key='${target_app_sql}' AND target_key='${target_key_sql}' LIMIT 1;" || true)"
+              target_cfg_id="$(printf '%s' "${target_cfg_id}" | tr -d '\r')"
+              if [ -z "${target_cfg_id:-}" ] || [ "${target_cfg_id}" = "null" ]; then
+                echo "⚠️ No Directus-managed cache refresh target row resolved for ${site_realm}/${site_app_key}/${target_key} after seed/read; skipping flow target."
+                continue
               fi
 
               target_cfg_json="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
                 "SELECT row_to_json(src)::text
                    FROM (
-                     SELECT id, enabled, endpoint
+                     SELECT id, keycloak_realm, app_key, site_key, target_key, enabled, endpoint
                      FROM directus.cms_cache_refresh_targets
-                     WHERE site_key='${target_site_sql}'
+                     WHERE keycloak_realm='${target_realm_sql}'
+                       AND app_key='${target_app_sql}'
                        AND target_key='${target_key_sql}'
                      ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST
                      LIMIT 1
@@ -9161,12 +9278,13 @@ data:
                 fi
               fi
     
-              create_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Create"
-              update_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Update"
-              manual_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Manual"
-              create_flow_desc="Refreshes '${target_key}' app cache endpoint for site '${site_key}' after create events."
-              update_flow_desc="Refreshes '${target_key}' app cache endpoint for site '${site_key}' after update events."
-              manual_flow_desc="Manual GUI-triggered refresh for '${target_key}' app cache endpoint (site '${site_key}')."
+              flow_identity="${site_realm}/${site_app_key}/${target_key}"
+              create_flow_name="CMS Cache Refresh (${flow_identity}) - Create"
+              update_flow_name="CMS Cache Refresh (${flow_identity}) - Update"
+              manual_flow_name="CMS Cache Refresh (${flow_identity}) - Manual"
+              create_flow_desc="Refreshes '${target_key}' cache endpoint for app '${site_app_key}' in realm '${site_realm}' after create events for site '${site_key}'."
+              update_flow_desc="Refreshes '${target_key}' cache endpoint for app '${site_app_key}' in realm '${site_realm}' after update events for site '${site_key}'."
+              manual_flow_desc="Manual GUI-triggered refresh for '${target_key}' cache endpoint for app '${site_app_key}' in realm '${site_realm}' (site '${site_key}')."
     
               create_flow_payload="$(jq -nc \
                 --arg name "${create_flow_name}" \
@@ -9214,12 +9332,24 @@ data:
               _directus_deactivate_duplicate_flow_names "${create_flow_name}" "${create_flow_id}"
               _directus_deactivate_duplicate_flow_names "${update_flow_name}" "${update_flow_id}"
               _directus_deactivate_duplicate_flow_names "${manual_flow_name}" "${manual_flow_id}"
+              legacy_scoped_create_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Create"
+              legacy_scoped_update_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Update"
+              legacy_scoped_manual_flow_name="CMS Cache Refresh (${site_key}/${target_key}) - Manual"
+              for legacy_scoped_flow_name in \
+                "${legacy_scoped_create_flow_name}" \
+                "${legacy_scoped_update_flow_name}" \
+                "${legacy_scoped_manual_flow_name}"; do
+                legacy_scoped_flow_id="$(_directus_find_flow_id_by_name "${legacy_scoped_flow_name}")"
+                if [ -n "${legacy_scoped_flow_id:-}" ] && [ "${legacy_scoped_flow_id}" != "null" ]; then
+                  _directus_api_write "PATCH" "/flows/${legacy_scoped_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-legacy-scoped.json 2>/dev/null || true
+                fi
+              done
     
               if [ -z "${create_flow_id:-}" ] || [ -z "${update_flow_id:-}" ] || [ -z "${manual_flow_id:-}" ]; then
-                echo "⚠️ Failed to ensure cache-refresh flows for site_key='${site_key}', target='${target_key}'"
+                echo "⚠️ Failed to ensure cache-refresh flows for ${flow_identity} (site_key=${site_key})"
               else
                 if [ "${flow_status}" != "active" ]; then
-                  echo "✅ Reconciled cache-refresh flows (create/update/manual) for site_key='${site_key}', target='${target_key}' as inactive"
+                  echo "✅ Reconciled cache-refresh flows (create/update/manual) for ${flow_identity} (site_key=${site_key}) as inactive"
                   continue
                 fi
 
@@ -9228,17 +9358,19 @@ data:
                 create_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
                   '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                 create_refresh_target_read_options="$(jq -nc --arg cfg_id "${target_cfg_id_effective}" \
-                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
-                create_refresh_target_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
+                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","keycloak_realm","app_key","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
+                create_refresh_target_match_options="$(jq -nc --arg realm "${site_realm}" --arg app "${site_app_key}" --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{keycloak_realm:{_eq:$realm}}},{refresh_target_config:{app_key:{_eq:$app}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
                 create_request_options="$(jq -nc \
                   --arg method "${target_method}" \
                   --arg url "{{ refresh_target_config.endpoint }}" \
+                  --arg realm "${site_realm}" \
+                  --arg app "${site_app_key}" \
                   --arg site "${site_key}" \
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
                   --argjson headers "${target_headers_effective_json}" \
-                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"items.create",collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",slug:"{{ read_item.slug }}",page_slug:"{{ read_item.page_slug }}"}}')"
+                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",keycloak_realm:$realm,app_key:$app,site_key:$site,target:$target,event:"items.create",collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",slug:"{{ read_item.slug }}",page_slug:"{{ read_item.page_slug }}"}}')"
                 create_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
                 create_token_options="$(jq -nc \
                   --arg url "${refresh_auth_token_url}" \
@@ -9303,17 +9435,19 @@ data:
                 update_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
                   '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                 update_refresh_target_read_options="$(jq -nc --arg cfg_id "${target_cfg_id_effective}" \
-                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
-                update_refresh_target_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
+                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","keycloak_realm","app_key","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
+                update_refresh_target_match_options="$(jq -nc --arg realm "${site_realm}" --arg app "${site_app_key}" --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{keycloak_realm:{_eq:$realm}}},{refresh_target_config:{app_key:{_eq:$app}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
                 update_request_options="$(jq -nc \
                   --arg method "${target_method}" \
                   --arg url "{{ refresh_target_config.endpoint }}" \
+                  --arg realm "${site_realm}" \
+                  --arg app "${site_app_key}" \
                   --arg site "${site_key}" \
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
                   --argjson headers "${target_headers_effective_json}" \
-                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"items.update",collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys[0] }}",slug:"{{ read_item.slug }}",page_slug:"{{ read_item.page_slug }}"}}')"
+                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",keycloak_realm:$realm,app_key:$app,site_key:$site,target:$target,event:"items.update",collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys[0] }}",slug:"{{ read_item.slug }}",page_slug:"{{ read_item.page_slug }}"}}')"
                 update_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
                 update_token_options="$(jq -nc \
                   --arg url "${refresh_auth_token_url}" \
@@ -9374,17 +9508,19 @@ data:
                   >/tmp/directus-flow-entry.json 2>/dev/null || true
 
                 manual_refresh_target_read_options="$(jq -nc --arg cfg_id "${target_cfg_id_effective}" \
-                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
-                manual_refresh_target_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
+                  '{collection:"cms_cache_refresh_targets",key:$cfg_id,query:{fields:["id","keycloak_realm","app_key","site_key","target_key","enabled","endpoint"]},emitEvents:false,permissions:"$full"}')"
+                manual_refresh_target_match_options="$(jq -nc --arg realm "${site_realm}" --arg app "${site_app_key}" --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{refresh_target_config:{enabled:{_eq:true}}},{refresh_target_config:{endpoint:{_nempty:true}}},{refresh_target_config:{keycloak_realm:{_eq:$realm}}},{refresh_target_config:{app_key:{_eq:$app}}},{refresh_target_config:{site_key:{_eq:$site}}},{refresh_target_config:{target_key:{_eq:$target}}}]}}')"
                 manual_request_options="$(jq -nc \
                   --arg method "${target_method}" \
                   --arg url "{{ refresh_target_config.endpoint }}" \
+                  --arg realm "${site_realm}" \
+                  --arg app "${site_app_key}" \
                   --arg site "${site_key}" \
                   --arg target "${target_key}" \
                   --argjson timeout "${target_request_timeout_ms}" \
                   --argjson headers "${target_headers_effective_json}" \
-                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",site_key:$site,target:$target,event:"manual.run",reason:"directus-manual-flow",collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",slug:"{{ $trigger.slug }}",page_slug:"{{ $trigger.page_slug }}"}}')"
+                  '{method:$method,url:$url,timeout:$timeout,headers:$headers,body:{source:"directus",keycloak_realm:$realm,app_key:$app,site_key:$site,target:$target,event:"manual.run",reason:"directus-manual-flow",collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",slug:"{{ $trigger.slug }}",page_slug:"{{ $trigger.page_slug }}"}}')"
                 manual_sleep_options="$(jq -nc --argjson milliseconds "${target_retry_delay_ms}" '{milliseconds:$milliseconds}')"
                 manual_token_options="$(jq -nc \
                   --arg url "${refresh_auth_token_url}" \
@@ -9441,9 +9577,9 @@ data:
                   >/tmp/directus-flow-entry.json 2>/dev/null || true
 
                 if [ "${flow_status}" = "active" ]; then
-                  echo "✅ Reconciled active cache-refresh flows (create/update/manual) for site_key='${site_key}', target='${target_key}' (${target_method} ${target_endpoint_effective}, attempts=${target_retry_attempts}, retry_delay_ms=${target_retry_delay_ms}, request_timeout_ms=${target_request_timeout_ms}, token_timeout_ms=${target_token_timeout_ms})"
+                  echo "✅ Reconciled active cache-refresh flows (create/update/manual) for ${flow_identity} (site_key=${site_key}) (${target_method} ${target_endpoint_effective}, attempts=${target_retry_attempts}, retry_delay_ms=${target_retry_delay_ms}, request_timeout_ms=${target_request_timeout_ms}, token_timeout_ms=${target_token_timeout_ms})"
                 else
-                  echo "✅ Reconciled cache-refresh flows (create/update/manual) for site_key='${site_key}', target='${target_key}' as inactive"
+                  echo "✅ Reconciled cache-refresh flows (create/update/manual) for ${flow_identity} (site_key=${site_key}) as inactive"
                 fi
               fi
             done
@@ -9452,6 +9588,12 @@ data:
             legacy_create_flow_name="CMS Cache Refresh (${site_key}) - Create"
             legacy_update_flow_name="CMS Cache Refresh (${site_key}) - Update"
             legacy_manual_flow_name="CMS Cache Refresh (${site_key}) - Manual"
+            legacy_target_create_flow_name="CMS Cache Refresh (${site_key}/prod) - Create"
+            legacy_target_update_flow_name="CMS Cache Refresh (${site_key}/prod) - Update"
+            legacy_target_manual_flow_name="CMS Cache Refresh (${site_key}/prod) - Manual"
+            legacy_target_preview_create_flow_name="CMS Cache Refresh (${site_key}/preview) - Create"
+            legacy_target_preview_update_flow_name="CMS Cache Refresh (${site_key}/preview) - Update"
+            legacy_target_preview_manual_flow_name="CMS Cache Refresh (${site_key}/preview) - Manual"
             legacy_create_flow_id="$(_directus_find_flow_id_by_name "${legacy_create_flow_name}")"
             if [ -n "${legacy_create_flow_id:-}" ] && [ "${legacy_create_flow_id}" != "null" ]; then
               _directus_api_write "PATCH" "/flows/${legacy_create_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-legacy.json 2>/dev/null || true
@@ -9464,6 +9606,18 @@ data:
             if [ -n "${legacy_manual_flow_id:-}" ] && [ "${legacy_manual_flow_id}" != "null" ]; then
               _directus_api_write "PATCH" "/flows/${legacy_manual_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-legacy.json 2>/dev/null || true
             fi
+            for legacy_target_flow_name in \
+              "${legacy_target_create_flow_name}" \
+              "${legacy_target_update_flow_name}" \
+              "${legacy_target_manual_flow_name}" \
+              "${legacy_target_preview_create_flow_name}" \
+              "${legacy_target_preview_update_flow_name}" \
+              "${legacy_target_preview_manual_flow_name}"; do
+              legacy_target_flow_id="$(_directus_find_flow_id_by_name "${legacy_target_flow_name}")"
+              if [ -n "${legacy_target_flow_id:-}" ] && [ "${legacy_target_flow_id}" != "null" ]; then
+                _directus_api_write "PATCH" "/flows/${legacy_target_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-legacy-target.json 2>/dev/null || true
+              fi
+            done
           else
             echo "⚠️ Skipping cache-refresh flow provisioning for site_key='${site_key}' (Directus API token unavailable)"
           fi

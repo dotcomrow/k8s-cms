@@ -17,11 +17,13 @@ data:
       external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=refresh"
 
     sites:
-      # Every deployed shell app needs one site entry whose site_key matches
-      # DIRECTUS_CONTENT_SITE_KEY in that app deployment. Multiple external apps
-      # can share realm: external while still using distinct site_key values.
+      # Every deployed shell app needs one site entry. app_key is the deployed
+      # app/cache-refresh identity; site_key is the Directus content scope passed
+      # as DIRECTUS_CONTENT_SITE_KEY. Multiple apps can share a realm, and they
+      # can either use distinct site_key values or refresh from the same site_key.
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
+        app_key: internal
         realm: internal
         homepage_slug: home
         homepage_release_channel: preview
@@ -221,6 +223,7 @@ data:
 
       # External site (Cloudflare Worker service client)
       - site_key: external
+        app_key: external
         realm: external
         homepage_slug: home
         homepage_release_channel: preview
