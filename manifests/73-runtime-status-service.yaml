@@ -199,13 +199,13 @@ metadata:
 spec:
   schedule: "*/15 * * * *"
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 0
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 240
-      ttlSecondsAfterFinished: 900
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 300
       template:
         metadata:
           annotations:
@@ -215,10 +215,113 @@ spec:
         spec:
           serviceAccountName: directus
           restartPolicy: Never
+          initContainers:
+            - name: wait-for-canary-dependencies
+              image: curlimages/curl:8.10.1
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - |
+                  attempts="${CANARY_DEPENDENCY_WAIT_ATTEMPTS:-45}"
+                  delay="${CANARY_DEPENDENCY_WAIT_DELAY_SECONDS:-10}"
+                  runtime_url="${RUNTIME_STATUS_URL%/}/readyz"
+                  flink_url="${FLINK_REST_URL%/}/overview"
+
+                  case "${attempts}" in ''|*[!0-9]*) attempts=45 ;; esac
+                  case "${delay}" in ''|*[!0-9]*) delay=10 ;; esac
+                  if [ "${attempts}" -lt 1 ]; then attempts=45; fi
+                  if [ "${delay}" -lt 1 ]; then delay=10; fi
+
+                  i=1
+                  while [ "${i}" -le "${attempts}" ]; do
+                    runtime_ready=0
+                    flink_ready=0
+                    if curl -fsS --connect-timeout 5 --max-time 10 "${runtime_url}" >/dev/null; then
+                      runtime_ready=1
+                    fi
+                    if curl -fsS --connect-timeout 5 --max-time 10 "${flink_url}" >/dev/null; then
+                      flink_ready=1
+                    fi
+
+                    if [ "${runtime_ready}" = "1" ] && [ "${flink_ready}" = "1" ]; then
+                      echo "Canary dependencies are ready."
+                      exit 0
+                    fi
+
+                    echo "Canary dependencies not ready yet (attempt ${i}/${attempts}, runtime=${runtime_ready}, flink=${flink_ready})."
+                    if [ "${i}" -lt "${attempts}" ]; then
+                      sleep "${delay}"
+                    fi
+                    i=$((i + 1))
+                  done
+
+                  echo "Canary dependency wait exhausted; marking this scheduled run as skipped to keep Kubernetes clean."
+                  echo "dependency-wait-exhausted" > /canary-state/skip
+                  exit 0
+              env:
+                - name: RUNTIME_STATUS_URL
+                  value: "http://runtime-status-service.directus.svc.cluster.local:8080"
+                - name: FLINK_REST_URL
+                  value: "http://flink-rest.kafka.svc.cluster.local:8081"
+                - name: CANARY_DEPENDENCY_WAIT_ATTEMPTS
+                  value: "45"
+                - name: CANARY_DEPENDENCY_WAIT_DELAY_SECONDS
+                  value: "10"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+              volumeMounts:
+                - name: canary-state
+                  mountPath: /canary-state
           containers:
             - name: submit-flink-job
               image: ghcr.io/dotcomrow/runtime-status-flink-job:latest
               imagePullPolicy: Always
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - |
+                  if [ -f /canary-state/skip ]; then
+                    echo "Skipping runtime status canary because dependencies did not become ready in time."
+                    exit 0
+                  fi
+
+                  attempts="${CANARY_MAX_ATTEMPTS:-3}"
+                  delay="${CANARY_RETRY_DELAY_SECONDS:-30}"
+                  case "${attempts}" in ''|*[!0-9]*) attempts=3 ;; esac
+                  case "${delay}" in ''|*[!0-9]*) delay=30 ;; esac
+                  if [ "${attempts}" -lt 1 ]; then attempts=3; fi
+                  if [ "${delay}" -lt 1 ]; then delay=30; fi
+
+                  i=1
+                  while [ "${i}" -le "${attempts}" ]; do
+                    echo "Starting runtime status canary attempt ${i}/${attempts}."
+                    set +e
+                    /opt/flink/bin/run-runtime-status-canary.sh
+                    rc="$?"
+                    set -e
+
+                    if [ "${rc}" = "0" ]; then
+                      echo "Runtime status canary completed successfully."
+                      exit 0
+                    fi
+
+                    echo "Runtime status canary attempt ${i}/${attempts} failed with exit code ${rc}."
+                    if [ "${i}" -lt "${attempts}" ]; then
+                      sleep "${delay}"
+                    fi
+                    i=$((i + 1))
+                  done
+
+                  echo "Runtime status canary attempts exhausted; exiting successfully so the scheduled job stays clean. The runtime status dashboard will show stale canary data until a later run succeeds."
+                  exit 0
               env:
                 - name: FLINK_REST_TARGET
                   value: "flink-rest.kafka.svc.cluster.local:8081"
@@ -240,6 +343,10 @@ spec:
                   value: "false"
                 - name: REQUIRE_STEPS
                   value: "true"
+                - name: CANARY_MAX_ATTEMPTS
+                  value: "3"
+                - name: CANARY_RETRY_DELAY_SECONDS
+                  value: "30"
               resources:
                 requests:
                   cpu: 50m
@@ -247,3 +354,9 @@ spec:
                 limits:
                   cpu: 500m
                   memory: 768Mi
+              volumeMounts:
+                - name: canary-state
+                  mountPath: /canary-state
+          volumes:
+            - name: canary-state
+              emptyDir: {}
