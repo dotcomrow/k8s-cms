@@ -508,7 +508,10 @@ data:
            ('cms_layout_template_slots'), \
            ('cms_theme_packages'), \
            ('cms_modules'), \
-           ('cms_cache_refresh_targets') \
+           ('cms_cache_refresh_targets'), \
+           ('platform_organizations'), \
+           ('platform_apps'), \
+           ('platform_app_operations') \
        ) \
        SELECT COALESCE(string_agg(required.table_name, ',' ORDER BY required.table_name), '') \
        FROM required \
@@ -594,7 +597,18 @@ data:
              ('cms_theme_packages','css_light'), \
              ('cms_modules','module_key'), \
              ('cms_cache_refresh_targets','site_key'), \
-             ('cms_cache_refresh_targets','target_key') \
+             ('cms_cache_refresh_targets','target_key'), \
+             ('platform_organizations','organization_key'), \
+             ('platform_organizations','name'), \
+             ('platform_apps','organization_id'), \
+             ('platform_apps','app_key'), \
+             ('platform_apps','site_key'), \
+             ('platform_apps','keycloak_realm'), \
+             ('platform_apps','deployment_status'), \
+             ('platform_app_operations','app_id'), \
+             ('platform_app_operations','operation_type'), \
+             ('platform_app_operations','status'), \
+             ('platform_app_operations','execution_provider') \
          ) \
          SELECT COALESCE(string_agg(required.table_name || '.' || required.column_name, ',' ORDER BY required.table_name, required.column_name), '') \
          FROM required \
@@ -1767,6 +1781,235 @@ data:
       echo "ℹ️ DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED=false; skipping manifest-managed Directus bookmark/list preset writes. Bookmark rows are managed in Directus and can be copied with the bookmark-copy interface."
     fi
 
+    # 5a.1) Ensure platform organization/application registry exists.
+    # These collections are the Directus-owned desired-state records for the future
+    # internal Organization Management page. Deployment execution is handled later by
+    # a server-side control-plane service, not by browser code.
+    echo "🧱 Ensuring platform organization/app registry collections exist..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE TABLE IF NOT EXISTS platform_organizations ( \
+         id UUID PRIMARY KEY, \
+         organization_key TEXT NOT NULL, \
+         name TEXT NOT NULL, \
+         status TEXT NOT NULL DEFAULT 'active', \
+         description TEXT NULL, \
+         default_domain TEXT NOT NULL DEFAULT 'suncoast.systems', \
+         default_keycloak_realm TEXT NOT NULL DEFAULT 'external', \
+         default_cloud_provider TEXT NOT NULL DEFAULT 'cloudflare', \
+         settings_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS organization_key TEXT; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS description TEXT; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS default_domain TEXT; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS default_keycloak_realm TEXT; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS default_cloud_provider TEXT; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS settings_json JSONB; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_organizations ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_organizations ALTER COLUMN status SET DEFAULT 'active'; \
+       ALTER TABLE IF EXISTS platform_organizations ALTER COLUMN default_domain SET DEFAULT 'suncoast.systems'; \
+       ALTER TABLE IF EXISTS platform_organizations ALTER COLUMN default_keycloak_realm SET DEFAULT 'external'; \
+       ALTER TABLE IF EXISTS platform_organizations ALTER COLUMN default_cloud_provider SET DEFAULT 'cloudflare'; \
+       ALTER TABLE IF EXISTS platform_organizations ALTER COLUMN settings_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_organizations ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE platform_organizations SET status = 'active' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE platform_organizations SET default_domain = 'suncoast.systems' WHERE default_domain IS NULL OR BTRIM(default_domain) = ''; \
+       UPDATE platform_organizations SET default_keycloak_realm = 'external' WHERE default_keycloak_realm IS NULL OR BTRIM(default_keycloak_realm) = ''; \
+       UPDATE platform_organizations SET default_cloud_provider = 'cloudflare' WHERE default_cloud_provider IS NULL OR BTRIM(default_cloud_provider) = ''; \
+       UPDATE platform_organizations SET settings_json = '{}'::jsonb WHERE settings_json IS NULL OR jsonb_typeof(settings_json) <> 'object'; \
+       UPDATE platform_organizations SET date_created = now() WHERE date_created IS NULL; \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_organizations_key_unique ON platform_organizations (organization_key); \
+       CREATE TABLE IF NOT EXISTS platform_apps ( \
+         id UUID PRIMARY KEY, \
+         organization_id UUID NULL, \
+         app_key TEXT NOT NULL, \
+         display_name TEXT NOT NULL, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         site_key TEXT NOT NULL, \
+         keycloak_realm TEXT NOT NULL DEFAULT 'external', \
+         cloud_provider TEXT NOT NULL DEFAULT 'cloudflare', \
+         deployment_strategy TEXT NOT NULL DEFAULT 'terraform_cloud', \
+         deployment_status TEXT NOT NULL DEFAULT 'not_deployed', \
+         domain TEXT NOT NULL DEFAULT 'suncoast.systems', \
+         production_hostname TEXT NULL, \
+         preview_hostname TEXT NULL, \
+         production_url TEXT NULL, \
+         preview_url TEXT NULL, \
+         app_auth_slug_production TEXT NULL, \
+         app_auth_slug_preview TEXT NULL, \
+         terraform_workspace_production TEXT NULL, \
+         terraform_workspace_preview TEXT NULL, \
+         terraform_project TEXT NULL, \
+         template_source_repo TEXT NULL, \
+         template_ref TEXT NULL, \
+         template_commit_sha TEXT NULL, \
+         last_deployed_at TIMESTAMPTZ NULL, \
+         last_error TEXT NULL, \
+         config_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS organization_id UUID; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS app_key TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS display_name TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS keycloak_realm TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS cloud_provider TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS deployment_strategy TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS deployment_status TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS domain TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS production_hostname TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS preview_hostname TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS production_url TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS preview_url TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS app_auth_slug_production TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS app_auth_slug_preview TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS terraform_workspace_production TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS terraform_workspace_preview TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS terraform_project TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS template_source_repo TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS template_ref TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS template_commit_sha TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS last_deployed_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS last_error TEXT; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS config_json JSONB; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN keycloak_realm SET DEFAULT 'external'; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN cloud_provider SET DEFAULT 'cloudflare'; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN deployment_strategy SET DEFAULT 'terraform_cloud'; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN deployment_status SET DEFAULT 'not_deployed'; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN domain SET DEFAULT 'suncoast.systems'; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN config_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE platform_apps SET status = 'draft' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE platform_apps SET keycloak_realm = 'external' WHERE keycloak_realm IS NULL OR BTRIM(keycloak_realm) = ''; \
+       UPDATE platform_apps SET cloud_provider = 'cloudflare' WHERE cloud_provider IS NULL OR BTRIM(cloud_provider) = ''; \
+       UPDATE platform_apps SET deployment_strategy = 'terraform_cloud' WHERE deployment_strategy IS NULL OR BTRIM(deployment_strategy) = ''; \
+       UPDATE platform_apps SET deployment_status = 'not_deployed' WHERE deployment_status IS NULL OR BTRIM(deployment_status) = ''; \
+       UPDATE platform_apps SET domain = 'suncoast.systems' WHERE domain IS NULL OR BTRIM(domain) = ''; \
+       UPDATE platform_apps SET config_json = '{}'::jsonb WHERE config_json IS NULL OR jsonb_typeof(config_json) <> 'object'; \
+       UPDATE platform_apps SET date_created = now() WHERE date_created IS NULL; \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_apps_site_key_unique ON platform_apps (site_key) WHERE site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_apps_org_app_key_unique ON platform_apps (COALESCE(organization_id, '00000000-0000-0000-0000-000000000000'::uuid), app_key) WHERE app_key IS NOT NULL AND BTRIM(app_key) <> ''; \
+       CREATE INDEX IF NOT EXISTS platform_apps_org_idx ON platform_apps (organization_id); \
+       CREATE INDEX IF NOT EXISTS platform_apps_status_idx ON platform_apps (status, deployment_status); \
+       CREATE TABLE IF NOT EXISTS platform_app_operations ( \
+         id UUID PRIMARY KEY, \
+         app_id UUID NOT NULL, \
+         operation_type TEXT NOT NULL, \
+         status TEXT NOT NULL DEFAULT 'queued', \
+        execution_provider TEXT NOT NULL DEFAULT 'terraform_cloud', \
+         requested_by UUID NULL, \
+         requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         started_at TIMESTAMPTZ NULL, \
+         finished_at TIMESTAMPTZ NULL, \
+         terraform_workspace TEXT NULL, \
+         terraform_run_id TEXT NULL, \
+         terraform_run_url TEXT NULL, \
+         input_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         result_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         error_message TEXT NULL, \
+         log_excerpt TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS app_id UUID; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS operation_type TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS status TEXT; \
+      ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS execution_provider TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS requested_by UUID; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS terraform_workspace TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS terraform_run_id TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS terraform_run_url TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS input_json JSONB; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS result_json JSONB; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS error_message TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS log_excerpt TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operations ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operations ALTER COLUMN status SET DEFAULT 'queued'; \
+      ALTER TABLE IF EXISTS platform_app_operations ALTER COLUMN execution_provider SET DEFAULT 'terraform_cloud'; \
+       ALTER TABLE IF EXISTS platform_app_operations ALTER COLUMN requested_at SET DEFAULT now(); \
+       ALTER TABLE IF EXISTS platform_app_operations ALTER COLUMN input_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_app_operations ALTER COLUMN result_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_app_operations ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE platform_app_operations SET status = 'queued' WHERE status IS NULL OR BTRIM(status) = ''; \
+      UPDATE platform_app_operations SET execution_provider = 'terraform_cloud' WHERE execution_provider IS NULL OR BTRIM(execution_provider) = ''; \
+       UPDATE platform_app_operations SET requested_at = now() WHERE requested_at IS NULL; \
+       UPDATE platform_app_operations SET input_json = '{}'::jsonb WHERE input_json IS NULL OR jsonb_typeof(input_json) <> 'object'; \
+       UPDATE platform_app_operations SET result_json = '{}'::jsonb WHERE result_json IS NULL OR jsonb_typeof(result_json) <> 'object'; \
+       UPDATE platform_app_operations SET date_created = now() WHERE date_created IS NULL; \
+       CREATE INDEX IF NOT EXISTS platform_app_operations_app_idx ON platform_app_operations (app_id, date_created DESC); \
+       CREATE INDEX IF NOT EXISTS platform_app_operations_status_idx ON platform_app_operations (status, operation_type); \
+       DO \$\$ \
+       BEGIN \
+         IF to_regclass('directus.platform_apps') IS NOT NULL \
+            AND to_regclass('directus.platform_organizations') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_apps_organization_id_fkey' AND conrelid = to_regclass('directus.platform_apps')) \
+            AND NOT EXISTS (SELECT 1 FROM platform_apps a WHERE a.organization_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_organizations o WHERE o.id = a.organization_id)) THEN \
+           ALTER TABLE platform_apps ADD CONSTRAINT platform_apps_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES platform_organizations(id) ON DELETE SET NULL; \
+         END IF; \
+         IF to_regclass('directus.platform_app_operations') IS NOT NULL \
+            AND to_regclass('directus.platform_apps') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_app_operations_app_id_fkey' AND conrelid = to_regclass('directus.platform_app_operations')) \
+            AND NOT EXISTS (SELECT 1 FROM platform_app_operations op WHERE op.app_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_apps a WHERE a.id = op.app_id)) THEN \
+           ALTER TABLE platform_app_operations ADD CONSTRAINT platform_app_operations_app_id_fkey FOREIGN KEY (app_id) REFERENCES platform_apps(id) ON DELETE CASCADE; \
+         END IF; \
+         IF to_regclass('directus.platform_app_operations') IS NOT NULL \
+            AND to_regclass('directus.directus_users') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_app_operations_requested_by_fkey' AND conrelid = to_regclass('directus.platform_app_operations')) \
+            AND NOT EXISTS (SELECT 1 FROM platform_app_operations op WHERE op.requested_by IS NOT NULL AND NOT EXISTS (SELECT 1 FROM directus_users u WHERE u.id = op.requested_by)) THEN \
+           ALTER TABLE platform_app_operations ADD CONSTRAINT platform_app_operations_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES directus_users(id) ON DELETE SET NULL; \
+         END IF; \
+       END \
+       \$\$;"
+
+    echo "🧭 Ensuring platform organization/app relation metadata..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       DO \$\$ \
+       BEGIN \
+         IF to_regclass('directus.directus_relations') IS NULL THEN \
+           RETURN; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='platform_apps' AND many_field='organization_id') THEN \
+           UPDATE directus_relations SET one_collection='platform_organizations', one_field='apps' WHERE many_collection='platform_apps' AND many_field='organization_id'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_apps', 'organization_id', 'platform_organizations', 'apps'); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='platform_app_operations' AND many_field='app_id') THEN \
+           UPDATE directus_relations SET one_collection='platform_apps', one_field='operations' WHERE many_collection='platform_app_operations' AND many_field='app_id'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_app_operations', 'app_id', 'platform_apps', 'operations'); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='platform_app_operations' AND many_field='requested_by') THEN \
+           UPDATE directus_relations SET one_collection='directus_users', one_field=NULL WHERE many_collection='platform_app_operations' AND many_field='requested_by'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_app_operations', 'requested_by', 'directus_users', NULL); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+       END \
+       \$\$;"
+
     echo "🧭 Ensuring cms_page_blocks display template exposes grouping context..."
     DIRECTUS_COLLECTIONS_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
       "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='directus_collections' LIMIT 1;" || true)"
@@ -1811,6 +2054,51 @@ data:
           echo "✅ Created directus_presets collection metadata for bookmark copy access"
         fi
       fi
+
+      _upsert_collection_meta() {
+        _collection="$1"
+        _icon="$2"
+        _note="$3"
+        _display_template="$4"
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _icon_sql="$(printf '%s' "${_icon}" | sed "s/'/''/g")"
+        _note_sql="$(printf '%s' "${_note}" | sed "s/'/''/g")"
+        _display_template_sql="$(printf '%s' "${_display_template}" | sed "s/'/''/g")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_collections WHERE collection='${_collection_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "${_exists:-}" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          COLLECTION_SETS=""
+          if _dc_has_col "hidden"; then COLLECTION_SETS="${COLLECTION_SETS},hidden=false"; fi
+          if _dc_has_col "singleton"; then COLLECTION_SETS="${COLLECTION_SETS},singleton=false"; fi
+          if _dc_has_col "icon"; then COLLECTION_SETS="${COLLECTION_SETS},icon='${_icon_sql}'"; fi
+          if _dc_has_col "note"; then COLLECTION_SETS="${COLLECTION_SETS},note='${_note_sql}'"; fi
+          if _dc_has_col "display_template"; then COLLECTION_SETS="${COLLECTION_SETS},display_template='${_display_template_sql}'"; fi
+          if [ -n "${COLLECTION_SETS}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_collections SET ${COLLECTION_SETS#,} WHERE collection='${_collection_sql}';"
+            echo "✅ Updated ${_collection} collection metadata"
+          fi
+          return 0
+        fi
+
+        COLLECTION_COLS="collection"
+        COLLECTION_VALS="'${_collection_sql}'"
+        if _dc_has_col "hidden"; then COLLECTION_COLS="${COLLECTION_COLS},hidden"; COLLECTION_VALS="${COLLECTION_VALS},false"; fi
+        if _dc_has_col "singleton"; then COLLECTION_COLS="${COLLECTION_COLS},singleton"; COLLECTION_VALS="${COLLECTION_VALS},false"; fi
+        if _dc_has_col "icon"; then COLLECTION_COLS="${COLLECTION_COLS},icon"; COLLECTION_VALS="${COLLECTION_VALS},'${_icon_sql}'"; fi
+        if _dc_has_col "note"; then COLLECTION_COLS="${COLLECTION_COLS},note"; COLLECTION_VALS="${COLLECTION_VALS},'${_note_sql}'"; fi
+        if _dc_has_col "display_template"; then COLLECTION_COLS="${COLLECTION_COLS},display_template"; COLLECTION_VALS="${COLLECTION_VALS},'${_display_template_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_collections (${COLLECTION_COLS}) VALUES (${COLLECTION_VALS});"
+        echo "✅ Created ${_collection} collection metadata"
+      }
+
+      _upsert_collection_meta "platform_organizations" "corporate_fare" "Platform organizations used by the internal Organization Management page." "{{name}}"
+      _upsert_collection_meta "platform_apps" "apps" "Desired state for deployed shell-app instances. Deployment operations are executed by the platform control plane." "{{display_name}} | {{site_key}} | {{deployment_status}}"
+      _upsert_collection_meta "platform_app_operations" "history" "Create, update, redeploy, and destroy operation history for platform apps." "{{operation_type}} | {{status}} | {{date_created}}"
+
       if _dc_has_col "display_template"; then
         block_display_template='{{template_scope}}/{{template_group_key}} | {{group_tag}} | {{collection}} -> {{slot}} | #{{sort}}'
         block_display_template_sql="$(printf '%s' "${block_display_template}" | sed "s/'/''/g")"
@@ -4723,6 +5011,48 @@ data:
       theme_selector_dock_position_display_options_json="$(jq -nc --argjson choices "${theme_selector_dock_position_choices_json}" '{choices:$choices}')"
       status_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       status_display_options_json="$(jq -nc --argjson choices "${status_choices_json}" '{choices:$choices}')"
+      platform_org_status_choices_json="$(jq -nc '[{"text":"Active","value":"active","foreground":"#065F46","background":"#D1FAE5"},{"text":"Inactive","value":"inactive","foreground":"#4B5563","background":"#F3F4F6"},{"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"}]')"
+      platform_app_status_choices_json="$(jq -nc '[{"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"},{"text":"Active","value":"active","foreground":"#065F46","background":"#D1FAE5"},{"text":"Suspended","value":"suspended","foreground":"#92400E","background":"#FEF3C7"},{"text":"Archived","value":"archived","foreground":"#991B1B","background":"#FEE2E2"}]')"
+      platform_deployment_status_choices_json="$(jq -nc '[{"text":"Not Deployed","value":"not_deployed","foreground":"#4B5563","background":"#F3F4F6"},{"text":"Queued","value":"queued","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Deploying","value":"deploying","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Deployed","value":"deployed","foreground":"#065F46","background":"#D1FAE5"},{"text":"Failed","value":"failed","foreground":"#991B1B","background":"#FEE2E2"},{"text":"Destroying","value":"destroying","foreground":"#92400E","background":"#FEF3C7"},{"text":"Destroyed","value":"destroyed","foreground":"#4B5563","background":"#F3F4F6"}]')"
+      platform_realm_choices_json="$(jq -nc '[{"text":"Internal","value":"internal","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"External","value":"external","foreground":"#065F46","background":"#D1FAE5"}]')"
+      platform_cloud_provider_choices_json="$(jq -nc '[{"text":"Cloudflare","value":"cloudflare","foreground":"#92400E","background":"#FEF3C7"}]')"
+      platform_deployment_strategy_choices_json="$(jq -nc '[{"text":"Terraform Cloud","value":"terraform_cloud","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Local Terraform","value":"local_terraform","foreground":"#1D4ED8","background":"#DBEAFE"}]')"
+      platform_operation_type_choices_json="$(jq -nc '[{"text":"Create","value":"create","foreground":"#065F46","background":"#D1FAE5"},{"text":"Update","value":"update","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Redeploy","value":"redeploy","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Delete","value":"delete","foreground":"#991B1B","background":"#FEE2E2"},{"text":"Destroy","value":"destroy","foreground":"#92400E","background":"#FEF3C7"}]')"
+      platform_operation_status_choices_json="$(jq -nc '[{"text":"Queued","value":"queued","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Running","value":"running","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Succeeded","value":"succeeded","foreground":"#065F46","background":"#D1FAE5"},{"text":"Failed","value":"failed","foreground":"#991B1B","background":"#FEE2E2"},{"text":"Canceled","value":"canceled","foreground":"#4B5563","background":"#F3F4F6"}]')"
+      platform_org_status_options_json="$(jq -nc --argjson choices "${platform_org_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_app_status_options_json="$(jq -nc --argjson choices "${platform_app_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_deployment_status_options_json="$(jq -nc --argjson choices "${platform_deployment_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_realm_options_json="$(jq -nc --argjson choices "${platform_realm_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_cloud_provider_options_json="$(jq -nc --argjson choices "${platform_cloud_provider_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_deployment_strategy_options_json="$(jq -nc --argjson choices "${platform_deployment_strategy_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_operation_type_options_json="$(jq -nc --argjson choices "${platform_operation_type_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_operation_status_options_json="$(jq -nc --argjson choices "${platform_operation_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_org_relation_options_json="$(jq -nc '{template:"{{name}} ({{organization_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
+      platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{site_key}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
+      platform_user_relation_options_json="$(jq -nc '{template:"{{first_name}} {{last_name}} <{{email}}>",enableCreate:false,enableSelect:true,enableLink:true}')"
+      platform_json_options_json="$(jq -nc '{language:"json",lineNumber:true,template:"{}"}')"
+      platform_org_key_note_sql="$(printf '%s' 'Stable organization slug used by the platform control plane.' | sed "s/'/''/g")"
+      platform_org_name_note_sql="$(printf '%s' 'Human-readable organization name shown in the internal management UI.' | sed "s/'/''/g")"
+      platform_default_domain_note_sql="$(printf '%s' 'Default base domain used when creating app hostnames.' | sed "s/'/''/g")"
+      platform_default_realm_note_sql="$(printf '%s' 'Default Keycloak realm for new apps in this organization.' | sed "s/'/''/g")"
+      platform_default_provider_note_sql="$(printf '%s' 'Default cloud provider for new apps. Cloudflare is the only enabled provider today.' | sed "s/'/''/g")"
+      platform_settings_note_sql="$(printf '%s' 'Non-secret organization settings for the future deployment control plane.' | sed "s/'/''/g")"
+      platform_app_org_note_sql="$(printf '%s' 'Owning organization for this app.' | sed "s/'/''/g")"
+      platform_app_key_note_sql="$(printf '%s' 'Stable app slug. This should match the deployment/resource prefix.' | sed "s/'/''/g")"
+      platform_app_site_key_note_sql="$(printf '%s' 'Directus content site key passed to the shell app as DIRECTUS_CONTENT_SITE_KEY.' | sed "s/'/''/g")"
+      platform_app_realm_note_sql="$(printf '%s' 'Keycloak realm used for auth. Multiple apps can share external while using distinct site keys.' | sed "s/'/''/g")"
+      platform_app_provider_note_sql="$(printf '%s' 'Cloud provider plugin target. Only Cloudflare is enabled in the first implementation.' | sed "s/'/''/g")"
+      platform_deployment_strategy_note_sql="$(printf '%s' 'Deployment engine that should execute operations for this app.' | sed "s/'/''/g")"
+      platform_deployment_status_note_sql="$(printf '%s' 'Last known deployment lifecycle status from the control plane.' | sed "s/'/''/g")"
+      platform_hostname_note_sql="$(printf '%s' 'Hostname or URL generated for the app deployment.' | sed "s/'/''/g")"
+      platform_workspace_note_sql="$(printf '%s' 'Terraform workspace name used by the deployment engine.' | sed "s/'/''/g")"
+      platform_template_note_sql="$(printf '%s' 'Template source/version that should be deployed for this app.' | sed "s/'/''/g")"
+      platform_operation_app_note_sql="$(printf '%s' 'App this create/update/redeploy/delete operation belongs to.' | sed "s/'/''/g")"
+      platform_operation_type_note_sql="$(printf '%s' 'Requested management operation.' | sed "s/'/''/g")"
+      platform_operation_status_note_sql="$(printf '%s' 'Execution state reported by the deployment worker.' | sed "s/'/''/g")"
+      platform_operation_requested_by_note_sql="$(printf '%s' 'Directus user that requested the operation.' | sed "s/'/''/g")"
+      platform_operation_json_note_sql="$(printf '%s' 'Operation payload/result metadata. Do not store secrets here.' | sed "s/'/''/g")"
+      platform_operation_log_note_sql="$(printf '%s' 'Short non-secret log excerpt for review/debugging.' | sed "s/'/''/g")"
       content_item_content_key_note="Generated from the content item name on save."
       content_item_language_code_note="Default source language code, usually en."
       content_item_reuse_strategy_note="Shared component reuses this same content item and translations when pages are copied. Copy per page creates a separate content item for each copied page."
@@ -6541,6 +6871,43 @@ data:
         echo "✅ Created content item field UX on ${_collection}.${_field}"
       }
 
+      _upsert_platform_m2o_field_meta() {
+        _collection="$1"
+        _field="$2"
+        _sort="${3:-1}"
+        _note_sql="${4:-}"
+        _options_json="${5:-}"
+        _required="${6:-false}"
+        _upsert_content_item_field_meta "${_field}" "select-dropdown-m2o" "half" "${_sort}" "${_note_sql}" "${_options_json}" "${_required}" false "${_collection}"
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
+        _special_sql="$(_df_special_m2o_sql)"
+        SETS=""
+        if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
+        if _df_has_col "display"; then SETS="${SETS},display='related-values'"; fi
+        if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then SETS="${SETS},options=${_options_sql}"; fi
+        if [ -n "${SETS:-}" ]; then
+          psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+            "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+          echo "✅ Updated platform relation UX on ${_collection}.${_field}"
+        fi
+      }
+
       _upsert_content_item_translation_group_field_meta() {
         _collection="cms_content_items"
         _field="_section_translation"
@@ -7071,6 +7438,63 @@ data:
       _set_template_function_field_conditions "reviewed_at" "${template_function_javascript_only_conditions_json}"
       _set_content_item_field_conditions "content_template_key" "${content_item_template_conditions_json}"
       _upsert_status_dropdown_field_meta "cms_modules" 1
+      _upsert_content_item_field_meta "organization_key" "input" "half" 1 "${platform_org_key_note_sql}" "" true false "platform_organizations"
+      _upsert_content_item_field_meta "name" "input" "half" 2 "${platform_org_name_note_sql}" "" true false "platform_organizations"
+      _upsert_content_item_field_meta "status" "select-dropdown" "half" 3 "${status_note_sql}" "${platform_org_status_options_json}" true false "platform_organizations"
+      _upsert_content_item_field_meta "default_domain" "input" "half" 4 "${platform_default_domain_note_sql}" "" true false "platform_organizations"
+      _upsert_content_item_field_meta "default_keycloak_realm" "select-dropdown" "half" 5 "${platform_default_realm_note_sql}" "${platform_realm_options_json}" true false "platform_organizations"
+      _upsert_content_item_field_meta "default_cloud_provider" "select-dropdown" "half" 6 "${platform_default_provider_note_sql}" "${platform_cloud_provider_options_json}" true false "platform_organizations"
+      _upsert_content_item_field_meta "description" "input-multiline" "full" 7 "" "" false false "platform_organizations"
+      _upsert_content_item_field_meta "settings_json" "input-code" "full" 8 "${platform_settings_note_sql}" "${platform_json_options_json}" false false "platform_organizations"
+      _upsert_platform_m2o_field_meta "platform_apps" "organization_id" 1 "${platform_app_org_note_sql}" "${platform_org_relation_options_json}" false
+      _upsert_content_item_field_meta "app_key" "input" "half" 2 "${platform_app_key_note_sql}" "" true false "platform_apps"
+      _upsert_content_item_field_meta "display_name" "input" "half" 3 "${platform_org_name_note_sql}" "" true false "platform_apps"
+      _upsert_content_item_field_meta "status" "select-dropdown" "half" 4 "${status_note_sql}" "${platform_app_status_options_json}" true false "platform_apps"
+      _upsert_content_item_field_meta "site_key" "select-dropdown" "half" 5 "${platform_app_site_key_note_sql}" "${site_key_options_json}" true false "platform_apps"
+      _upsert_content_item_field_meta "keycloak_realm" "select-dropdown" "half" 6 "${platform_app_realm_note_sql}" "${platform_realm_options_json}" true false "platform_apps"
+      _upsert_content_item_field_meta "cloud_provider" "select-dropdown" "half" 7 "${platform_app_provider_note_sql}" "${platform_cloud_provider_options_json}" true false "platform_apps"
+      _upsert_content_item_field_meta "deployment_strategy" "select-dropdown" "half" 8 "${platform_deployment_strategy_note_sql}" "${platform_deployment_strategy_options_json}" true false "platform_apps"
+      _upsert_content_item_field_meta "deployment_status" "select-dropdown" "half" 9 "${platform_deployment_status_note_sql}" "${platform_deployment_status_options_json}" true true "platform_apps"
+      _upsert_content_item_field_meta "domain" "input" "half" 10 "${platform_default_domain_note_sql}" "" true false "platform_apps"
+      _upsert_content_item_field_meta "production_hostname" "input" "half" 11 "${platform_hostname_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "preview_hostname" "input" "half" 12 "${platform_hostname_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "production_url" "input" "half" 13 "${platform_hostname_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "preview_url" "input" "half" 14 "${platform_hostname_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "app_auth_slug_production" "input" "half" 15 "${platform_app_key_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "app_auth_slug_preview" "input" "half" 16 "${platform_app_key_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "terraform_workspace_production" "input" "half" 17 "${platform_workspace_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "terraform_workspace_preview" "input" "half" 18 "${platform_workspace_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "terraform_project" "input" "half" 19 "${platform_workspace_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "template_source_repo" "input" "full" 20 "${platform_template_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "template_ref" "input" "half" 21 "${platform_template_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "template_commit_sha" "input" "half" 22 "${platform_template_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "last_deployed_at" "datetime" "half" 23 "${date_updated_note_sql}" "" false true "platform_apps"
+      _upsert_content_item_field_meta "last_error" "input-multiline" "full" 24 "${platform_operation_log_note_sql}" "" false true "platform_apps"
+      _upsert_content_item_field_meta "config_json" "input-code" "full" 25 "${platform_settings_note_sql}" "${platform_json_options_json}" false false "platform_apps"
+      _upsert_platform_m2o_field_meta "platform_app_operations" "app_id" 1 "${platform_operation_app_note_sql}" "${platform_app_relation_options_json}" true
+      _upsert_content_item_field_meta "operation_type" "select-dropdown" "half" 2 "${platform_operation_type_note_sql}" "${platform_operation_type_options_json}" true false "platform_app_operations"
+      _upsert_content_item_field_meta "status" "select-dropdown" "half" 3 "${platform_operation_status_note_sql}" "${platform_operation_status_options_json}" true true "platform_app_operations"
+      _upsert_content_item_field_meta "execution_provider" "select-dropdown" "half" 4 "${platform_deployment_strategy_note_sql}" "${platform_deployment_strategy_options_json}" true true "platform_app_operations"
+      _upsert_platform_m2o_field_meta "platform_app_operations" "requested_by" 5 "${platform_operation_requested_by_note_sql}" "${platform_user_relation_options_json}" false
+      _upsert_content_item_field_meta "requested_at" "datetime" "half" 6 "${date_created_note_sql}" "" true true "platform_app_operations"
+      _upsert_content_item_field_meta "started_at" "datetime" "half" 7 "${date_created_note_sql}" "" false true "platform_app_operations"
+      _upsert_content_item_field_meta "finished_at" "datetime" "half" 8 "${date_updated_note_sql}" "" false true "platform_app_operations"
+      _upsert_content_item_field_meta "terraform_workspace" "input" "half" 9 "${platform_workspace_note_sql}" "" false true "platform_app_operations"
+      _upsert_content_item_field_meta "terraform_run_id" "input" "half" 10 "${platform_workspace_note_sql}" "" false true "platform_app_operations"
+      _upsert_content_item_field_meta "terraform_run_url" "input" "full" 11 "${platform_workspace_note_sql}" "" false true "platform_app_operations"
+      _upsert_content_item_field_meta "input_json" "input-code" "full" 12 "${platform_operation_json_note_sql}" "${platform_json_options_json}" false true "platform_app_operations"
+      _upsert_content_item_field_meta "result_json" "input-code" "full" 13 "${platform_operation_json_note_sql}" "${platform_json_options_json}" false true "platform_app_operations"
+      _upsert_content_item_field_meta "error_message" "input-multiline" "full" 14 "${platform_operation_log_note_sql}" "" false true "platform_app_operations"
+      _upsert_content_item_field_meta "log_excerpt" "input-multiline" "full" 15 "${platform_operation_log_note_sql}" "" false true "platform_app_operations"
+      _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "id" 90
+      _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_created" 91
+      _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_updated" 92
+      _upsert_hidden_internal_field_meta_dynamic "platform_apps" "id" 90
+      _upsert_hidden_internal_field_meta_dynamic "platform_apps" "date_created" 91
+      _upsert_hidden_internal_field_meta_dynamic "platform_apps" "date_updated" 92
+      _upsert_hidden_internal_field_meta_dynamic "platform_app_operations" "id" 90
+      _upsert_hidden_internal_field_meta_dynamic "platform_app_operations" "date_created" 91
+      _upsert_hidden_internal_field_meta_dynamic "platform_app_operations" "date_updated" 92
       _upsert_page_section_group_field_meta "_section_page_settings" "Page (Core Settings)" 1 "article"
       _upsert_page_section_group_field_meta "_section_layout" "Section Layout" 9 "dashboard_customize"
       _upsert_page_section_group_field_meta "_section_theme" "Theme (Family + Mode)" 3 "palette"

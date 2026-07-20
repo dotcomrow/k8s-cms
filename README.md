@@ -13,6 +13,10 @@ Each deployed shell app should use a stable `DIRECTUS_CONTENT_SITE_KEY`, and tha
 
 Multiple external apps can share `realm: external` while using different `site_key` values. Add a matching entry to `sites.yaml` before deploying a shell app with a new site key, or have the future Organization Management flow generate the equivalent config.
 
+## Platform Organization Management
+
+The postschema reconcile creates Directus-managed registry collections for the internal Organization Management workflow: `platform_organizations`, `platform_apps`, and `platform_app_operations`. These store non-secret desired state and operation history only; deployment credentials stay server-side in the future control-plane service.
+
 ## Docs
 
 - `docs/directus-dynamic-selectors.md` - pattern for live Directus template/slot dropdowns used by pages/blocks.
