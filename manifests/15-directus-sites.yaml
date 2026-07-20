@@ -8,8 +8,8 @@ metadata:
     app: directus
 data:
   sites.yaml: |
-    # Single-source cache refresh endpoints for all sites/targets.
-    # Update URLs here only; site target endpoint fields below reference these anchors.
+    # Bootstrap cache refresh endpoints for initial platform_apps rows.
+    # Long-term app refresh URLs are managed on platform_apps in Directus.
     cache_refresh_endpoint_templates:
       internal_prod_refresh_url: &cache_refresh_internal_prod_refresh_url "https://internal.suncoast.systems/api/cache/refresh?mode=refresh"
       internal_preview_refresh_url: &cache_refresh_internal_preview_refresh_url "https://internal-preview.suncoast.systems/api/cache/refresh?mode=refresh"
@@ -17,10 +17,11 @@ data:
       external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=refresh"
 
     sites:
-      # Every deployed shell app needs one site entry. app_key is the deployed
-      # app/cache-refresh identity; site_key is the Directus content scope passed
-      # as DIRECTUS_CONTENT_SITE_KEY. Multiple apps can share a realm, and they
-      # can either use distinct site_key values or refresh from the same site_key.
+      # Every Directus content scope needs one site entry. platform_apps rows
+      # are the deployed app/cache-refresh identities; site_key is the content
+      # scope passed as DIRECTUS_CONTENT_SITE_KEY. Multiple apps can share a
+      # realm and either use distinct site_key values or refresh from the same
+      # site_key.
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
         app_key: internal
@@ -31,8 +32,8 @@ data:
         homepage_theme_package_key: theme-clear
         client_key: cms-site-internal
         role_name: cms-site-internal
-        # Flow endpoints can be edited in Directus UI (Settings -> Flows),
-        # but this GitOps config is authoritative on deploy.
+        # These endpoints seed platform_apps when missing. Once an app row exists,
+        # the app row is authoritative for generated refresh flows.
         cache_refresh:
           enabled: true
           targets:

@@ -9,9 +9,9 @@ kubectl apply -f manifests/
 
 ## Shell App Site Keys
 
-Each deployed shell app should use a stable `DIRECTUS_CONTENT_SITE_KEY`, and that value must match the `site_key` on its Directus content rows. Site entries in `manifests/15-directus-sites.yaml` drive Directus read policies, service-token binding, and cache-refresh targets for those keys.
+Each deployed shell app should use a stable `DIRECTUS_CONTENT_SITE_KEY`, and that value must match the `site_key` on its Directus content rows. Site entries in `manifests/15-directus-sites.yaml` drive Directus read policies, service-token binding, and bootstrap cache-refresh defaults for those keys.
 
-Multiple apps can share `realm: external` or `realm: internal` while using distinct `app_key` values and whichever `site_key` they read content from. Cache refresh targets are app-scoped by `realm + app_key + target_key`, so multiple deployed apps can refresh from the same content site key when needed. Add a matching entry to `sites.yaml` before deploying a shell app with a new app/site key, or have the future Organization Management flow generate the equivalent config.
+Multiple apps can share `realm: external` or `realm: internal` while using distinct `app_key` values and whichever `site_key` they read content from. Cache refresh URLs live on `platform_apps` (`production_cache_refresh_url` and `preview_cache_refresh_url`), so multiple deployed apps can refresh from the same content site key when needed. Add a matching app row before deploying a shell app with a new app/site key, or have the future Organization Management flow create it.
 
 ## Platform Organization Management
 
