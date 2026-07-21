@@ -1,0 +1,501 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-deploy-runner
+  namespace: directus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-deploy-job-manager
+  namespace: directus
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-deploy-job-manager
+  namespace: directus
+subjects:
+  - kind: ServiceAccount
+    name: directus
+    namespace: directus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-deploy-job-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-deploy-secret-bootstrap
+  namespace: directus
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-deploy-secret-bootstrap
+  namespace: directus
+subjects:
+  - kind: ServiceAccount
+    name: directus
+    namespace: directus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-deploy-secret-bootstrap
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: platform-deploy-secret-bootstrap
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Force=true
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: "disabled"
+    spec:
+      serviceAccountName: directus
+      restartPolicy: Never
+      volumes:
+        - name: vault-root-token
+          secret:
+            secretName: vault-root-token
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.31.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              apk add --no-cache curl jq openssl >/dev/null
+
+              VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
+              VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
+              SECRET_PATH="secret/data/platform-deploy-service"
+
+              code="$(curl -sS -o /tmp/platform-deploy-token.json -w '%{http_code}' \
+                -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                "${VAULT_ADDR}/v1/${SECRET_PATH}" || true)"
+
+              if [ "${code}" = "200" ]; then
+                service_token="$(jq -r '.data.data.token // empty' /tmp/platform-deploy-token.json)"
+              else
+                service_token=""
+              fi
+
+              if [ -z "${service_token}" ] || [ "${service_token}" = "null" ]; then
+                service_token="$(openssl rand -base64 48 | tr -d '\n' | tr '/+' '._')"
+                payload="$(jq -nc --arg token "${service_token}" '{data:{token:$token}}')"
+                write_code="$(curl -sS -o /tmp/platform-deploy-token-write.json -w '%{http_code}' \
+                  -X POST \
+                  -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                  -H "Content-Type: application/json" \
+                  -d "${payload}" \
+                  "${VAULT_ADDR}/v1/${SECRET_PATH}" || true)"
+                if [ "${write_code}" != "200" ] && [ "${write_code}" != "204" ]; then
+                  echo "Failed to write ${SECRET_PATH} to Vault (HTTP ${write_code})."
+                  cat /tmp/platform-deploy-token-write.json || true
+                  exit 1
+                fi
+              fi
+
+              token_b64="$(printf '%s' "${service_token}" | base64 | tr -d '\n')"
+              if kubectl -n directus get secret platform-deploy-secrets >/dev/null 2>&1; then
+                patch="$(jq -nc --arg serviceToken "${token_b64}" '{data:{"service-token":$serviceToken}}')"
+                kubectl -n directus patch secret platform-deploy-secrets --type merge -p "${patch}"
+              else
+                kubectl -n directus create secret generic platform-deploy-secrets \
+                  --from-literal=service-token="${service_token}"
+              fi
+
+              echo "platform-deploy-service token is present in Vault and Kubernetes Secret."
+          volumeMounts:
+            - name: vault-root-token
+              mountPath: /vault-token
+              readOnly: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: platform-deploy-state
+  namespace: directus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: longhorn
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-app-deploy-runner
+  namespace: directus
+data:
+  run.sh: |
+    #!/usr/bin/env sh
+    set -eu
+
+    callback() {
+      path="$1"
+      body="$2"
+      if [ -z "${PLATFORM_DEPLOY_CALLBACK_URL:-}" ]; then
+        echo "[runner] PLATFORM_DEPLOY_CALLBACK_URL is not set; skipping callback ${path}."
+        return 0
+      fi
+
+      auth_args=""
+      if [ -n "${PLATFORM_DEPLOY_SERVICE_TOKEN:-}" ]; then
+        auth_args="-H Authorization: Bearer ${PLATFORM_DEPLOY_SERVICE_TOKEN}"
+      fi
+
+      # shellcheck disable=SC2086
+      curl -fsS --connect-timeout 10 --max-time 60 \
+        -X POST \
+        -H "Content-Type: application/json" \
+        ${auth_args} \
+        -d "${body}" \
+        "${PLATFORM_DEPLOY_CALLBACK_URL%/}${path}" >/dev/null
+    }
+
+    finish() {
+      status="$1"
+      error_message="${2:-}"
+      log_excerpt=""
+      if [ -f /tmp/platform-deploy.log ]; then
+        log_excerpt="$(tail -c 8000 /tmp/platform-deploy.log || true)"
+      fi
+      body="$(jq -nc \
+        --arg app_id "${APP_ID:-}" \
+        --arg operation_type "${OPERATION_TYPE:-redeploy}" \
+        --arg status "${status}" \
+        --arg error_message "${error_message}" \
+        --arg log_excerpt "${log_excerpt}" \
+        '{app_id:$app_id,operation_type:$operation_type,status:$status,error_message:$error_message,log_excerpt:$log_excerpt,result_json:{runner:"platform-app-deploy-runner"}}')"
+      callback "/internal/operations/${OPERATION_ID}/finish" "${body}" || true
+    }
+
+    fail() {
+      echo "[runner] $*" | tee -a /tmp/platform-deploy.log
+      finish "failed" "$*"
+      exit 1
+    }
+
+    [ -n "${OPERATION_ID:-}" ] || fail "OPERATION_ID is required."
+    [ -n "${APP_ID:-}" ] || fail "APP_ID is required."
+    [ -n "${APP_KEY:-}" ] || fail "APP_KEY is required."
+
+    start_body="$(jq -nc \
+      --arg app_id "${APP_ID}" \
+      --arg operation_type "${OPERATION_TYPE:-redeploy}" \
+      '{app_id:$app_id,operation_type:$operation_type}')"
+    callback "/internal/operations/${OPERATION_ID}/start" "${start_body}" || true
+
+    [ -n "${TEMPLATE_REPOSITORY:-}" ] || fail "TEMPLATE_REPOSITORY is required on the platform app."
+
+    export TF_IN_AUTOMATION=true
+    export TF_INPUT=false
+    export TF_VAR_app_id="${APP_ID}"
+    export TF_VAR_app_key="${APP_KEY}"
+    export TF_VAR_site_key="${SITE_KEY:-}"
+    export TF_VAR_keycloak_realm="${KEYCLOAK_REALM:-external}"
+    export TF_VAR_domain="${DOMAIN:-}"
+    export TF_VAR_production_hostname="${PRODUCTION_HOSTNAME:-}"
+    export TF_VAR_preview_hostname="${PREVIEW_HOSTNAME:-}"
+    export TF_VAR_production_url="${PRODUCTION_URL:-}"
+    export TF_VAR_preview_url="${PREVIEW_URL:-}"
+    export TF_VAR_cloudflare_account_id="${CLOUDFLARE_ACCOUNT_ID:-}"
+    export TF_VAR_cloudflare_zone_id="${CLOUDFLARE_ZONE_ID:-}"
+    export TF_VAR_directus_graphql_endpoint="${DIRECTUS_GRAPHQL_ENDPOINT:-}"
+    export TF_VAR_keycloak_auth_host="${KEYCLOAK_AUTH_HOST:-}"
+    export TF_VAR_app_auth_gateway_url="${APP_AUTH_GATEWAY_URL:-}"
+    export TF_VAR_app_auth_gateway_admin_url="${APP_AUTH_GATEWAY_ADMIN_URL:-}"
+    export TF_VAR_app_auth_gateway_admin_token="${APP_AUTH_GATEWAY_ADMIN_TOKEN:-}"
+    export TF_VAR_app_auth_app_slug_production="${APP_AUTH_APP_SLUG_PRODUCTION:-}"
+    export TF_VAR_app_auth_app_slug_preview="${APP_AUTH_APP_SLUG_PREVIEW:-}"
+    export TF_VAR_vault_addr="${VAULT_ADDR:-}"
+    export TF_VAR_vault_token="${VAULT_TOKEN:-}"
+
+    deploy_target() {
+      target="$1"
+      ref="$2"
+      workspace="$3"
+      action="$4"
+
+      [ -n "${ref}" ] || fail "Missing git ref for ${target}."
+      [ -n "${workspace}" ] || fail "Missing Terraform workspace for ${target}."
+
+      workdir="/workspace/${target}"
+      rm -rf "${workdir}"
+      mkdir -p "${workdir}"
+
+      echo "[runner] Cloning ${TEMPLATE_REPOSITORY} (${ref}) for ${target}." | tee -a /tmp/platform-deploy.log
+      git clone --depth 1 --branch "${ref}" "${TEMPLATE_REPOSITORY}" "${workdir}" >>/tmp/platform-deploy.log 2>&1 \
+        || {
+          echo "[runner] Shallow clone failed; retrying full clone." | tee -a /tmp/platform-deploy.log
+          git clone "${TEMPLATE_REPOSITORY}" "${workdir}" >>/tmp/platform-deploy.log 2>&1
+          git -C "${workdir}" checkout "${ref}" >>/tmp/platform-deploy.log 2>&1
+        }
+
+      if [ -d "${workdir}/terraform" ]; then
+        cd "${workdir}/terraform"
+      else
+        cd "${workdir}"
+      fi
+
+      export TF_VAR_deploy_target="${target}"
+      export TF_VAR_environment="${target}"
+      terraform init -input=false >>/tmp/platform-deploy.log 2>&1
+      terraform workspace select "${workspace}" >>/tmp/platform-deploy.log 2>&1 \
+        || terraform workspace new "${workspace}" >>/tmp/platform-deploy.log 2>&1
+
+      if [ "${action}" = "destroy" ]; then
+        terraform destroy -auto-approve -input=false >>/tmp/platform-deploy.log 2>&1
+      else
+        terraform apply -auto-approve -input=false >>/tmp/platform-deploy.log 2>&1
+      fi
+    }
+
+    case "${DEPLOY_SEQUENCE:-create}" in
+      destroy)
+        deploy_target "preview" "${TEMPLATE_PREVIEW_REF:-}" "${TERRAFORM_WORKSPACE_PREVIEW:-}" "destroy"
+        deploy_target "production" "${TEMPLATE_PROD_REF:-}" "${TERRAFORM_WORKSPACE_PRODUCTION:-}" "destroy"
+        ;;
+      create|recreate)
+        deploy_target "preview" "${TEMPLATE_PREVIEW_REF:-}" "${TERRAFORM_WORKSPACE_PREVIEW:-}" "apply"
+        deploy_target "production" "${TEMPLATE_PROD_REF:-}" "${TERRAFORM_WORKSPACE_PRODUCTION:-}" "apply"
+        ;;
+      *)
+        fail "Unsupported DEPLOY_SEQUENCE '${DEPLOY_SEQUENCE:-}'."
+        ;;
+    esac
+
+    finish "succeeded" ""
+    echo "[runner] Deployment operation completed."
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-agent-config-platform-deploy-service
+  namespace: directus
+data:
+  vault-agent.hcl: |
+    pid_file = "/vault/agent.pid"
+    exit_after_auth = false
+
+    vault {
+      address = "http://vault.vault.svc.cluster.local:8200"
+    }
+
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "directus"
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault-secrets/vault-token"
+          mode = 0644
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-deploy-service
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    reloader.stakater.com/auto: "true"
+  labels:
+    app: platform-deploy-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform-deploy-service
+  template:
+    metadata:
+      annotations:
+        reloader.stakater.com/auto: "true"
+      labels:
+        app: platform-deploy-service
+    spec:
+      serviceAccountName: directus
+      containers:
+        - name: vault-agent
+          image: hashicorp/vault:1.15.4
+          command: ["vault", "agent", "-config=/vault-config/vault-agent.hcl"]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 24Mi
+            limits:
+              cpu: 50m
+              memory: 96Mi
+          volumeMounts:
+            - name: vault-agent-config
+              mountPath: /vault-config
+            - name: vault-secrets
+              mountPath: /vault-secrets
+        - name: platform-deploy-service
+          image: "ghcr.io/dotcomrow/platform-deploy-service:latest"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DIRECTUS_BASE_URL
+              value: "http://directus-service.directus.svc.cluster.local:8055"
+            - name: DIRECTUS_HEALTH_PATH
+              value: "/server/health"
+            - name: DIRECTUS_TOKEN_VAULT_PATH
+              value: "secret/data/directus/gravitee/openapi/admin"
+            - name: DIRECTUS_TOKEN_VAULT_KEY
+              value: "token"
+            - name: INTERNAL_TOKEN_VAULT_PATH
+              value: "secret/data/platform-deploy-service"
+            - name: INTERNAL_TOKEN_VAULT_KEY
+              value: "token"
+            - name: VAULT_ADDR
+              value: "http://vault.vault.svc.cluster.local:8200"
+            - name: VAULT_TOKEN_FILE
+              value: "/vault-secrets/vault-token"
+            - name: OPENAPI_SERVER_URL
+              value: "http://platform-deploy-service.directus.svc.cluster.local:8080"
+            - name: KUBERNETES_NAMESPACE
+              value: "directus"
+            - name: DEPLOY_RUNNER_IMAGE
+              value: "ghcr.io/dotcomrow/platform-app-deploy-runner:latest"
+            - name: DEPLOY_RUNNER_SERVICE_ACCOUNT
+              value: "platform-deploy-runner"
+            - name: DEPLOY_SECRET_NAME
+              value: "platform-deploy-secrets"
+            - name: DEPLOY_STATE_PVC_NAME
+              value: "platform-deploy-state"
+            - name: DEPLOY_JOB_TTL_SECONDS
+              value: "86400"
+            - name: DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS
+              value: "3600"
+            - name: DEPLOY_CALLBACK_BASE_URL
+              value: "http://platform-deploy-service.directus.svc.cluster.local:8080"
+            - name: REQUEST_TIMEOUT_MS
+              value: "15000"
+            - name: RATE_MAX
+              value: "60"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          volumeMounts:
+            - name: vault-secrets
+              mountPath: /vault-secrets
+      volumes:
+        - name: vault-agent-config
+          configMap:
+            name: vault-agent-config-platform-deploy-service
+        - name: vault-secrets
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-deploy-service
+  namespace: directus
+  annotations:
+    gravitee.io/expose: "true"
+    gravitee.io/context-path: "/platform-deploy"
+    gravitee.io/auth-required: "directus-token"
+    gravitee.io/approval-required: "admin"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
+    gravitee.io/description: "Internal platform app deployment control plane"
+    gravitee.io/version: "latest"
+    gravitee.io/tags: "directus,cms,hasura,platform,deploy,terraform"
+    gravitee.io/definition-name: "platform-deploy-api"
+    gravitee.io/definition-summary: "Platform deploy API"
+    gravitee.io/definition-description: "Queues and executes Kubernetes-hosted deployment jobs for Directus-managed shell applications."
+    gravitee.io/definition-type: "HTTP"
+    gravitee.io/definition-visibility: "PUBLIC"
+    gravitee.io/definition-state: "STARTED"
+    gravitee.io/definition-lifecycle-state: "PUBLISHED"
+    gravitee.io/definition-openapi-url: "http://platform-deploy-service.directus.svc.cluster.local:8080/openapi.json"
+    gravitee.io/definition-context-path: "/platform-deploy"
+    gravitee.io/definition-version: "latest"
+    gravitee.io/definition-listener-host: "platform-deploy-service.directus.svc.cluster.local"
+    gravitee.io/definition-listener-port: "8080"
+    gravitee.io/definition-groups: "cms"
+    gravitee.io/definition-tags: "directus,cms,hasura,platform,deploy,terraform"
+    gravitee.io/definition-labels: "internal,cms,hasura,platform,deploy"
+    gravitee.io/definition-categories: "infra"
+    gravitee.io/definition-path-mappings: "/platform-deploy/*"
+    gravitee.io/definition-metadata: '{"owner":"infra","service":"platform-deploy","slack":"#infra"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
+    gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":120000,"idleTimeout":120000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":5}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"platform-deploy-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://platform-deploy-service.directus.svc.cluster.local:8080"},"secondary":false}]}]'
+    gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://platform-deploy-service.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
+    gravitee.io/definition-resources: '[]'
+    gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"Platform deploy API access is enforced by GraphQL/Gravitee auth","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"}}'
+    gravitee.io/definition-flows: '[]'
+    gravitee.io/definition-response-templates: '{}'
+    gravitee.io/definition-analytics: '{"enabled":true,"logging":{"condition":"true","content":{"headers":true,"payload":false,"messageHeaders":false,"messageMetadata":false,"messagePayload":false},"mode":{"entrypoint":true,"endpoint":true},"phase":{"request":true,"response":true}}}'
+    gravitee.io/definition-entrypoints: '[]'
+  labels:
+    app: platform-deploy-service
+spec:
+  selector:
+    app: platform-deploy-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
