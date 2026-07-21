@@ -248,6 +248,10 @@ data:
         directus_client_id_vault_path: "secret/data/keycloak-client-id-graphql-api"
         directus_client_id_vault_field: "value"
         role_name: cms-site-external
+        # The internal MFE reaches Directus through Hasura/Gravitee using the
+        # GraphQL audience alias bound to this Directus service token.
+        platform_management:
+          enabled: true
         cache_refresh:
           enabled: true
           # Retry transient 429/5xx refresh failures from Cloudflare edge rules.
@@ -431,6 +435,18 @@ data:
                         _null: true
                     - site_key:
                         _eq: external
+          - collection: platform_organizations
+            fields:
+              - "*"
+            permissions: {}
+          - collection: platform_apps
+            fields:
+              - "*"
+            permissions: {}
+          - collection: platform_app_operations
+            fields:
+              - "*"
+            permissions: {}
           - collection: cms_block_hero
             fields:
               - "*"

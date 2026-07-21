@@ -17,6 +17,8 @@ Multiple apps can share `realm: external` or `realm: internal` while using disti
 
 The postschema reconcile creates Directus-managed registry collections for the internal Organization Management workflow: `platform_organizations`, `platform_apps`, and `platform_app_operations`. These store non-secret desired state and operation history only; deployment credentials stay server-side in the future control-plane service.
 
+Directus site entries can opt into platform registry permissions with `platform_management.enabled: true`. The GraphQL audience alias used by the internal MFE is bound to the external site token today, so that site entry carries the platform-management grant while browser traffic still enters through Hasura and Gravitee.
+
 ## Docs
 
 - `docs/directus-dynamic-selectors.md` - pattern for live Directus template/slot dropdowns used by pages/blocks.

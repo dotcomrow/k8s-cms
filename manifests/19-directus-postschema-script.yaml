@@ -8858,7 +8858,12 @@ data:
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "create" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "update" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
 
-              if [ "${site_key:-}" = "internal" ] || [ "${role_name:-}" = "cms-site-internal" ]; then
+              platform_management_enabled="$(printf '%s' "$site" | jq -r 'if .platform_management == true then "true" elif .platform_management.enabled == true then "true" else "false" end' 2>/dev/null || true)"
+              case "$(printf '%s' "${platform_management_enabled:-false}" | tr '[:upper:]' '[:lower:]')" in
+                true|1|yes|on) platform_management_enabled="true" ;;
+                *) platform_management_enabled="false" ;;
+              esac
+              if [ "${site_key:-}" = "internal" ] || [ "${role_name:-}" = "cms-site-internal" ] || [ "${platform_management_enabled}" = "true" ]; then
                 PLATFORM_REGISTRY_PERMISSIONS_JSON="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_organizations" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_organizations" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
