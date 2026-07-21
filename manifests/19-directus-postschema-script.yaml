@@ -8858,6 +8858,19 @@ data:
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "create" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
               _upsert_policy_action_permission "${POLICY_ID}" "cms_content_translation_jobs" "update" "$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
 
+              if [ "${site_key:-}" = "internal" ] || [ "${role_name:-}" = "cms-site-internal" ]; then
+                PLATFORM_REGISTRY_PERMISSIONS_JSON="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_organizations" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_organizations" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_organizations" "update" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_apps" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_apps" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_apps" "update" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_apps" "delete" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+              fi
+
               FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_realm}/${site_app_key}/prod) - Manual"
               FLOW_TRIGGER_NAME_PREVIEW="CMS Cache Refresh (${site_realm}/${site_app_key}/preview) - Manual"
               FLOW_TRIGGER_NAME_LEGACY_PROD="CMS Cache Refresh (${site_key}/prod) - Manual"

@@ -65,7 +65,6 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true
 spec:
   backoffLimit: 3
-  ttlSecondsAfterFinished: 300
   template:
     metadata:
       annotations:
