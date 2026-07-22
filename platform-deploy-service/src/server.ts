@@ -35,8 +35,15 @@ const envSchema = z.object({
   DEPLOY_SECRET_NAME: z.string().default("platform-deploy-secrets"),
   DEPLOY_STATE_PVC_NAME: z.string().default("platform-deploy-state"),
   DEPLOY_JOB_TTL_SECONDS: z.string().default("86400"),
-  DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS: z.string().default("3600"),
+  DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS: z.string().default("7200"),
   DEPLOY_CALLBACK_BASE_URL: z.string().default("http://platform-deploy-service.directus.svc.cluster.local:8080"),
+  GITHUB_API_BASE: z.string().default("https://api.github.com"),
+  DEFAULT_INITIAL_DEPLOY_WORKFLOW: z.string().default("initial-deploy.yml"),
+  DEFAULT_UPDATE_DEPLOY_WORKFLOW: z.string().default("terraform-deploy.yml"),
+  DEFAULT_GITHUB_PRODUCTION_REF: z.string().default("prod"),
+  DEFAULT_GITHUB_PREVIEW_REF: z.string().default("dev"),
+  GITHUB_WORKFLOW_TIMEOUT_SECONDS: z.string().default("7200"),
+  GITHUB_WORKFLOW_POLL_SECONDS: z.string().default("20"),
   DEFAULT_ORG_NAME: z.string().default("suncoast-systems")
 });
 
@@ -53,12 +60,16 @@ const VAULT_ADDR = env.VAULT_ADDR.replace(/\/+$/, "");
 const TOKEN_CACHE_SECONDS = Math.max(5, Number(env.TOKEN_CACHE_SECONDS) || 300);
 const KUBERNETES_API_URL = env.KUBERNETES_API_URL.replace(/\/+$/, "");
 const DEPLOY_JOB_TTL_SECONDS = Math.max(60, Number(env.DEPLOY_JOB_TTL_SECONDS) || 86_400);
-const DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS = Math.max(300, Number(env.DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS) || 3600);
+const DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS = Math.max(300, Number(env.DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS) || 7200);
+const GITHUB_API_BASE = env.GITHUB_API_BASE.replace(/\/+$/, "");
+const GITHUB_WORKFLOW_TIMEOUT_SECONDS = Math.max(300, Number(env.GITHUB_WORKFLOW_TIMEOUT_SECONDS) || 7200);
+const GITHUB_WORKFLOW_POLL_SECONDS = Math.max(5, Number(env.GITHUB_WORKFLOW_POLL_SECONDS) || 20);
 
 type JsonRecord = Record<string, unknown>;
 type OperationType = "create" | "update" | "redeploy" | "delete" | "destroy";
 type OperationStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 type DeploymentStatus = "not_deployed" | "queued" | "deploying" | "deployed" | "failed" | "destroying" | "destroyed";
+type DeploymentStrategy = "terraform_cloud" | "local_terraform";
 
 type DirectusListResponse<T> = {
   data?: T[];
@@ -90,6 +101,7 @@ type PlatformApp = {
   preview_url?: string | null;
   app_auth_slug_production?: string | null;
   app_auth_slug_preview?: string | null;
+  deployment_strategy?: DeploymentStrategy | string | null;
   terraform_workspace_production?: string | null;
   terraform_workspace_preview?: string | null;
   terraform_project?: string | null;
@@ -126,6 +138,16 @@ function asRecord(value: unknown): JsonRecord | null {
 
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function asBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
 }
 
 function truncate(value: string, max = 1200): string {
@@ -276,6 +298,7 @@ async function getApp(appId: string): Promise<PlatformApp> {
     "display_name",
     "site_key",
     "keycloak_realm",
+    "deployment_strategy",
     "domain",
     "production_hostname",
     "preview_hostname",
@@ -297,7 +320,12 @@ async function getApp(appId: string): Promise<PlatformApp> {
   return response.data;
 }
 
-async function createOperation(app: PlatformApp, operationType: OperationType, inputJson: JsonRecord): Promise<PlatformOperation> {
+async function createOperation(
+  app: PlatformApp,
+  operationType: OperationType,
+  inputJson: JsonRecord,
+  executionProvider: DeploymentStrategy
+): Promise<PlatformOperation> {
   const response = await directusJson<DirectusItemResponse<PlatformOperation>>("/items/platform_app_operations", {
     method: "POST",
     body: {
@@ -305,7 +333,7 @@ async function createOperation(app: PlatformApp, operationType: OperationType, i
       app_id: app.id,
       operation_type: operationType,
       status: "queued",
-      execution_provider: "local_terraform",
+      execution_provider: executionProvider,
       requested_at: new Date().toISOString(),
       terraform_workspace: app.terraform_workspace_production || app.app_key,
       input_json: inputJson,
@@ -412,6 +440,149 @@ function terraformProject(app: PlatformApp): string {
   return asString(app.terraform_project) || asString(deploymentSettings(app).terraformProject);
 }
 
+function githubSettings(app: PlatformApp): JsonRecord {
+  const settings = settingsFromApp(app);
+  return {
+    ...(asRecord(settings.github) ?? {}),
+    ...(asRecord(deploymentSettings(app).github) ?? {})
+  };
+}
+
+function getStringAtPath(source: JsonRecord, paths: string[][]): string {
+  for (const path of paths) {
+    let current: unknown = source;
+    for (const segment of path) {
+      current = asRecord(current)?.[segment];
+    }
+    const value = asString(current);
+    if (value) return value;
+  }
+  return "";
+}
+
+function deploymentStrategy(app: PlatformApp): DeploymentStrategy {
+  const configured =
+    asString(app.deployment_strategy)
+    || getStringAtPath(deploymentSettings(app), [["deploymentStrategy"], ["deployment_strategy"], ["provider"]]);
+  return configured === "local_terraform" ? "local_terraform" : "terraform_cloud";
+}
+
+function parseGitHubRepository(value: string): { owner: string; repo: string; fullName: string } | null {
+  const candidate = value.trim().replace(/\.git$/i, "");
+  const sshMatch = candidate.match(/^git@github\.com:([^/]+)\/(.+)$/i);
+  if (sshMatch) {
+    const owner = sshMatch[1].trim();
+    const repo = sshMatch[2].trim();
+    return owner && repo ? { owner, repo, fullName: `${owner}/${repo}` } : null;
+  }
+
+  const shorthandMatch = candidate.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (shorthandMatch) {
+    const owner = shorthandMatch[1].trim();
+    const repo = shorthandMatch[2].trim();
+    return owner && repo ? { owner, repo, fullName: `${owner}/${repo}` } : null;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (!parsed.hostname.toLowerCase().endsWith("github.com")) {
+      return null;
+    }
+    const [owner, repo] = parsed.pathname.split("/").filter(Boolean);
+    return owner && repo ? { owner, repo, fullName: `${owner}/${repo}` } : null;
+  } catch {
+    return null;
+  }
+}
+
+function githubRepository(app: PlatformApp): { owner: string; repo: string; fullName: string } | null {
+  const configured = asString(githubSettings(app).repository)
+    || asString(githubSettings(app).repo)
+    || templateRepository(app);
+  return configured ? parseGitHubRepository(configured) : null;
+}
+
+function githubWorkflow(app: PlatformApp, operationType: OperationType): string {
+  const settings = githubSettings(app);
+  if (operationType === "create") {
+    return asString(settings.initialDeployWorkflow)
+      || asString(settings.initial_deploy_workflow)
+      || asString(settings.initialWorkflow)
+      || env.DEFAULT_INITIAL_DEPLOY_WORKFLOW;
+  }
+  return asString(settings.updateDeployWorkflow)
+    || asString(settings.update_deploy_workflow)
+    || asString(settings.workflow)
+    || env.DEFAULT_UPDATE_DEPLOY_WORKFLOW;
+}
+
+function githubRef(app: PlatformApp, operationType: OperationType): string {
+  const settings = githubSettings(app);
+  if (operationType === "destroy" || operationType === "delete") {
+    return asString(settings.destroyRef)
+      || asString(settings.destroy_ref)
+      || asString(settings.productionRef)
+      || asString(settings.production_ref)
+      || templateProdRef(app)
+      || env.DEFAULT_GITHUB_PRODUCTION_REF;
+  }
+  return asString(settings.productionRef)
+    || asString(settings.production_ref)
+    || asString(settings.prodRef)
+    || asString(settings.prod_ref)
+    || templateProdRef(app)
+    || env.DEFAULT_GITHUB_PRODUCTION_REF;
+}
+
+function optionalWorkflowVariableValue(app: PlatformApp, key: string): string {
+  const settings = deploymentSettings(app);
+  const github = githubSettings(app);
+  switch (key) {
+    case "TFE_AGENT_POOL_ID":
+      return asString(github.tfeAgentPoolId)
+        || asString(github.tfe_agent_pool_id)
+        || asString(settings.tfeAgentPoolId)
+        || asString(settings.tfe_agent_pool_id);
+    case "OPENOBSERVE_BROWSER_RUM_VERSION":
+      return asString(github.openObserveBrowserRumVersion)
+        || asString(github.openobserve_browser_rum_version)
+        || asString(settings.openObserveBrowserRumVersion)
+        || asString(settings.openobserve_browser_rum_version);
+    default:
+      return "";
+  }
+}
+
+function githubRepositoryVariables(app: PlatformApp): JsonRecord {
+  const configuredVariables =
+    asRecord(githubSettings(app).variables)
+    || asRecord(githubSettings(app).repoVariables)
+    || asRecord(githubSettings(app).repository_variables)
+    || {};
+  const variables: JsonRecord = {
+    KEYCLOAK_REALM: app.keycloak_realm,
+    TFE_PROJECT: terraformProject(app),
+    DIRECTUS_CONTENT_SITE_KEY: app.site_key,
+    KEYCLOAK_AUTH_HOST: keycloakAuthHost(app),
+    APP_AUTH_GATEWAY_URL: authGatewayUrl(app),
+    APP_AUTH_GATEWAY_ADMIN_URL: authGatewayAdminUrl(app),
+    APP_BASE_DOMAIN: domainFor(app),
+    APP_AUTH_BASE_URL_PRODUCTION: productionUrl(app),
+    APP_AUTH_BASE_URL_PREVIEW: previewUrl(app),
+    ...configuredVariables
+  };
+
+  for (const optionalKey of ["TFE_AGENT_POOL_ID", "OPENOBSERVE_BROWSER_RUM_VERSION"]) {
+    const configured = asString(variables[optionalKey]);
+    const fallback = optionalWorkflowVariableValue(app, optionalKey);
+    if (!configured && fallback) {
+      variables[optionalKey] = fallback;
+    }
+  }
+
+  return Object.fromEntries(Object.entries(variables).filter(([, value]) => asString(value) !== ""));
+}
+
 function operationSequence(operationType: OperationType): string {
   if (operationType === "delete" || operationType === "destroy") {
     return "destroy";
@@ -424,10 +595,12 @@ function operationSequence(operationType: OperationType): string {
 
 function buildRunnerInput(app: PlatformApp, operationType: OperationType, operationId: string): JsonRecord {
   const sequence = operationSequence(operationType);
+  const repository = githubRepository(app);
   return {
     operation_id: operationId,
     operation_type: operationType,
     sequence,
+    deployment_strategy: deploymentStrategy(app),
     app_id: app.id,
     app_key: app.app_key,
     site_key: app.site_key,
@@ -447,7 +620,14 @@ function buildRunnerInput(app: PlatformApp, operationType: OperationType, operat
     app_auth_slug_production: asString(app.app_auth_slug_production, app.app_key),
     app_auth_slug_preview: asString(app.app_auth_slug_preview, `${app.app_key}-preview`),
     terraform_workspace_production: asString(app.terraform_workspace_production, app.app_key),
-    terraform_workspace_preview: asString(app.terraform_workspace_preview, `${app.app_key}-preview`)
+    terraform_workspace_preview: asString(app.terraform_workspace_preview, `${app.app_key}-preview`),
+    github_api_base: GITHUB_API_BASE,
+    github_repository: repository?.fullName ?? "",
+    github_workflow: githubWorkflow(app, operationType),
+    github_ref: githubRef(app, operationType),
+    github_workflow_timeout_seconds: GITHUB_WORKFLOW_TIMEOUT_SECONDS,
+    github_workflow_poll_seconds: GITHUB_WORKFLOW_POLL_SECONDS,
+    github_repository_variables: githubRepositoryVariables(app)
   };
 }
 
@@ -559,6 +739,7 @@ async function createDeployJob(app: PlatformApp, operation: PlatformOperation, i
                 envValue("OPERATION_ID", operation.id),
                 envValue("OPERATION_TYPE", operation.operation_type),
                 envValue("DEPLOY_SEQUENCE", input.sequence),
+                envValue("DEPLOY_EXECUTION_PROVIDER", input.deployment_strategy),
                 envValue("SITE_KEY", app.site_key),
                 envValue("KEYCLOAK_REALM", app.keycloak_realm),
                 envValue("DOMAIN", input.domain),
@@ -570,6 +751,7 @@ async function createDeployJob(app: PlatformApp, operation: PlatformOperation, i
                 envValue("TEMPLATE_PROD_REF", input.template_prod_ref),
                 envValue("TEMPLATE_PREVIEW_REF", input.template_preview_ref),
                 envValue("TERRAFORM_PROJECT", input.terraform_project),
+                envValue("TFE_PROJECT", input.terraform_project),
                 envValue("KEYCLOAK_AUTH_HOST", input.keycloak_auth_host),
                 envValue("APP_AUTH_GATEWAY_URL", input.app_auth_gateway_url),
                 envValue("APP_AUTH_GATEWAY_ADMIN_URL", input.app_auth_gateway_admin_url),
@@ -578,7 +760,15 @@ async function createDeployJob(app: PlatformApp, operation: PlatformOperation, i
                 envValue("TERRAFORM_WORKSPACE_PRODUCTION", input.terraform_workspace_production),
                 envValue("TERRAFORM_WORKSPACE_PREVIEW", input.terraform_workspace_preview),
                 envValue("PLATFORM_DEPLOY_CALLBACK_URL", callbackBaseUrl),
+                envValue("GITHUB_API_BASE", input.github_api_base),
+                envValue("GITHUB_REPOSITORY", input.github_repository),
+                envValue("GITHUB_WORKFLOW", input.github_workflow),
+                envValue("GITHUB_REF", input.github_ref),
+                envValue("GITHUB_REPOSITORY_VARIABLES_JSON", JSON.stringify(input.github_repository_variables ?? {})),
+                envValue("GITHUB_WORKFLOW_TIMEOUT_SECONDS", input.github_workflow_timeout_seconds),
+                envValue("GITHUB_WORKFLOW_POLL_SECONDS", input.github_workflow_poll_seconds),
                 secretEnv("PLATFORM_DEPLOY_SERVICE_TOKEN", "service-token"),
+                secretEnv("GITHUB_TOKEN", "github-token"),
                 secretEnv("CLOUDFLARE_API_TOKEN", "cloudflare-api-token"),
                 secretEnv("CLOUDFLARE_ACCOUNT_ID", "cloudflare-account-id"),
                 secretEnv("CLOUDFLARE_ZONE_ID", "cloudflare-zone-id"),
@@ -640,9 +830,18 @@ async function queueOperation(appId: string, operationType: OperationType): Prom
   if (!templateRepo) {
     throw Object.assign(new Error("App template repository is not configured."), { status: 422 });
   }
+  const executionProvider = deploymentStrategy(app);
+  if (executionProvider === "terraform_cloud") {
+    if (!terraformProject(app)) {
+      throw Object.assign(new Error("TFE_PROJECT is required. Set the app Terraform project before deploying."), { status: 422 });
+    }
+    if (!githubRepository(app)) {
+      throw Object.assign(new Error("A GitHub repository is required for Terraform Cloud deployments."), { status: 422 });
+    }
+  }
 
   const operationInput = buildRunnerInput(app, operationType, "pending");
-  const operation = await createOperation(app, operationType, operationInput);
+  const operation = await createOperation(app, operationType, operationInput, executionProvider);
   const input = buildRunnerInput(app, operationType, operation.id);
   await updateOperation(operation.id, { input_json: input });
 
@@ -684,11 +883,123 @@ const openApiSpec = {
     description: "Internal Kubernetes control plane for Directus-managed shell app deployments."
   },
   servers: [{ url: env.OPENAPI_SERVER_URL }],
+  components: {
+    parameters: {
+      AppIdPath: {
+        name: "id",
+        in: "path",
+        required: true,
+        schema: { type: "string", format: "uuid" },
+        description: "Directus platform_apps id."
+      }
+    },
+    schemas: {
+      QueueDeployRequest: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          operation_type: {
+            type: "string",
+            enum: ["create", "update", "redeploy"],
+            description: "Deployment operation to queue."
+          }
+        }
+      },
+      QueueDestroyRequest: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          operation_type: {
+            type: "string",
+            enum: ["destroy", "delete"],
+            description: "Destroy operation to queue."
+          }
+        }
+      },
+      QueueOperationResponse: {
+        type: "object",
+        required: ["ok", "app_id", "operation_id", "job_name"],
+        properties: {
+          ok: { type: "boolean" },
+          app_id: { type: "string" },
+          operation_id: { type: "string" },
+          job_name: { type: "string" }
+        },
+        additionalProperties: true
+      },
+      ErrorResponse: {
+        type: "object",
+        properties: {
+          error: {
+            type: "object",
+            properties: {
+              message: { type: "string" },
+              status: { type: "integer" }
+            }
+          }
+        }
+      }
+    }
+  },
   paths: {
     "/healthz": { get: { operationId: "healthz", responses: { "200": { description: "Service health" } } } },
     "/readyz": { get: { operationId: "readyz", responses: { "200": { description: "Dependency readiness" } } } },
-    "/internal/apps/{id}/deploy": { post: { operationId: "queueDeploy", responses: { "200": { description: "Deploy queued" } } } },
-    "/internal/apps/{id}/destroy": { post: { operationId: "queueDestroy", responses: { "200": { description: "Destroy queued" } } } }
+    "/internal/apps/{id}/deploy": {
+      post: {
+        operationId: "queueDeploy",
+        parameters: [{ $ref: "#/components/parameters/AppIdPath" }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/QueueDeployRequest" }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Deploy queued",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/QueueOperationResponse" }
+              }
+            }
+          },
+          "422": {
+            description: "Deploy configuration is incomplete",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/apps/{id}/destroy": {
+      post: {
+        operationId: "queueDestroy",
+        parameters: [{ $ref: "#/components/parameters/AppIdPath" }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/QueueDestroyRequest" }
+            }
+          }
+        },
+        responses: {
+          "200": {
+            description: "Destroy queued",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/QueueOperationResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 };
 
@@ -789,7 +1100,9 @@ app.post("/internal/operations/:id/finish", async (req, res, next) => {
       finished_at: new Date().toISOString(),
       result_json: asRecord(body.result_json) ?? {},
       error_message: errorMessage || null,
-      log_excerpt: asString(body.log_excerpt) || null
+      log_excerpt: asString(body.log_excerpt) || null,
+      terraform_run_id: asString(body.terraform_run_id) || undefined,
+      terraform_run_url: asString(body.terraform_run_url) || undefined
     });
     if (appId) {
       await updateApp(appId, {

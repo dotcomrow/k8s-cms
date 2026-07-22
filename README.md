@@ -15,9 +15,26 @@ Multiple apps can share `realm: external` or `realm: internal` while using disti
 
 ## Platform Organization Management
 
-The postschema reconcile creates Directus-managed registry collections for the internal Organization Management workflow: `platform_organizations`, `platform_apps`, and `platform_app_operations`. These store non-secret desired state and operation history only; deployment credentials stay server-side in the future control-plane service.
+The postschema reconcile creates Directus-managed registry collections for the internal Organization Management workflow: `platform_organizations`, `platform_apps`, and `platform_app_operations`. These store non-secret desired state and operation history only; deployment credentials stay server-side in the platform deploy service.
 
 Directus site entries can opt into platform registry permissions with `platform_management.enabled: true`. The GraphQL audience alias used by the internal MFE is bound to the external site token today, so that site entry carries the platform-management grant while browser traffic still enters through Hasura and Gravitee.
+
+## Platform deploy service
+
+The platform deploy backend lives in `platform-deploy-service/` and is deployed by `manifests/75-platform-deploy-service.yaml`. Gravitee exposes it at `/platform-deploy`, and Hasura generates actions from `/openapi.json`.
+
+- Deploy action: `gravitee_platform_deploy_api_queuedeploy`
+- Destroy action: `gravitee_platform_deploy_api_queuedestroy`
+- OpenAPI: `docs/platform-deploy-service-openapi.yaml`
+
+For `deployment_strategy: terraform_cloud`, the service creates a Kubernetes runner Job that:
+
+- creates a `platform_app_operations` row and marks the app queued/deploying
+- upserts GitHub repository variables including `TFE_PROJECT`, `KEYCLOAK_REALM`, `DIRECTUS_CONTENT_SITE_KEY`, app URLs, auth gateway URLs, and base domain
+- dispatches `initial-deploy.yml` for first deploys and `terraform-deploy.yml` for updates on the configured prod ref
+- polls the GitHub Actions run and writes the run id/url plus final status back to Directus
+
+The runner requires `platform-deploy-secrets.github-token`. The bootstrap Job copies it from `secret/platform-deploy-service` (`github_token` or `github-token`) or `secret/platform-deploy-service/github` (`token`) when present. That token must be able to read workflows, enable workflows, dispatch workflows, and create/update repository Actions variables for the target app repos. Existing GitHub workflow secrets such as `TFE_TOKEN` and `AUTH_GATEWAY_ADMIN_TOKEN` remain in the app repository or organization; the platform deploy service does not copy those secrets.
 
 ## Docs
 
@@ -26,6 +43,7 @@ Directus site entries can opt into platform registry permissions with `platform_
 - `docs/directus-image-action-openapi.yaml` - OpenAPI spec for the in-cluster image service used by Hasura actions.
 - `docs/vm-stats-service-openapi.yaml` - OpenAPI spec for the VM stats reporting endpoints.
 - `docs/cloud-billing-service-openapi.yaml` - OpenAPI spec for the cloud billing aggregation API and Hasura action.
+- `docs/platform-deploy-service-openapi.yaml` - OpenAPI spec for the platform app deploy API and Hasura actions.
 - `docs/ui-module-contract.md` - universal module contract for page components and MFEs with mandatory async configuration.
 - `docs/schemas/ui-module-definition.schema.json` - JSON Schema for module definition manifests produced by module repos.
 - `docs/schemas/ui-module-instance.schema.json` - JSON Schema for per-page module instances stored in CMS.

@@ -97,13 +97,17 @@ spec:
 
               if [ "${code}" = "200" ]; then
                 service_token="$(jq -r '.data.data.token // empty' /tmp/platform-deploy-token.json)"
+                existing_secret_data="$(jq -c '.data.data // {}' /tmp/platform-deploy-token.json)"
+                github_token="$(jq -r '.data.data.github_token // .data.data["github-token"] // empty' /tmp/platform-deploy-token.json)"
               else
                 service_token=""
+                existing_secret_data="{}"
+                github_token=""
               fi
 
               if [ -z "${service_token}" ] || [ "${service_token}" = "null" ]; then
                 service_token="$(openssl rand -base64 48 | tr -d '\n' | tr '/+' '._')"
-                payload="$(jq -nc --arg token "${service_token}" '{data:{token:$token}}')"
+                payload="$(jq -nc --arg token "${service_token}" --argjson existing "${existing_secret_data}" '{data:($existing + {token:$token})}')"
                 write_code="$(curl -sS -o /tmp/platform-deploy-token-write.json -w '%{http_code}' \
                   -X POST \
                   -H "X-Vault-Token: ${VAULT_TOKEN}" \
@@ -117,6 +121,15 @@ spec:
                 fi
               fi
 
+              if [ -z "${github_token}" ] || [ "${github_token}" = "null" ]; then
+                github_code="$(curl -sS -o /tmp/platform-deploy-github-token.json -w '%{http_code}' \
+                  -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                  "${VAULT_ADDR}/v1/secret/data/platform-deploy-service/github" || true)"
+                if [ "${github_code}" = "200" ]; then
+                  github_token="$(jq -r '.data.data.token // .data.data.github_token // .data.data["github-token"] // empty' /tmp/platform-deploy-github-token.json)"
+                fi
+              fi
+
               token_b64="$(printf '%s' "${service_token}" | base64 | tr -d '\n')"
               if kubectl -n directus get secret platform-deploy-secrets >/dev/null 2>&1; then
                 patch="$(jq -nc --arg serviceToken "${token_b64}" '{data:{"service-token":$serviceToken}}')"
@@ -124,6 +137,15 @@ spec:
               else
                 kubectl -n directus create secret generic platform-deploy-secrets \
                   --from-literal=service-token="${service_token}"
+              fi
+
+              if [ -n "${github_token}" ] && [ "${github_token}" != "null" ]; then
+                github_token_b64="$(printf '%s' "${github_token}" | base64 | tr -d '\n')"
+                github_patch="$(jq -nc --arg githubToken "${github_token_b64}" '{data:{"github-token":$githubToken}}')"
+                kubectl -n directus patch secret platform-deploy-secrets --type merge -p "${github_patch}"
+                echo "GitHub workflow token is present in Kubernetes Secret."
+              else
+                echo "GitHub workflow token was not found in Vault; terraform_cloud platform deploys require platform-deploy-secrets.github-token."
               fi
 
               echo "platform-deploy-service token is present in Vault and Kubernetes Secret."
@@ -190,7 +212,12 @@ data:
         --arg status "${status}" \
         --arg error_message "${error_message}" \
         --arg log_excerpt "${log_excerpt}" \
-        '{app_id:$app_id,operation_type:$operation_type,status:$status,error_message:$error_message,log_excerpt:$log_excerpt,result_json:{runner:"platform-app-deploy-runner"}}')"
+        --arg terraform_run_id "${PLATFORM_DEPLOY_RUN_ID:-}" \
+        --arg terraform_run_url "${PLATFORM_DEPLOY_RUN_URL:-}" \
+        --arg github_repository "${GITHUB_REPOSITORY:-}" \
+        --arg github_workflow "${GITHUB_WORKFLOW:-}" \
+        --arg github_ref "${GITHUB_REF:-}" \
+        '{app_id:$app_id,operation_type:$operation_type,status:$status,error_message:$error_message,log_excerpt:$log_excerpt,terraform_run_id:$terraform_run_id,terraform_run_url:$terraform_run_url,result_json:{runner:"platform-app-deploy-runner",github_repository:$github_repository,github_workflow:$github_workflow,github_ref:$github_ref,github_run_id:$terraform_run_id,github_run_url:$terraform_run_url}}')"
       callback "/internal/operations/${OPERATION_ID}/finish" "${body}" || true
     }
 
@@ -198,6 +225,180 @@ data:
       echo "[runner] $*" | tee -a /tmp/platform-deploy.log
       finish "failed" "$*"
       exit 1
+    }
+
+    urlencode() {
+      jq -rn --arg value "$1" '$value|@uri'
+    }
+
+    github_api() {
+      method="$1"
+      path="$2"
+      body="${3:-}"
+      out="${4:-/tmp/github-api.json}"
+
+      [ -n "${GITHUB_TOKEN:-}" ] || fail "GITHUB_TOKEN is required for Terraform Cloud/GitHub Actions deployments."
+      [ -n "${GITHUB_API_BASE:-}" ] || GITHUB_API_BASE="https://api.github.com"
+
+      url="${GITHUB_API_BASE%/}${path}"
+      if [ -n "${body}" ]; then
+        curl -sS -o "${out}" -w '%{http_code}' \
+          -X "${method}" \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Content-Type: application/json" \
+          -d "${body}" \
+          "${url}" 2>>/tmp/platform-deploy.log || true
+      else
+        curl -sS -o "${out}" -w '%{http_code}' \
+          -X "${method}" \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "${url}" 2>>/tmp/platform-deploy.log || true
+      fi
+    }
+
+    github_expect_success() {
+      code="$1"
+      out="$2"
+      message="$3"
+      case "${code}" in
+        200|201|202|204)
+          return 0
+          ;;
+      esac
+      echo "[runner] ${message} (HTTP ${code})." | tee -a /tmp/platform-deploy.log
+      if [ -f "${out}" ]; then
+        cat "${out}" >>/tmp/platform-deploy.log || true
+      fi
+      fail "${message} (HTTP ${code})."
+    }
+
+    upsert_github_variable() {
+      name="$1"
+      value="$2"
+      [ -n "${name}" ] || return 0
+      [ -n "${value}" ] || return 0
+
+      payload="$(jq -nc --arg name "${name}" --arg value "${value}" '{name:$name,value:$value}')"
+      encoded_name="$(urlencode "${name}")"
+      out="/tmp/github-variable-${name}.json"
+      code="$(github_api "PATCH" "/repos/${GITHUB_REPOSITORY}/actions/variables/${encoded_name}" "${payload}" "${out}")"
+      case "${code}" in
+        200|201|204)
+          echo "[runner] Updated GitHub repository variable ${name}." | tee -a /tmp/platform-deploy.log
+          return 0
+          ;;
+        404)
+          code="$(github_api "POST" "/repos/${GITHUB_REPOSITORY}/actions/variables" "${payload}" "${out}")"
+          github_expect_success "${code}" "${out}" "Failed to create GitHub repository variable ${name}"
+          echo "[runner] Created GitHub repository variable ${name}." | tee -a /tmp/platform-deploy.log
+          ;;
+        *)
+          github_expect_success "${code}" "${out}" "Failed to update GitHub repository variable ${name}"
+          ;;
+      esac
+    }
+
+    sync_github_variables() {
+      variables_json="${GITHUB_REPOSITORY_VARIABLES_JSON:-{}}"
+      printf '%s' "${variables_json}" | jq -e 'type == "object"' >/dev/null \
+        || fail "GITHUB_REPOSITORY_VARIABLES_JSON must be a JSON object."
+
+      printf '%s' "${variables_json}" | jq -r 'to_entries[] | @base64' | while IFS= read -r item; do
+        name="$(printf '%s' "${item}" | base64 -d | jq -r '.key')"
+        value="$(printf '%s' "${item}" | base64 -d | jq -r '.value|tostring')"
+        upsert_github_variable "${name}" "${value}"
+      done
+    }
+
+    run_github_actions_deploy() {
+      [ -n "${GITHUB_REPOSITORY:-}" ] || fail "GITHUB_REPOSITORY is required for Terraform Cloud deployments."
+      [ -n "${GITHUB_WORKFLOW:-}" ] || fail "GITHUB_WORKFLOW is required for Terraform Cloud deployments."
+      [ -n "${GITHUB_REF:-}" ] || fail "GITHUB_REF is required for Terraform Cloud deployments."
+
+      sync_github_variables
+
+      workflow_path="/repos/${GITHUB_REPOSITORY}/actions/workflows/$(urlencode "${GITHUB_WORKFLOW}")"
+      code="$(github_api "GET" "${workflow_path}" "" "/tmp/github-workflow.json")"
+      github_expect_success "${code}" "/tmp/github-workflow.json" "Failed to read GitHub workflow ${GITHUB_WORKFLOW}"
+
+      code="$(github_api "PUT" "${workflow_path}/enable" "" "/tmp/github-workflow-enable.json")"
+      case "${code}" in
+        200|201|202|204|409)
+          ;;
+        *)
+          github_expect_success "${code}" "/tmp/github-workflow-enable.json" "Failed to enable GitHub workflow ${GITHUB_WORKFLOW}"
+          ;;
+      esac
+
+      dispatch_started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+      dispatch_payload="$(jq -nc --arg ref "${GITHUB_REF}" '{ref:$ref}')"
+      code="$(github_api "POST" "${workflow_path}/dispatches" "${dispatch_payload}" "/tmp/github-dispatch.json")"
+      github_expect_success "${code}" "/tmp/github-dispatch.json" "Failed to dispatch GitHub workflow ${GITHUB_WORKFLOW}. Ensure the workflow declares workflow_dispatch."
+      echo "[runner] Dispatched ${GITHUB_REPOSITORY}/${GITHUB_WORKFLOW} on ${GITHUB_REF}." | tee -a /tmp/platform-deploy.log
+
+      branch_query="$(urlencode "${GITHUB_REF}")"
+      run_id=""
+      run_url=""
+      lookup_attempts="${GITHUB_RUN_LOOKUP_ATTEMPTS:-24}"
+      attempt=1
+      while [ "${attempt}" -le "${lookup_attempts}" ]; do
+        code="$(github_api "GET" "${workflow_path}/runs?branch=${branch_query}&event=workflow_dispatch&per_page=10" "" "/tmp/github-runs.json")"
+        github_expect_success "${code}" "/tmp/github-runs.json" "Failed to list GitHub workflow runs"
+        run_id="$(jq -r --arg started "${dispatch_started_at}" '
+          (.workflow_runs // [])
+          | map(select((.created_at // "") >= $started))
+          | sort_by(.created_at // "")
+          | reverse
+          | .[0].id // empty
+        ' /tmp/github-runs.json)"
+        run_url="$(jq -r --arg id "${run_id}" '
+          (.workflow_runs // [])
+          | map(select((.id|tostring) == $id))
+          | .[0].html_url // empty
+        ' /tmp/github-runs.json)"
+        if [ -n "${run_id}" ]; then
+          PLATFORM_DEPLOY_RUN_ID="${run_id}"
+          PLATFORM_DEPLOY_RUN_URL="${run_url}"
+          export PLATFORM_DEPLOY_RUN_ID PLATFORM_DEPLOY_RUN_URL
+          break
+        fi
+        sleep 5
+        attempt=$((attempt + 1))
+      done
+
+      [ -n "${run_id}" ] || fail "GitHub workflow dispatch succeeded, but no workflow_dispatch run was found for ${GITHUB_WORKFLOW} on ${GITHUB_REF}."
+
+      echo "[runner] Monitoring GitHub Actions run ${run_id}: ${run_url}" | tee -a /tmp/platform-deploy.log
+      deadline=$(( $(date +%s) + ${GITHUB_WORKFLOW_TIMEOUT_SECONDS:-7200} ))
+      poll_seconds="${GITHUB_WORKFLOW_POLL_SECONDS:-20}"
+      while :; do
+        code="$(github_api "GET" "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" "" "/tmp/github-run.json")"
+        github_expect_success "${code}" "/tmp/github-run.json" "Failed to read GitHub Actions run ${run_id}"
+        run_status="$(jq -r '.status // empty' /tmp/github-run.json)"
+        run_conclusion="$(jq -r '.conclusion // empty' /tmp/github-run.json)"
+        run_url="$(jq -r '.html_url // empty' /tmp/github-run.json)"
+        PLATFORM_DEPLOY_RUN_URL="${run_url}"
+        export PLATFORM_DEPLOY_RUN_URL
+        echo "[runner] GitHub Actions run ${run_id}: status=${run_status:-unknown} conclusion=${run_conclusion:-pending}." | tee -a /tmp/platform-deploy.log
+
+        if [ "${run_status}" = "completed" ]; then
+          if [ "${run_conclusion}" = "success" ]; then
+            finish "succeeded" ""
+            echo "[runner] GitHub Actions deployment completed successfully."
+            exit 0
+          fi
+          fail "GitHub Actions deployment completed with conclusion '${run_conclusion:-unknown}'."
+        fi
+
+        if [ "$(date +%s)" -ge "${deadline}" ]; then
+          fail "Timed out waiting for GitHub Actions run ${run_id}."
+        fi
+        sleep "${poll_seconds}"
+      done
     }
 
     [ -n "${OPERATION_ID:-}" ] || fail "OPERATION_ID is required."
@@ -211,6 +412,10 @@ data:
     callback "/internal/operations/${OPERATION_ID}/start" "${start_body}" || true
 
     [ -n "${TEMPLATE_REPOSITORY:-}" ] || fail "TEMPLATE_REPOSITORY is required on the platform app."
+
+    if [ "${DEPLOY_EXECUTION_PROVIDER:-local_terraform}" = "terraform_cloud" ] && [ "${DEPLOY_SEQUENCE:-create}" != "destroy" ]; then
+      run_github_actions_deploy
+    fi
 
     export TF_IN_AUTOMATION=true
     export TF_INPUT=false
@@ -400,9 +605,23 @@ spec:
             - name: DEPLOY_JOB_TTL_SECONDS
               value: "86400"
             - name: DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS
-              value: "3600"
+              value: "7200"
             - name: DEPLOY_CALLBACK_BASE_URL
               value: "http://platform-deploy-service.directus.svc.cluster.local:8080"
+            - name: GITHUB_API_BASE
+              value: "https://api.github.com"
+            - name: DEFAULT_INITIAL_DEPLOY_WORKFLOW
+              value: "initial-deploy.yml"
+            - name: DEFAULT_UPDATE_DEPLOY_WORKFLOW
+              value: "terraform-deploy.yml"
+            - name: DEFAULT_GITHUB_PRODUCTION_REF
+              value: "prod"
+            - name: DEFAULT_GITHUB_PREVIEW_REF
+              value: "dev"
+            - name: GITHUB_WORKFLOW_TIMEOUT_SECONDS
+              value: "7200"
+            - name: GITHUB_WORKFLOW_POLL_SECONDS
+              value: "20"
             - name: REQUEST_TIMEOUT_MS
               value: "15000"
             - name: RATE_MAX
