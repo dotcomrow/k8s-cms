@@ -38,12 +38,13 @@ const envSchema = z.object({
   DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS: z.string().default("7200"),
   DEPLOY_CALLBACK_BASE_URL: z.string().default("http://platform-deploy-service.directus.svc.cluster.local:8080"),
   GITHUB_API_BASE: z.string().default("https://api.github.com"),
+  TFE_API_BASE: z.string().default("https://app.terraform.io/api/v2"),
   DEFAULT_INITIAL_DEPLOY_WORKFLOW: z.string().default("initial-deploy.yml"),
-  DEFAULT_UPDATE_DEPLOY_WORKFLOW: z.string().default("terraform-deploy.yml"),
   DEFAULT_GITHUB_PRODUCTION_REF: z.string().default("prod"),
   DEFAULT_GITHUB_PREVIEW_REF: z.string().default("dev"),
-  GITHUB_WORKFLOW_TIMEOUT_SECONDS: z.string().default("7200"),
-  GITHUB_WORKFLOW_POLL_SECONDS: z.string().default("20"),
+  TERRAFORM_RUN_TIMEOUT_SECONDS: z.string().default("7200"),
+  TERRAFORM_RUN_POLL_SECONDS: z.string().default("20"),
+  DEFAULT_OPENOBSERVE_BROWSER_RUM_VERSION: z.string().default("0.3.1"),
   DEFAULT_ORG_NAME: z.string().default("suncoast-systems")
 });
 
@@ -62,8 +63,9 @@ const KUBERNETES_API_URL = env.KUBERNETES_API_URL.replace(/\/+$/, "");
 const DEPLOY_JOB_TTL_SECONDS = Math.max(60, Number(env.DEPLOY_JOB_TTL_SECONDS) || 86_400);
 const DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS = Math.max(300, Number(env.DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS) || 7200);
 const GITHUB_API_BASE = env.GITHUB_API_BASE.replace(/\/+$/, "");
-const GITHUB_WORKFLOW_TIMEOUT_SECONDS = Math.max(300, Number(env.GITHUB_WORKFLOW_TIMEOUT_SECONDS) || 7200);
-const GITHUB_WORKFLOW_POLL_SECONDS = Math.max(5, Number(env.GITHUB_WORKFLOW_POLL_SECONDS) || 20);
+const TFE_API_BASE = env.TFE_API_BASE.replace(/\/+$/, "");
+const TERRAFORM_RUN_TIMEOUT_SECONDS = Math.max(300, Number(env.TERRAFORM_RUN_TIMEOUT_SECONDS) || 7200);
+const TERRAFORM_RUN_POLL_SECONDS = Math.max(5, Number(env.TERRAFORM_RUN_POLL_SECONDS) || 20);
 
 type JsonRecord = Record<string, unknown>;
 type OperationType = "create" | "update" | "redeploy" | "delete" | "destroy";
@@ -369,11 +371,17 @@ function settingsFromApp(app: PlatformApp): JsonRecord {
   const orgSettings = asRecord(organization?.settings_json) ?? {};
   const appConfig = asRecord(app.config_json) ?? {};
   const deployment = asRecord(appConfig.deployment) ?? {};
+  const orgAppRepository = asRecord(orgSettings.appRepository) ?? asRecord(orgSettings.app_repository) ?? {};
+  const deploymentAppRepository = asRecord(deployment.appRepository) ?? asRecord(deployment.app_repository) ?? {};
   return {
     ...orgSettings,
     deployment: {
       ...(asRecord(orgSettings.deployment) ?? {}),
       ...(asRecord(deployment) ?? {})
+    },
+    appRepository: {
+      ...orgAppRepository,
+      ...deploymentAppRepository
     },
     template: {
       ...(asRecord(orgSettings.template) ?? {}),
@@ -388,6 +396,14 @@ function deploymentSettings(app: PlatformApp): JsonRecord {
 
 function templateSettings(app: PlatformApp): JsonRecord {
   return asRecord(settingsFromApp(app).template) ?? {};
+}
+
+function repositorySettings(app: PlatformApp): JsonRecord {
+  const settings = settingsFromApp(app);
+  return {
+    ...(asRecord(settings.template) ?? {}),
+    ...(asRecord(settings.appRepository) ?? {})
+  };
 }
 
 function domainFor(app: PlatformApp): string {
@@ -412,16 +428,17 @@ function previewUrl(app: PlatformApp): string {
   return asString(app.preview_url, `https://${previewHostname(app)}`);
 }
 
-function templateRepository(app: PlatformApp): string {
-  return asString(app.template_source_repo) || asString(templateSettings(app).repository);
+function sourceRepository(app: PlatformApp): string {
+  return asString(app.template_source_repo) || asString(repositorySettings(app).repository);
 }
 
 function templateProdRef(app: PlatformApp): string {
-  return asString(app.template_ref) || asString(templateSettings(app).prodRef, "prod");
+  const settings = repositorySettings(app);
+  return asString(app.template_ref) || asString(settings.prodRef) || asString(settings.ref, "prod");
 }
 
 function templatePreviewRef(app: PlatformApp): string {
-  return asString(templateSettings(app).previewRef, "dev");
+  return asString(repositorySettings(app).previewRef, "dev");
 }
 
 function keycloakAuthHost(app: PlatformApp): string {
@@ -498,22 +515,8 @@ function parseGitHubRepository(value: string): { owner: string; repo: string; fu
 function githubRepository(app: PlatformApp): { owner: string; repo: string; fullName: string } | null {
   const configured = asString(githubSettings(app).repository)
     || asString(githubSettings(app).repo)
-    || templateRepository(app);
+    || sourceRepository(app);
   return configured ? parseGitHubRepository(configured) : null;
-}
-
-function githubWorkflow(app: PlatformApp, operationType: OperationType): string {
-  const settings = githubSettings(app);
-  if (operationType === "create") {
-    return asString(settings.initialDeployWorkflow)
-      || asString(settings.initial_deploy_workflow)
-      || asString(settings.initialWorkflow)
-      || env.DEFAULT_INITIAL_DEPLOY_WORKFLOW;
-  }
-  return asString(settings.updateDeployWorkflow)
-    || asString(settings.update_deploy_workflow)
-    || asString(settings.workflow)
-    || env.DEFAULT_UPDATE_DEPLOY_WORKFLOW;
 }
 
 function githubRef(app: PlatformApp, operationType: OperationType): string {
@@ -534,23 +537,47 @@ function githubRef(app: PlatformApp, operationType: OperationType): string {
     || env.DEFAULT_GITHUB_PRODUCTION_REF;
 }
 
-function optionalWorkflowVariableValue(app: PlatformApp, key: string): string {
+function initialDeployWorkflow(app: PlatformApp): string {
+  const settings = githubSettings(app);
+  return asString(settings.initialDeployWorkflow)
+    || asString(settings.initial_deploy_workflow)
+    || asString(settings.initialWorkflow)
+    || env.DEFAULT_INITIAL_DEPLOY_WORKFLOW;
+}
+
+function tfeAgentPoolId(app: PlatformApp): string {
   const settings = deploymentSettings(app);
   const github = githubSettings(app);
-  switch (key) {
-    case "TFE_AGENT_POOL_ID":
-      return asString(github.tfeAgentPoolId)
-        || asString(github.tfe_agent_pool_id)
-        || asString(settings.tfeAgentPoolId)
-        || asString(settings.tfe_agent_pool_id);
-    case "OPENOBSERVE_BROWSER_RUM_VERSION":
-      return asString(github.openObserveBrowserRumVersion)
-        || asString(github.openobserve_browser_rum_version)
-        || asString(settings.openObserveBrowserRumVersion)
-        || asString(settings.openobserve_browser_rum_version);
-    default:
-      return "";
-  }
+  return asString(github.tfeAgentPoolId)
+    || asString(github.tfe_agent_pool_id)
+    || asString(settings.tfeAgentPoolId)
+    || asString(settings.tfe_agent_pool_id);
+}
+
+function terraformCloudOrganization(app: PlatformApp): string {
+  const repository = githubRepository(app);
+  const settings = deploymentSettings(app);
+  const github = githubSettings(app);
+  return asString(settings.terraformCloudOrganization)
+    || asString(settings.terraform_cloud_organization)
+    || asString(settings.tfCloudOrganization)
+    || asString(settings.tf_cloud_organization)
+    || asString(github.terraformCloudOrganization)
+    || asString(github.terraform_cloud_organization)
+    || asString(github.tfCloudOrganization)
+    || asString(github.tf_cloud_organization)
+    || repository?.owner
+    || env.DEFAULT_ORG_NAME;
+}
+
+function openObserveBrowserRumVersion(app: PlatformApp): string {
+  const settings = deploymentSettings(app);
+  const github = githubSettings(app);
+  return asString(github.openObserveBrowserRumVersion)
+    || asString(github.openobserve_browser_rum_version)
+    || asString(settings.openObserveBrowserRumVersion)
+    || asString(settings.openobserve_browser_rum_version)
+    || env.DEFAULT_OPENOBSERVE_BROWSER_RUM_VERSION;
 }
 
 function githubRepositoryVariables(app: PlatformApp): JsonRecord {
@@ -572,12 +599,12 @@ function githubRepositoryVariables(app: PlatformApp): JsonRecord {
     ...configuredVariables
   };
 
-  for (const optionalKey of ["TFE_AGENT_POOL_ID", "OPENOBSERVE_BROWSER_RUM_VERSION"]) {
-    const configured = asString(variables[optionalKey]);
-    const fallback = optionalWorkflowVariableValue(app, optionalKey);
-    if (!configured && fallback) {
-      variables[optionalKey] = fallback;
-    }
+  if (!asString(variables.TFE_AGENT_POOL_ID)) {
+    const agentPoolId = tfeAgentPoolId(app);
+    if (agentPoolId) variables.TFE_AGENT_POOL_ID = agentPoolId;
+  }
+  if (!asString(variables.OPENOBSERVE_BROWSER_RUM_VERSION)) {
+    variables.OPENOBSERVE_BROWSER_RUM_VERSION = openObserveBrowserRumVersion(app);
   }
 
   return Object.fromEntries(Object.entries(variables).filter(([, value]) => asString(value) !== ""));
@@ -610,10 +637,12 @@ function buildRunnerInput(app: PlatformApp, operationType: OperationType, operat
     preview_hostname: previewHostname(app),
     production_url: productionUrl(app),
     preview_url: previewUrl(app),
-    template_repository: templateRepository(app),
+    source_repository: sourceRepository(app),
     template_prod_ref: templateProdRef(app),
     template_preview_ref: templatePreviewRef(app),
     terraform_project: terraformProject(app),
+    terraform_cloud_organization: terraformCloudOrganization(app),
+    tfe_agent_pool_id: tfeAgentPoolId(app),
     keycloak_auth_host: keycloakAuthHost(app),
     app_auth_gateway_url: authGatewayUrl(app),
     app_auth_gateway_admin_url: authGatewayAdminUrl(app),
@@ -623,10 +652,12 @@ function buildRunnerInput(app: PlatformApp, operationType: OperationType, operat
     terraform_workspace_preview: asString(app.terraform_workspace_preview, `${app.app_key}-preview`),
     github_api_base: GITHUB_API_BASE,
     github_repository: repository?.fullName ?? "",
-    github_workflow: githubWorkflow(app, operationType),
+    github_initial_workflow: initialDeployWorkflow(app),
     github_ref: githubRef(app, operationType),
-    github_workflow_timeout_seconds: GITHUB_WORKFLOW_TIMEOUT_SECONDS,
-    github_workflow_poll_seconds: GITHUB_WORKFLOW_POLL_SECONDS,
+    tfe_api_base: TFE_API_BASE,
+    terraform_run_timeout_seconds: TERRAFORM_RUN_TIMEOUT_SECONDS,
+    terraform_run_poll_seconds: TERRAFORM_RUN_POLL_SECONDS,
+    openobserve_browser_rum_version: openObserveBrowserRumVersion(app),
     github_repository_variables: githubRepositoryVariables(app)
   };
 }
@@ -747,11 +778,13 @@ async function createDeployJob(app: PlatformApp, operation: PlatformOperation, i
                 envValue("PREVIEW_HOSTNAME", input.preview_hostname),
                 envValue("PRODUCTION_URL", input.production_url),
                 envValue("PREVIEW_URL", input.preview_url),
-                envValue("TEMPLATE_REPOSITORY", input.template_repository),
+                envValue("APP_SOURCE_REPOSITORY", input.source_repository),
                 envValue("TEMPLATE_PROD_REF", input.template_prod_ref),
                 envValue("TEMPLATE_PREVIEW_REF", input.template_preview_ref),
                 envValue("TERRAFORM_PROJECT", input.terraform_project),
                 envValue("TFE_PROJECT", input.terraform_project),
+                envValue("APP_TF_CLOUD_ORGANIZATION", input.terraform_cloud_organization),
+                envValue("APP_TFE_AGENT_POOL_ID", input.tfe_agent_pool_id),
                 envValue("KEYCLOAK_AUTH_HOST", input.keycloak_auth_host),
                 envValue("APP_AUTH_GATEWAY_URL", input.app_auth_gateway_url),
                 envValue("APP_AUTH_GATEWAY_ADMIN_URL", input.app_auth_gateway_admin_url),
@@ -762,13 +795,18 @@ async function createDeployJob(app: PlatformApp, operation: PlatformOperation, i
                 envValue("PLATFORM_DEPLOY_CALLBACK_URL", callbackBaseUrl),
                 envValue("GITHUB_API_BASE", input.github_api_base),
                 envValue("GITHUB_REPOSITORY", input.github_repository),
-                envValue("GITHUB_WORKFLOW", input.github_workflow),
+                envValue("GITHUB_INITIAL_WORKFLOW", input.github_initial_workflow),
                 envValue("GITHUB_REF", input.github_ref),
+                envValue("TFE_API_BASE", input.tfe_api_base),
                 envValue("GITHUB_REPOSITORY_VARIABLES_JSON", JSON.stringify(input.github_repository_variables ?? {})),
-                envValue("GITHUB_WORKFLOW_TIMEOUT_SECONDS", input.github_workflow_timeout_seconds),
-                envValue("GITHUB_WORKFLOW_POLL_SECONDS", input.github_workflow_poll_seconds),
+                envValue("TERRAFORM_RUN_TIMEOUT_SECONDS", input.terraform_run_timeout_seconds),
+                envValue("TERRAFORM_RUN_POLL_SECONDS", input.terraform_run_poll_seconds),
+                envValue("OPENOBSERVE_BROWSER_RUM_VERSION", input.openobserve_browser_rum_version),
                 secretEnv("PLATFORM_DEPLOY_SERVICE_TOKEN", "service-token"),
                 secretEnv("GITHUB_TOKEN", "github-token"),
+                secretEnv("TF_API_TOKEN", "tfe-token"),
+                secretEnv("TF_CLOUD_ORGANIZATION", "tfe-organization"),
+                secretEnv("TFE_AGENT_POOL_ID", "tfe-agent-pool-id"),
                 secretEnv("CLOUDFLARE_API_TOKEN", "cloudflare-api-token"),
                 secretEnv("CLOUDFLARE_ACCOUNT_ID", "cloudflare-account-id"),
                 secretEnv("CLOUDFLARE_ZONE_ID", "cloudflare-zone-id"),
@@ -826,9 +864,9 @@ function operationTypeFromBody(body: JsonRecord, fallback: OperationType): Opera
 
 async function queueOperation(appId: string, operationType: OperationType): Promise<JsonRecord> {
   const app = await getApp(appId);
-  const templateRepo = templateRepository(app);
-  if (!templateRepo) {
-    throw Object.assign(new Error("App template repository is not configured."), { status: 422 });
+  const appSourceRepo = sourceRepository(app);
+  if (!appSourceRepo) {
+    throw Object.assign(new Error("App source repository is not configured."), { status: 422 });
   }
   const executionProvider = deploymentStrategy(app);
   if (executionProvider === "terraform_cloud") {

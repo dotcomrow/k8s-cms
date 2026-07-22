@@ -30,11 +30,13 @@ The platform deploy backend lives in `platform-deploy-service/` and is deployed 
 For `deployment_strategy: terraform_cloud`, the service creates a Kubernetes runner Job that:
 
 - creates a `platform_app_operations` row and marks the app queued/deploying
+- checks out the configured app repository/ref, matching the source checkout that the old GitHub workflow performed
+- builds the Cloudflare/OpenNext worker artifacts in the runner
 - upserts GitHub repository variables including `TFE_PROJECT`, `KEYCLOAK_REALM`, `DIRECTUS_CONTENT_SITE_KEY`, app URLs, auth gateway URLs, and base domain
-- dispatches `initial-deploy.yml` for first deploys and `terraform-deploy.yml` for updates on the configured prod ref
-- polls the GitHub Actions run and writes the run id/url plus final status back to Directus
+- creates or updates Terraform Cloud workspaces, variables, uploaded configuration versions, and runs
+- polls the Terraform Cloud run and writes the run id/url plus final status back to Directus
 
-The runner requires `platform-deploy-secrets.github-token`. The bootstrap Job copies it from `secret/platform-deploy-service` (`github_token` or `github-token`) or `secret/platform-deploy-service/github` (`token`) when present. That token must be able to read workflows, enable workflows, dispatch workflows, and create/update repository Actions variables for the target app repos. Existing GitHub workflow secrets such as `TFE_TOKEN` and `AUTH_GATEWAY_ADMIN_TOKEN` remain in the app repository or organization; the platform deploy service does not copy those secrets.
+The runner requires `platform-deploy-secrets.github-token` and `platform-deploy-secrets.tfe-token`. The bootstrap Job copies the GitHub token from `secret/platform-deploy-service` (`github_token` or `github-token`) or `secret/platform-deploy-service/github` (`token`) when present. It also copies Terraform Cloud values from `secret/platform-deploy-service` keys `tfe_token`/`tfe-token`/`tf_api_token`, `tfe_agent_pool_id`/`tfe-agent-pool-id`, and `tfe_organization`/`tfe-organization`/`tf_cloud_organization`. The GitHub token must be able to read the target app repo, create releases, disable the initial workflow after a first deploy, and create/update repository Actions variables. Terraform Cloud credentials and runtime secrets stay in `platform-deploy-secrets`; app repository workflow secrets are not used by the k8s runner.
 
 ## Docs
 
