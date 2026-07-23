@@ -834,6 +834,38 @@ data:
         "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
     fi
     
+    # Demote one-off random admins created by older deployment startup logic.
+    echo "🧹 Demoting generated startup admin users..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       DO \$\$ \
+       DECLARE \
+         _set_list TEXT := 'role = NULL'; \
+         _demoted_count INTEGER := 0; \
+       BEGIN \
+         IF to_regclass('directus.directus_users') IS NULL OR to_regclass('directus.directus_roles') IS NULL THEN \
+           RETURN; \
+         END IF; \
+         IF NOT EXISTS (SELECT 1 FROM directus_roles WHERE LOWER(name)=LOWER('Administrator')) THEN \
+           RETURN; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='status') THEN \
+           _set_list := _set_list || ', status = ''suspended'''; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='token') THEN \
+           _set_list := _set_list || ', token = NULL'; \
+         END IF; \
+         EXECUTE format( \
+           'UPDATE directus_users SET %s WHERE role IN (SELECT id FROM directus_roles WHERE LOWER(name)=LOWER(%L)) AND email ~ %L', \
+           _set_list, \
+           'Administrator', \
+           '^admin-[a-z0-9]{8}@example[.]com$' \
+         ); \
+         GET DIAGNOSTICS _demoted_count = ROW_COUNT; \
+         RAISE NOTICE 'Demoted % generated startup admin users', _demoted_count; \
+       END \
+       \$\$;"
+
     # 5) Static tokens are provisioned via service users (directus_users.token) in the site bootstrap below.
     echo "🔐 Provisioning Directus static tokens via site service users..."
     

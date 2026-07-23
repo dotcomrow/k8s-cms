@@ -1450,13 +1450,14 @@ spec:
             fi
             . /vault-secrets/redis-creds.env
 
-            # Generate random admin credentials for initial setup (not used for actual login)
-            RANDOM_ADMIN_EMAIL="admin-$(tr -dc 'a-z0-9' < /dev/urandom | head -c 8)@example.com"
-            RANDOM_ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9@#%^*+=_-' < /dev/urandom | head -c 32)"
+            if [ -z "${ADMIN_EMAIL:-}" ] || [ -z "${ADMIN_PASSWORD:-}" ] \
+              || [ "${ADMIN_EMAIL}" = "null" ] || [ "${ADMIN_PASSWORD}" = "null" ]; then
+              echo "❌ Vault admin credentials missing from /vault-secrets/app-keys.env"
+              exit 1
+            fi
             
             # Export required envs for Directus
-            export DB_USER DB_PASSWORD KEY SECRET REDIS_PASSWORD OPENAI_API_KEY
-            export ADMIN_EMAIL="$RANDOM_ADMIN_EMAIL" ADMIN_PASSWORD="$RANDOM_ADMIN_PASSWORD"
+            export DB_USER DB_PASSWORD KEY SECRET REDIS_PASSWORD OPENAI_API_KEY ADMIN_EMAIL ADMIN_PASSWORD
 
             # Work from the app dir so the CLI behaves consistently
             cd /directus
@@ -1692,6 +1693,7 @@ spec:
             NODE
             }
 
+            DIRECTUS_DB_INSTALLED_THIS_START="false"
             DIRECTUS_DB_STATE="$(_directus_db_state 2>/dev/null || echo error)"
             echo "ℹ️ Directus DB state: ${DIRECTUS_DB_STATE}"
 
@@ -1701,6 +1703,7 @@ spec:
               echo "📦 Running database install (idempotent)..."
               if CACHE_ENABLED=false RATE_LIMITER_ENABLED=false INIT_ADMIN_EMAIL="$ADMIN_EMAIL" INIT_ADMIN_PASSWORD="$ADMIN_PASSWORD" node cli.js database install >/tmp/install.log 2>&1; then
                 echo "✅ Database installation completed successfully"
+                DIRECTUS_DB_INSTALLED_THIS_START="true"
               else
                 if grep -q "Database is already installed" /tmp/install.log; then
                   echo "✅ Database already installed, proceeding..."
@@ -2253,24 +2256,11 @@ spec:
             export AUTH_GITHUB_ROLE_MAPPING
             echo "✅ AUTH_GITHUB_ROLE_MAPPING = $AUTH_GITHUB_ROLE_MAPPING"
 
-            # Ensure admin user exists to disable setup form
-            echo "👤 Ensuring admin user exists..."
-            admin_tmp="$(mktemp)"
-            export CACHE_ENABLED=false
-            export RATE_LIMITER_ENABLED=false
-            
-            # Try to create admin user (will fail if exists, which is fine)
-            if node cli.js users create --email "$ADMIN_EMAIL" --password "$ADMIN_PASSWORD" --role "$ADMIN_ROLE_ID" >"$admin_tmp" 2>&1; then
-              echo "✅ Admin user created successfully"
+            if [ "${DIRECTUS_DB_INSTALLED_THIS_START:-false}" = "true" ]; then
+              echo "👤 Initial admin user was created by database install (${ADMIN_EMAIL})."
             else
-              if grep -q "already exists\|duplicate\|unique constraint" "$admin_tmp"; then
-                echo "✅ Admin user already exists"
-              else
-                echo "⚠️ Admin user creation issue (continuing anyway):"
-                cat "$admin_tmp"
-              fi
+              echo "👤 Existing database detected; skipping admin user creation."
             fi
-            rm -f "$admin_tmp"
 
             echo "🚀 Starting Directus server..."
             # Reset cache settings for production mode

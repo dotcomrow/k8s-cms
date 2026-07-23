@@ -11852,6 +11852,10 @@ data:
     export KEY="{{ .Data.data.key }}"
     export SECRET="{{ .Data.data.secret }}"
     {{- end }}
+    {{ with secret "secret/data/directus/admin" -}}
+    export ADMIN_EMAIL="{{ .Data.data.email }}"
+    export ADMIN_PASSWORD="{{ .Data.data.password }}"
+    {{- end }}
   openai.tpl: |
     {{ with secret "secret/data/open_ai_key" -}}
     export OPENAI_API_KEY="{{ .Data.data.value }}"
