@@ -2430,7 +2430,7 @@ spec:
         - name: AUTH_PROVIDERS
           value: "github"
         - name: AUTH_DISABLE_DEFAULT
-          value: "true"
+          value: "false"
         - name: DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED
           value: "no"
         - name: DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED
