@@ -2221,6 +2221,116 @@ spec:
             export ADMIN_ROLE_ID
             export EDITOR_ROLE_ID
 
+            _ensure_bootstrap_admin_state() {
+              node - <<'NODE'
+            const fs = require("fs");
+            const path = require("path");
+
+            const pnpmRoot = "/directus/node_modules/.pnpm";
+            const knexEntry = fs
+              .readdirSync(pnpmRoot)
+              .find((name) => name.startsWith("knex@") && fs.existsSync(path.join(pnpmRoot, name, "node_modules", "knex")));
+
+            if (!knexEntry) {
+              console.error("knex not found");
+              process.exit(1);
+            }
+
+            const knex = require(path.join(pnpmRoot, knexEntry, "node_modules", "knex"));
+            const schema = process.env.DB_SCHEMA || "directus";
+            const db = knex({
+              client: "pg",
+              connection: {
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT || 5432),
+                user: process.env.DB_USER,
+                password: process.env.DB_PASSWORD,
+                database: process.env.DB_DATABASE
+              }
+            });
+
+            async function tableColumns(table) {
+              const rows = await db("information_schema.columns")
+                .select("column_name")
+                .where({ table_schema: schema, table_name: table });
+              return new Set(rows.map((row) => row.column_name));
+            }
+
+            async function run() {
+              const adminEmail = process.env.ADMIN_EMAIL;
+              const adminRoleId = process.env.ADMIN_ROLE_ID;
+              if (!adminEmail || !adminRoleId) {
+                throw new Error("ADMIN_EMAIL and ADMIN_ROLE_ID are required");
+              }
+
+              const cols = await tableColumns("directus_users");
+              const selectCols = ["id"];
+              if (cols.has("role")) selectCols.push("role");
+              if (cols.has("status")) selectCols.push("status");
+              const existing = await db("directus_users")
+                .withSchema(schema)
+                .select(selectCols)
+                .where({ email: adminEmail })
+                .first();
+
+              if (!existing) {
+                process.stdout.write("missing");
+                return;
+              }
+
+              const updates = {};
+              if (cols.has("role") && existing.role !== adminRoleId) updates.role = adminRoleId;
+              if (cols.has("status") && existing.status !== "active") updates.status = "active";
+
+              if (Object.keys(updates).length) {
+                await db("directus_users").withSchema(schema).where({ id: existing.id }).update(updates);
+                process.stdout.write("updated");
+              } else {
+                process.stdout.write("present");
+              }
+            }
+
+            run()
+              .catch((error) => {
+                console.error(error);
+                process.exit(1);
+              })
+              .finally(() => db.destroy());
+            NODE
+            }
+
+            echo "👤 Ensuring stable bootstrap admin account exists..."
+            bootstrap_admin_state="$(_ensure_bootstrap_admin_state 2>/tmp/bootstrap-admin-state.err || echo error)"
+            case "${bootstrap_admin_state}" in
+              present)
+                echo "✅ Stable bootstrap admin account present (${ADMIN_EMAIL})."
+                ;;
+              updated)
+                echo "✅ Stable bootstrap admin account role/status corrected (${ADMIN_EMAIL})."
+                ;;
+              missing)
+                admin_tmp="$(mktemp)"
+                export CACHE_ENABLED=false
+                export RATE_LIMITER_ENABLED=false
+                if node cli.js users create --email "$ADMIN_EMAIL" --password "$ADMIN_PASSWORD" --role "$ADMIN_ROLE_ID" >"$admin_tmp" 2>&1; then
+                  echo "✅ Stable bootstrap admin account recreated (${ADMIN_EMAIL})."
+                elif grep -q "already exists\|duplicate\|unique constraint" "$admin_tmp"; then
+                  echo "✅ Stable bootstrap admin account already exists (${ADMIN_EMAIL})."
+                else
+                  echo "❌ Failed to recreate stable bootstrap admin account:"
+                  cat "$admin_tmp"
+                  rm -f "$admin_tmp"
+                  exit 1
+                fi
+                rm -f "$admin_tmp"
+                ;;
+              *)
+                echo "❌ Failed to inspect stable bootstrap admin account:"
+                cat /tmp/bootstrap-admin-state.err
+                exit 1
+                ;;
+            esac
+
             # Build AUTH_GITHUB_ROLE_MAPPING purely in sh from TEAM_ROLE_MAP and the two IDs
             TEAM_ROLE_MAP="${TEAM_ROLE_MAP:-github:dotcomrow:k8s_directus_console_admins=Administrator,github:dotcomrow:k8s_directus_console_editors=Editor}"
 
@@ -2259,7 +2369,7 @@ spec:
             if [ "${DIRECTUS_DB_INSTALLED_THIS_START:-false}" = "true" ]; then
               echo "👤 Initial admin user was created by database install (${ADMIN_EMAIL})."
             else
-              echo "👤 Existing database detected; skipping admin user creation."
+              echo "👤 Existing database detected; stable bootstrap admin check completed."
             fi
 
             echo "🚀 Starting Directus server..."

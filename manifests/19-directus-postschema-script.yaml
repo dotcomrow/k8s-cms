@@ -834,8 +834,9 @@ data:
         "SET search_path TO directus, public; INSERT INTO schema_patch_log (patch_key) VALUES ('${PATCH_KEY}') ON CONFLICT (patch_key) DO NOTHING;"
     fi
     
-    # Demote one-off random admins created by older deployment startup logic.
-    echo "🧹 Demoting generated startup admin users..."
+    # Quarantine one-off random admins created by older deployment startup logic.
+    # A later cleanup deletes them after admin-capable service users exist.
+    echo "🧹 Quarantining generated startup admin users..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
        DO \$\$ \
@@ -862,7 +863,7 @@ data:
            '^admin-[a-z0-9]{8}@example[.]com$' \
          ); \
          GET DIAGNOSTICS _demoted_count = ROW_COUNT; \
-         RAISE NOTICE 'Demoted % generated startup admin users', _demoted_count; \
+         RAISE NOTICE 'Quarantined % generated startup admin users', _demoted_count; \
        END \
        \$\$;"
 
@@ -8484,6 +8485,8 @@ data:
         # Fallback for environments that still allow local email/password auth.
         if [ "${_directus_api_enabled}" != "1" ]; then
           ADMIN_CREDS_CODE="$(curl -sS -o /tmp/directus-admin-creds.json -w '%{http_code}' \
+            --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS}" \
+            --max-time "${DIRECTUS_API_MAX_TIME_SECONDS}" \
             -H "X-Vault-Token: ${VAULT_TOKEN}" \
             "${VAULT_ADDR}/v1/secret/data/directus/admin" || true)"
           if [ "${ADMIN_CREDS_CODE}" = "200" ]; then
@@ -8493,6 +8496,8 @@ data:
               && [ "${DIRECTUS_ADMIN_EMAIL}" != "null" ] && [ "${DIRECTUS_ADMIN_PASSWORD}" != "null" ]; then
               LOGIN_PAYLOAD="$(jq -nc --arg email "${DIRECTUS_ADMIN_EMAIL}" --arg password "${DIRECTUS_ADMIN_PASSWORD}" '{email:$email,password:$password}')"
               LOGIN_CODE="$(curl -sS -o /tmp/directus-login.json -w '%{http_code}' -X POST \
+                --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS}" \
+                --max-time "${DIRECTUS_API_MAX_TIME_SECONDS}" \
                 -H "Content-Type: application/json" \
                 -d "${LOGIN_PAYLOAD}" \
                 "${DIRECTUS_API_BASE}/auth/login" || true)"
@@ -9785,6 +9790,114 @@ data:
     else
       echo "⚠️ directus_users.token column not found; cannot provision OpenAPI sync token."
     fi
+
+    echo "🧹 Deleting generated startup admin users after service admin reconciliation..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       DO \$\$ \
+       DECLARE \
+         _provider_guard TEXT := ''; \
+         _status_guard TEXT := ''; \
+         _set_list TEXT := ''; \
+         _admin_service_count INTEGER := 0; \
+         _target_count INTEGER := 0; \
+         _deleted_count INTEGER := 0; \
+         _quarantined_count INTEGER := 0; \
+         _access_deleted_count INTEGER := 0; \
+         _fk_updated_count INTEGER := 0; \
+         _updated_count INTEGER := 0; \
+         _fk RECORD; \
+       BEGIN \
+         IF to_regclass('directus.directus_users') IS NULL OR to_regclass('directus.directus_roles') IS NULL THEN \
+           RETURN; \
+         END IF; \
+         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='role') THEN \
+           RAISE WARNING 'directus_users.role missing; skipping generated startup admin deletion'; \
+           RETURN; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='status') THEN \
+           _status_guard := ' AND COALESCE(u.status, '''') = ''active'''; \
+         END IF; \
+         EXECUTE format( \
+           'SELECT COUNT(*) FROM directus_users u JOIN directus_roles r ON r.id = u.role WHERE LOWER(r.name)=LOWER(%L) AND u.email IN (%L,%L)%s', \
+           'Administrator', \
+           'svc-flow-admin@svc.local', \
+           'svc-openapi-admin@svc.local', \
+           _status_guard \
+         ) INTO _admin_service_count; \
+         IF COALESCE(_admin_service_count, 0) < 1 THEN \
+           RAISE WARNING 'No active admin-capable service user found; skipping generated startup admin deletion'; \
+           RETURN; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='provider') THEN \
+           _provider_guard := ' AND COALESCE(provider, '''') <> ''github'''; \
+         END IF; \
+         CREATE TEMP TABLE _directus_bootstrap_admin_cleanup_targets ON COMMIT DROP AS SELECT id FROM directus_users WHERE false; \
+         EXECUTE format( \
+           'INSERT INTO _directus_bootstrap_admin_cleanup_targets SELECT id FROM directus_users WHERE email ~ %L AND email NOT LIKE %L%s', \
+           '^admin-[a-z0-9]{8}@example[.]com$', \
+           'svc-%@svc.local', \
+           _provider_guard \
+         ); \
+         SELECT COUNT(*) INTO _target_count FROM _directus_bootstrap_admin_cleanup_targets; \
+         IF COALESCE(_target_count, 0) < 1 THEN \
+           RAISE NOTICE 'No generated startup admin users matched cleanup criteria'; \
+           RETURN; \
+         END IF; \
+         IF to_regclass('directus.directus_access') IS NOT NULL \
+           AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_access' AND column_name='user') THEN \
+           DELETE FROM directus_access da USING _directus_bootstrap_admin_cleanup_targets t WHERE da.\"user\" = t.id; \
+           GET DIAGNOSTICS _access_deleted_count = ROW_COUNT; \
+         END IF; \
+         FOR _fk IN \
+           SELECT ns.nspname AS table_schema, cls.relname AS table_name, att.attname AS column_name \
+             FROM pg_constraint con \
+             JOIN pg_class cls ON cls.oid = con.conrelid \
+             JOIN pg_namespace ns ON ns.oid = cls.relnamespace \
+             JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1] \
+             JOIN pg_class refcls ON refcls.oid = con.confrelid \
+             JOIN pg_namespace refns ON refns.oid = refcls.relnamespace \
+             JOIN pg_attribute refatt ON refatt.attrelid = con.confrelid AND refatt.attnum = con.confkey[1] \
+             JOIN information_schema.columns cols \
+               ON cols.table_schema = ns.nspname \
+              AND cols.table_name = cls.relname \
+              AND cols.column_name = att.attname \
+            WHERE con.contype = 'f' \
+              AND refns.nspname = 'directus' \
+              AND refcls.relname = 'directus_users' \
+              AND refatt.attname = 'id' \
+              AND array_length(con.conkey, 1) = 1 \
+              AND array_length(con.confkey, 1) = 1 \
+              AND cols.is_nullable = 'YES' \
+         LOOP \
+           EXECUTE format('UPDATE %I.%I SET %I = NULL WHERE %I IN (SELECT id FROM _directus_bootstrap_admin_cleanup_targets)', _fk.table_schema, _fk.table_name, _fk.column_name, _fk.column_name); \
+           GET DIAGNOSTICS _updated_count = ROW_COUNT; \
+           _fk_updated_count := _fk_updated_count + COALESCE(_updated_count, 0); \
+         END LOOP; \
+         BEGIN \
+           DELETE FROM directus_users u USING _directus_bootstrap_admin_cleanup_targets t WHERE u.id = t.id; \
+           GET DIAGNOSTICS _deleted_count = ROW_COUNT; \
+           RAISE NOTICE 'Deleted % generated startup admin users; removed % direct access rows; nulled % nullable FK references', _deleted_count, _access_deleted_count, _fk_updated_count; \
+         EXCEPTION WHEN foreign_key_violation THEN \
+           IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='role') THEN \
+             _set_list := 'role = NULL'; \
+           END IF; \
+           IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='status') THEN \
+             IF _set_list <> '' THEN _set_list := _set_list || ', '; END IF; \
+             _set_list := _set_list || 'status = ''suspended'''; \
+           END IF; \
+           IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='directus_users' AND column_name='token') THEN \
+             IF _set_list <> '' THEN _set_list := _set_list || ', '; END IF; \
+             _set_list := _set_list || 'token = NULL'; \
+           END IF; \
+           IF _set_list <> '' THEN \
+             EXECUTE format('UPDATE directus_users SET %s WHERE id IN (SELECT id FROM _directus_bootstrap_admin_cleanup_targets)', _set_list); \
+             GET DIAGNOSTICS _quarantined_count = ROW_COUNT; \
+           END IF; \
+           RAISE WARNING 'Could not delete all generated startup admin users due to remaining FK references; quarantined % users instead: %', _quarantined_count, SQLERRM; \
+         END; \
+       END \
+       \$\$;"
     
     if [ "${DIRECTUS_POSTSCHEMA_SETTINGS_SEED_ENABLED}" = "true" ] || [ "${DIRECTUS_POSTSCHEMA_DATA_MUTATIONS_ENABLED}" = "true" ] || [ "${DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED}" = "true" ]; then
       if command -v run_directus_settings_mutations >/dev/null 2>&1; then
