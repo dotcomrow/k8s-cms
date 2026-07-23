@@ -2,7 +2,7 @@ import express, { NextFunction, Request, Response } from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Agent, Dispatcher, request as undiciRequest, setGlobalDispatcher } from "undici";
 import { z } from "zod";
@@ -25,18 +25,13 @@ const envSchema = z.object({
   VAULT_TOKEN_FILE: z.string().default("/vault-secrets/vault-token"),
   TOKEN_CACHE_SECONDS: z.string().default("300"),
   OPENAPI_SERVER_URL: z.string().default("http://platform-deploy-service.directus.svc.cluster.local:8080"),
-  KUBERNETES_NAMESPACE: z.string().default(""),
-  KUBERNETES_TOKEN_FILE: z.string().default("/var/run/secrets/kubernetes.io/serviceaccount/token"),
-  KUBERNETES_CA_FILE: z.string().default("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
-  KUBERNETES_NAMESPACE_FILE: z.string().default("/var/run/secrets/kubernetes.io/serviceaccount/namespace"),
-  KUBERNETES_API_URL: z.string().default("https://kubernetes.default.svc"),
-  DEPLOY_RUNNER_IMAGE: z.string().default("ghcr.io/dotcomrow/platform-app-deploy-runner:latest"),
-  DEPLOY_RUNNER_SERVICE_ACCOUNT: z.string().default("platform-deploy-runner"),
-  DEPLOY_SECRET_NAME: z.string().default("platform-deploy-secrets"),
-  DEPLOY_STATE_PVC_NAME: z.string().default("platform-deploy-state"),
-  DEPLOY_JOB_TTL_SECONDS: z.string().default("86400"),
-  DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS: z.string().default("7200"),
-  DEPLOY_CALLBACK_BASE_URL: z.string().default("http://platform-deploy-service.directus.svc.cluster.local:8080"),
+  FLINK_REST_URL: z.string().default("http://flink-rest.kafka.svc.cluster.local:8081"),
+  FLINK_JAR_NAME: z.string().default("platform-deploy-flink-job.jar"),
+  FLINK_ENTRY_CLASS: z.string().default("com.suncoast.platform.deploy.flink.PlatformDeployJob"),
+  FLINK_PARALLELISM: z.string().default("1"),
+  PLATFORM_DEPLOY_PREPARED_TOPIC: z.string().default("batch.platform.deploy.prepared.v1"),
+  PLATFORM_DEPLOY_SERVICE_URL: z.string().default("http://platform-deploy-service.directus.svc.cluster.local:8080"),
+  OPERATION_CALLBACK_TOKEN_TTL_SECONDS: z.string().default("21600"),
   GITHUB_API_BASE: z.string().default("https://api.github.com"),
   TFE_API_BASE: z.string().default("https://app.terraform.io/api/v2"),
   DEFAULT_INITIAL_DEPLOY_WORKFLOW: z.string().default("initial-deploy.yml"),
@@ -59,9 +54,9 @@ const DIRECTUS_HEALTH_PATH = env.DIRECTUS_HEALTH_PATH.startsWith("/")
   : `/${env.DIRECTUS_HEALTH_PATH}`;
 const VAULT_ADDR = env.VAULT_ADDR.replace(/\/+$/, "");
 const TOKEN_CACHE_SECONDS = Math.max(5, Number(env.TOKEN_CACHE_SECONDS) || 300);
-const KUBERNETES_API_URL = env.KUBERNETES_API_URL.replace(/\/+$/, "");
-const DEPLOY_JOB_TTL_SECONDS = Math.max(60, Number(env.DEPLOY_JOB_TTL_SECONDS) || 86_400);
-const DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS = Math.max(300, Number(env.DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS) || 7200);
+const FLINK_REST_URL = env.FLINK_REST_URL.replace(/\/+$/, "");
+const FLINK_PARALLELISM = Math.max(1, Number(env.FLINK_PARALLELISM) || 1);
+const OPERATION_CALLBACK_TOKEN_TTL_SECONDS = Math.max(300, Number(env.OPERATION_CALLBACK_TOKEN_TTL_SECONDS) || 21_600);
 const GITHUB_API_BASE = env.GITHUB_API_BASE.replace(/\/+$/, "");
 const TFE_API_BASE = env.TFE_API_BASE.replace(/\/+$/, "");
 const TERRAFORM_RUN_TIMEOUT_SECONDS = Math.max(300, Number(env.TERRAFORM_RUN_TIMEOUT_SECONDS) || 7200);
@@ -114,9 +109,10 @@ type PlatformApp = {
 
 type PlatformOperation = {
   id: string;
-  app_id: string;
+  app_id: string | PlatformApp;
   operation_type: OperationType;
   status: OperationStatus;
+  result_json?: JsonRecord | null;
 };
 
 type VaultCacheEntry = {
@@ -125,7 +121,6 @@ type VaultCacheEntry = {
 };
 
 const vaultCache = new Map<string, VaultCacheEntry>();
-let kubernetesDispatcher: Agent | null = null;
 
 setGlobalDispatcher(
   new Agent({
@@ -154,6 +149,29 @@ function asBoolean(value: unknown, fallback = false): boolean {
 
 function truncate(value: string, max = 1200): string {
   return value.length <= max ? value : `${value.slice(0, max)}...`;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function bearerToken(req: Request): string {
+  const authorization = asString(req.header("authorization"));
+  return authorization.toLowerCase().startsWith("bearer ") ? authorization.slice(7).trim() : "";
+}
+
+function callbackTokenExpiresAt(): string {
+  return new Date(Date.now() + OPERATION_CALLBACK_TOKEN_TTL_SECONDS * 1000).toISOString();
+}
+
+function operationPayloadBase64(payload: JsonRecord): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
 function extractErrorMessage(payload: unknown, fallback: string): string {
@@ -344,6 +362,17 @@ async function createOperation(
   });
   if (!response.data?.id) {
     throw new Error("Directus did not return a platform operation id");
+  }
+  return response.data;
+}
+
+async function getOperation(operationId: string): Promise<PlatformOperation> {
+  const fields = "id,app_id,operation_type,status,result_json";
+  const response = await directusJson<DirectusItemResponse<PlatformOperation>>(
+    `/items/platform_app_operations/${encodeURIComponent(operationId)}${queryString({ fields })}`
+  );
+  if (!response.data?.id) {
+    throw Object.assign(new Error(`Platform operation ${operationId} was not found`), { status: 404 });
   }
   return response.data;
 }
@@ -620,6 +649,10 @@ function operationSequence(operationType: OperationType): string {
   return "create";
 }
 
+function appIdFromOperation(operation: PlatformOperation): string {
+  return typeof operation.app_id === "string" ? operation.app_id : asString(operation.app_id?.id);
+}
+
 function buildRunnerInput(app: PlatformApp, operationType: OperationType, operationId: string): JsonRecord {
   const sequence = operationSequence(operationType);
   const repository = githubRepository(app);
@@ -662,185 +695,68 @@ function buildRunnerInput(app: PlatformApp, operationType: OperationType, operat
   };
 }
 
-async function kubernetesNamespace(): Promise<string> {
-  if (env.KUBERNETES_NAMESPACE) {
-    return env.KUBERNETES_NAMESPACE;
+async function resolveFlinkJarId(): Promise<string> {
+  const result = await httpJson<JsonRecord>(`${FLINK_REST_URL}/jars`, { timeoutMs: REQUEST_TIMEOUT_MS });
+  if (result.statusCode >= 400) {
+    throw new Error(`Flink jar list failed: ${result.statusCode} ${truncate(result.text, 1000)}`);
   }
-  return (await readFile(env.KUBERNETES_NAMESPACE_FILE, "utf8")).trim();
-}
 
-async function kubernetesToken(): Promise<string> {
-  return (await readFile(env.KUBERNETES_TOKEN_FILE, "utf8")).trim();
-}
+  const payload = asRecord(result.payload) ?? {};
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const candidates = files
+    .map((file) => asRecord(file))
+    .filter((file): file is JsonRecord => Boolean(file))
+    .filter((file) => {
+      const id = asString(file.id);
+      const name = asString(file.name);
+      return id.endsWith(env.FLINK_JAR_NAME) || name.endsWith(env.FLINK_JAR_NAME);
+    })
+    .sort((left, right) => Number(right.uploaded ?? 0) - Number(left.uploaded ?? 0));
 
-async function kubernetesAgent(): Promise<Agent> {
-  if (kubernetesDispatcher) {
-    return kubernetesDispatcher;
+  const jarId = asString(candidates[0]?.id);
+  if (!jarId) {
+    throw new Error(`Flink jar ${env.FLINK_JAR_NAME} is not uploaded.`);
   }
-  const ca = await readFile(env.KUBERNETES_CA_FILE, "utf8");
-  kubernetesDispatcher = new Agent({
-    connect: {
-      ca
-    }
-  });
-  return kubernetesDispatcher;
+  return jarId;
 }
 
-async function kubernetesJson<T>(path: string, init: { method?: Dispatcher.HttpMethod; body?: unknown } = {}): Promise<T> {
-  const token = await kubernetesToken();
-  const result = await httpJson<T>(`${KUBERNETES_API_URL}${path}`, {
-    method: init.method ?? "GET",
-    body: init.body,
+async function submitFlinkPrepareJob(
+  app: PlatformApp,
+  operation: PlatformOperation,
+  input: JsonRecord,
+  operationToken: string
+): Promise<{ jarId: string; jobId: string }> {
+  const jarId = await resolveFlinkJarId();
+  const args = [
+    "--operation-id", operation.id,
+    "--app-id", app.id,
+    "--operation-type", operation.operation_type,
+    "--operation-token", operationToken,
+    "--operation-payload-base64", operationPayloadBase64(input),
+    "--prepared-topic", env.PLATFORM_DEPLOY_PREPARED_TOPIC,
+    "--platform-deploy-service-url", env.PLATFORM_DEPLOY_SERVICE_URL,
+    "--source", "platform-deploy-service"
+  ];
+
+  const result = await httpJson<JsonRecord>(`${FLINK_REST_URL}/jars/${encodeURIComponent(jarId)}/run`, {
+    method: "POST",
     timeoutMs: REQUEST_TIMEOUT_MS,
-    dispatcher: await kubernetesAgent(),
-    headers: {
-      authorization: `Bearer ${token}`
+    body: {
+      entryClass: env.FLINK_ENTRY_CLASS,
+      parallelism: FLINK_PARALLELISM,
+      programArgsList: args
     }
   });
   if (result.statusCode >= 400) {
-    throw new Error(`Kubernetes ${init.method ?? "GET"} ${path} failed: ${result.statusCode} ${truncate(result.text, 1000)}`);
+    throw new Error(`Flink prepare job submission failed: ${result.statusCode} ${truncate(result.text, 1000)}`);
   }
-  return result.payload;
-}
 
-function safeJobName(appKey: string, operationId: string): string {
-  const suffix = operationId.replace(/-/g, "").slice(0, 10);
-  const base = `platform-app-${appKey}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `${base.slice(0, Math.max(1, 52 - suffix.length))}-${suffix}`;
-}
-
-function envValue(name: string, value: unknown): JsonRecord {
-  return { name, value: String(value ?? "") };
-}
-
-function secretEnv(name: string, key: string): JsonRecord {
-  return {
-    name,
-    valueFrom: {
-      secretKeyRef: {
-        name: env.DEPLOY_SECRET_NAME,
-        key,
-        optional: true
-      }
-    }
-  };
-}
-
-async function createDeployJob(app: PlatformApp, operation: PlatformOperation, input: JsonRecord): Promise<string> {
-  const namespace = await kubernetesNamespace();
-  const jobName = safeJobName(app.app_key, operation.id);
-  const callbackBaseUrl = env.DEPLOY_CALLBACK_BASE_URL.replace(/\/+$/, "");
-
-  const job = {
-    apiVersion: "batch/v1",
-    kind: "Job",
-    metadata: {
-      name: jobName,
-      namespace,
-      labels: {
-        app: "platform-app-deploy-runner",
-        "platform.suncoast.systems/app-id": app.id,
-        "platform.suncoast.systems/operation-id": operation.id
-      }
-    },
-    spec: {
-      backoffLimit: 0,
-      ttlSecondsAfterFinished: DEPLOY_JOB_TTL_SECONDS,
-      activeDeadlineSeconds: DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS,
-      template: {
-        metadata: {
-          labels: {
-            app: "platform-app-deploy-runner",
-            "platform.suncoast.systems/app-id": app.id,
-            "platform.suncoast.systems/operation-id": operation.id
-          }
-        },
-        spec: {
-          serviceAccountName: env.DEPLOY_RUNNER_SERVICE_ACCOUNT,
-          restartPolicy: "Never",
-          containers: [
-            {
-              name: "runner",
-              image: env.DEPLOY_RUNNER_IMAGE,
-              imagePullPolicy: "Always",
-              command: ["/bin/sh", "/runner/run.sh"],
-              env: [
-                envValue("APP_ID", app.id),
-                envValue("APP_KEY", app.app_key),
-                envValue("OPERATION_ID", operation.id),
-                envValue("OPERATION_TYPE", operation.operation_type),
-                envValue("DEPLOY_SEQUENCE", input.sequence),
-                envValue("DEPLOY_EXECUTION_PROVIDER", input.deployment_strategy),
-                envValue("SITE_KEY", app.site_key),
-                envValue("KEYCLOAK_REALM", app.keycloak_realm),
-                envValue("DOMAIN", input.domain),
-                envValue("PRODUCTION_HOSTNAME", input.production_hostname),
-                envValue("PREVIEW_HOSTNAME", input.preview_hostname),
-                envValue("PRODUCTION_URL", input.production_url),
-                envValue("PREVIEW_URL", input.preview_url),
-                envValue("APP_SOURCE_REPOSITORY", input.source_repository),
-                envValue("TEMPLATE_PROD_REF", input.template_prod_ref),
-                envValue("TEMPLATE_PREVIEW_REF", input.template_preview_ref),
-                envValue("TERRAFORM_PROJECT", input.terraform_project),
-                envValue("TFE_PROJECT", input.terraform_project),
-                envValue("APP_TF_CLOUD_ORGANIZATION", input.terraform_cloud_organization),
-                envValue("APP_TFE_AGENT_POOL_ID", input.tfe_agent_pool_id),
-                envValue("KEYCLOAK_AUTH_HOST", input.keycloak_auth_host),
-                envValue("APP_AUTH_GATEWAY_URL", input.app_auth_gateway_url),
-                envValue("APP_AUTH_GATEWAY_ADMIN_URL", input.app_auth_gateway_admin_url),
-                envValue("APP_AUTH_APP_SLUG_PRODUCTION", input.app_auth_slug_production),
-                envValue("APP_AUTH_APP_SLUG_PREVIEW", input.app_auth_slug_preview),
-                envValue("TERRAFORM_WORKSPACE_PRODUCTION", input.terraform_workspace_production),
-                envValue("TERRAFORM_WORKSPACE_PREVIEW", input.terraform_workspace_preview),
-                envValue("PLATFORM_DEPLOY_CALLBACK_URL", callbackBaseUrl),
-                envValue("GITHUB_API_BASE", input.github_api_base),
-                envValue("GITHUB_REPOSITORY", input.github_repository),
-                envValue("GITHUB_INITIAL_WORKFLOW", input.github_initial_workflow),
-                envValue("GITHUB_REF", input.github_ref),
-                envValue("TFE_API_BASE", input.tfe_api_base),
-                envValue("GITHUB_REPOSITORY_VARIABLES_JSON", JSON.stringify(input.github_repository_variables ?? {})),
-                envValue("TERRAFORM_RUN_TIMEOUT_SECONDS", input.terraform_run_timeout_seconds),
-                envValue("TERRAFORM_RUN_POLL_SECONDS", input.terraform_run_poll_seconds),
-                envValue("OPENOBSERVE_BROWSER_RUM_VERSION", input.openobserve_browser_rum_version),
-                secretEnv("PLATFORM_DEPLOY_SERVICE_TOKEN", "service-token"),
-                secretEnv("GITHUB_TOKEN", "github-token"),
-                secretEnv("TF_API_TOKEN", "tfe-token"),
-                secretEnv("TF_CLOUD_ORGANIZATION", "tfe-organization"),
-                secretEnv("TFE_AGENT_POOL_ID", "tfe-agent-pool-id"),
-                secretEnv("CLOUDFLARE_API_TOKEN", "cloudflare-api-token"),
-                secretEnv("CLOUDFLARE_ACCOUNT_ID", "cloudflare-account-id"),
-                secretEnv("CLOUDFLARE_ZONE_ID", "cloudflare-zone-id"),
-                secretEnv("DIRECTUS_GRAPHQL_ENDPOINT", "directus-graphql-endpoint"),
-                secretEnv("APP_AUTH_GATEWAY_ADMIN_TOKEN", "app-auth-gateway-admin-token"),
-                secretEnv("VAULT_ADDR", "vault-addr"),
-                secretEnv("VAULT_TOKEN", "vault-token")
-              ],
-              volumeMounts: [
-                { name: "runner-script", mountPath: "/runner", readOnly: true },
-                { name: "deploy-state", mountPath: "/state" },
-                { name: "workspace", mountPath: "/workspace" }
-              ],
-              resources: {
-                requests: { cpu: "250m", memory: "768Mi" },
-                limits: { cpu: "2", memory: "3Gi" }
-              }
-            }
-          ],
-          volumes: [
-            { name: "runner-script", configMap: { name: "platform-app-deploy-runner", defaultMode: 493 } },
-            { name: "deploy-state", persistentVolumeClaim: { claimName: env.DEPLOY_STATE_PVC_NAME } },
-            { name: "workspace", emptyDir: {} }
-          ]
-        }
-      }
-    }
-  };
-
-  await kubernetesJson(`/apis/batch/v1/namespaces/${encodeURIComponent(namespace)}/jobs`, {
-    method: "POST",
-    body: job
-  });
-  return jobName;
+  const payload = asRecord(result.payload) ?? {};
+  const jobId = asString(payload.jobid) || asString(payload.jobId);
+  if (!jobId) {
+    throw new Error(`Flink prepare job submission did not return a job id: ${truncate(result.text, 1000)}`);
+  }
+  return { jarId, jobId };
 }
 
 async function enforceInternalAuth(req: Request): Promise<void> {
@@ -849,9 +765,33 @@ async function enforceInternalAuth(req: Request): Promise<void> {
     return;
   }
   const actual = asString(req.header("authorization"));
-  if (actual !== `Bearer ${expected}`) {
+  if (!safeEqual(actual, `Bearer ${expected}`)) {
     throw Object.assign(new Error("Unauthorized"), { status: 401 });
   }
+}
+
+async function enforceInternalOrOperationAuth(req: Request, operationId: string): Promise<PlatformOperation> {
+  const operation = await getOperation(operationId);
+  const expectedInternal = await internalToken();
+  const authorization = asString(req.header("authorization"));
+  if (!expectedInternal || safeEqual(authorization, `Bearer ${expectedInternal}`)) {
+    return operation;
+  }
+
+  const token = bearerToken(req);
+  const resultJson = asRecord(operation.result_json) ?? {};
+  const expectedTokenHash = asString(resultJson.prepare_token_sha256);
+  const expiresAt = asString(resultJson.prepare_token_expires_at);
+  if (
+    token
+    && expectedTokenHash
+    && (!expiresAt || Date.parse(expiresAt) > Date.now())
+    && safeEqual(sha256(token), expectedTokenHash)
+  ) {
+    return operation;
+  }
+
+  throw Object.assign(new Error("Unauthorized"), { status: 401 });
 }
 
 function operationTypeFromBody(body: JsonRecord, fallback: OperationType): OperationType {
@@ -890,14 +830,35 @@ async function queueOperation(appId: string, operationType: OperationType): Prom
   });
 
   try {
-    const jobName = await createDeployJob(app, operation, input);
+    const operationToken = randomBytes(32).toString("base64url");
+    const tokenExpiresAt = callbackTokenExpiresAt();
     await updateOperation(operation.id, {
       result_json: {
-        job_name: jobName,
-        namespace: await kubernetesNamespace()
+        prepare_token_sha256: sha256(operationToken),
+        prepare_token_expires_at: tokenExpiresAt,
+        prepared_topic: env.PLATFORM_DEPLOY_PREPARED_TOPIC
       }
     });
-    return { ok: true, app_id: app.id, operation_id: operation.id, job_name: jobName };
+    const flinkJob = await submitFlinkPrepareJob(app, operation, input, operationToken);
+    const currentOperation = await getOperation(operation.id);
+    await updateOperation(operation.id, {
+      result_json: {
+        ...(asRecord(currentOperation.result_json) ?? {}),
+        prepare_token_sha256: sha256(operationToken),
+        prepare_token_expires_at: tokenExpiresAt,
+        prepared_topic: env.PLATFORM_DEPLOY_PREPARED_TOPIC,
+        flink_jar_id: flinkJob.jarId,
+        flink_job_id: flinkJob.jobId,
+        prepare_submitted_at: new Date().toISOString()
+      }
+    });
+    return {
+      ok: true,
+      app_id: app.id,
+      operation_id: operation.id,
+      flink_job_id: flinkJob.jobId,
+      prepared_topic: env.PLATFORM_DEPLOY_PREPARED_TOPIC
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to create deploy job.";
     await updateOperation(operation.id, {
@@ -918,7 +879,7 @@ const openApiSpec = {
   info: {
     title: "Platform Deploy API",
     version: "1.0.0",
-    description: "Internal Kubernetes control plane for Directus-managed shell app deployments."
+    description: "Internal deployment control plane for Directus-managed shell app deployments."
   },
   servers: [{ url: env.OPENAPI_SERVER_URL }],
   components: {
@@ -956,12 +917,13 @@ const openApiSpec = {
       },
       QueueOperationResponse: {
         type: "object",
-        required: ["ok", "app_id", "operation_id", "job_name"],
+        required: ["ok", "app_id", "operation_id", "flink_job_id", "prepared_topic"],
         properties: {
           ok: { type: "boolean" },
           app_id: { type: "string" },
           operation_id: { type: "string" },
-          job_name: { type: "string" }
+          flink_job_id: { type: "string" },
+          prepared_topic: { type: "string" }
         },
         additionalProperties: true
       },
@@ -1055,7 +1017,6 @@ app.get("/healthz", (_req, res) => {
 app.get("/readyz", async (_req, res) => {
   try {
     const token = await directusToken();
-    const namespace = await kubernetesNamespace();
     const result = await httpJson<unknown>(`${DIRECTUS_BASE_URL}${DIRECTUS_HEALTH_PATH}`, {
       headers: { authorization: `Bearer ${token}` },
       timeoutMs: REQUEST_TIMEOUT_MS
@@ -1064,7 +1025,12 @@ app.get("/readyz", async (_req, res) => {
       res.status(503).json({ ok: false, reason: "directus_health_failed", status: result.statusCode });
       return;
     }
-    res.status(200).json({ ok: true, namespace, directus_base_url: DIRECTUS_BASE_URL });
+    const flinkResult = await httpJson<unknown>(`${FLINK_REST_URL}/overview`, { timeoutMs: REQUEST_TIMEOUT_MS });
+    if (flinkResult.statusCode >= 400) {
+      res.status(503).json({ ok: false, reason: "flink_health_failed", status: flinkResult.statusCode });
+      return;
+    }
+    res.status(200).json({ ok: true, directus_base_url: DIRECTUS_BASE_URL, flink_rest_url: FLINK_REST_URL });
   } catch (error) {
     res.status(503).json({
       ok: false,
@@ -1102,10 +1068,10 @@ app.post("/internal/apps/:id/destroy", async (req, res, next) => {
 
 app.post("/internal/operations/:id/start", async (req, res, next) => {
   try {
-    await enforceInternalAuth(req);
+    const operation = await enforceInternalOrOperationAuth(req, req.params.id);
     const body = asRecord(req.body) ?? {};
-    const appId = asString(body.app_id);
-    const operationType = operationTypeFromBody(body, "redeploy");
+    const appId = asString(body.app_id) || appIdFromOperation(operation);
+    const operationType = operationTypeFromBody(body, operation.operation_type);
     await updateOperation(req.params.id, {
       status: "running",
       started_at: new Date().toISOString()
@@ -1122,21 +1088,46 @@ app.post("/internal/operations/:id/start", async (req, res, next) => {
   }
 });
 
+app.post("/internal/operations/:id/prepared", async (req, res, next) => {
+  try {
+    const operation = await enforceInternalOrOperationAuth(req, req.params.id);
+    const body = asRecord(req.body) ?? {};
+    const bodyResultJson = asRecord(body.result_json) ?? {};
+    const preparedAt = asString(body.prepared_at, new Date().toISOString());
+    const preparedTopic = asString(body.prepared_topic, env.PLATFORM_DEPLOY_PREPARED_TOPIC);
+    await updateOperation(req.params.id, {
+      result_json: {
+        ...(asRecord(operation.result_json) ?? {}),
+        ...bodyResultJson,
+        prepared_at: preparedAt,
+        prepared_topic: preparedTopic
+      }
+    });
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/internal/operations/:id/finish", async (req, res, next) => {
   try {
-    await enforceInternalAuth(req);
+    const operation = await enforceInternalOrOperationAuth(req, req.params.id);
     const body = asRecord(req.body) ?? {};
-    const appId = asString(body.app_id);
-    const operationType = operationTypeFromBody(body, "redeploy");
+    const appId = asString(body.app_id) || appIdFromOperation(operation);
+    const operationType = operationTypeFromBody(body, operation.operation_type);
     const succeeded = asString(body.status) === "succeeded";
     const deploymentStatus: DeploymentStatus = succeeded
       ? operationSequence(operationType) === "destroy" ? "destroyed" : "deployed"
       : "failed";
     const errorMessage = asString(body.error_message);
+    const bodyResultJson = asRecord(body.result_json) ?? {};
     await updateOperation(req.params.id, {
       status: succeeded ? "succeeded" : "failed",
       finished_at: new Date().toISOString(),
-      result_json: asRecord(body.result_json) ?? {},
+      result_json: {
+        ...(asRecord(operation.result_json) ?? {}),
+        ...bodyResultJson
+      },
       error_message: errorMessage || null,
       log_excerpt: asString(body.log_excerpt) || null,
       terraform_run_id: asString(body.terraform_run_id) || undefined,

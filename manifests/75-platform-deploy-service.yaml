@@ -1020,22 +1020,20 @@ spec:
               value: "/vault-secrets/vault-token"
             - name: OPENAPI_SERVER_URL
               value: "http://platform-deploy-service.directus.svc.cluster.local:8080"
-            - name: KUBERNETES_NAMESPACE
-              value: "directus"
-            - name: DEPLOY_RUNNER_IMAGE
-              value: "ghcr.io/dotcomrow/platform-app-deploy-runner:latest"
-            - name: DEPLOY_RUNNER_SERVICE_ACCOUNT
-              value: "platform-deploy-runner"
-            - name: DEPLOY_SECRET_NAME
-              value: "platform-deploy-secrets"
-            - name: DEPLOY_STATE_PVC_NAME
-              value: "platform-deploy-state"
-            - name: DEPLOY_JOB_TTL_SECONDS
-              value: "86400"
-            - name: DEPLOY_JOB_ACTIVE_DEADLINE_SECONDS
-              value: "7200"
-            - name: DEPLOY_CALLBACK_BASE_URL
+            - name: FLINK_REST_URL
+              value: "http://flink-rest.kafka.svc.cluster.local:8081"
+            - name: FLINK_JAR_NAME
+              value: "platform-deploy-flink-job.jar"
+            - name: FLINK_ENTRY_CLASS
+              value: "com.suncoast.platform.deploy.flink.PlatformDeployJob"
+            - name: FLINK_PARALLELISM
+              value: "1"
+            - name: PLATFORM_DEPLOY_PREPARED_TOPIC
+              value: "batch.platform.deploy.prepared.v1"
+            - name: PLATFORM_DEPLOY_SERVICE_URL
               value: "http://platform-deploy-service.directus.svc.cluster.local:8080"
+            - name: OPERATION_CALLBACK_TOKEN_TTL_SECONDS
+              value: "21600"
             - name: GITHUB_API_BASE
               value: "https://api.github.com"
             - name: DEFAULT_INITIAL_DEPLOY_WORKFLOW
