@@ -219,6 +219,29 @@ spec:
                 policies="directus" \
                 ttl="48h"
 
+              vault policy write "platform-deploy-service" - <<'EOF'
+              path "secret/data/directus/gravitee/openapi/admin"      { capabilities = ["read"] }
+              path "secret/data/platform-deploy-service"              { capabilities = ["create", "read", "update"] }
+              path "secret/data/platform-deploy-service/*"            { capabilities = ["create", "read", "update"] }
+              EOF
+
+              vault write auth/kubernetes/role/platform-deploy-service \
+                bound_service_account_names="platform-deploy-service" \
+                bound_service_account_namespaces="directus" \
+                policies="platform-deploy-service" \
+                ttl="48h"
+
+              vault policy write "platform-deploy-executor" - <<'EOF'
+              path "secret/data/platform-deploy-service"              { capabilities = ["read"] }
+              path "secret/data/platform-deploy-service/*"            { capabilities = ["read"] }
+              EOF
+
+              vault write auth/kubernetes/role/platform-deploy-executor \
+                bound_service_account_names="platform-deploy-executor" \
+                bound_service_account_namespaces="directus" \
+                policies="platform-deploy-executor" \
+                ttl="48h"
+
               # Directus AI proxy uses Keycloak client_credentials to call Gravitee-protected APIs.
               # Keep permissions narrow: only the specific Keycloak client creds are readable.
               vault policy write "directus-ai-proxy" - <<'EOF'
