@@ -19,24 +19,14 @@ The postschema reconcile creates Directus-managed registry collections for the i
 
 Directus site entries can opt into platform registry permissions with `platform_management.enabled: true`. The GraphQL audience alias used by the internal MFE is bound to the external site token today, so that site entry carries the platform-management grant while browser traffic still enters through Hasura and Gravitee.
 
-## Platform deploy service
+## Platform Deploy Runtime
 
-The platform deploy backend lives in `platform-deploy-service/` and is deployed by `manifests/75-platform-deploy-service.yaml`. Gravitee exposes it at `/platform-deploy`, and Hasura generates actions from `/openapi.json`.
+The platform deploy API service, Flink preparation job, runtime manifests, and
+runtime image workflows now live in `platform-deploy-runtime`.
 
-- Deploy action: `gravitee_platform_deploy_api_queuedeploy`
-- Destroy action: `gravitee_platform_deploy_api_queuedestroy`
-- OpenAPI: `docs/platform-deploy-service-openapi.yaml`
-
-For `deployment_strategy: terraform_cloud`, the service creates a Kubernetes runner Job that:
-
-- creates a `platform_app_operations` row and marks the app queued/deploying
-- checks out the configured app repository/ref, matching the source checkout that the old GitHub workflow performed
-- builds the Cloudflare/OpenNext worker artifacts in the runner
-- upserts GitHub repository variables including `TFE_PROJECT`, `KEYCLOAK_REALM`, `DIRECTUS_CONTENT_SITE_KEY`, app URLs, auth gateway URLs, and base domain
-- creates or updates Terraform Cloud workspaces, variables, uploaded configuration versions, and runs
-- polls the Terraform Cloud run and writes the run id/url plus final status back to Directus
-
-The runner requires `platform-deploy-secrets.github-token` and `platform-deploy-secrets.tfe-token`. The bootstrap Job copies the GitHub token from `secret/platform-deploy-service` (`github_token` or `github-token`) or `secret/platform-deploy-service/github` (`token`) when present. It also copies Terraform Cloud values from `secret/platform-deploy-service` keys `tfe_token`/`tfe-token`/`tf_api_token`, `tfe_agent_pool_id`/`tfe-agent-pool-id`, and `tfe_organization`/`tfe-organization`/`tf_cloud_organization`. The GitHub token must be able to read the target app repo, create releases, disable the initial workflow after a first deploy, and create/update repository Actions variables. Terraform Cloud credentials and runtime secrets stay in `platform-deploy-secrets`; app repository workflow secrets are not used by the k8s runner.
+This repo still owns the Directus-managed registry collections used by
+Organization Management: `platform_organizations`, `platform_apps`, and
+`platform_app_operations`.
 
 ## Docs
 
@@ -45,7 +35,6 @@ The runner requires `platform-deploy-secrets.github-token` and `platform-deploy-
 - `docs/directus-image-action-openapi.yaml` - OpenAPI spec for the in-cluster image service used by Hasura actions.
 - `docs/vm-stats-service-openapi.yaml` - OpenAPI spec for the VM stats reporting endpoints.
 - `docs/cloud-billing-service-openapi.yaml` - OpenAPI spec for the cloud billing aggregation API and Hasura action.
-- `docs/platform-deploy-service-openapi.yaml` - OpenAPI spec for the platform app deploy API and Hasura actions.
 - `docs/ui-module-contract.md` - universal module contract for page components and MFEs with mandatory async configuration.
 - `docs/schemas/ui-module-definition.schema.json` - JSON Schema for module definition manifests produced by module repos.
 - `docs/schemas/ui-module-instance.schema.json` - JSON Schema for per-page module instances stored in CMS.
