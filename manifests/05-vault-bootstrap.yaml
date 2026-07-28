@@ -219,8 +219,15 @@ spec:
                 policies="directus" \
                 ttl="48h"
 
-              vault policy write "platform-deploy-service" - <<'EOF'
-              path "secret/data/directus/gravitee/openapi/admin"      { capabilities = ["read"] }
+              graphql_api_client_id="$(vault kv get -field=value secret/keycloak-client-id-graphql-api 2>/dev/null || true)"
+              if [ -z "${graphql_api_client_id}" ]; then
+                echo "GraphQL API client id was empty in Vault; cannot write platform-deploy-service Vault policy."
+                exit 1
+              fi
+
+              vault policy write "platform-deploy-service" - <<EOF
+              path "secret/data/keycloak-client-id-graphql-api"        { capabilities = ["read"] }
+              path "secret/data/directus/gravitee/clients/${graphql_api_client_id}" { capabilities = ["read"] }
               path "secret/data/platform-deploy-service"              { capabilities = ["create", "read", "update"] }
               path "secret/data/platform-deploy-service/*"            { capabilities = ["create", "read", "update"] }
               EOF
