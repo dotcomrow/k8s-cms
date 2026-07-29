@@ -1368,6 +1368,21 @@ spec:
               echo "🔑 DB tunnel key fingerprint: ${KEY_FINGERPRINT}"
             fi
 
+            _postgres_tunnel_probe() {
+              _probe_host="$1"
+              _probe_port="$2"
+              _probe_reply="$(
+                printf '\000\000\000\010\004\322\026/' \
+                  | nc -w 2 "${_probe_host}" "${_probe_port}" \
+                  | od -An -tx1 \
+                  | tr -d ' \n' || true
+              )"
+              case "${_probe_reply}" in
+                53|4e) return 0 ;;
+                *) return 1 ;;
+              esac
+            }
+
             while true; do
               _attempted_any="false"
               _old_ifs="${IFS}"
@@ -1377,6 +1392,8 @@ spec:
                 [ -z "${DB_TUNNEL_USER_TRY}" ] && continue
                 _attempted_any="true"
                 echo "🔒 Starting DB SSH tunnel ${DB_TUNNEL_USER_TRY}@${DB_TUNNEL_HOST}:${DB_TUNNEL_PORT} -> 127.0.0.1:${DB_TUNNEL_REMOTE_PORT} (local ${DB_TUNNEL_LOCAL_PORT})"
+                SSH_ERR_FILE="/tmp/directus-db-tunnel/ssh-${DB_TUNNEL_USER_TRY}.err"
+                : > "${SSH_ERR_FILE}"
                 ssh \
                   -N \
                   -i "${KEY_FILE}" \
@@ -1391,8 +1408,39 @@ spec:
                   -o ServerAliveCountMax=3 \
                   -p "${DB_TUNNEL_PORT}" \
                   -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:${DB_TUNNEL_REMOTE_PORT}" \
-                  "${DB_TUNNEL_USER_TRY}@${DB_TUNNEL_HOST}" || true
-                echo "⚠️ DB SSH tunnel disconnected/failed for user ${DB_TUNNEL_USER_TRY}; trying next candidate..."
+                  "${DB_TUNNEL_USER_TRY}@${DB_TUNNEL_HOST}" 2>"${SSH_ERR_FILE}" &
+                TUNNEL_PID="$!"
+                TUNNEL_VERIFIED="false"
+                _probe_waited=0
+                while [ "${_probe_waited}" -lt 15 ]; do
+                  if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
+                    break
+                  fi
+                  if _postgres_tunnel_probe 127.0.0.1 "${DB_TUNNEL_LOCAL_PORT}"; then
+                    TUNNEL_VERIFIED="true"
+                    echo "✅ DB SSH tunnel verified with user ${DB_TUNNEL_USER_TRY}."
+                    break
+                  fi
+                  if grep -qi 'administratively prohibited' "${SSH_ERR_FILE}" 2>/dev/null; then
+                    break
+                  fi
+                  sleep 1
+                  _probe_waited=$((_probe_waited + 1))
+                done
+
+                if [ "${TUNNEL_VERIFIED}" = "true" ]; then
+                  wait "${TUNNEL_PID}" || true
+                  echo "⚠️ DB SSH tunnel disconnected/failed for user ${DB_TUNNEL_USER_TRY}; trying next candidate..."
+                else
+                  SSH_ERR="$(tail -n 2 "${SSH_ERR_FILE}" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g' || true)"
+                  if [ -n "${SSH_ERR}" ]; then
+                    echo "⚠️ DB SSH tunnel did not verify for user ${DB_TUNNEL_USER_TRY}: ${SSH_ERR}"
+                  else
+                    echo "⚠️ DB SSH tunnel did not verify for user ${DB_TUNNEL_USER_TRY}."
+                  fi
+                  kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
+                  wait "${TUNNEL_PID}" >/dev/null 2>&1 || true
+                fi
                 sleep 1
               done
               IFS="${_old_ifs}"
@@ -1465,6 +1513,34 @@ spec:
             # Ensure Directus uses the intended schema/search_path for all CLI calls
             export DB_SEARCH_PATH="${DB_SCHEMA:-directus},public"
 
+            _directus_postgres_protocol_probe() {
+              node - <<'NODE'
+            const net = require("net");
+
+            const host = process.env.DB_HOST || "127.0.0.1";
+            const port = Number(process.env.DB_PORT || 5432);
+            const socket = net.createConnection({ host, port, timeout: 2000 });
+            const sslRequest = Buffer.from([0, 0, 0, 8, 4, 210, 22, 47]);
+            let finished = false;
+
+            const finish = (ok) => {
+              if (finished) return;
+              finished = true;
+              socket.destroy();
+              process.exit(ok ? 0 : 1);
+            };
+
+            socket.on("connect", () => socket.write(sslRequest));
+            socket.on("data", (chunk) => {
+              const first = chunk && chunk[0];
+              finish(first === 0x53 || first === 0x4e);
+            });
+            socket.on("error", () => finish(false));
+            socket.on("timeout", () => finish(false));
+            setTimeout(() => finish(false), 2500);
+            NODE
+            }
+
             _directus_wait_for_db_connectivity() {
               _attempt=0
               _max_attempts_raw="${DIRECTUS_DB_CONNECT_MAX_ATTEMPTS:-60}"
@@ -1478,19 +1554,24 @@ spec:
                 _retry_seconds=2
               fi
 
-              if command -v psql >/dev/null 2>&1; then
+              if command -v node >/dev/null 2>&1; then
+                _DB_CONNECT_CHECK_MODE="postgres-protocol"
+              elif command -v psql >/dev/null 2>&1; then
                 _DB_CONNECT_CHECK_MODE="psql"
               elif command -v nc >/dev/null 2>&1; then
                 _DB_CONNECT_CHECK_MODE="nc"
-              elif command -v node >/dev/null 2>&1; then
-                _DB_CONNECT_CHECK_MODE="node"
               else
                 echo "⚠️ No DB connectivity check tool available; skipping TCP check and allowing Directus startup."
                 _DB_CONNECT_CHECK_MODE="skip"
               fi
 
               while true; do
-                if [ "${_DB_CONNECT_CHECK_MODE}" = "psql" ]; then
+                if [ "${_DB_CONNECT_CHECK_MODE}" = "postgres-protocol" ]; then
+                  if _directus_postgres_protocol_probe; then
+                    echo "✅ Directus can open a Postgres protocol connection through the tunnel."
+                    return 0
+                  fi
+                elif [ "${_DB_CONNECT_CHECK_MODE}" = "psql" ]; then
                   if PGPASSWORD="${DB_PASSWORD}" PGCONNECT_TIMEOUT=2 psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_DATABASE}" -Atc "SELECT 1" >/dev/null 2>&1; then
                     echo "✅ Directus can reach the DB through the tunnel."
                     return 0
@@ -1498,11 +1579,6 @@ spec:
                 elif [ "${_DB_CONNECT_CHECK_MODE}" = "nc" ]; then
                   if nc -z -w2 "${DB_HOST}" "${DB_PORT}"; then
                     echo "✅ Directus can reach the DB through the tunnel (tcp check)."
-                    return 0
-                  fi
-                elif [ "${_DB_CONNECT_CHECK_MODE}" = "node" ]; then
-                  if node -e 'const net = require("net"); const host = process.env.DB_HOST; const port = Number(process.env.DB_PORT || 5432); const socket = net.createConnection({ host, port, timeout: 2000 }, () => { socket.end(); process.exit(0); }); socket.on("error", () => process.exit(1)); socket.on("timeout", () => { socket.destroy(); process.exit(1); });'; then
-                    echo "✅ Directus can reach the DB through the tunnel."
                     return 0
                   fi
                 elif [ "${_DB_CONNECT_CHECK_MODE}" = "skip" ]; then
@@ -1642,6 +1718,10 @@ spec:
             fi
 
             echo "🔄 Initializing Directus database..."
+            if ! _directus_wait_for_db_connectivity; then
+              echo "❌ Directus DB connectivity check failed before database initialization."
+              exit 1
+            fi
             _reset_partial_directus_install_if_needed
             _directus_db_state() {
               node - <<'NODE'
