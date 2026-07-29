@@ -8911,6 +8911,7 @@ data:
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_apps" "delete" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "update" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
               fi
 
               FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_realm}/${site_app_key}/prod) - Manual"
