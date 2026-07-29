@@ -238,6 +238,10 @@ data:
       - site_key: external
         app_key: external
         realm: external
+        # The external app is now created by the platform deployment pipeline.
+        # Keep this site for content/auth scoping, but do not seed a deployed
+        # platform_apps row from Directus startup.
+        seed_platform_app: false
         homepage_slug: home
         homepage_release_channel: preview
         homepage_layout_template_key: spa-default

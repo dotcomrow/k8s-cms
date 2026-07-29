@@ -9080,6 +9080,11 @@ data:
             if [ -z "${site_display_name:-}" ] || [ "${site_display_name}" = "null" ]; then
               site_display_name="${site_app_key}"
             fi
+            site_seed_platform_app_raw="$(printf '%s' "$site" | jq -r '(.platform_app_seed.enabled // .seed_platform_app // true) | tostring' 2>/dev/null || true)"
+            case "$(printf '%s' "${site_seed_platform_app_raw:-true}" | tr '[:upper:]' '[:lower:]')" in
+              0|false|no|off) site_seed_platform_app="false" ;;
+              *) site_seed_platform_app="true" ;;
+            esac
             site_key_sql="$(printf '%s' "${site_key}" | sed "s/'/''/g")"
             site_app_sql="$(printf '%s' "${site_app_key}" | sed "s/'/''/g")"
             site_realm_sql="$(printf '%s' "${site_realm}" | sed "s/'/''/g")"
@@ -9095,22 +9100,27 @@ data:
               "SELECT id FROM directus.platform_apps WHERE keycloak_realm='${site_realm_sql}' AND app_key='${site_app_sql}' ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
             platform_app_id="$(printf '%s' "${platform_app_id:-}" | tr -d '\r')"
             if [ -z "${platform_app_id:-}" ] || [ "${platform_app_id}" = "null" ]; then
-              platform_app_id="$(cat /proc/sys/kernel/random/uuid)"
-              platform_app_id_sql="$(printf '%s' "${platform_app_id}" | sed "s/'/''/g")"
-              if ! _psql_yb_retry "INSERT INTO platform_apps (id, app_key, display_name, status, site_key, keycloak_realm, cloud_provider, deployment_status, domain, cache_refresh_enabled, production_cache_refresh_url, preview_cache_refresh_url, date_created, date_updated)
-                SELECT '${platform_app_id_sql}', '${site_app_sql}', '${site_display_name_sql}', 'active', '${site_key_sql}', '${site_realm_sql}', 'cloudflare', 'deployed', 'suncoast.systems', ${site_cache_refresh_enabled_seed}, NULLIF('${site_prod_cache_refresh_url_sql}', ''), NULLIF('${site_preview_cache_refresh_url_sql}', ''), now(), now()
-                WHERE NOT EXISTS (
-                  SELECT 1
-                  FROM platform_apps
-                  WHERE keycloak_realm='${site_realm_sql}'
-                    AND app_key='${site_app_sql}'
-                );" "seed platform app registry for ${site_realm}/${site_app_key}" 12; then
-                echo "⚠️ failed to seed platform app registry for realm='${site_realm}', app='${site_app_key}', site_key='${site_key}'"
-                continue
+              if [ "${site_seed_platform_app}" = "true" ]; then
+                platform_app_id="$(cat /proc/sys/kernel/random/uuid)"
+                platform_app_id_sql="$(printf '%s' "${platform_app_id}" | sed "s/'/''/g")"
+                if ! _psql_yb_retry "INSERT INTO platform_apps (id, app_key, display_name, status, site_key, keycloak_realm, cloud_provider, deployment_status, domain, cache_refresh_enabled, production_cache_refresh_url, preview_cache_refresh_url, date_created, date_updated)
+                  SELECT '${platform_app_id_sql}', '${site_app_sql}', '${site_display_name_sql}', 'active', '${site_key_sql}', '${site_realm_sql}', 'cloudflare', 'deployed', 'suncoast.systems', ${site_cache_refresh_enabled_seed}, NULLIF('${site_prod_cache_refresh_url_sql}', ''), NULLIF('${site_preview_cache_refresh_url_sql}', ''), now(), now()
+                  WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM platform_apps
+                    WHERE keycloak_realm='${site_realm_sql}'
+                      AND app_key='${site_app_sql}'
+                  );" "seed platform app registry for ${site_realm}/${site_app_key}" 12; then
+                  echo "⚠️ failed to seed platform app registry for realm='${site_realm}', app='${site_app_key}', site_key='${site_key}'"
+                  continue
+                fi
+                platform_app_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                  "SELECT id FROM directus.platform_apps WHERE keycloak_realm='${site_realm_sql}' AND app_key='${site_app_sql}' ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
+                platform_app_id="$(printf '%s' "${platform_app_id:-}" | tr -d '\r')"
+              else
+                echo "ℹ️ platform_apps seed disabled for ${site_realm}/${site_app_key}; waiting for platform deployment pipeline to create the app row."
+                platform_app_id=""
               fi
-              platform_app_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-                "SELECT id FROM directus.platform_apps WHERE keycloak_realm='${site_realm_sql}' AND app_key='${site_app_sql}' ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
-              platform_app_id="$(printf '%s' "${platform_app_id:-}" | tr -d '\r')"
             else
               platform_app_id_sql="$(printf '%s' "${platform_app_id}" | sed "s/'/''/g")"
               _psql_yb_retry "UPDATE platform_apps
@@ -9121,11 +9131,15 @@ data:
                  WHERE id='${platform_app_id_sql}';" "backfill platform app cache refresh URLs for ${site_realm}/${site_app_key}" 12 || true
             fi
             platform_app_id="$(printf '%s' "${platform_app_id:-}" | tr -d '\r')"
+            platform_app_id_filter_sql=""
             if [ -z "${platform_app_id:-}" ] || [ "${platform_app_id}" = "null" ]; then
-              echo "⚠️ No platform_apps row resolved for ${site_realm}/${site_app_key}; skipping cache-refresh flow provisioning for site_key='${site_key}'"
-              continue
+              echo "⚠️ No platform_apps row resolved for ${site_realm}/${site_app_key}; checking for other app rows on site_key='${site_key}'"
+              platform_app_id=""
+              platform_app_id_sql=""
+            else
+              platform_app_id_sql="$(printf '%s' "${platform_app_id}" | sed "s/'/''/g")"
+              platform_app_id_filter_sql="OR id='${platform_app_id_sql}'"
             fi
-            platform_app_id_sql="$(printf '%s' "${platform_app_id}" | sed "s/'/''/g")"
 
             platform_apps_for_site_jsonl="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
               "SELECT row_to_json(src)::text \
@@ -9139,12 +9153,21 @@ data:
                           preview_cache_refresh_url \
                    FROM directus.platform_apps \
                    WHERE site_key='${site_key_sql}' \
-                      OR id='${platform_app_id_sql}' \
+                      ${platform_app_id_filter_sql} \
                    ORDER BY date_created ASC NULLS LAST, id ASC \
                  ) src;" || true)"
             platform_apps_for_site_jsonl="$(printf '%s' "${platform_apps_for_site_jsonl:-}" | tr -d '\r')"
             if [ -z "${platform_apps_for_site_jsonl:-}" ]; then
-              echo "⚠️ No platform_apps rows found for site_key='${site_key}'; skipping cache-refresh flow provisioning"
+              echo "⚠️ No platform_apps rows found for site_key='${site_key}'; disabling stale cache-refresh flows for ${site_realm}/${site_app_key}"
+              for stale_target_key in prod preview; do
+                for stale_flow_action in Create Update Manual; do
+                  stale_flow_name="CMS Cache Refresh (${site_realm}/${site_app_key}/${stale_target_key}) - ${stale_flow_action}"
+                  stale_flow_id="$(_directus_find_flow_id_by_name "${stale_flow_name}")"
+                  if [ -n "${stale_flow_id:-}" ] && [ "${stale_flow_id}" != "null" ]; then
+                    _directus_api_write "PATCH" "/flows/${stale_flow_id}" "$(jq -nc '{status:"inactive"}')" >/tmp/directus-flow-stale-app.json 2>/dev/null || true
+                  fi
+                done
+              done
               continue
             fi
 
