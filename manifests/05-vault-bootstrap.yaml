@@ -241,6 +241,7 @@ spec:
               vault policy write "platform-deploy-executor" - <<'EOF'
               path "secret/data/platform-deploy-service"              { capabilities = ["read"] }
               path "secret/data/platform-deploy-service/*"            { capabilities = ["read"] }
+              path "secret/data/auth-gateway-admin-api"               { capabilities = ["read"] }
               EOF
 
               vault write auth/kubernetes/role/platform-deploy-executor \
