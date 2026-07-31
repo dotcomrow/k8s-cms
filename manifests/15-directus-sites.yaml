@@ -224,6 +224,10 @@ data:
             fields:
               - "*"
             permissions: {}
+          - collection: platform_app_operation_steps
+            fields:
+              - "*"
+            permissions: {}
           - collection: cms_block_hero
             fields:
               - "*"
@@ -448,6 +452,10 @@ data:
               - "*"
             permissions: {}
           - collection: platform_app_operations
+            fields:
+              - "*"
+            permissions: {}
+          - collection: platform_app_operation_steps
             fields:
               - "*"
             permissions: {}

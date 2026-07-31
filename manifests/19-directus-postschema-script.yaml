@@ -557,7 +557,8 @@ data:
            ('cms_modules'), \
            ('platform_organizations'), \
            ('platform_apps'), \
-           ('platform_app_operations') \
+           ('platform_app_operations'), \
+           ('platform_app_operation_steps') \
        ) \
        SELECT COALESCE(string_agg(required.table_name, ',' ORDER BY required.table_name), '') \
        FROM required \
@@ -655,7 +656,10 @@ data:
              ('platform_app_operations','app_id'), \
              ('platform_app_operations','operation_type'), \
              ('platform_app_operations','status'), \
-             ('platform_app_operations','execution_provider') \
+             ('platform_app_operations','execution_provider'), \
+             ('platform_app_operation_steps','operation_id'), \
+             ('platform_app_operation_steps','step_key'), \
+             ('platform_app_operation_steps','status') \
          ) \
          SELECT COALESCE(string_agg(required.table_name || '.' || required.column_name, ',' ORDER BY required.table_name, required.column_name), '') \
          FROM required \
@@ -2095,6 +2099,51 @@ data:
        UPDATE platform_app_operations SET date_created = now() WHERE date_created IS NULL; \
        CREATE INDEX IF NOT EXISTS platform_app_operations_app_idx ON platform_app_operations (app_id, date_created DESC); \
        CREATE INDEX IF NOT EXISTS platform_app_operations_status_idx ON platform_app_operations (status, operation_type); \
+       CREATE TABLE IF NOT EXISTS platform_app_operation_steps ( \
+         id UUID PRIMARY KEY, \
+         operation_id UUID NOT NULL, \
+         app_id UUID NULL, \
+         step_key TEXT NOT NULL, \
+         step_label TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'queued', \
+         sequence INTEGER NOT NULL DEFAULT 0, \
+         message TEXT NULL, \
+         result_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         error_message TEXT NULL, \
+         log_excerpt TEXT NULL, \
+         started_at TIMESTAMPTZ NULL, \
+         finished_at TIMESTAMPTZ NULL, \
+         duration_ms INTEGER NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS operation_id UUID; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS app_id UUID; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS step_key TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS step_label TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS sequence INTEGER; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS message TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS result_json JSONB; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS error_message TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS log_excerpt TEXT; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS duration_ms INTEGER; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ALTER COLUMN status SET DEFAULT 'queued'; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ALTER COLUMN sequence SET DEFAULT 0; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ALTER COLUMN result_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_app_operation_steps ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE platform_app_operation_steps SET status = 'queued' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE platform_app_operation_steps SET sequence = 0 WHERE sequence IS NULL; \
+       UPDATE platform_app_operation_steps SET result_json = '{}'::jsonb WHERE result_json IS NULL OR jsonb_typeof(result_json) <> 'object'; \
+       UPDATE platform_app_operation_steps SET date_created = now() WHERE date_created IS NULL; \
+       CREATE INDEX IF NOT EXISTS platform_app_operation_steps_operation_idx ON platform_app_operation_steps (operation_id, sequence, date_created); \
+       CREATE INDEX IF NOT EXISTS platform_app_operation_steps_app_idx ON platform_app_operation_steps (app_id, date_created DESC); \
+       CREATE INDEX IF NOT EXISTS platform_app_operation_steps_status_idx ON platform_app_operation_steps (status, step_key); \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_app_operation_steps_operation_step_unique ON platform_app_operation_steps (operation_id, step_key); \
        DO \$\$ \
        BEGIN \
          IF to_regclass('directus.platform_apps') IS NOT NULL \
@@ -2114,6 +2163,18 @@ data:
             AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_app_operations_requested_by_fkey' AND conrelid = to_regclass('directus.platform_app_operations')) \
             AND NOT EXISTS (SELECT 1 FROM platform_app_operations op WHERE op.requested_by IS NOT NULL AND NOT EXISTS (SELECT 1 FROM directus_users u WHERE u.id = op.requested_by)) THEN \
            ALTER TABLE platform_app_operations ADD CONSTRAINT platform_app_operations_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES directus_users(id) ON DELETE SET NULL; \
+         END IF; \
+         IF to_regclass('directus.platform_app_operation_steps') IS NOT NULL \
+            AND to_regclass('directus.platform_app_operations') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_app_operation_steps_operation_id_fkey' AND conrelid = to_regclass('directus.platform_app_operation_steps')) \
+            AND NOT EXISTS (SELECT 1 FROM platform_app_operation_steps s WHERE s.operation_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_app_operations op WHERE op.id = s.operation_id)) THEN \
+           ALTER TABLE platform_app_operation_steps ADD CONSTRAINT platform_app_operation_steps_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES platform_app_operations(id) ON DELETE CASCADE; \
+         END IF; \
+         IF to_regclass('directus.platform_app_operation_steps') IS NOT NULL \
+            AND to_regclass('directus.platform_apps') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_app_operation_steps_app_id_fkey' AND conrelid = to_regclass('directus.platform_app_operation_steps')) \
+            AND NOT EXISTS (SELECT 1 FROM platform_app_operation_steps s WHERE s.app_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_apps a WHERE a.id = s.app_id)) THEN \
+           ALTER TABLE platform_app_operation_steps ADD CONSTRAINT platform_app_operation_steps_app_id_fkey FOREIGN KEY (app_id) REFERENCES platform_apps(id) ON DELETE CASCADE; \
          END IF; \
        END \
        \$\$;"
@@ -2147,6 +2208,22 @@ data:
          ELSE \
            BEGIN \
              INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_app_operations', 'requested_by', 'directus_users', NULL); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='platform_app_operation_steps' AND many_field='operation_id') THEN \
+           UPDATE directus_relations SET one_collection='platform_app_operations', one_field='steps' WHERE many_collection='platform_app_operation_steps' AND many_field='operation_id'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_app_operation_steps', 'operation_id', 'platform_app_operations', 'steps'); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='platform_app_operation_steps' AND many_field='app_id') THEN \
+           UPDATE directus_relations SET one_collection='platform_apps', one_field='operation_steps' WHERE many_collection='platform_app_operation_steps' AND many_field='app_id'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_app_operation_steps', 'app_id', 'platform_apps', 'operation_steps'); \
            EXCEPTION WHEN unique_violation THEN NULL; \
            END; \
          END IF; \
@@ -2241,6 +2318,7 @@ data:
       _upsert_collection_meta "platform_organizations" "corporate_fare" "Platform organizations used by the internal Organization Management page." "{{name}}"
       _upsert_collection_meta "platform_apps" "apps" "Desired state for deployed shell-app instances. Deployment operations are executed by the platform control plane." "{{display_name}} | {{site_key}} | {{deployment_status}}"
       _upsert_collection_meta "platform_app_operations" "history" "Create, update, redeploy, and destroy operation history for platform apps." "{{operation_type}} | {{status}} | {{date_created}}"
+      _upsert_collection_meta "platform_app_operation_steps" "timeline" "Detailed non-secret step status, results, and sanitized failure logs for platform app operations." "{{step_key}} | {{status}} | {{date_created}}"
 
       if _dc_has_col "display_template"; then
         block_display_template='{{template_scope}}/{{template_group_key}} | {{group_tag}} | {{collection}} -> {{slot}} | #{{sort}}'
@@ -5048,6 +5126,7 @@ data:
       platform_operation_status_options_json="$(jq -nc --argjson choices "${platform_operation_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_org_relation_options_json="$(jq -nc '{template:"{{name}} ({{organization_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
       platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{site_key}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
+      platform_operation_relation_options_json="$(jq -nc '{template:"{{operation_type}} | {{status}} | {{date_created}}",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_user_relation_options_json="$(jq -nc '{template:"{{first_name}} {{last_name}} <{{email}}>",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_json_options_json="$(jq -nc '{language:"json",lineNumber:true,template:"{}"}')"
       platform_org_key_note_sql="$(printf '%s' 'Stable organization slug used by the platform control plane.' | sed "s/'/''/g")"
@@ -5074,6 +5153,7 @@ data:
       platform_operation_requested_by_note_sql="$(printf '%s' 'Directus user that requested the operation.' | sed "s/'/''/g")"
       platform_operation_json_note_sql="$(printf '%s' 'Operation payload/result metadata. Do not store secrets here.' | sed "s/'/''/g")"
       platform_operation_log_note_sql="$(printf '%s' 'Short non-secret log excerpt for review/debugging.' | sed "s/'/''/g")"
+      platform_operation_step_note_sql="$(printf '%s' 'Detailed deployment step status and sanitized results. Do not store secrets here.' | sed "s/'/''/g")"
       content_item_content_key_note="Generated from the content item name on save."
       content_item_language_code_note="Default source language code, usually en."
       content_item_reuse_strategy_note="Shared component reuses this same content item and translations when pages are copied. Copy per page creates a separate content item for each copied page."
@@ -7510,6 +7590,19 @@ data:
       _upsert_content_item_field_meta "result_json" "input-code" "full" 13 "${platform_operation_json_note_sql}" "${platform_json_options_json}" false true "platform_app_operations"
       _upsert_content_item_field_meta "error_message" "input-multiline" "full" 14 "${platform_operation_log_note_sql}" "" false true "platform_app_operations"
       _upsert_content_item_field_meta "log_excerpt" "input-multiline" "full" 15 "${platform_operation_log_note_sql}" "" false true "platform_app_operations"
+      _upsert_platform_m2o_field_meta "platform_app_operation_steps" "operation_id" 1 "${platform_operation_step_note_sql}" "${platform_operation_relation_options_json}" true
+      _upsert_platform_m2o_field_meta "platform_app_operation_steps" "app_id" 2 "${platform_operation_app_note_sql}" "${platform_app_relation_options_json}" false
+      _upsert_content_item_field_meta "step_key" "input" "half" 3 "${platform_operation_step_note_sql}" "" true true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "step_label" "input" "half" 4 "${platform_operation_step_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "status" "select-dropdown" "half" 5 "${platform_operation_status_note_sql}" "${platform_operation_status_options_json}" true true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "sequence" "input" "half" 6 "${platform_operation_step_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "message" "input-multiline" "full" 7 "${platform_operation_step_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "started_at" "datetime" "half" 8 "${date_created_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "finished_at" "datetime" "half" 9 "${date_updated_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "duration_ms" "input" "half" 10 "${platform_operation_step_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "result_json" "input-code" "full" 11 "${platform_operation_json_note_sql}" "${platform_json_options_json}" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "error_message" "input-multiline" "full" 12 "${platform_operation_log_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "log_excerpt" "input-multiline" "full" 13 "${platform_operation_log_note_sql}" "" false true "platform_app_operation_steps"
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "id" 90
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_created" 91
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_updated" 92
@@ -7519,6 +7612,9 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "platform_app_operations" "id" 90
       _upsert_hidden_internal_field_meta_dynamic "platform_app_operations" "date_created" 91
       _upsert_hidden_internal_field_meta_dynamic "platform_app_operations" "date_updated" 92
+      _upsert_hidden_internal_field_meta_dynamic "platform_app_operation_steps" "id" 90
+      _upsert_hidden_internal_field_meta_dynamic "platform_app_operation_steps" "date_created" 91
+      _upsert_hidden_internal_field_meta_dynamic "platform_app_operation_steps" "date_updated" 92
       _upsert_page_section_group_field_meta "_section_page_settings" "Page (Core Settings)" 1 "article"
       _upsert_page_section_group_field_meta "_section_layout" "Section Layout" 9 "dashboard_customize"
       _upsert_page_section_group_field_meta "_section_theme" "Theme (Family + Mode)" 3 "palette"
@@ -8912,6 +9008,9 @@ data:
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operations" "update" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operation_steps" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operation_steps" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operation_steps" "update" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
               fi
 
               FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_realm}/${site_app_key}/prod) - Manual"
