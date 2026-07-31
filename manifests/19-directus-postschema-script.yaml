@@ -9081,7 +9081,15 @@ data:
             if [ -z "${site_display_name:-}" ] || [ "${site_display_name}" = "null" ]; then
               site_display_name="${site_app_key}"
             fi
-            site_seed_platform_app_raw="$(printf '%s' "$site" | jq -r '(.platform_app_seed.enabled // .seed_platform_app // true) | tostring' 2>/dev/null || true)"
+            site_seed_platform_app_raw="$(printf '%s' "$site" | jq -r '
+              if (has("platform_app_seed") and (.platform_app_seed | type == "object") and (.platform_app_seed | has("enabled"))) then
+                .platform_app_seed.enabled
+              elif has("seed_platform_app") then
+                .seed_platform_app
+              else
+                true
+              end | tostring
+            ' 2>/dev/null || true)"
             case "$(printf '%s' "${site_seed_platform_app_raw:-true}" | tr '[:upper:]' '[:lower:]')" in
               0|false|no|off) site_seed_platform_app="false" ;;
               *) site_seed_platform_app="true" ;;
