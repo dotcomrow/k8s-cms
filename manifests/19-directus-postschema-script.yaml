@@ -10317,7 +10317,7 @@ data:
         --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS:-5}" \
         --max-time "${DIRECTUS_API_MAX_TIME_SECONDS:-20}" \
         -H "Authorization: Bearer ${DIRECTUS_ACCESS_TOKEN}" \
-        "${DIRECTUS_API_BASE:-http://127.0.0.1:8055}/utils/cache/clear" || true)"
+        "${DIRECTUS_API_BASE:-http://127.0.0.1:8055}/utils/cache/clear?system" || true)"
       if [ "${CACHE_CLEAR_CODE}" = "200" ] || [ "${CACHE_CLEAR_CODE}" = "204" ]; then
         echo "✅ Cleared Directus data/schema cache after postschema reconcile."
       else
