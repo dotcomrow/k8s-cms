@@ -301,7 +301,7 @@ data:
       done
     }
 
-    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-07-17.1}"
+    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-07-31.1}"
     DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW="${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE:-false}"
     case "$(printf '%s' "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW}" | tr '[:upper:]' '[:lower:]')" in
       1|true|yes|on) DIRECTUS_POSTSCHEMA_FORCE_RECONCILE="true" ;;
@@ -675,6 +675,101 @@ data:
       fi
     fi
 
+    RECON_METADATA_HEALTHY="1"
+    if [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
+      MISSING_REQUIRED_COLLECTION_METADATA="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "WITH required(collection) AS ( \
+           VALUES \
+             ('platform_organizations'), \
+             ('platform_apps'), \
+             ('platform_app_operations'), \
+             ('platform_app_operation_steps') \
+         ) \
+         SELECT COALESCE(string_agg(required.collection, ',' ORDER BY required.collection), '') \
+         FROM required \
+         WHERE to_regclass('directus.directus_collections') IS NULL \
+            OR NOT EXISTS ( \
+              SELECT 1 \
+              FROM directus.directus_collections dc \
+              WHERE dc.collection = required.collection \
+            );" || true)"
+      MISSING_REQUIRED_COLLECTION_METADATA="$(printf '%s' "${MISSING_REQUIRED_COLLECTION_METADATA:-}" | tr -d '\r')"
+      if [ -n "${MISSING_REQUIRED_COLLECTION_METADATA:-}" ]; then
+        RECON_METADATA_HEALTHY="0"
+        echo "⚠️ Required Directus collection metadata missing (${MISSING_REQUIRED_COLLECTION_METADATA}); forcing reconcile despite checksum match."
+      fi
+
+      MISSING_REQUIRED_FIELD_METADATA="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "WITH required(collection, field) AS ( \
+           VALUES \
+             ('platform_app_operations','app_id'), \
+             ('platform_app_operations','operation_type'), \
+             ('platform_app_operations','status'), \
+             ('platform_app_operation_steps','operation_id'), \
+             ('platform_app_operation_steps','step_key'), \
+             ('platform_app_operation_steps','status') \
+         ) \
+         SELECT COALESCE(string_agg(required.collection || '.' || required.field, ',' ORDER BY required.collection, required.field), '') \
+         FROM required \
+         WHERE to_regclass('directus.directus_fields') IS NULL \
+            OR NOT EXISTS ( \
+              SELECT 1 \
+              FROM directus.directus_fields df \
+              WHERE df.collection = required.collection \
+                AND df.field = required.field \
+            );" || true)"
+      MISSING_REQUIRED_FIELD_METADATA="$(printf '%s' "${MISSING_REQUIRED_FIELD_METADATA:-}" | tr -d '\r')"
+      if [ -n "${MISSING_REQUIRED_FIELD_METADATA:-}" ]; then
+        RECON_METADATA_HEALTHY="0"
+        echo "⚠️ Required Directus field metadata missing (${MISSING_REQUIRED_FIELD_METADATA}); forcing reconcile despite checksum match."
+      fi
+    fi
+
+    RECON_PLATFORM_PERMISSIONS_HEALTHY="1"
+    if [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
+      MISSING_PLATFORM_PERMISSIONS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "WITH required(policy_name, collection, action) AS ( \
+           SELECT policy_name, collection, action \
+           FROM (VALUES ('cms-site-internal'), ('cms-site-external')) policies(policy_name) \
+           CROSS JOIN (VALUES \
+             ('platform_organizations'), \
+             ('platform_apps'), \
+             ('platform_app_operations'), \
+             ('platform_app_operation_steps') \
+           ) collections(collection) \
+           CROSS JOIN (VALUES ('read')) read_actions(action) \
+           UNION ALL \
+           SELECT policy_name, collection, action \
+           FROM (VALUES ('cms-site-internal'), ('cms-site-external')) policies(policy_name) \
+           CROSS JOIN (VALUES \
+             ('platform_apps'), \
+             ('platform_app_operations'), \
+             ('platform_app_operation_steps') \
+           ) collections(collection) \
+           CROSS JOIN (VALUES ('create'), ('update')) write_actions(action) \
+           UNION ALL \
+           SELECT policy_name, 'platform_apps', 'delete' \
+           FROM (VALUES ('cms-site-internal'), ('cms-site-external')) policies(policy_name) \
+         ) \
+         SELECT COALESCE(string_agg(required.policy_name || ':' || required.collection || ':' || required.action, ',' ORDER BY required.policy_name, required.collection, required.action), '') \
+         FROM required \
+         LEFT JOIN directus.directus_policies p \
+           ON p.name = required.policy_name \
+         LEFT JOIN directus.directus_permissions dp \
+           ON dp.policy = p.id \
+          AND dp.collection = required.collection \
+          AND dp.action = required.action \
+         WHERE to_regclass('directus.directus_policies') IS NULL \
+            OR to_regclass('directus.directus_permissions') IS NULL \
+            OR p.id IS NULL \
+            OR dp.id IS NULL;" || true)"
+      MISSING_PLATFORM_PERMISSIONS="$(printf '%s' "${MISSING_PLATFORM_PERMISSIONS:-}" | tr -d '\r')"
+      if [ -n "${MISSING_PLATFORM_PERMISSIONS:-}" ]; then
+        RECON_PLATFORM_PERMISSIONS_HEALTHY="0"
+        echo "⚠️ Required platform management permissions missing (${MISSING_PLATFORM_PERMISSIONS}); forcing reconcile despite checksum match."
+      fi
+    fi
+
     RECON_TOKEN_HEALTHY="1"
     if [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
       USERS_TABLE_EXISTS="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -705,7 +800,7 @@ data:
       fi
     fi
 
-    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ] && [ "${RECON_SCHEMA_HEALTHY}" = "1" ] && [ "${RECON_TOKEN_HEALTHY}" = "1" ]; then
+    if [ "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE}" != "true" ] && [ "${RECON_ALREADY_CURRENT}" = "1" ] && [ "${RECON_FLOW_HEALTHY}" = "1" ] && [ "${RECON_SCHEMA_HEALTHY}" = "1" ] && [ "${RECON_METADATA_HEALTHY}" = "1" ] && [ "${RECON_PLATFORM_PERMISSIONS_HEALTHY}" = "1" ] && [ "${RECON_TOKEN_HEALTHY}" = "1" ]; then
       psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
         "SET search_path TO directus, public; UPDATE schema_patch_log SET last_checked_at=now() WHERE patch_key='${RECON_PATCH_KEY_SQL}';" >/dev/null
       echo "✅ Postschema reconcile already up to date (version=${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION}, checksum=${RECON_PATCH_CHECKSUM})."
@@ -10216,6 +10311,21 @@ data:
     trap - EXIT
     rm -f "${POSTSCHEMA_FAILED_FILE}" >/dev/null 2>&1 || true
     touch "${POSTSCHEMA_DB_READY_FILE}"
+
+    if [ "${_directus_api_enabled:-0}" = "1" ] && [ -n "${DIRECTUS_ACCESS_TOKEN:-}" ]; then
+      CACHE_CLEAR_CODE="$(curl -sS -o /tmp/directus-cache-clear.json -w '%{http_code}' -X POST \
+        --connect-timeout "${DIRECTUS_API_CONNECT_TIMEOUT_SECONDS:-5}" \
+        --max-time "${DIRECTUS_API_MAX_TIME_SECONDS:-20}" \
+        -H "Authorization: Bearer ${DIRECTUS_ACCESS_TOKEN}" \
+        "${DIRECTUS_API_BASE:-http://127.0.0.1:8055}/utils/cache/clear" || true)"
+      if [ "${CACHE_CLEAR_CODE}" = "200" ] || [ "${CACHE_CLEAR_CODE}" = "204" ]; then
+        echo "✅ Cleared Directus data/schema cache after postschema reconcile."
+      else
+        echo "⚠️ Failed to clear Directus data/schema cache after postschema reconcile (HTTP ${CACHE_CLEAR_CODE})."
+      fi
+    else
+      echo "⚠️ Directus API token unavailable; skipping Directus cache clear after postschema reconcile."
+    fi
     touch "${POSTSCHEMA_READY_FILE}"
 
     echo "✅ Schema patch applied. Going idle."
