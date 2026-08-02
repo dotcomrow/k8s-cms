@@ -1771,6 +1771,7 @@ metadata:
     gravitee.io/context-path: "/cms-content-resolver"
     gravitee.io/auth-required: "directus-token"
     gravitee.io/approval-required: "admin"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
     gravitee.io/description: "Language-aware CMS content resolver"
     gravitee.io/version: "latest"
     gravitee.io/tags: "directus,cms,hasura,content,translation"
@@ -1790,6 +1791,7 @@ metadata:
     gravitee.io/definition-tags: "directus,cms,hasura,content,translation"
     gravitee.io/definition-labels: "internal,cms,hasura,content,translation"
     gravitee.io/definition-path-mappings: "/cms-content-resolver/*"
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
     gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"cms-content-resolver-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://cms-content-resolver.directus.svc.cluster.local:8080"},"secondary":false}]}]'
     gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://cms-content-resolver.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
     gravitee.io/definition-plans: '{"open-access":{"name":"Open access","description":"Resolver API access is enforced by the service bearer token","security":{"type":"KEY_LESS"},"status":"PUBLISHED","validation":"AUTO","type":"API","selectionRule":"true"}}'
