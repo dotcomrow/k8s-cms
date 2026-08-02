@@ -2216,6 +2216,7 @@ data:
        UPDATE platform_app_operations SET date_created = now() WHERE date_created IS NULL; \
        CREATE INDEX IF NOT EXISTS platform_app_operations_app_idx ON platform_app_operations (app_id, date_created DESC); \
        CREATE INDEX IF NOT EXISTS platform_app_operations_status_idx ON platform_app_operations (status, operation_type); \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_app_operations_one_active_per_app_idx ON platform_app_operations (app_id) WHERE status IN ('queued', 'running'); \
        CREATE TABLE IF NOT EXISTS platform_app_operation_steps ( \
          id UUID PRIMARY KEY, \
          operation_id UUID NOT NULL, \
