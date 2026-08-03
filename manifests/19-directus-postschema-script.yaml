@@ -8424,6 +8424,159 @@ data:
             "SET search_path TO directus, public; INSERT INTO directus_permissions (${PCOLS}) VALUES (${PVALS});"
           echo "✅ Granted ${_action_sql} on ${_collection_sql} to policy '${role_name}'"
         }
+
+        _ensure_platform_notification_directus_identity() {
+          _pn_role_name="${PLATFORM_NOTIFICATION_DIRECTUS_ROLE_NAME:-platform-notification-service}"
+          _pn_policy_name="${PLATFORM_NOTIFICATION_DIRECTUS_POLICY_NAME:-platform-notification-service}"
+          _pn_token_vault_path="${PLATFORM_NOTIFICATION_DIRECTUS_TOKEN_VAULT_PATH:-secret/data/directus/platform-notification-service}"
+          _pn_email="${PLATFORM_NOTIFICATION_DIRECTUS_EMAIL:-svc-platform-notification-service@svc.local}"
+
+          if ! _has_user_col "token"; then
+            echo "⚠️ directus_users.token column not found; cannot provision platform notification Directus token."
+            return 0
+          fi
+
+          _pn_role_name_sql="$(printf '%s' "${_pn_role_name}" | sed "s/'/''/g")"
+          _pn_role_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id FROM directus.directus_roles WHERE name='${_pn_role_name_sql}' LIMIT 1;" || true)"
+          _pn_role_id="$(printf '%s' "${_pn_role_id}" | tr -d '\r')"
+          if [ -z "${_pn_role_id:-}" ] || [ "${_pn_role_id}" = "null" ]; then
+            _pn_role_id="$(cat /proc/sys/kernel/random/uuid)"
+            _pn_role_desc_sql="$(printf '%s' "Service role for platform notification delivery" | sed "s/'/''/g")"
+            _pn_role_cols="id,name"
+            _pn_role_vals="'${_pn_role_id}','${_pn_role_name_sql}'"
+            if _has_role_col "description"; then _pn_role_cols="${_pn_role_cols},description"; _pn_role_vals="${_pn_role_vals},'${_pn_role_desc_sql}'"; fi
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; INSERT INTO directus_roles (${_pn_role_cols}) VALUES (${_pn_role_vals});"
+            echo "✅ Created Directus role '${_pn_role_name}' (id=${_pn_role_id})"
+          fi
+
+          _pn_policy_id="${_pn_role_id}"
+          if [ "${POLICY_TABLE_EXISTS:-0}" = "1" ]; then
+            _pn_policy_name_sql="$(printf '%s' "${_pn_policy_name}" | sed "s/'/''/g")"
+            _pn_policy_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT id FROM directus.directus_policies WHERE name='${_pn_policy_name_sql}' LIMIT 1;" || true)"
+            _pn_policy_id="$(printf '%s' "${_pn_policy_id}" | tr -d '\r')"
+            if [ -z "${_pn_policy_id:-}" ] || [ "${_pn_policy_id}" = "null" ]; then
+              _pn_policy_id="$(cat /proc/sys/kernel/random/uuid)"
+              _pn_policy_desc_sql="$(printf '%s' "Least-privilege policy for platform notification service" | sed "s/'/''/g")"
+              _pn_policy_cols="id,name"
+              _pn_policy_vals="'${_pn_policy_id}','${_pn_policy_name_sql}'"
+              if _has_policy_col "description"; then _pn_policy_cols="${_pn_policy_cols},description"; _pn_policy_vals="${_pn_policy_vals},'${_pn_policy_desc_sql}'"; fi
+              if _has_policy_col "icon"; then _pn_policy_cols="${_pn_policy_cols},icon"; _pn_policy_vals="${_pn_policy_vals},'notifications'"; fi
+              if _has_policy_col "admin_access"; then _pn_policy_cols="${_pn_policy_cols},admin_access"; _pn_policy_vals="${_pn_policy_vals},false"; fi
+              if _has_policy_col "app_access"; then _pn_policy_cols="${_pn_policy_cols},app_access"; _pn_policy_vals="${_pn_policy_vals},false"; fi
+              if _has_policy_col "enforce_tfa"; then _pn_policy_cols="${_pn_policy_cols},enforce_tfa"; _pn_policy_vals="${_pn_policy_vals},false"; fi
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                "SET search_path TO directus, public; INSERT INTO directus_policies (${_pn_policy_cols}) VALUES (${_pn_policy_vals});"
+              echo "✅ Created Directus policy '${_pn_policy_name}' (id=${_pn_policy_id})"
+            fi
+          fi
+
+          if [ "${ACCESS_TABLE_EXISTS:-0}" = "1" ] && [ "${POLICY_TABLE_EXISTS:-0}" = "1" ]; then
+            _pn_role_id_sql="$(printf '%s' "${_pn_role_id}" | sed "s/'/''/g")"
+            _pn_policy_id_sql="$(printf '%s' "${_pn_policy_id}" | sed "s/'/''/g")"
+            _pn_access_where="policy='${_pn_policy_id_sql}'"
+            if _has_access_col "role"; then _pn_access_where="${_pn_access_where} AND role='${_pn_role_id_sql}'"; fi
+            if _has_access_col "user"; then _pn_access_where="${_pn_access_where} AND \"user\" IS NULL"; fi
+            _pn_access_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+              "SELECT 1 FROM directus.directus_access WHERE ${_pn_access_where} LIMIT 1;" || true)"
+            _pn_access_exists="$(printf '%s' "${_pn_access_exists}" | tr -d '\r')"
+            if [ "${_pn_access_exists}" != "1" ]; then
+              _pn_access_cols="id,policy"
+              _pn_access_vals="'$(cat /proc/sys/kernel/random/uuid)','${_pn_policy_id_sql}'"
+              if _has_access_col "role"; then _pn_access_cols="${_pn_access_cols},role"; _pn_access_vals="${_pn_access_vals},'${_pn_role_id_sql}'"; fi
+              if _has_access_col "user"; then _pn_access_cols="${_pn_access_cols},\"user\""; _pn_access_vals="${_pn_access_vals},NULL"; fi
+              if _has_access_col "sort"; then _pn_access_cols="${_pn_access_cols},sort"; _pn_access_vals="${_pn_access_vals},NULL"; fi
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                "SET search_path TO directus, public; INSERT INTO directus_access (${_pn_access_cols}) VALUES (${_pn_access_vals});"
+              echo "✅ Linked role '${_pn_role_name}' to policy '${_pn_policy_name}'"
+            fi
+          fi
+
+          _pn_token=""
+          _pn_write_vault_token="0"
+          _pn_vault_code="$(curl -sS -o /tmp/platform-notification-directus-token.json -w '%{http_code}' \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" "${VAULT_ADDR}/v1/${_pn_token_vault_path}" || true)"
+          if [ "${_pn_vault_code}" = "200" ]; then
+            _pn_token="$(jq -r '.data.data.token // empty' /tmp/platform-notification-directus-token.json 2>/dev/null || true)"
+          else
+            _pn_write_vault_token="1"
+          fi
+
+          _pn_email_sql="$(printf '%s' "${_pn_email}" | sed "s/'/''/g")"
+          _pn_user_id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id FROM directus.directus_users WHERE email='${_pn_email_sql}' LIMIT 1;" || true)"
+          _pn_user_id="$(printf '%s' "${_pn_user_id}" | tr -d '\r')"
+          if [ -z "${_pn_token:-}" ] || [ "${_pn_token}" = "null" ]; then
+            if [ -n "${_pn_user_id:-}" ] && [ "${_pn_user_id}" != "null" ]; then
+              _pn_user_id_sql="$(printf '%s' "${_pn_user_id}" | sed "s/'/''/g")"
+              _pn_token="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+                "SELECT token FROM directus.directus_users WHERE id='${_pn_user_id_sql}' LIMIT 1;" || true)"
+              _pn_token="$(printf '%s' "${_pn_token}" | tr -d '\r')"
+            fi
+          fi
+          if [ -z "${_pn_token:-}" ] || [ "${_pn_token}" = "null" ]; then
+            _pn_token="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
+            _pn_write_vault_token="1"
+          fi
+
+          if [ "${_pn_write_vault_token}" = "1" ]; then
+            _pn_token_payload="$(jq -nc --arg t "${_pn_token}" '{data:{token:$t}}')"
+            _pn_write_code="$(curl -sS -o /tmp/platform-notification-directus-token-write.json -w '%{http_code}' -X POST \
+              -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+              -d "${_pn_token_payload}" "${VAULT_ADDR}/v1/${_pn_token_vault_path}" || true)"
+            if [ "${_pn_write_code}" = "200" ] || [ "${_pn_write_code}" = "204" ]; then
+              echo "✅ Platform notification Directus token stored in Vault (${_pn_token_vault_path})"
+            else
+              echo "⚠️ Failed to store platform notification Directus token in Vault (HTTP ${_pn_write_code})"
+            fi
+          fi
+
+          _pn_role_id_sql="$(printf '%s' "${_pn_role_id}" | sed "s/'/''/g")"
+          _pn_token_sql="$(printf '%s' "${_pn_token}" | sed "s/'/''/g")"
+          if [ -z "${_pn_user_id:-}" ] || [ "${_pn_user_id}" = "null" ]; then
+            _pn_user_id="$(cat /proc/sys/kernel/random/uuid)"
+            _pn_user_cols="id,email"
+            _pn_user_vals="'${_pn_user_id}','${_pn_email_sql}'"
+            if _has_user_col "role"; then _pn_user_cols="${_pn_user_cols},role"; _pn_user_vals="${_pn_user_vals},'${_pn_role_id_sql}'"; fi
+            if _has_user_col "token"; then _pn_user_cols="${_pn_user_cols},token"; _pn_user_vals="${_pn_user_vals},'${_pn_token_sql}'"; fi
+            if _has_user_col "status"; then _pn_user_cols="${_pn_user_cols},status"; _pn_user_vals="${_pn_user_vals},'active'"; fi
+            if _has_user_col "first_name"; then _pn_user_cols="${_pn_user_cols},first_name"; _pn_user_vals="${_pn_user_vals},'svc'"; fi
+            if _has_user_col "last_name"; then _pn_user_cols="${_pn_user_cols},last_name"; _pn_user_vals="${_pn_user_vals},'platform-notification-service'"; fi
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; INSERT INTO directus_users (${_pn_user_cols}) VALUES (${_pn_user_vals});"
+            echo "✅ Created platform notification service user ${_pn_email}"
+          else
+            _pn_user_id_sql="$(printf '%s' "${_pn_user_id}" | sed "s/'/''/g")"
+            _pn_update_sets=""
+            if _has_user_col "role"; then _pn_update_sets="${_pn_update_sets},role='${_pn_role_id_sql}'"; fi
+            if _has_user_col "token"; then _pn_update_sets="${_pn_update_sets},token='${_pn_token_sql}'"; fi
+            if _has_user_col "status"; then _pn_update_sets="${_pn_update_sets},status='active'"; fi
+            if [ -n "${_pn_update_sets:-}" ]; then
+              psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+                "SET search_path TO directus, public; UPDATE directus_users SET ${_pn_update_sets#,} WHERE id='${_pn_user_id_sql}';"
+            fi
+            echo "✅ Updated platform notification service user ${_pn_email}"
+          fi
+
+          _pn_permissions_json="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+          _pn_saved_role_name="${role_name:-}"
+          role_name="${_pn_policy_name}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_organizations" "read" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_apps" "read" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_requests" "read" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_requests" "create" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_requests" "update" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_browser_subscriptions" "read" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_browser_subscriptions" "create" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_browser_subscriptions" "update" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_delivery_attempts" "read" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_delivery_attempts" "create" "${_pn_permissions_json}"
+          role_name="${_pn_saved_role_name}"
+        }
+
+        _ensure_platform_notification_directus_identity
     
         DIRECTUS_API_BASE="http://127.0.0.1:8055"
         DIRECTUS_ACCESS_TOKEN=""
