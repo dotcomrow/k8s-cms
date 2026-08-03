@@ -2405,11 +2405,11 @@ data:
          id UUID PRIMARY KEY, \
          source TEXT NOT NULL DEFAULT 'internal-application-mfe', \
          browser_installation_id TEXT NULL, \
-         endpoint TEXT NOT NULL, \
-         endpoint_hash TEXT NOT NULL, \
+         endpoint TEXT NULL, \
+         endpoint_hash TEXT NULL, \
          expiration_time TIMESTAMPTZ NULL, \
-         p256dh TEXT NOT NULL, \
-         auth TEXT NOT NULL, \
+         p256dh TEXT NULL, \
+         auth TEXT NULL, \
          user_id TEXT NULL, \
          user_email TEXT NULL, \
          user_phone TEXT NULL, \
@@ -2447,6 +2447,10 @@ data:
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN source SET DEFAULT 'internal-application-mfe'; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN endpoint DROP NOT NULL; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN endpoint_hash DROP NOT NULL; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN p256dh DROP NOT NULL; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN auth DROP NOT NULL; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN permission SET DEFAULT 'granted'; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN capabilities_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN fallback_channels_json SET DEFAULT '[]'::jsonb; \
