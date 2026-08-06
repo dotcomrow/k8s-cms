@@ -198,6 +198,7 @@ spec:
               path "secret/data/directus/keys"                     { capabilities = ["read"] }
               path "secret/data/directus/gravitee"                 { capabilities = ["read"] }
               path "secret/data/directus/gravitee/clients/*"        { capabilities = ["read"] }
+              path "secret/data/directus/gravitee/clients/+/+"      { capabilities = ["read"] }
               path "secret/data/directus/gravitee/openapi/*"        { capabilities = ["read"] }
               path "secret/data/cms-content-resolver"               { capabilities = ["read"] }
               path "secret/data/runtime-status-service"              { capabilities = ["read"] }

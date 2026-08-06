@@ -9437,6 +9437,7 @@ data:
           role_name="$(printf '%s' "$site" | jq -r '.role_name // .role // empty')"
           directus_client_id_vault_path="$(printf '%s' "$site" | jq -r '.directus_client_id_vault_path // empty' 2>/dev/null || true)"
           directus_client_id_vault_field="$(printf '%s' "$site" | jq -r '.directus_client_id_vault_field // "value"' 2>/dev/null || true)"
+          directus_client_scoped_aliases="$(printf '%s' "$site" | jq -r '.directus_client_scoped_aliases[]? // empty' 2>/dev/null || true)"
     
           if [ -z "${client_key:-}" ] || [ "${client_key}" = "null" ]; then
             echo "⚠️  site entry missing client_key; skipping (site_key=${site_key})"
@@ -9534,6 +9535,7 @@ data:
           fi
 
           client_keys_to_bind="$(printf '%s\n%s\n' "${client_key}" "${dynamic_client_key:-}" | awk 'NF && !seen[$0]++')"
+          scoped_client_keys_to_bind="$(printf '%s\n%s\n%s\n' "${client_key}" "${dynamic_client_key:-}" "${directus_client_scoped_aliases:-}" | awk 'NF && !seen[$0]++')"
     
           # Ensure Directus role exists (create if missing).
           role_name_sql="$(printf '%s' "$role_name" | sed "s/'/''/g")"
@@ -9598,6 +9600,40 @@ data:
           # column is unique.
           if _has_user_col "token"; then
             token_sql="$(printf '%s' "$SITE_TOKEN" | sed "s/'/''/g")"
+            printf '%s\n' "${scoped_client_keys_to_bind}" | while IFS= read -r scoped_bind_client_key; do
+              scoped_bind_client_key="$(printf '%s' "${scoped_bind_client_key:-}" | tr -d '\r')"
+              if [ -z "${scoped_bind_client_key:-}" ] || [ "${scoped_bind_client_key}" = "null" ]; then
+                continue
+              fi
+              if ! printf '%s' "${scoped_bind_client_key}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+                echo "⚠️  invalid scoped bind client_key '${scoped_bind_client_key}' for site_key='${site_key}'; skipping"
+                continue
+              fi
+
+              scoped_bind_vault_path="secret/data/directus/gravitee/clients/${site_realm}/${scoped_bind_client_key}"
+              scoped_bind_code="$(curl -sS -o /tmp/site-token-scoped-bind.json -w '%{http_code}' -H "X-Vault-Token: ${VAULT_TOKEN}" \
+                "${VAULT_ADDR}/v1/${scoped_bind_vault_path}" || true)"
+              scoped_bind_token=""
+              if [ "${scoped_bind_code}" = "200" ]; then
+                scoped_bind_token="$(jq -r '.data.data.token // empty' /tmp/site-token-scoped-bind.json 2>/dev/null || true)"
+              fi
+              if [ -z "${scoped_bind_token:-}" ] || [ "${scoped_bind_token}" = "null" ] || [ "${scoped_bind_token}" != "${SITE_TOKEN}" ]; then
+                payload="$(jq -nc --arg t "$SITE_TOKEN" '{data:{token:$t}}')"
+                scoped_bind_write_code="$(curl -sS -o /tmp/site-token-scoped-bind-write.json -w '%{http_code}' -X POST \
+                  -H "X-Vault-Token: ${VAULT_TOKEN}" -H "Content-Type: application/json" \
+                  -d "$payload" "${VAULT_ADDR}/v1/${scoped_bind_vault_path}" || true)"
+                if [ "${scoped_bind_write_code}" != "200" ] && [ "${scoped_bind_write_code}" != "204" ]; then
+                  echo "⚠️  failed to bind scoped Vault token for client_key=${site_realm}/${scoped_bind_client_key} (HTTP ${scoped_bind_write_code})"
+                  continue
+                fi
+                if [ -z "${scoped_bind_token:-}" ] || [ "${scoped_bind_token}" = "null" ]; then
+                  echo "🔐 Vault token created for scoped client_key=${site_realm}/${scoped_bind_client_key}"
+                else
+                  echo "🔐 Vault token updated for scoped client_key=${site_realm}/${scoped_bind_client_key}"
+                fi
+              fi
+            done
+
             printf '%s\n' "${client_keys_to_bind}" | while IFS= read -r bind_client_key; do
               bind_client_key="$(printf '%s' "${bind_client_key:-}" | tr -d '\r')"
               if [ -z "${bind_client_key:-}" ] || [ "${bind_client_key}" = "null" ]; then

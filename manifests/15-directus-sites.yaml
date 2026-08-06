@@ -32,6 +32,13 @@ data:
         homepage_theme_package_key: theme-clear
         client_key: cms-site-internal
         role_name: cms-site-internal
+        # Hasura tokens minted by the internal auth gateway are issued through
+        # auth-gateway-exchange for the GraphQL audience. Bind those aliases only
+        # inside the internal issuer scope so external-realm tokens cannot inherit
+        # internal Directus permissions.
+        directus_client_scoped_aliases:
+          - auth-gateway-exchange
+          - graphql-api
         # These endpoints seed platform_apps when missing. Once an app row exists,
         # the app row is authoritative for generated refresh flows.
         cache_refresh:

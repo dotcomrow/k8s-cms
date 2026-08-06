@@ -76,6 +76,16 @@ data:
     def _is_client_key(value) -> bool:
         return isinstance(value, str) and _client_id_re.match(value) is not None
 
+    def _is_token_lookup_key(value) -> bool:
+        if not isinstance(value, str):
+            return False
+        parts = value.split("/")
+        if len(parts) == 1:
+            return _is_client_key(parts[0])
+        if len(parts) == 2 and parts[0] in ("internal", "external"):
+            return _is_client_key(parts[1])
+        return False
+
     def _client_key_aliases(value):
         if not _is_client_key(value):
             return []
@@ -86,6 +96,28 @@ data:
             if _is_client_key(base):
                 aliases.append(base)
         return aliases
+
+    def _realm_from_issuer(decoded: dict) -> str:
+        issuer = decoded.get("iss")
+        if issuer == INTERNAL_ISSUER:
+            return "internal"
+        if issuer == EXTERNAL_ISSUER:
+            return "external"
+        return ""
+
+    def _token_lookup_keys(realm: str, client_key: str):
+        keys = []
+        for alias in _client_key_aliases(client_key):
+            if realm:
+                keys.append(f"{realm}/{alias}")
+            keys.append(alias)
+        out = []
+        seen = set()
+        for key in keys:
+            if key and key not in seen:
+                out.append(key)
+                seen.add(key)
+        return out
 
     def _audience_matches(actual, requested: str) -> bool:
         if not requested:
@@ -159,17 +191,19 @@ data:
 
         return ""
 
-    def _get_directus_token_for_client(client_key: str) -> str:
+    def _get_directus_token_for_lookup_key(lookup_key: str) -> str:
+        if not _is_token_lookup_key(lookup_key):
+            return ""
         now = time.time()
         with _token_lock:
-            cached = _token_cache["by_client"].get(client_key)
+            cached = _token_cache["by_client"].get(lookup_key)
             if cached and now - cached.get("loaded_at", 0.0) < TOKEN_CACHE_SECONDS:
                 return cached.get("token", "")
 
-        token = _extract_token(_vault_read(f"{DIRECTUS_TOKEN_CLIENT_PREFIX}{client_key}"))
+        token = _extract_token(_vault_read(f"{DIRECTUS_TOKEN_CLIENT_PREFIX}{lookup_key}"))
 
         with _token_lock:
-            _token_cache["by_client"][client_key] = {"token": token, "loaded_at": now}
+            _token_cache["by_client"][lookup_key] = {"token": token, "loaded_at": now}
         return token
 
     def _load_jwks(jwks_url: str):
@@ -272,10 +306,15 @@ data:
                 detail="Subject token missing client identifier",
             )
 
-        directus_token = _get_directus_token_for_client(client_key)
+        directus_token = ""
+        realm = _realm_from_issuer(decoded)
+        for token_key in _token_lookup_keys(realm, client_key):
+            directus_token = _get_directus_token_for_lookup_key(token_key)
+            if directus_token:
+                break
         if not directus_token and AUDIENCE_TOKEN_FALLBACK_ENABLED:
-            for token_key in _client_key_aliases(audience):
-                directus_token = _get_directus_token_for_client(token_key)
+            for token_key in _token_lookup_keys(realm, audience):
+                directus_token = _get_directus_token_for_lookup_key(token_key)
                 if directus_token:
                     break
         if not directus_token:
@@ -337,7 +376,7 @@ spec:
   template:
     metadata:
       annotations:
-        directus-auth-bridge.suncoast.systems/config-version: "2026-06-25-graphql-audience-aliases"
+        directus-auth-bridge.suncoast.systems/config-version: "2026-08-06-issuer-scoped-client-tokens"
       labels:
         app: directus-auth-bridge
     spec:
