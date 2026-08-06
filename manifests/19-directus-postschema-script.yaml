@@ -561,7 +561,9 @@ data:
            ('platform_app_operation_steps'), \
            ('platform_notification_requests'), \
            ('platform_notification_delivery_attempts'), \
-           ('platform_notification_browser_subscriptions') \
+           ('platform_notification_browser_subscriptions'), \
+           ('platform_notification_templates'), \
+           ('platform_notification_template_assets') \
        ) \
        SELECT COALESCE(string_agg(required.table_name, ',' ORDER BY required.table_name), '') \
        FROM required \
@@ -672,13 +674,23 @@ data:
              ('platform_notification_requests','result_json'), \
              ('platform_notification_requests','requested_channels_json'), \
              ('platform_notification_requests','recipients_json'), \
+             ('platform_notification_requests','notification_key'), \
+             ('platform_notification_requests','template_parameters_json'), \
+             ('platform_notification_requests','rendered_message_json'), \
              ('platform_notification_delivery_attempts','notification_request_id'), \
              ('platform_notification_delivery_attempts','channel'), \
              ('platform_notification_delivery_attempts','status'), \
              ('platform_notification_browser_subscriptions','endpoint_hash'), \
              ('platform_notification_browser_subscriptions','browser_installation_id'), \
              ('platform_notification_browser_subscriptions','permission'), \
-             ('platform_notification_browser_subscriptions','fallback_channels_json') \
+             ('platform_notification_browser_subscriptions','fallback_channels_json'), \
+             ('platform_notification_templates','notification_key'), \
+             ('platform_notification_templates','subject_template'), \
+             ('platform_notification_templates','body_template'), \
+             ('platform_notification_templates','required_parameters_json'), \
+             ('platform_notification_template_assets','template_id'), \
+             ('platform_notification_template_assets','asset_key'), \
+             ('platform_notification_template_assets','asset_type') \
          ) \
          SELECT COALESCE(string_agg(required.table_name || '.' || required.column_name, ',' ORDER BY required.table_name, required.column_name), '') \
          FROM required \
@@ -705,7 +717,9 @@ data:
              ('platform_app_operation_steps'), \
              ('platform_notification_requests'), \
              ('platform_notification_delivery_attempts'), \
-             ('platform_notification_browser_subscriptions') \
+             ('platform_notification_browser_subscriptions'), \
+             ('platform_notification_templates'), \
+             ('platform_notification_template_assets') \
          ) \
          SELECT COALESCE(string_agg(required.collection, ',' ORDER BY required.collection), '') \
          FROM required \
@@ -729,7 +743,13 @@ data:
              ('platform_app_operations','status'), \
              ('platform_app_operation_steps','operation_id'), \
              ('platform_app_operation_steps','step_key'), \
-             ('platform_app_operation_steps','status') \
+             ('platform_app_operation_steps','status'), \
+             ('platform_notification_templates','notification_key'), \
+             ('platform_notification_templates','status'), \
+             ('platform_notification_templates','subject_template'), \
+             ('platform_notification_templates','body_template'), \
+             ('platform_notification_template_assets','asset_key'), \
+             ('platform_notification_template_assets','asset_type') \
          ) \
          SELECT COALESCE(string_agg(required.collection || '.' || required.field, ',' ORDER BY required.collection, required.field), '') \
          FROM required \
@@ -772,6 +792,15 @@ data:
            UNION ALL \
            SELECT policy_name, 'platform_apps', 'delete' \
            FROM (VALUES ('cms-site-internal'), ('cms-site-external')) policies(policy_name) \
+           UNION ALL \
+           SELECT 'cms-site-internal', 'platform_notification_browser_subscriptions', 'read' \
+           UNION ALL \
+           SELECT 'cms-site-internal', collection, action \
+           FROM (VALUES \
+             ('platform_notification_templates'), \
+             ('platform_notification_template_assets') \
+           ) collections(collection) \
+           CROSS JOIN (VALUES ('read'), ('create'), ('update'), ('delete')) template_actions(action) \
          ) \
          SELECT COALESCE(string_agg(required.policy_name || ':' || required.collection || ':' || required.action, ',' ORDER BY required.policy_name, required.collection, required.action), '') \
          FROM required \
@@ -2274,12 +2303,15 @@ data:
          organization_id UUID NULL, \
          app_id UUID NULL, \
          actor_user_id TEXT NULL, \
+         notification_key TEXT NULL, \
          template_key TEXT NULL, \
          locale TEXT NULL, \
          subject_hint TEXT NULL, \
          body_hint TEXT NULL, \
          requested_channels_json JSONB NOT NULL DEFAULT '[]'::jsonb, \
          recipients_json JSONB NOT NULL DEFAULT '[]'::jsonb, \
+         template_parameters_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         rendered_message_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          data_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          context_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
@@ -2307,12 +2339,15 @@ data:
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS organization_id UUID; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS app_id UUID; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS actor_user_id TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS notification_key TEXT; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS template_key TEXT; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS locale TEXT; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS subject_hint TEXT; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS body_hint TEXT; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS requested_channels_json JSONB; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS recipients_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS template_parameters_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS rendered_message_json JSONB; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS data_json JSONB; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS context_json JSONB; \
        ALTER TABLE IF EXISTS platform_notification_requests ADD COLUMN IF NOT EXISTS metadata_json JSONB; \
@@ -2334,6 +2369,8 @@ data:
        ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN status SET DEFAULT 'queued'; \
        ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN requested_channels_json SET DEFAULT '[]'::jsonb; \
        ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN recipients_json SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN template_parameters_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN rendered_message_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN data_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN context_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS platform_notification_requests ALTER COLUMN metadata_json SET DEFAULT '{}'::jsonb; \
@@ -2345,6 +2382,8 @@ data:
        UPDATE platform_notification_requests SET status = 'queued' WHERE status IS NULL OR BTRIM(status) = ''; \
        UPDATE platform_notification_requests SET requested_channels_json = '[]'::jsonb WHERE requested_channels_json IS NULL OR jsonb_typeof(requested_channels_json) <> 'array'; \
        UPDATE platform_notification_requests SET recipients_json = '[]'::jsonb WHERE recipients_json IS NULL OR jsonb_typeof(recipients_json) <> 'array'; \
+       UPDATE platform_notification_requests SET template_parameters_json = '{}'::jsonb WHERE template_parameters_json IS NULL OR jsonb_typeof(template_parameters_json) <> 'object'; \
+       UPDATE platform_notification_requests SET rendered_message_json = '{}'::jsonb WHERE rendered_message_json IS NULL OR jsonb_typeof(rendered_message_json) <> 'object'; \
        UPDATE platform_notification_requests SET data_json = '{}'::jsonb WHERE data_json IS NULL OR jsonb_typeof(data_json) <> 'object'; \
        UPDATE platform_notification_requests SET context_json = '{}'::jsonb WHERE context_json IS NULL OR jsonb_typeof(context_json) <> 'object'; \
        UPDATE platform_notification_requests SET metadata_json = '{}'::jsonb WHERE metadata_json IS NULL OR jsonb_typeof(metadata_json) <> 'object'; \
@@ -2352,6 +2391,7 @@ data:
        UPDATE platform_notification_requests SET requested_at = now() WHERE requested_at IS NULL; \
        UPDATE platform_notification_requests SET date_created = now() WHERE date_created IS NULL; \
        CREATE INDEX IF NOT EXISTS platform_notification_requests_app_idx ON platform_notification_requests (app_id, date_created DESC); \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_notification_key_idx ON platform_notification_requests (notification_key, date_created DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_requests_status_idx ON platform_notification_requests (status, priority, date_created DESC); \
        CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_requests_idempotency_unique ON platform_notification_requests (source, idempotency_key) WHERE idempotency_key IS NOT NULL AND BTRIM(idempotency_key) <> ''; \
        CREATE TABLE IF NOT EXISTS platform_notification_delivery_attempts ( \
@@ -2470,6 +2510,120 @@ data:
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_installation_idx ON platform_notification_browser_subscriptions (browser_installation_id, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_idx ON platform_notification_browser_subscriptions (user_id, status, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_app_idx ON platform_notification_browser_subscriptions (app_id, status, last_seen_at DESC); \
+       CREATE TABLE IF NOT EXISTS platform_notification_templates ( \
+         id UUID PRIMARY KEY, \
+         notification_key TEXT NOT NULL, \
+         name TEXT NOT NULL, \
+         description TEXT NULL, \
+         status TEXT NOT NULL DEFAULT 'draft', \
+         locale TEXT NULL DEFAULT 'en', \
+         channels_json JSONB NOT NULL DEFAULT '[]'::jsonb, \
+         required_parameters_json JSONB NOT NULL DEFAULT '[]'::jsonb, \
+         sample_parameters_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         subject_template TEXT NULL, \
+         title_template TEXT NULL, \
+         body_template TEXT NULL, \
+         text_template TEXT NULL, \
+         html_template TEXT NULL, \
+         data_template_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         options_template_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         assets_json JSONB NOT NULL DEFAULT '[]'::jsonb, \
+         stylesheets_json JSONB NOT NULL DEFAULT '[]'::jsonb, \
+         metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS notification_key TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS name TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS description TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS locale TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS channels_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS required_parameters_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS sample_parameters_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS subject_template TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS title_template TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS body_template TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS text_template TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS html_template TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS data_template_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS options_template_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS assets_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS stylesheets_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS metadata_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_notification_templates ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN locale SET DEFAULT 'en'; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN channels_json SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN required_parameters_json SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN sample_parameters_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN data_template_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN options_template_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN assets_json SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN stylesheets_json SET DEFAULT '[]'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN metadata_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_templates ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE platform_notification_templates SET status = 'draft' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE platform_notification_templates SET locale = 'en' WHERE locale IS NULL OR BTRIM(locale) = ''; \
+       UPDATE platform_notification_templates SET channels_json = '[]'::jsonb WHERE channels_json IS NULL OR jsonb_typeof(channels_json) <> 'array'; \
+       UPDATE platform_notification_templates SET required_parameters_json = '[]'::jsonb WHERE required_parameters_json IS NULL OR jsonb_typeof(required_parameters_json) NOT IN ('array', 'object'); \
+       UPDATE platform_notification_templates SET sample_parameters_json = '{}'::jsonb WHERE sample_parameters_json IS NULL OR jsonb_typeof(sample_parameters_json) <> 'object'; \
+       UPDATE platform_notification_templates SET data_template_json = '{}'::jsonb WHERE data_template_json IS NULL OR jsonb_typeof(data_template_json) <> 'object'; \
+       UPDATE platform_notification_templates SET options_template_json = '{}'::jsonb WHERE options_template_json IS NULL OR jsonb_typeof(options_template_json) <> 'object'; \
+       UPDATE platform_notification_templates SET assets_json = '[]'::jsonb WHERE assets_json IS NULL OR jsonb_typeof(assets_json) NOT IN ('array', 'object'); \
+       UPDATE platform_notification_templates SET stylesheets_json = '[]'::jsonb WHERE stylesheets_json IS NULL OR jsonb_typeof(stylesheets_json) NOT IN ('array', 'object'); \
+       UPDATE platform_notification_templates SET metadata_json = '{}'::jsonb WHERE metadata_json IS NULL OR jsonb_typeof(metadata_json) <> 'object'; \
+       UPDATE platform_notification_templates SET date_created = now() WHERE date_created IS NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_templates_key_locale_idx ON platform_notification_templates (notification_key, locale, status); \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_templates_key_active_unique ON platform_notification_templates (notification_key, locale) WHERE status IN ('active', 'published') AND locale IS NOT NULL; \
+       CREATE TABLE IF NOT EXISTS platform_notification_template_assets ( \
+         id UUID PRIMARY KEY, \
+         template_id UUID NULL, \
+         notification_key TEXT NULL, \
+         asset_key TEXT NOT NULL, \
+         asset_type TEXT NOT NULL DEFAULT 'generic', \
+         status TEXT NOT NULL DEFAULT 'active', \
+         mime_type TEXT NULL, \
+         url TEXT NULL, \
+         directus_file UUID NULL, \
+         content TEXT NULL, \
+         metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         sort INTEGER NOT NULL DEFAULT 0, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS template_id UUID; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS notification_key TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS asset_key TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS asset_type TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS mime_type TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS url TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS directus_file UUID; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS content TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS metadata_json JSONB; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS sort INTEGER; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ALTER COLUMN asset_type SET DEFAULT 'generic'; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ALTER COLUMN status SET DEFAULT 'active'; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ALTER COLUMN metadata_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ALTER COLUMN sort SET DEFAULT 0; \
+       ALTER TABLE IF EXISTS platform_notification_template_assets ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE platform_notification_template_assets SET asset_type = 'generic' WHERE asset_type IS NULL OR BTRIM(asset_type) = ''; \
+       UPDATE platform_notification_template_assets SET status = 'active' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE platform_notification_template_assets SET metadata_json = '{}'::jsonb WHERE metadata_json IS NULL OR jsonb_typeof(metadata_json) <> 'object'; \
+       UPDATE platform_notification_template_assets SET sort = 0 WHERE sort IS NULL; \
+       UPDATE platform_notification_template_assets SET date_created = now() WHERE date_created IS NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_template_assets_template_idx ON platform_notification_template_assets (template_id, sort); \
+       CREATE INDEX IF NOT EXISTS platform_notification_template_assets_key_idx ON platform_notification_template_assets (notification_key, asset_key); \
+       INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
+       SELECT '00000000-0000-4000-8000-000000000101'::uuid, 'platform.deploy.operation-step', 'Platform deployment step', 'Deployment operation step status notification used by the platform deploy service.', 'published', 'en', jsonb_build_array('browser_push', 'email', 'sms'), jsonb_build_array('operation_id', 'operation_type', 'step_label', 'status', 'message'), jsonb_build_object('operation_id', 'sample-operation-id', 'operation_type', 'redeploy', 'app_id', 'sample-app-id', 'step_key', 'deploy', 'step_label', 'Deploy application', 'status', 'success', 'message', 'Deploy application completed.'), 'Platform {{operation_type}}: {{step_label}} {{status}}', 'Platform {{operation_type}}: {{step_label}} {{status}}', '{{message}}', '{{message}}', NULL, jsonb_build_object('operation_id', '{{operation_id}}', 'operation_type', '{{operation_type}}', 'app_id', '{{app_id}}', 'step_key', '{{step_key}}', 'step_label', '{{step_label}}', 'status', '{{status}}', 'message', '{{message}}', 'error_message', '{{error_message}}'), jsonb_build_object('tag', 'platform-deploy-{{operation_id}}-{{step_key}}-{{status}}', 'ttl_seconds', 3600, 'urgency', 'normal', 'renotify', true), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'platform-deploy-service'), now(), now() \
+       WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.deploy.operation-step' AND COALESCE(locale, '') = 'en'); \
+       INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
+       SELECT '00000000-0000-4000-8000-000000000102'::uuid, 'platform.notification.test.browser-push', 'Browser push delivery test', 'Internal notification page browser push delivery test template.', 'published', 'en', jsonb_build_array('browser_push'), jsonb_build_array('subject', 'body'), jsonb_build_object('subject', 'Notification delivery test', 'body', 'This is a test notification from the internal operations page.', 'target_type', 'current_browser'), '{{subject}}', '{{subject}}', '{{body}}', '{{body}}', NULL, jsonb_build_object('test', true, 'app_key', '{{app_key}}', 'realm', '{{realm}}', 'target_type', '{{target_type}}', 'sent_from_url', '{{sent_from_url}}', 'requested_at', '{{requested_at}}'), jsonb_build_object('tag', 'platform-notification-test-{{target_type}}', 'ttl_seconds', 300, 'urgency', 'normal', 'renotify', true), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'internal-application-mfe'), now(), now() \
+       WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.notification.test.browser-push' AND COALESCE(locale, '') = 'en'); \
        DO \$\$ \
        BEGIN \
          IF to_regclass('directus.platform_apps') IS NOT NULL \
@@ -2519,6 +2673,12 @@ data:
             AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_notification_delivery_attempts_request_id_fkey' AND conrelid = to_regclass('directus.platform_notification_delivery_attempts')) \
             AND NOT EXISTS (SELECT 1 FROM platform_notification_delivery_attempts a WHERE a.notification_request_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_notification_requests r WHERE r.id = a.notification_request_id)) THEN \
            ALTER TABLE platform_notification_delivery_attempts ADD CONSTRAINT platform_notification_delivery_attempts_request_id_fkey FOREIGN KEY (notification_request_id) REFERENCES platform_notification_requests(id) ON DELETE CASCADE; \
+         END IF; \
+         IF to_regclass('directus.platform_notification_template_assets') IS NOT NULL \
+            AND to_regclass('directus.platform_notification_templates') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'platform_notification_template_assets_template_id_fkey' AND conrelid = to_regclass('directus.platform_notification_template_assets')) \
+            AND NOT EXISTS (SELECT 1 FROM platform_notification_template_assets a WHERE a.template_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_notification_templates t WHERE t.id = a.template_id)) THEN \
+           ALTER TABLE platform_notification_template_assets ADD CONSTRAINT platform_notification_template_assets_template_id_fkey FOREIGN KEY (template_id) REFERENCES platform_notification_templates(id) ON DELETE CASCADE; \
          END IF; \
          IF to_regclass('directus.platform_notification_browser_subscriptions') IS NOT NULL \
             AND to_regclass('directus.platform_organizations') IS NOT NULL \
@@ -2604,6 +2764,14 @@ data:
          ELSE \
            BEGIN \
              INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_notification_delivery_attempts', 'notification_request_id', 'platform_notification_requests', 'delivery_attempts'); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='platform_notification_template_assets' AND many_field='template_id') THEN \
+           UPDATE directus_relations SET one_collection='platform_notification_templates', one_field='assets' WHERE many_collection='platform_notification_template_assets' AND many_field='template_id'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_notification_template_assets', 'template_id', 'platform_notification_templates', 'assets'); \
            EXCEPTION WHEN unique_violation THEN NULL; \
            END; \
          END IF; \
@@ -2718,6 +2886,8 @@ data:
       _upsert_collection_meta "platform_notification_requests" "notifications" "Validated notification requests accepted by the platform notification service and routed through Kafka/NiFi." "{{event_key}} | {{status}} | {{date_created}}"
       _upsert_collection_meta "platform_notification_delivery_attempts" "outgoing_mail" "Per-channel notification delivery attempt history written by the notification executor." "{{channel}} | {{status}} | {{attempted_at}}"
       _upsert_collection_meta "platform_notification_browser_subscriptions" "notifications_active" "Browser push subscription handles captured by Organization Management for deployment event updates." "{{source}} | {{status}} | {{last_seen_at}}"
+      _upsert_collection_meta "platform_notification_templates" "mark_email_read" "Reusable notification templates resolved by the platform notification service from notification keys and parameters." "{{notification_key}} | {{status}} | {{locale}}"
+      _upsert_collection_meta "platform_notification_template_assets" "attachment" "Images, stylesheets, and other reusable assets associated with platform notification templates." "{{asset_key}} | {{asset_type}} | {{status}}"
 
       if _dc_has_col "display_template"; then
         block_display_template='{{template_scope}}/{{template_group_key}} | {{group_tag}} | {{collection}} -> {{slot}} | #{{sort}}'
@@ -5515,6 +5685,7 @@ data:
       platform_deployment_strategy_choices_json="$(jq -nc '[{"text":"Terraform Cloud","value":"terraform_cloud","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Local Terraform","value":"local_terraform","foreground":"#1D4ED8","background":"#DBEAFE"}]')"
       platform_operation_type_choices_json="$(jq -nc '[{"text":"Create","value":"create","foreground":"#065F46","background":"#D1FAE5"},{"text":"Update","value":"update","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Redeploy","value":"redeploy","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Delete","value":"delete","foreground":"#991B1B","background":"#FEE2E2"},{"text":"Destroy","value":"destroy","foreground":"#92400E","background":"#FEF3C7"}]')"
       platform_operation_status_choices_json="$(jq -nc '[{"text":"Queued","value":"queued","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Running","value":"running","foreground":"#6D28D9","background":"#EDE9FE"},{"text":"Succeeded","value":"succeeded","foreground":"#065F46","background":"#D1FAE5"},{"text":"Failed","value":"failed","foreground":"#991B1B","background":"#FEE2E2"},{"text":"Canceled","value":"canceled","foreground":"#4B5563","background":"#F3F4F6"}]')"
+      platform_notification_template_status_choices_json="$(jq -nc '[{"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"},{"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"},{"text":"Active","value":"active","foreground":"#1D4ED8","background":"#DBEAFE"},{"text":"Archived","value":"archived","foreground":"#991B1B","background":"#FEE2E2"}]')"
       platform_org_status_options_json="$(jq -nc --argjson choices "${platform_org_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_app_status_options_json="$(jq -nc --argjson choices "${platform_app_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_deployment_status_options_json="$(jq -nc --argjson choices "${platform_deployment_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
@@ -5523,9 +5694,11 @@ data:
       platform_deployment_strategy_options_json="$(jq -nc --argjson choices "${platform_deployment_strategy_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_operation_type_options_json="$(jq -nc --argjson choices "${platform_operation_type_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_operation_status_options_json="$(jq -nc --argjson choices "${platform_operation_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      platform_notification_template_status_options_json="$(jq -nc --argjson choices "${platform_notification_template_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_org_relation_options_json="$(jq -nc '{template:"{{name}} ({{organization_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
       platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{site_key}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_operation_relation_options_json="$(jq -nc '{template:"{{operation_type}} | {{status}} | {{date_created}}",enableCreate:false,enableSelect:true,enableLink:true}')"
+      platform_notification_template_relation_options_json="$(jq -nc '{template:"{{notification_key}} ({{locale}} | {{status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_user_relation_options_json="$(jq -nc '{template:"{{first_name}} {{last_name}} <{{email}}>",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_json_options_json="$(jq -nc '{language:"json",lineNumber:true,template:"{}"}')"
       platform_org_key_note_sql="$(printf '%s' 'Stable organization slug used by the platform control plane.' | sed "s/'/''/g")"
@@ -5553,6 +5726,10 @@ data:
       platform_operation_json_note_sql="$(printf '%s' 'Operation payload/result metadata. Do not store secrets here.' | sed "s/'/''/g")"
       platform_operation_log_note_sql="$(printf '%s' 'Short non-secret log excerpt for review/debugging.' | sed "s/'/''/g")"
       platform_operation_step_note_sql="$(printf '%s' 'Detailed deployment step status and sanitized results. Do not store secrets here.' | sed "s/'/''/g")"
+      platform_notification_template_key_note_sql="$(printf '%s' 'Stable notification key accepted by the notification submit API.' | sed "s/'/''/g")"
+      platform_notification_template_note_sql="$(printf '%s' 'Reusable template text rendered by the notification service with request parameters.' | sed "s/'/''/g")"
+      platform_notification_template_json_note_sql="$(printf '%s' 'JSON payload rendered by replacing {{parameter.path}} tokens. Do not store secrets here.' | sed "s/'/''/g")"
+      platform_notification_template_asset_note_sql="$(printf '%s' 'Template asset reference, URL, stylesheet, or inline content stored in Directus.' | sed "s/'/''/g")"
       content_item_content_key_note="Generated from the content item name on save."
       content_item_language_code_note="Default source language code, usually en."
       content_item_reuse_strategy_note="Shared component reuses this same content item and translations when pages are copied. Copy per page creates a separate content item for each copied page."
@@ -8002,6 +8179,35 @@ data:
       _upsert_content_item_field_meta "result_json" "input-code" "full" 11 "${platform_operation_json_note_sql}" "${platform_json_options_json}" false true "platform_app_operation_steps"
       _upsert_content_item_field_meta "error_message" "input-multiline" "full" 12 "${platform_operation_log_note_sql}" "" false true "platform_app_operation_steps"
       _upsert_content_item_field_meta "log_excerpt" "input-multiline" "full" 13 "${platform_operation_log_note_sql}" "" false true "platform_app_operation_steps"
+      _upsert_content_item_field_meta "notification_key" "input" "half" 1 "${platform_notification_template_key_note_sql}" "" true false "platform_notification_templates"
+      _upsert_content_item_field_meta "name" "input" "half" 2 "${platform_notification_template_note_sql}" "" true false "platform_notification_templates"
+      _upsert_content_item_field_meta "status" "select-dropdown" "half" 3 "${status_note_sql}" "${platform_notification_template_status_options_json}" true false "platform_notification_templates"
+      _upsert_content_item_field_meta "locale" "input" "half" 4 "${content_item_language_code_note_sql}" "" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "description" "input-multiline" "full" 5 "${platform_notification_template_note_sql}" "" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "channels_json" "input-code" "full" 6 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "required_parameters_json" "input-code" "full" 7 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "sample_parameters_json" "input-code" "full" 8 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "subject_template" "input" "full" 9 "${platform_notification_template_note_sql}" "" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "title_template" "input" "full" 10 "${platform_notification_template_note_sql}" "" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "body_template" "input-multiline" "full" 11 "${platform_notification_template_note_sql}" "" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "text_template" "input-multiline" "full" 12 "${platform_notification_template_note_sql}" "" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "html_template" "input-rich-text-html" "full" 13 "${platform_notification_template_note_sql}" "" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "data_template_json" "input-code" "full" 14 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "options_template_json" "input-code" "full" 15 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "assets_json" "input-code" "full" 16 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "stylesheets_json" "input-code" "full" 17 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_content_item_field_meta "metadata_json" "input-code" "full" 18 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_templates"
+      _upsert_platform_m2o_field_meta "platform_notification_template_assets" "template_id" 1 "${platform_notification_template_asset_note_sql}" "${platform_notification_template_relation_options_json}" false
+      _upsert_content_item_field_meta "notification_key" "input" "half" 2 "${platform_notification_template_key_note_sql}" "" false false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "asset_key" "input" "half" 3 "${platform_notification_template_asset_note_sql}" "" true false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "asset_type" "input" "half" 4 "${platform_notification_template_asset_note_sql}" "" true false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "status" "select-dropdown" "half" 5 "${status_note_sql}" "${platform_notification_template_status_options_json}" true false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "mime_type" "input" "half" 6 "${platform_notification_template_asset_note_sql}" "" false false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "url" "input" "full" 7 "${platform_notification_template_asset_note_sql}" "" false false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "directus_file" "input" "half" 8 "${platform_notification_template_asset_note_sql}" "" false false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "content" "input-code" "full" 9 "${platform_notification_template_asset_note_sql}" "" false false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "metadata_json" "input-code" "full" 10 "${platform_notification_template_json_note_sql}" "${platform_json_options_json}" false false "platform_notification_template_assets"
+      _upsert_content_item_field_meta "sort" "input" "half" 11 "${platform_notification_template_asset_note_sql}" "" false false "platform_notification_template_assets"
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "id" 90
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_created" 91
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_updated" 92
@@ -8014,6 +8220,12 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "platform_app_operation_steps" "id" 90
       _upsert_hidden_internal_field_meta_dynamic "platform_app_operation_steps" "date_created" 91
       _upsert_hidden_internal_field_meta_dynamic "platform_app_operation_steps" "date_updated" 92
+      _upsert_hidden_internal_field_meta_dynamic "platform_notification_templates" "id" 90
+      _upsert_hidden_internal_field_meta_dynamic "platform_notification_templates" "date_created" 91
+      _upsert_hidden_internal_field_meta_dynamic "platform_notification_templates" "date_updated" 92
+      _upsert_hidden_internal_field_meta_dynamic "platform_notification_template_assets" "id" 90
+      _upsert_hidden_internal_field_meta_dynamic "platform_notification_template_assets" "date_created" 91
+      _upsert_hidden_internal_field_meta_dynamic "platform_notification_template_assets" "date_updated" 92
       _upsert_page_section_group_field_meta "_section_page_settings" "Page (Core Settings)" 1 "article"
       _upsert_page_section_group_field_meta "_section_layout" "Section Layout" 9 "dashboard_customize"
       _upsert_page_section_group_field_meta "_section_theme" "Theme (Family + Mode)" 3 "palette"
@@ -8577,6 +8789,8 @@ data:
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_browser_subscriptions" "update" "${_pn_permissions_json}"
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_delivery_attempts" "read" "${_pn_permissions_json}"
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_delivery_attempts" "create" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_templates" "read" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_template_assets" "read" "${_pn_permissions_json}"
           role_name="${_pn_saved_role_name}"
         }
 
@@ -9563,6 +9777,18 @@ data:
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operation_steps" "read" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operation_steps" "create" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
                 _upsert_policy_action_permission "${POLICY_ID}" "platform_app_operation_steps" "update" "${PLATFORM_REGISTRY_PERMISSIONS_JSON}"
+              fi
+              if [ "${site_key:-}" = "internal" ] || [ "${role_name:-}" = "cms-site-internal" ]; then
+                PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON="$(_json_empty_for_type "${PERMISSIONS_TYPE:-}")"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_browser_subscriptions" "read" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_templates" "read" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_templates" "create" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_templates" "update" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_templates" "delete" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_template_assets" "read" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_template_assets" "create" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_template_assets" "update" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
+                _upsert_policy_action_permission "${POLICY_ID}" "platform_notification_template_assets" "delete" "${PLATFORM_NOTIFICATION_TEMPLATE_PERMISSIONS_JSON}"
               fi
 
               FLOW_TRIGGER_NAME_PROD="CMS Cache Refresh (${site_realm}/${site_app_key}/prod) - Manual"
