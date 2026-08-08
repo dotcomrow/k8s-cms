@@ -301,7 +301,7 @@ data:
       done
     }
 
-    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-07-31.1}"
+    DIRECTUS_POSTSCHEMA_RECONCILE_VERSION="${DIRECTUS_POSTSCHEMA_RECONCILE_VERSION:-2026-08-08.1}"
     DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW="${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE:-false}"
     case "$(printf '%s' "${DIRECTUS_POSTSCHEMA_FORCE_RECONCILE_RAW}" | tr '[:upper:]' '[:lower:]')" in
       1|true|yes|on) DIRECTUS_POSTSCHEMA_FORCE_RECONCILE="true" ;;
@@ -703,6 +703,48 @@ data:
       if [ -n "${MISSING_REQUIRED_COLUMNS:-}" ]; then
         RECON_SCHEMA_HEALTHY="0"
         echo "⚠️ Required CMS columns missing (${MISSING_REQUIRED_COLUMNS}); forcing reconcile despite checksum match."
+      fi
+    fi
+
+    if [ "${RECON_SCHEMA_HEALTHY}" = "1" ]; then
+      MISSING_HISTORY_RETENTION="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "WITH required(table_name, trigger_name) AS ( \
+           VALUES \
+             ('platform_app_operations','platform_app_operations_history_retention_trg'), \
+             ('platform_app_operation_steps','platform_app_operation_steps_history_retention_trg'), \
+             ('platform_notification_requests','platform_notification_requests_history_retention_trg'), \
+             ('platform_notification_delivery_attempts','platform_notification_delivery_attempts_history_retention_trg'), \
+             ('platform_notification_browser_subscriptions','platform_notification_browser_subscriptions_history_retention_trg'), \
+             ('cms_content_translation_jobs','cms_content_translation_jobs_history_retention_trg'), \
+             ('runtime_canary_runs','runtime_canary_runs_history_retention_trg'), \
+             ('runtime_canary_run_steps','runtime_canary_run_steps_history_retention_trg'), \
+             ('schema_patch_runs','schema_patch_runs_history_retention_trg'), \
+             ('directus_activity','directus_activity_history_retention_trg') \
+         ), missing_triggers AS ( \
+           SELECT required.trigger_name AS name \
+           FROM required \
+           WHERE to_regclass('directus.' || required.table_name) IS NOT NULL \
+             AND NOT EXISTS ( \
+               SELECT 1 \
+               FROM pg_trigger t \
+               WHERE t.tgrelid = to_regclass('directus.' || required.table_name) \
+                 AND t.tgname = required.trigger_name \
+                 AND NOT t.tgisinternal \
+             ) \
+         ), missing_function AS ( \
+           SELECT 'function:prune_history_retention' AS name \
+           WHERE to_regprocedure('directus.prune_history_retention()') IS NULL \
+         ) \
+         SELECT COALESCE(string_agg(name, ',' ORDER BY name), '') \
+         FROM ( \
+           SELECT name FROM missing_triggers \
+           UNION ALL \
+           SELECT name FROM missing_function \
+         ) missing;" || true)"
+      MISSING_HISTORY_RETENTION="$(printf '%s' "${MISSING_HISTORY_RETENTION:-}" | tr -d '\r')"
+      if [ -n "${MISSING_HISTORY_RETENTION:-}" ]; then
+        RECON_SCHEMA_HEALTHY="0"
+        echo "⚠️ Required Directus history retention objects missing (${MISSING_HISTORY_RETENTION}); forcing reconcile despite checksum match."
       fi
     fi
 
@@ -4073,6 +4115,111 @@ data:
            EXCEPTION WHEN duplicate_object THEN \
              NULL; \
            END; \
+         END IF; \
+       END \
+       \$\$;"
+
+    echo "🧹 Ensuring Directus history retention triggers exist (14 days)..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       CREATE INDEX IF NOT EXISTS platform_app_operations_retention_idx ON platform_app_operations (COALESCE(finished_at, requested_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS platform_app_operation_steps_retention_idx ON platform_app_operation_steps (COALESCE(finished_at, started_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_retention_idx ON platform_notification_requests (COALESCE(finished_at, requested_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS platform_notification_delivery_attempts_retention_idx ON platform_notification_delivery_attempts (COALESCE(finished_at, attempted_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_retention_idx ON platform_notification_browser_subscriptions (status, COALESCE(date_updated, last_seen_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_retention_idx ON cms_content_translation_jobs (COALESCE(date_completed, date_updated, date_created)); \
+       CREATE INDEX IF NOT EXISTS runtime_canary_runs_retention_idx ON runtime_canary_runs (COALESCE(completed_at, started_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS runtime_canary_run_steps_retention_idx ON runtime_canary_run_steps (COALESCE(completed_at, started_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS schema_patch_runs_retention_idx ON schema_patch_runs (COALESCE(finished_at, started_at)); \
+       DO \$\$ \
+       BEGIN \
+         IF to_regclass('directus.directus_activity') IS NOT NULL THEN \
+           EXECUTE 'CREATE INDEX IF NOT EXISTS directus_activity_retention_idx ON directus.directus_activity (\"timestamp\")'; \
+         END IF; \
+         IF to_regclass('directus.directus_revisions') IS NOT NULL THEN \
+           EXECUTE 'CREATE INDEX IF NOT EXISTS directus_revisions_activity_retention_idx ON directus.directus_revisions (activity)'; \
+         END IF; \
+       END \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.prune_history_retention() RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         cutoff TIMESTAMPTZ := now() - INTERVAL '14 days'; \
+       BEGIN \
+         IF to_regclass('directus.directus_revisions') IS NOT NULL AND to_regclass('directus.directus_activity') IS NOT NULL THEN \
+           DELETE FROM directus.directus_revisions r \
+           USING directus.directus_activity a \
+           WHERE r.activity = a.id \
+             AND a.\"timestamp\" < cutoff; \
+         END IF; \
+         IF to_regclass('directus.directus_activity') IS NOT NULL THEN \
+           DELETE FROM directus.directus_activity \
+           WHERE \"timestamp\" < cutoff; \
+         END IF; \
+         IF to_regclass('directus.platform_app_operation_steps') IS NOT NULL THEN \
+           DELETE FROM directus.platform_app_operation_steps \
+           WHERE COALESCE(finished_at, started_at, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.platform_app_operations') IS NOT NULL THEN \
+           DELETE FROM directus.platform_app_operations \
+           WHERE COALESCE(finished_at, requested_at, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.platform_notification_delivery_attempts') IS NOT NULL THEN \
+           DELETE FROM directus.platform_notification_delivery_attempts \
+           WHERE COALESCE(finished_at, attempted_at, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.platform_notification_requests') IS NOT NULL THEN \
+           DELETE FROM directus.platform_notification_requests \
+           WHERE COALESCE(finished_at, requested_at, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.platform_notification_browser_subscriptions') IS NOT NULL THEN \
+           DELETE FROM directus.platform_notification_browser_subscriptions \
+           WHERE status IN ('superseded', 'expired', 'stale') \
+             AND COALESCE(date_updated, last_seen_at, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.cms_content_translation_jobs') IS NOT NULL THEN \
+           DELETE FROM directus.cms_content_translation_jobs \
+           WHERE COALESCE(date_completed, date_updated, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.runtime_canary_run_steps') IS NOT NULL THEN \
+           DELETE FROM directus.runtime_canary_run_steps \
+           WHERE COALESCE(completed_at, started_at, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.runtime_canary_runs') IS NOT NULL THEN \
+           DELETE FROM directus.runtime_canary_runs \
+           WHERE COALESCE(completed_at, started_at, date_created) < cutoff; \
+         END IF; \
+         IF to_regclass('directus.schema_patch_runs') IS NOT NULL THEN \
+           DELETE FROM directus.schema_patch_runs \
+           WHERE COALESCE(finished_at, started_at) < cutoff; \
+         END IF; \
+         RETURN NULL; \
+       END; \
+       \$\$; \
+       DO \$\$ \
+       BEGIN \
+         DROP TRIGGER IF EXISTS platform_app_operations_history_retention_trg ON directus.platform_app_operations; \
+         CREATE TRIGGER platform_app_operations_history_retention_trg AFTER INSERT OR UPDATE ON directus.platform_app_operations FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS platform_app_operation_steps_history_retention_trg ON directus.platform_app_operation_steps; \
+         CREATE TRIGGER platform_app_operation_steps_history_retention_trg AFTER INSERT OR UPDATE ON directus.platform_app_operation_steps FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS platform_notification_requests_history_retention_trg ON directus.platform_notification_requests; \
+         CREATE TRIGGER platform_notification_requests_history_retention_trg AFTER INSERT OR UPDATE ON directus.platform_notification_requests FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS platform_notification_delivery_attempts_history_retention_trg ON directus.platform_notification_delivery_attempts; \
+         CREATE TRIGGER platform_notification_delivery_attempts_history_retention_trg AFTER INSERT OR UPDATE ON directus.platform_notification_delivery_attempts FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS platform_notification_browser_subscriptions_history_retention_trg ON directus.platform_notification_browser_subscriptions; \
+         CREATE TRIGGER platform_notification_browser_subscriptions_history_retention_trg AFTER INSERT OR UPDATE ON directus.platform_notification_browser_subscriptions FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS cms_content_translation_jobs_history_retention_trg ON directus.cms_content_translation_jobs; \
+         CREATE TRIGGER cms_content_translation_jobs_history_retention_trg AFTER INSERT OR UPDATE ON directus.cms_content_translation_jobs FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS runtime_canary_runs_history_retention_trg ON directus.runtime_canary_runs; \
+         CREATE TRIGGER runtime_canary_runs_history_retention_trg AFTER INSERT OR UPDATE ON directus.runtime_canary_runs FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS runtime_canary_run_steps_history_retention_trg ON directus.runtime_canary_run_steps; \
+         CREATE TRIGGER runtime_canary_run_steps_history_retention_trg AFTER INSERT OR UPDATE ON directus.runtime_canary_run_steps FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         DROP TRIGGER IF EXISTS schema_patch_runs_history_retention_trg ON directus.schema_patch_runs; \
+         CREATE TRIGGER schema_patch_runs_history_retention_trg AFTER INSERT OR UPDATE ON directus.schema_patch_runs FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
+         IF to_regclass('directus.directus_activity') IS NOT NULL THEN \
+           DROP TRIGGER IF EXISTS directus_activity_history_retention_trg ON directus.directus_activity; \
+           CREATE TRIGGER directus_activity_history_retention_trg AFTER INSERT OR UPDATE ON directus.directus_activity FOR EACH STATEMENT EXECUTE FUNCTION directus.prune_history_retention(); \
          END IF; \
        END \
        \$\$;"
