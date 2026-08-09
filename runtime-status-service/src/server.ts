@@ -113,7 +113,11 @@ type CanaryStepConfig = {
   type?: string;
   method?: string;
   url?: string;
-  auth?: "none" | "directus";
+  auth?: "none" | "directus" | "internal" | "vault";
+  auth_vault_path?: string;
+  auth_vault_key?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
   expect_status?: number[];
   timeout_ms?: number;
   optional?: boolean;
@@ -156,6 +160,22 @@ function asNumber(value: unknown, fallback: number): number {
   }
   const parsed = Number(asString(value));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  const record = asRecord(value);
+  if (!record) {
+    return {};
+  }
+  const entries: [string, string][] = [];
+  for (const [key, entry] of Object.entries(record)) {
+    const headerName = asString(key);
+    const headerValue = asString(entry);
+    if (headerName && headerValue) {
+      entries.push([headerName, headerValue]);
+    }
+  }
+  return Object.fromEntries(entries);
 }
 
 function clampTimeout(value: unknown, fallback: number): number {
@@ -386,13 +406,18 @@ function getStepConfigs(definition: CanaryDefinition): CanaryStepConfig[] {
       if (!key || !url) {
         return null;
       }
+      const auth = asString(raw.auth, "none");
       return {
         key,
         url,
         name: asString(raw.name, key),
         type: asString(raw.type, "http"),
         method: asString(raw.method, "GET").toUpperCase(),
-        auth: asString(raw.auth, "none") === "directus" ? "directus" : "none",
+        auth: auth === "directus" || auth === "internal" || auth === "vault" ? auth : "none",
+        auth_vault_path: asString(raw.auth_vault_path) || asString(raw.authVaultPath),
+        auth_vault_key: asString(raw.auth_vault_key) || asString(raw.authVaultKey, "token"),
+        headers: stringRecord(raw.headers),
+        body: Object.hasOwn(raw, "body") ? raw.body : undefined,
         expect_status: asArray(raw.expect_status)
           .map((entry) => Math.trunc(asNumber(entry, 0)))
           .filter((entry) => entry >= 100 && entry <= 599),
@@ -474,9 +499,17 @@ async function executeHttpStep(definition: CanaryDefinition, runId: string, step
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
   const expectedStatuses = stepConfig.expect_status && stepConfig.expect_status.length > 0 ? stepConfig.expect_status : [200];
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...(stepConfig.headers ?? {}) };
   if (stepConfig.auth === "directus") {
     headers.authorization = `Bearer ${await directusToken()}`;
+  } else if (stepConfig.auth === "internal") {
+    const token = await internalToken();
+    if (token) {
+      headers.authorization = `Bearer ${token}`;
+    }
+  } else if (stepConfig.auth === "vault") {
+    const token = await vaultValue(stepConfig.auth_vault_path || "", stepConfig.auth_vault_key || "token");
+    headers.authorization = `Bearer ${token}`;
   }
 
   let step: CanaryStep;
@@ -484,6 +517,7 @@ async function executeHttpStep(definition: CanaryDefinition, runId: string, step
     const result = await httpJson<unknown>(stepConfig.url ?? "", {
       method: httpMethod(stepConfig.method),
       headers,
+      body: stepConfig.body,
       timeoutMs: stepConfig.timeout_ms ?? definition.timeout_ms ?? REQUEST_TIMEOUT_MS
     });
     const completedAt = new Date().toISOString();
@@ -506,6 +540,7 @@ async function executeHttpStep(definition: CanaryDefinition, runId: string, step
       details_json: {
         url: stepConfig.url,
         method: stepConfig.method,
+        auth: stepConfig.auth ?? "none",
         expected_status: expectedStatuses,
         actual_status: result.statusCode,
         response: body ?? truncate(result.text, 2000)
@@ -528,6 +563,7 @@ async function executeHttpStep(definition: CanaryDefinition, runId: string, step
       details_json: {
         url: stepConfig.url,
         method: stepConfig.method,
+        auth: stepConfig.auth ?? "none",
         expected_status: expectedStatuses
       },
       error: error instanceof Error ? truncate(error.message, 2000) : "Unknown step failure",
@@ -715,16 +751,20 @@ async function handleAction(input: JsonRecord): Promise<unknown> {
     return { ok: !!run, run, steps: run ? await listRunSteps(run.id) : [] };
   }
   if (action === "trigger") {
+    const requestedSource = asString(input.source, "manual").toLowerCase();
+    const triggerSource = requestedSource === "flink" ? "flink" : "manual";
+    const requestId = asString(input.request_id) || asString(input.requestId) || randomUUID();
     if (!definitionKey) {
-      throw Object.assign(new Error("definition_key is required"), { status: 400 });
+      const results: CanaryRunResult[] = [];
+      for (const definition of await listDefinitions(false)) {
+        results.push(await runDefinition(definition, triggerSource, requestId));
+      }
+      return { ok: true, request_id: requestId, results };
     }
     const definition = await getDefinition(definitionKey);
     if (!definition) {
       throw Object.assign(new Error(`Canary definition '${definitionKey}' was not found`), { status: 404 });
     }
-    const requestedSource = asString(input.source, "manual").toLowerCase();
-    const triggerSource = requestedSource === "flink" ? "flink" : "manual";
-    const requestId = asString(input.request_id) || asString(input.requestId) || randomUUID();
     const result = await runDefinition(definition, triggerSource, requestId);
     return { ok: true, run: result.run, steps: result.steps, result };
   }

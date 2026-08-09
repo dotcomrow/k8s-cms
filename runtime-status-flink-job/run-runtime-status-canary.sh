@@ -3,7 +3,7 @@ set -eu
 
 FLINK_REST_TARGET="${FLINK_REST_TARGET:-flink-rest.kafka.svc.cluster.local:8081}"
 RUNTIME_STATUS_URL="${RUNTIME_STATUS_URL:-http://runtime-status-service.directus.svc.cluster.local:8080}"
-CANARY_DEFINITION_KEY="${CANARY_DEFINITION_KEY:-cms.translation.pipeline.lightweight}"
+CANARY_DEFINITION_KEY="${CANARY_DEFINITION_KEY-}"
 CANARY_SOURCE="${CANARY_SOURCE:-flink}"
 ENDPOINT_MODE="${ENDPOINT_MODE:-action}"
 CONNECT_TIMEOUT_MS="${CONNECT_TIMEOUT_MS:-5000}"

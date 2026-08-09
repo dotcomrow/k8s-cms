@@ -202,6 +202,7 @@ spec:
               path "secret/data/directus/gravitee/openapi/*"        { capabilities = ["read"] }
               path "secret/data/cms-content-resolver"               { capabilities = ["read"] }
               path "secret/data/runtime-status-service"              { capabilities = ["read"] }
+              path "secret/data/platform-notification-service/clients/runtime-status-service" { capabilities = ["read"] }
               path "secret/data/platform-deploy-service"             { capabilities = ["read"] }
               path "secret/data/keycloak-client-id-*"               { capabilities = ["read"] }
               path "secret/data/keycloak-client-secret-*"           { capabilities = ["read"] }

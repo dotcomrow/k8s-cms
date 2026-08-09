@@ -94,7 +94,7 @@ spec:
             - name: REQUEST_TIMEOUT_MS
               value: "8000"
             - name: RUN_TIMEOUT_MS
-              value: "30000"
+              value: "120000"
             - name: RATE_MAX
               value: "90"
           resources:
@@ -328,7 +328,7 @@ spec:
                 - name: RUNTIME_STATUS_URL
                   value: "http://runtime-status-service.directus.svc.cluster.local:8080"
                 - name: CANARY_DEFINITION_KEY
-                  value: "cms.translation.pipeline.lightweight"
+                  value: ""
                 - name: CANARY_SOURCE
                   value: "flink"
                 - name: ENDPOINT_MODE
@@ -336,7 +336,7 @@ spec:
                 - name: CONNECT_TIMEOUT_MS
                   value: "5000"
                 - name: HTTP_TIMEOUT_MS
-                  value: "60000"
+                  value: "240000"
                 - name: FAIL_ON_WARNING
                   value: "false"
                 - name: FAIL_ON_SKIPPED

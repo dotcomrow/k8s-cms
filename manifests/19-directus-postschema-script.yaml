@@ -2669,6 +2669,18 @@ data:
        INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
        SELECT '00000000-0000-4000-8000-000000000103'::uuid, 'platform.notification.test.email', 'Email delivery test', 'Internal notification page email delivery test template.', 'published', 'en', jsonb_build_array('email'), jsonb_build_array('subject', 'body'), jsonb_build_object('subject', 'Notification delivery test', 'body', 'This is a test email notification from the internal operations page.', 'target_type', 'email'), '{{subject}}', '{{subject}}', '{{body}}', '{{body}}', '<p>{{body}}</p>', jsonb_build_object('test', true, 'app_key', '{{app_key}}', 'realm', '{{realm}}', 'target_type', '{{target_type}}', 'sent_from_url', '{{sent_from_url}}', 'requested_at', '{{requested_at}}'), jsonb_build_object('ttl_seconds', 300), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'internal-application-mfe'), now(), now() \
        WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.notification.test.email' AND COALESCE(locale, '') = 'en'); \
+       INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
+       SELECT '00000000-0000-4000-8000-000000000104'::uuid, 'platform.notification.canary.browser-push', 'Browser push NiFi canary', 'Runtime canary template for the browser push notification NiFi flow.', 'published', 'en', jsonb_build_array('browser_push'), jsonb_build_array('channel', 'correlation_id', 'dry_run', 'requested_at'), jsonb_build_object('channel', 'browser_push', 'correlation_id', 'runtime-notification-canary:browser_push:sample', 'dry_run', true, 'requested_at', '2026-01-01T00:00:00.000Z'), 'Notification canary: {{channel_label}}', 'Notification canary: {{channel_label}}', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', NULL, jsonb_build_object('notification_canary', true, 'channel', '{{channel}}', 'correlation_id', '{{correlation_id}}', 'requested_at', '{{requested_at}}'), jsonb_build_object('dry_run', '{{dry_run}}', 'tag', 'runtime-notification-canary-{{channel}}', 'ttl_seconds', 300, 'urgency', 'normal'), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'runtime-status-canary'), now(), now() \
+       WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.notification.canary.browser-push' AND COALESCE(locale, '') = 'en'); \
+       INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
+       SELECT '00000000-0000-4000-8000-000000000105'::uuid, 'platform.notification.canary.email', 'Email NiFi canary', 'Runtime canary template for the email notification NiFi flow.', 'published', 'en', jsonb_build_array('email'), jsonb_build_array('channel', 'correlation_id', 'dry_run', 'requested_at'), jsonb_build_object('channel', 'email', 'correlation_id', 'runtime-notification-canary:email:sample', 'dry_run', true, 'requested_at', '2026-01-01T00:00:00.000Z'), 'Notification canary: {{channel_label}}', 'Notification canary: {{channel_label}}', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', '<p>Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.</p>', jsonb_build_object('notification_canary', true, 'channel', '{{channel}}', 'correlation_id', '{{correlation_id}}', 'requested_at', '{{requested_at}}'), jsonb_build_object('dry_run', '{{dry_run}}', 'ttl_seconds', 300), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'runtime-status-canary'), now(), now() \
+       WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.notification.canary.email' AND COALESCE(locale, '') = 'en'); \
+       INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
+       SELECT '00000000-0000-4000-8000-000000000106'::uuid, 'platform.notification.canary.sms', 'SMS NiFi canary', 'Runtime canary template for the SMS notification NiFi flow.', 'published', 'en', jsonb_build_array('sms'), jsonb_build_array('channel', 'correlation_id', 'dry_run', 'requested_at'), jsonb_build_object('channel', 'sms', 'correlation_id', 'runtime-notification-canary:sms:sample', 'dry_run', true, 'requested_at', '2026-01-01T00:00:00.000Z'), 'Notification canary: {{channel_label}}', 'Notification canary: {{channel_label}}', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', NULL, jsonb_build_object('notification_canary', true, 'channel', '{{channel}}', 'correlation_id', '{{correlation_id}}', 'requested_at', '{{requested_at}}'), jsonb_build_object('dry_run', '{{dry_run}}', 'ttl_seconds', 300), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'runtime-status-canary'), now(), now() \
+       WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.notification.canary.sms' AND COALESCE(locale, '') = 'en'); \
+       INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
+       SELECT '00000000-0000-4000-8000-000000000107'::uuid, 'platform.notification.canary.mobile-push', 'Mobile push NiFi canary', 'Runtime canary template for the mobile push notification NiFi flow.', 'published', 'en', jsonb_build_array('mobile_push'), jsonb_build_array('channel', 'correlation_id', 'dry_run', 'requested_at'), jsonb_build_object('channel', 'mobile_push', 'correlation_id', 'runtime-notification-canary:mobile_push:sample', 'dry_run', true, 'requested_at', '2026-01-01T00:00:00.000Z'), 'Notification canary: {{channel_label}}', 'Notification canary: {{channel_label}}', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', 'Runtime notification canary {{correlation_id}} completed template rendering for {{channel}}.', NULL, jsonb_build_object('notification_canary', true, 'channel', '{{channel}}', 'correlation_id', '{{correlation_id}}', 'requested_at', '{{requested_at}}'), jsonb_build_object('dry_run', '{{dry_run}}', 'tag', 'runtime-notification-canary-{{channel}}', 'ttl_seconds', 300, 'urgency', 'normal'), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'runtime-status-canary'), now(), now() \
+       WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.notification.canary.mobile-push' AND COALESCE(locale, '') = 'en'); \
        DO \$\$ \
        BEGIN \
          IF to_regclass('directus.platform_apps') IS NOT NULL \
@@ -4492,6 +4504,72 @@ data:
           sort = EXCLUDED.sort,
           date_updated = now();" "seed default runtime canary definition" 24; then
       echo "❌ Could not seed runtime canary definitions after retries."
+      exit 1
+    fi
+
+    echo "🌱 Ensuring notification NiFi runtime canary definitions exist..."
+    if ! _psql_yb_retry "WITH seed AS (
+      SELECT *
+      FROM (VALUES
+        ('nifi.platform-notification.browser-push.dry-run'::text, 'Notification NiFi browser push dry-run'::text, 'Queues a browser push notification canary through Kafka, NiFi, template rendering, executor dry-run delivery, delivery-attempt recording, and terminal status callback.'::text, 'browser_push'::text, 40::integer),
+        ('nifi.platform-notification.email.dry-run'::text, 'Notification NiFi email dry-run'::text, 'Queues an email notification canary through Kafka, NiFi, template rendering, executor dry-run delivery, delivery-attempt recording, and terminal status callback.'::text, 'email'::text, 41::integer),
+        ('nifi.platform-notification.sms.dry-run'::text, 'Notification NiFi SMS dry-run'::text, 'Queues an SMS notification canary through Kafka, NiFi, template rendering, executor dry-run delivery, delivery-attempt recording, and terminal status callback.'::text, 'sms'::text, 42::integer),
+        ('nifi.platform-notification.mobile-push.dry-run'::text, 'Notification NiFi mobile push dry-run'::text, 'Queues a mobile push notification canary through Kafka, NiFi, template rendering, executor dry-run delivery, delivery-attempt recording, and terminal status callback.'::text, 'mobile_push'::text, 43::integer)
+      ) AS v(key, name, description, channel, sort)
+    )
+    INSERT INTO runtime_canary_definitions (key, name, domain, status, description, enabled, impact_level, schedule_hint, max_frequency_seconds, timeout_ms, config_json, sort, date_created, date_updated)
+    SELECT
+      key,
+      name,
+      'nifi.platform-notification',
+      'published',
+      description,
+      true,
+      'low',
+      'Every 15 minutes via runtime-status-lightweight-canary CronJob.',
+      900,
+      60000,
+      jsonb_build_object(
+        'steps',
+        jsonb_build_array(
+          jsonb_build_object(
+            'key', 'notification.' || channel || '.dry_run',
+            'name', name,
+            'type', 'http',
+            'method', 'POST',
+            'url', 'http://platform-notification-service.directus.svc.cluster.local:8080/internal/canaries/notifications',
+            'auth', 'vault',
+            'auth_vault_path', 'secret/data/platform-notification-service/clients/runtime-status-service',
+            'auth_vault_key', 'token',
+            'expect_status', jsonb_build_array(200),
+            'timeout_ms', 60000,
+            'body', jsonb_build_object(
+              'channel', channel,
+              'dry_run', true,
+              'timeout_ms', 45000,
+              'poll_interval_ms', 1000
+            )
+          )
+        )
+      ),
+      sort,
+      now(),
+      now()
+    FROM seed
+    ON CONFLICT (key) DO UPDATE
+      SET name = EXCLUDED.name,
+          domain = EXCLUDED.domain,
+          status = EXCLUDED.status,
+          description = EXCLUDED.description,
+          enabled = EXCLUDED.enabled,
+          impact_level = EXCLUDED.impact_level,
+          schedule_hint = EXCLUDED.schedule_hint,
+          max_frequency_seconds = EXCLUDED.max_frequency_seconds,
+          timeout_ms = EXCLUDED.timeout_ms,
+          config_json = EXCLUDED.config_json,
+          sort = EXCLUDED.sort,
+          date_updated = now();" "seed notification NiFi runtime canary definitions" 24; then
+      echo "❌ Could not seed notification NiFi runtime canary definitions after retries."
       exit 1
     fi
 
