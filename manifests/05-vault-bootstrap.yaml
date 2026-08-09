@@ -119,12 +119,6 @@ spec:
                 vault kv put secret/runtime-status-service token="$TOKEN"
               fi
 
-              # Internal bearer token used by platform deploy runner callbacks.
-              if ! vault kv get -format=json secret/platform-deploy-service >/dev/null 2>&1; then
-                TOKEN="$(tr -dc 'A-Za-z0-9-._~' </dev/urandom | head -c 64)"
-                vault kv put secret/platform-deploy-service token="$TOKEN"
-              fi
-              
               # Redis password is already managed in existing Redis instance
 
               EXTERNAL_DB_CFG="$(vault kv get -format=json secret/directus/db 2>/dev/null || true)"
@@ -220,36 +214,8 @@ spec:
                 policies="directus" \
                 ttl="48h"
 
-              graphql_api_client_id="$(vault kv get -field=value secret/keycloak-client-id-graphql-api 2>/dev/null || true)"
-              if [ -z "${graphql_api_client_id}" ]; then
-                echo "GraphQL API client id was empty in Vault; cannot write platform-deploy-service Vault policy."
-                exit 1
-              fi
-
-              vault policy write "platform-deploy-service" - <<EOF
-              path "secret/data/keycloak-client-id-graphql-api"        { capabilities = ["read"] }
-              path "secret/data/directus/gravitee/clients/${graphql_api_client_id}" { capabilities = ["read"] }
-              path "secret/data/platform-deploy-service"              { capabilities = ["create", "read", "update"] }
-              path "secret/data/platform-deploy-service/*"            { capabilities = ["create", "read", "update"] }
-              EOF
-
-              vault write auth/kubernetes/role/platform-deploy-service \
-                bound_service_account_names="platform-deploy-service" \
-                bound_service_account_namespaces="directus" \
-                policies="platform-deploy-service" \
-                ttl="48h"
-
-              vault policy write "platform-deploy-executor" - <<'EOF'
-              path "secret/data/platform-deploy-service"              { capabilities = ["read"] }
-              path "secret/data/platform-deploy-service/*"            { capabilities = ["read"] }
-              path "secret/data/auth-gateway-admin-api"               { capabilities = ["read"] }
-              EOF
-
-              vault write auth/kubernetes/role/platform-deploy-executor \
-                bound_service_account_names="platform-deploy-executor" \
-                bound_service_account_namespaces="directus" \
-                policies="platform-deploy-executor" \
-                ttl="48h"
+              # Platform deploy service/executor Vault identities are owned by
+              # their component manifests, not the CMS bootstrap.
 
               # Directus AI proxy uses Keycloak client_credentials to call Gravitee-protected APIs.
               # Keep permissions narrow: only the specific Keycloak client creds are readable.
