@@ -2435,6 +2435,10 @@ data:
        CREATE INDEX IF NOT EXISTS platform_notification_requests_app_idx ON platform_notification_requests (app_id, date_created DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_requests_notification_key_idx ON platform_notification_requests (notification_key, date_created DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_requests_status_idx ON platform_notification_requests (status, priority, date_created DESC); \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_expires_idx ON platform_notification_requests (status, expires_at) WHERE status IN ('queued', 'processing') AND expires_at IS NOT NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_queued_idx ON platform_notification_requests (status, queued_at) WHERE status = 'queued' AND queued_at IS NOT NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_started_idx ON platform_notification_requests (status, started_at) WHERE status = 'processing' AND started_at IS NOT NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_requested_idx ON platform_notification_requests (status, requested_at) WHERE status IN ('queued', 'processing') AND requested_at IS NOT NULL; \
        CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_requests_idempotency_unique ON platform_notification_requests (source, idempotency_key) WHERE idempotency_key IS NOT NULL AND BTRIM(idempotency_key) <> ''; \
        CREATE TABLE IF NOT EXISTS platform_notification_delivery_attempts ( \
          id UUID PRIMARY KEY, \
@@ -4137,6 +4141,10 @@ data:
        CREATE INDEX IF NOT EXISTS platform_app_operations_retention_idx ON platform_app_operations (COALESCE(finished_at, requested_at, date_created)); \
        CREATE INDEX IF NOT EXISTS platform_app_operation_steps_retention_idx ON platform_app_operation_steps (COALESCE(finished_at, started_at, date_created)); \
        CREATE INDEX IF NOT EXISTS platform_notification_requests_retention_idx ON platform_notification_requests (COALESCE(finished_at, requested_at, date_created)); \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_expires_idx ON platform_notification_requests (status, expires_at) WHERE status IN ('queued', 'processing') AND expires_at IS NOT NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_queued_idx ON platform_notification_requests (status, queued_at) WHERE status = 'queued' AND queued_at IS NOT NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_started_idx ON platform_notification_requests (status, started_at) WHERE status = 'processing' AND started_at IS NOT NULL; \
+       CREATE INDEX IF NOT EXISTS platform_notification_requests_reconcile_requested_idx ON platform_notification_requests (status, requested_at) WHERE status IN ('queued', 'processing') AND requested_at IS NOT NULL; \
        CREATE INDEX IF NOT EXISTS platform_notification_delivery_attempts_retention_idx ON platform_notification_delivery_attempts (COALESCE(finished_at, attempted_at, date_created)); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_retention_idx ON platform_notification_browser_subscriptions (status, COALESCE(date_updated, last_seen_at, date_created)); \
        CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_retention_idx ON cms_content_translation_jobs (COALESCE(date_completed, date_updated, date_created)); \
