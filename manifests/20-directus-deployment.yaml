@@ -24,7 +24,7 @@ spec:
         app: directus
       annotations:
         reloader.stakater.com/auto: "true"
-        directus.suncoast.systems/extensions-seed-revision: "2026-07-17.1"
+        directus.suncoast.systems/extensions-seed-revision: "2026-08-17.1"
         # Init containers must reach Oracle VM (SSH 22 / Postgres 5432) before
         # linkerd-proxy is running. Skip proxy redirection for these ports.
         config.linkerd.io/skip-outbound-ports: "22,5432,5433"

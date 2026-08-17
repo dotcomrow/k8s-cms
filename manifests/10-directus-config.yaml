@@ -10941,6 +10941,9 @@ data:
           const hasDivider = typeof resolvedDivider !== 'string';
           const hasCard = typeof resolvedCard !== 'string';
           const pageMissingReleaseChannel = Boolean(pageId.value) && !hasPageReleaseChannel.value;
+          const rows = groupedBlocks.value;
+          const changedCount = contextBlocks.value.filter((row) => hasChanges(row)).length;
+          const canSaveAll = changedCount > 0 && !props.disabled;
     
           const sortBlockRows = (left, right) => {
             const leftSort = asInteger(left?.sort);
@@ -11017,12 +11020,17 @@ data:
             },
             toolbar: {
               display: 'flex',
-              flexWrap: 'wrap',
-              gap: '8px',
-              alignItems: 'center',
+              flexDirection: 'column',
+              gap: '10px',
               padding: '12px',
               borderRadius: 'var(--theme--border-radius)',
               background: 'var(--theme--background-subdued)',
+            },
+            toolbarRow: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '10px',
+              alignItems: 'center',
             },
             toolbarSearch: {
               minWidth: '220px',
@@ -11038,6 +11046,69 @@ data:
               margin: '0',
               fontSize: '12px',
               color: 'var(--theme--foreground-subdued)',
+            },
+            controlWide: {
+              minWidth: '360px',
+              flex: '1 1 420px',
+            },
+            controlMedium: {
+              minWidth: '190px',
+              flex: '1 1 220px',
+            },
+            group: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0',
+              overflow: 'hidden',
+            },
+            groupHeader: {
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '10px',
+              padding: '10px 12px',
+              background: 'var(--theme--background-subdued)',
+            },
+            groupLabel: {
+              fontSize: '13px',
+              color: 'var(--theme--foreground-normal)',
+            },
+            row: {
+              padding: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+            },
+            rowMeta: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '8px',
+              alignItems: 'center',
+            },
+            rowEdit: {
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+              gap: '10px',
+              alignItems: 'end',
+            },
+            actions: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '8px',
+              alignItems: 'center',
+            },
+            field: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            },
+            fieldLabel: {
+              fontSize: '12px',
+              color: 'var(--theme--foreground-subdued)',
+              margin: '0 2px',
+            },
+            fieldWide: {
+              gridColumn: 'span 2',
             },
             treeRoot: {
               display: 'flex',
@@ -11333,6 +11404,30 @@ data:
               },
             }, children);
           };
+
+          const groupItems = [
+            { text: 'Group: Template', value: 'template' },
+            { text: 'Group: Tag', value: 'group_tag' },
+            { text: 'Group: Slot', value: 'slot' },
+            { text: 'Group: Collection', value: 'collection' },
+            { text: 'Group: None', value: 'none' },
+          ];
+          const hierarchyItems = [
+            { text: 'Hierarchy: Page Children', value: 'direct_children' },
+            { text: 'Hierarchy: Nested Only', value: 'nested_only' },
+            { text: 'Hierarchy: All Blocks', value: 'all' },
+          ];
+          const contextItems = contextChoices.value.map((choice) => ({ text: choice.text, value: choice.value }));
+          const collectionItems = [{ text: 'All Collections', value: '__all' }, ...toChoiceItems(collectionChoices.value)];
+          const slotItems = [{ text: 'All Slots', value: '__all' }, ...toChoiceItems(slotChoices.value)];
+          const scopeItems = [{ text: 'All Scopes', value: '__all' }, ...toChoiceItems(scopeChoices.value)];
+          const groupTagItems = [{ text: 'All Tags', value: '__all' }, ...toChoiceItems(groupTagChoices.value)];
+          const contextScopeLabel = activeContext.value?.value === PAGE_CONTEXT_ID ? 'page' : 'template';
+          const hierarchyLabel = filterHierarchy.value === 'direct_children'
+            ? (contextScopeLabel === 'template' ? 'Template direct children' : 'Page children')
+            : filterHierarchy.value === 'nested_only'
+              ? 'Nested only'
+              : 'All blocks';
     
           const renderTreeNode = (row, ancestorPath = []) => {
             const rowId = asString(row?.id);
@@ -11492,7 +11587,39 @@ data:
               className: 'cms-page-blocks-manager__toolbar-card',
               children: [
                 h('div', { class: 'cms-page-blocks-manager__toolbar', style: styles.toolbar }, [
-                  h('div', { style: styles.toolbarActionGroup }, [
+                  h('div', { class: 'cms-page-blocks-manager__toolbar-row', style: styles.toolbarRow }, [
+                    h('div', { style: styles.controlWide }, [
+                      renderInputControl({
+                        value: searchText.value,
+                        disabled: props.disabled || loading.value,
+                        placeholder: `Search ${contextScopeLabel} context by group, slot, template, collection, id...`,
+                        onUpdate: (next) => { searchText.value = asString(next); },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: activeContext.value?.value || PAGE_CONTEXT_ID,
+                        items: contextItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { selectedContext.value = asString(next) || PAGE_CONTEXT_ID; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: groupBy.value,
+                        items: groupItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { groupBy.value = asString(next) || 'template'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterHierarchy.value,
+                        items: hierarchyItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterHierarchy.value = asString(next) || defaultHierarchy.value; },
+                      }),
+                    ]),
                     renderIconControl({
                       icon: 'autorenew',
                       fallbackIcon: '↻',
@@ -11514,16 +11641,53 @@ data:
                       disabled: loading.value || blocks.value.length === 0,
                       onClick: () => expandCollapseAllNodes(false),
                     }),
-                  ]),
-                  h('div', { style: styles.toolbarSearch }, [
-                    renderInputControl({
-                      value: searchText.value,
-                      disabled: loading.value,
-                      placeholder: 'Search blocks (type, slot, group, template, id)',
-                      onUpdate: (next) => { searchText.value = asString(next); },
+                    renderButtonControl({
+                      label: `Save Changed (${changedCount})`,
+                      disabled: !canSaveAll,
+                      primary: true,
+                      onClick: () => { void saveAll(); },
                     }),
                   ]),
-                  h('div', { style: styles.toolbarActionGroup }, [
+                  h('div', { class: 'cms-page-blocks-manager__toolbar-row', style: styles.toolbarRow }, [
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterCollection.value,
+                        items: collectionItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterCollection.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterSlot.value,
+                        items: slotItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterSlot.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterScope.value,
+                        items: scopeItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterScope.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    h('div', { style: styles.controlMedium }, [
+                      renderSelectControl({
+                        value: filterGroupTag.value,
+                        items: groupTagItems,
+                        disabled: props.disabled || loading.value,
+                        onUpdate: (next) => { filterGroupTag.value = asString(next) || '__all'; },
+                      }),
+                    ]),
+                    renderButtonControl({
+                      label: 'Reset Filters',
+                      disabled: props.disabled || loading.value,
+                      onClick: resetFilters,
+                    }),
+                  ]),
+                  h('div', { class: 'cms-page-blocks-manager__toolbar-row', style: styles.toolbarRow }, [
                     h('div', { style: { minWidth: '180px' } }, [
                       renderSelectControl({
                         value: addBlockType.value,
@@ -11570,7 +11734,7 @@ data:
     
           if (pageId.value) {
             children.push(
-              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Channel ${pageContext.value.release_channel || '(unset)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Blocks ${visibleCount}/${blocks.value.length}`)
+              h('p', { class: 'cms-page-blocks-manager__meta', style: styles.meta }, `Page ${pageContext.value.slug || pageId.value} | Site ${pageContext.value.site_key || '(global)'} | Channel ${pageContext.value.release_channel || '(unset)'} | Layout ${pageContext.value.layout_template_key || '(none)'} | Context ${activeContext.value?.text || 'Page'} | View ${hierarchyLabel} | List ${filteredBlocks.value.length}/${contextBlocks.value.length} | Tree ${visibleCount}/${blocks.value.length}`)
             );
           } else {
             children.push(
@@ -11600,6 +11764,102 @@ data:
             );
           }
     
+          if (!loading.value && rows.length === 0) {
+            children.push(
+              h('p', { class: 'cms-page-blocks-manager__hint', style: styles.meta }, pageId.value ? 'No blocks match the current filters.' : 'No page context available.')
+            );
+          }
+
+          for (const group of rows) {
+            children.push(
+              renderCard({
+                className: 'cms-page-blocks-manager__group',
+                style: styles.group,
+                children: [
+                  h('header', { class: 'cms-page-blocks-manager__group-header', style: styles.groupHeader }, [
+                    h('strong', { style: styles.groupLabel }, group.label),
+                    renderMetaChip(`${group.rows.length}`),
+                  ]),
+                  ...(hasDivider ? [h(resolvedDivider)] : []),
+                  ...group.rows.map((row) => {
+                    const draft = getDraft(row);
+                    const rowTemplateKey = contextTemplateKey.value
+                      || (asString(row.template_group_key) !== 'page-root' ? asString(row.template_group_key) : '');
+                    const slotChoicesForRow = toChoiceItems(uniqueNonEmpty([
+                      ...templateSlotsFor(rowTemplateKey),
+                      asString(row.slot) || 'main',
+                    ]));
+                    const changed = hasChanges(row);
+                    const rowSaving = isSaving(row.id);
+                    return h('article', { class: 'cms-page-blocks-manager__row', key: row.id, style: styles.row }, [
+                      h('div', { class: 'cms-page-blocks-manager__row-meta', style: styles.rowMeta }, [
+                        renderMetaChip(row.id),
+                        renderMetaChip(`${row.collection}:${row.item}`),
+                        renderMetaChip(`scope=${row.template_scope}`),
+                        renderMetaChip(`template=${row.template_group_key}`),
+                        renderMetaChip(`depth=${row.tree_depth}`),
+                        ...(row.status ? [renderMetaChip(`status=${row.status}`)] : []),
+                      ]),
+                      h('div', { class: 'cms-page-blocks-manager__row-edit', style: styles.rowEdit }, [
+                        h('label', { class: 'cms-page-blocks-manager__field', style: styles.field }, [
+                          h('span', { style: styles.fieldLabel }, 'Slot'),
+                          renderSelectControl({
+                            value: asString(draft.slot) || 'main',
+                            items: slotChoicesForRow,
+                            disabled: props.disabled || rowSaving,
+                            onUpdate: (next) => setDraft(row.id, { slot: asString(next) || 'main' }),
+                          }),
+                        ]),
+                        h('label', { class: 'cms-page-blocks-manager__field', style: styles.field }, [
+                          h('span', { style: styles.fieldLabel }, 'Sort'),
+                          renderInputControl({
+                            value: draft.sort ?? '',
+                            type: 'number',
+                            disabled: props.disabled || rowSaving,
+                            onUpdate: (next) => setDraft(row.id, { sort: asString(next) }),
+                          }),
+                        ]),
+                        h('label', { class: 'cms-page-blocks-manager__field cms-page-blocks-manager__field--wide', style: { ...styles.field, ...styles.fieldWide } }, [
+                          h('span', { style: styles.fieldLabel }, 'Group Tag'),
+                          renderInputControl({
+                            value: asString(draft.group_tag),
+                            placeholder: 'Optional grouping tag',
+                            disabled: props.disabled || rowSaving,
+                            onUpdate: (next) => setDraft(row.id, { group_tag: asString(next) }),
+                          }),
+                        ]),
+                      ]),
+                      h('div', { class: 'cms-page-blocks-manager__actions', style: styles.actions }, [
+                        renderButtonControl({
+                          label: rowSaving ? 'Saving...' : 'Save',
+                          primary: true,
+                          disabled: props.disabled || rowSaving || !changed,
+                          onClick: () => { void saveRow(row); },
+                        }),
+                        renderButtonControl({
+                          label: 'Reset',
+                          disabled: props.disabled || rowSaving || !changed,
+                          onClick: () => resetRow(row),
+                        }),
+                        renderButtonControl({
+                          label: 'Open Block Row',
+                          disabled: rowSaving,
+                          onClick: () => openBlockRow(row),
+                        }),
+                        renderButtonControl({
+                          label: 'Open Content',
+                          disabled: rowSaving || !row.collection || !row.item,
+                          onClick: () => { void openContentItem(row); },
+                        }),
+                      ]),
+                      ...(hasDivider ? [h(resolvedDivider)] : []),
+                    ]);
+                  }),
+                ],
+              })
+            );
+          }
+
           if (!loading.value && rootRows.length === 0) {
             children.push(
               h(
