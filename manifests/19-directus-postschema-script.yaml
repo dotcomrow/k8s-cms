@@ -9091,7 +9091,7 @@ data:
           _flow_sql="$(printf '%s' "${_flow_id}" | sed "s/'/''/g")"
           _key_sql="$(printf '%s' "${_key}" | sed "s/'/''/g")"
           _id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-            "SELECT id FROM directus.directus_operations WHERE flow='${_flow_sql}' AND key='${_key_sql}' ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
+            "SELECT id FROM directus.directus_operations WHERE flow='${_flow_sql}' AND key='${_key_sql}' ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
           _id="$(printf '%s' "${_id:-}" | tr -d '\r')"
           printf '%s' "${_id:-}"
         }
