@@ -9088,19 +9088,10 @@ data:
         _directus_find_operation_id() {
           _flow_id="$1"
           _key="$2"
-          _id="$(_directus_api_get "/operations" \
-            --data-urlencode "filter[flow][_eq]=${_flow_id}" \
-            --data-urlencode "filter[key][_eq]=${_key}" \
-            --data-urlencode "sort=-date_updated" \
-            --data-urlencode "limit=1" \
-            --data-urlencode "fields=id" \
-            2>/dev/null | jq -r '.data[0].id // empty' 2>/dev/null || true)"
-          if [ -z "${_id:-}" ] || [ "${_id}" = "null" ]; then
-            _flow_sql="$(printf '%s' "${_flow_id}" | sed "s/'/''/g")"
-            _key_sql="$(printf '%s' "${_key}" | sed "s/'/''/g")"
-            _id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-              "SELECT id FROM directus.directus_operations WHERE flow='${_flow_sql}' AND key='${_key_sql}' ORDER BY date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
-          fi
+          _flow_sql="$(printf '%s' "${_flow_id}" | sed "s/'/''/g")"
+          _key_sql="$(printf '%s' "${_key}" | sed "s/'/''/g")"
+          _id="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+            "SELECT id FROM directus.directus_operations WHERE flow='${_flow_sql}' AND key='${_key_sql}' ORDER BY date_updated DESC NULLS LAST, date_created DESC NULLS LAST, id DESC LIMIT 1;" || true)"
           _id="$(printf '%s' "${_id:-}" | tr -d '\r')"
           printf '%s' "${_id:-}"
         }
