@@ -618,6 +618,10 @@ data:
              ('cms_content_item_translations','content_item_id'), \
              ('cms_content_item_translations','language_code'), \
              ('cms_content_item_translations','content_json'), \
+             ('cms_content_item_translations','site_key'), \
+             ('cms_content_item_translations','release_channel'), \
+             ('cms_content_item_translations','page_slug'), \
+             ('cms_content_item_translations','refresh_target'), \
              ('cms_content_translation_jobs','content_item_id'), \
              ('cms_content_translation_jobs','language_code'), \
              ('cms_content_translation_jobs','source_content_version'), \
@@ -1856,9 +1860,13 @@ data:
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "model" 105
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "prompt_version" 106
       _upsert_hidden_internal_field_meta "cms_content_item_translations" "translated_by" 107
-      _upsert_hidden_internal_field_meta "cms_translation_languages" "id" 108
-      _upsert_hidden_internal_field_meta "cms_translation_languages" "date_created" 109
-      _upsert_hidden_internal_field_meta "cms_translation_languages" "date_updated" 110
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "site_key" 108
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "release_channel" 109
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "page_slug" 110
+      _upsert_hidden_internal_field_meta "cms_content_item_translations" "refresh_target" 111
+      _upsert_hidden_internal_field_meta "cms_translation_languages" "id" 112
+      _upsert_hidden_internal_field_meta "cms_translation_languages" "date_created" 113
+      _upsert_hidden_internal_field_meta "cms_translation_languages" "date_updated" 114
       _upsert_hidden_internal_field_meta "cms_template_functions" "id" 108
       _upsert_hidden_internal_field_meta "cms_template_functions" "site_key" 109
       _upsert_hidden_internal_field_meta "cms_template_functions" "release_channel" 110
@@ -3680,6 +3688,10 @@ data:
          model TEXT NULL, \
          prompt_version TEXT NULL, \
          translated_by TEXT NULL, \
+         site_key TEXT NULL, \
+         release_channel TEXT NULL, \
+         page_slug TEXT NULL, \
+         refresh_target TEXT NULL, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
          date_updated TIMESTAMPTZ NULL \
        ); \
@@ -3692,6 +3704,10 @@ data:
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS model TEXT; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS prompt_version TEXT; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS translated_by TEXT; \
+       ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS release_channel TEXT; \
+       ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS page_slug TEXT; \
+       ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_content_item_translations ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_content_item_translations ALTER COLUMN status SET DEFAULT 'draft'; \
@@ -3770,6 +3786,26 @@ data:
        ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN status SET NOT NULL; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN attempt_count SET NOT NULL; \
        ALTER TABLE IF EXISTS cms_content_translation_jobs ALTER COLUMN date_created SET NOT NULL; \
+       UPDATE cms_content_item_translations t \
+          SET site_key = COALESCE(NULLIF(BTRIM(t.site_key), ''), NULLIF(BTRIM(i.site_key), '')), \
+              release_channel = COALESCE(NULLIF(BTRIM(t.release_channel), ''), NULLIF(BTRIM(i.release_channel), '')), \
+              page_slug = COALESCE( \
+                NULLIF(BTRIM(t.page_slug), ''), \
+                (SELECT NULLIF(BTRIM(j.page_slug), '') \
+                   FROM cms_content_translation_jobs j \
+                  WHERE j.content_item_id = t.content_item_id \
+                    AND LOWER(j.language_code) = LOWER(t.language_code) \
+                    AND NULLIF(BTRIM(j.page_slug), '') IS NOT NULL \
+                  ORDER BY COALESCE(j.date_completed, j.date_updated, j.date_created) DESC NULLS LAST \
+                  LIMIT 1) \
+              ), \
+              refresh_target = COALESCE(NULLIF(BTRIM(t.refresh_target), ''), NULLIF(BTRIM(i.refresh_target), ''), 'both') \
+         FROM cms_content_items i \
+        WHERE t.content_item_id = i.id \
+          AND (NULLIF(BTRIM(t.site_key), '') IS NULL \
+            OR NULLIF(BTRIM(t.release_channel), '') IS NULL \
+            OR NULLIF(BTRIM(t.page_slug), '') IS NULL \
+            OR NULLIF(BTRIM(t.refresh_target), '') IS NULL); \
        CREATE TABLE IF NOT EXISTS runtime_canary_definitions ( \
          id UUID PRIMARY KEY, \
          key TEXT NOT NULL, \
@@ -8600,21 +8636,25 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "model" 121
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "prompt_version" 122
       _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "translated_by" 123
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_created" 124
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_updated" 125
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "id" 126
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "content_item_id" 127
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "source_content_version" 128
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "source_hash" 129
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "kafka_topic" 130
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "kafka_key" 131
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "last_error" 132
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_created" 133
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_updated" 134
-      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_completed" 135
-      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "id" 136
-      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "date_created" 137
-      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "date_updated" 138
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "site_key" 124
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "release_channel" 125
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "page_slug" 126
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "refresh_target" 127
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_created" 128
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_item_translations" "date_updated" 129
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "id" 130
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "content_item_id" 131
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "source_content_version" 132
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "source_hash" 133
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "kafka_topic" 134
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "kafka_key" 135
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "last_error" 136
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_created" 137
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_updated" 138
+      _upsert_hidden_internal_field_meta_dynamic "cms_content_translation_jobs" "date_completed" 139
+      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "id" 140
+      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "date_created" 141
+      _upsert_hidden_internal_field_meta_dynamic "cms_translation_languages" "date_updated" 142
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "id" 126
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "site_key" 127
       _upsert_hidden_internal_field_meta_dynamic "cms_template_functions" "release_channel" 128

@@ -9466,7 +9466,7 @@ data:
             return ['id', 'status', 'template_key', 'name', 'html_template', 'css', 'content_schema'];
           }
           if (key === 'cms_content_item_translations') {
-            return ['id', 'content_item_id', 'language_code', 'status', 'source_content_version', 'content_json'];
+            return ['id', 'content_item_id', 'language_code', 'status', 'source_content_version', 'site_key', 'release_channel', 'page_slug', 'refresh_target', 'content_json'];
           }
           if (key === 'cms_block_hero') {
             return ['id', 'status', 'headline', 'subheadline', 'background_image', 'cta_label', 'cta_url'];

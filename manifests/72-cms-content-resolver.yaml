@@ -159,6 +159,14 @@ data:
               type: integer
             source_hash:
               type: string
+            site_key:
+              type: string
+            release_channel:
+              type: string
+            page_slug:
+              type: string
+            refresh_target:
+              type: string
             content_json:
               type: object
             model:
@@ -530,6 +538,10 @@ data:
       source_content_version: int
       source_hash: Optional[str] = None
       translation_job_id: Optional[str] = None
+      site_key: Optional[str] = None
+      release_channel: Optional[str] = None
+      page_slug: Optional[str] = None
+      refresh_target: Optional[str] = None
       content_json: Dict[str, Any]
       model: Optional[str] = None
       prompt_version: Optional[str] = None
@@ -714,7 +726,7 @@ data:
     async def fetch_source_content_item(content_item_id: str) -> Optional[Dict[str, Any]]:
       headers = await directus_headers()
       params = {
-        "fields": "id,content_key,name,default_language_code,content_json,content_version,site_key,release_channel,translation_enabled,translation_excluded_languages,translation_prewarm_languages,translation_rules",
+        "fields": "id,content_key,name,default_language_code,content_json,content_version,site_key,release_channel,refresh_target,translation_enabled,translation_excluded_languages,translation_prewarm_languages,translation_rules",
         "limit": "1",
       }
       async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
@@ -1048,6 +1060,65 @@ data:
         )
         response.raise_for_status()
 
+    def clean_optional_text(value: Any) -> Optional[str]:
+      text = str(value or "").strip()
+      if not text or text.lower() == "null":
+        return None
+      return text
+
+    def clean_refresh_target(value: Any) -> Optional[str]:
+      text = clean_optional_text(value)
+      if not text:
+        return None
+      normalized = text.lower()
+      return normalized if normalized in {"preview", "prod", "both"} else None
+
+    async def fetch_translation_job_route_context(job_id: Optional[str]) -> Dict[str, Any]:
+      normalized_job_id = clean_optional_text(job_id)
+      if not normalized_job_id:
+        return {}
+      headers = await directus_headers()
+      async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.get(
+          f"{DIRECTUS_BASE_URL}/items/cms_content_translation_jobs/{normalized_job_id}",
+          headers=headers,
+          params={"fields": "site_key,release_channel,page_slug"},
+        )
+        if response.status_code == 404:
+          return {}
+        response.raise_for_status()
+      data = response.json().get("data")
+      return data if isinstance(data, dict) else {}
+
+    async def resolve_translation_route_context(payload: UpsertTranslationRequest, source_item: Dict[str, Any]) -> Dict[str, Any]:
+      job_context = await fetch_translation_job_route_context(payload.translation_job_id)
+      site_key = (
+        clean_optional_text(payload.site_key)
+        or clean_optional_text(job_context.get("site_key"))
+        or clean_optional_text(source_item.get("site_key"))
+      )
+      release_channel = (
+        clean_optional_text(payload.release_channel)
+        or clean_optional_text(job_context.get("release_channel"))
+        or clean_optional_text(source_item.get("release_channel"))
+      )
+      page_slug = clean_optional_text(payload.page_slug) or clean_optional_text(job_context.get("page_slug"))
+      refresh_target = (
+        clean_refresh_target(payload.refresh_target)
+        or clean_refresh_target(source_item.get("refresh_target"))
+        or "both"
+      )
+      return {
+        key: value
+        for key, value in {
+          "site_key": site_key,
+          "release_channel": release_channel,
+          "page_slug": page_slug,
+          "refresh_target": refresh_target,
+        }.items()
+        if value is not None
+      }
+
     async def patch_translation_job(job_id: str, status: str, last_error: Optional[str] = None) -> None:
       if not job_id:
         return
@@ -1328,6 +1399,7 @@ data:
           "content_item_id": payload.content_item_id,
           "language_code": payload.language_code,
         })
+      route_context = await resolve_translation_route_context(payload, source_item)
       body = {
         "content_item_id": payload.content_item_id,
         "language_code": payload.language_code,
@@ -1338,6 +1410,7 @@ data:
         "model": payload.model,
         "prompt_version": payload.prompt_version,
         "translated_by": payload.translated_by,
+        **route_context,
       }
       existing_id = await find_translation_id_with_retry(payload.content_item_id, payload.language_code, attempts=3)
       async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
