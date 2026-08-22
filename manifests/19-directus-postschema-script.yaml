@@ -2204,11 +2204,11 @@ data:
        END \
        \$\$; \
        UPDATE platform_apps \
-          SET production_cache_refresh_url = regexp_replace(COALESCE(NULLIF(BTRIM(production_url), ''), 'https://' || NULLIF(BTRIM(production_hostname), '')), '/+$', '') || '/api/cache/refresh?mode=refresh' \
+          SET production_cache_refresh_url = regexp_replace(COALESCE(NULLIF(BTRIM(production_url), ''), 'https://' || NULLIF(BTRIM(production_hostname), '')), '/+$', '') || '/api/cache/refresh?mode=purge-and-refresh&slug=home' \
         WHERE (production_cache_refresh_url IS NULL OR BTRIM(production_cache_refresh_url) = '') \
           AND (NULLIF(BTRIM(production_url), '') IS NOT NULL OR NULLIF(BTRIM(production_hostname), '') IS NOT NULL); \
        UPDATE platform_apps \
-          SET preview_cache_refresh_url = regexp_replace(COALESCE(NULLIF(BTRIM(preview_url), ''), 'https://' || NULLIF(BTRIM(preview_hostname), '')), '/+$', '') || '/api/cache/refresh?mode=refresh' \
+          SET preview_cache_refresh_url = regexp_replace(COALESCE(NULLIF(BTRIM(preview_url), ''), 'https://' || NULLIF(BTRIM(preview_hostname), '')), '/+$', '') || '/api/cache/refresh?mode=purge-and-refresh&slug=home' \
         WHERE (preview_cache_refresh_url IS NULL OR BTRIM(preview_cache_refresh_url) = '') \
           AND (NULLIF(BTRIM(preview_url), '') IS NOT NULL OR NULLIF(BTRIM(preview_hostname), '') IS NOT NULL); \
        DROP INDEX IF EXISTS platform_apps_site_key_unique; \
@@ -10315,8 +10315,16 @@ data:
               _psql_yb_retry "UPDATE platform_apps
                    SET site_key = COALESCE(NULLIF(BTRIM(site_key), ''), '${site_key_sql}'),
                        cache_refresh_enabled = COALESCE(cache_refresh_enabled, true),
-                       production_cache_refresh_url = COALESCE(NULLIF(BTRIM(production_cache_refresh_url), ''), NULLIF('${site_prod_cache_refresh_url_sql}', '')),
-                       preview_cache_refresh_url = COALESCE(NULLIF(BTRIM(preview_cache_refresh_url), ''), NULLIF('${site_preview_cache_refresh_url_sql}', ''))
+                       production_cache_refresh_url = CASE
+                         WHEN NULLIF(BTRIM(production_cache_refresh_url), '') IS NULL THEN NULLIF('${site_prod_cache_refresh_url_sql}', '')
+                         WHEN BTRIM(production_cache_refresh_url) ~ '/api/cache/refresh\?mode=refresh$' THEN COALESCE(NULLIF('${site_prod_cache_refresh_url_sql}', ''), production_cache_refresh_url)
+                         ELSE production_cache_refresh_url
+                       END,
+                       preview_cache_refresh_url = CASE
+                         WHEN NULLIF(BTRIM(preview_cache_refresh_url), '') IS NULL THEN NULLIF('${site_preview_cache_refresh_url_sql}', '')
+                         WHEN BTRIM(preview_cache_refresh_url) ~ '/api/cache/refresh\?mode=refresh$' THEN COALESCE(NULLIF('${site_preview_cache_refresh_url_sql}', ''), preview_cache_refresh_url)
+                         ELSE preview_cache_refresh_url
+                       END
                  WHERE id='${platform_app_id_sql}';" "backfill platform app cache refresh URLs for ${site_realm}/${site_app_key}" 12 || true
             fi
             platform_app_id="$(printf '%s' "${platform_app_id:-}" | tr -d '\r')"
