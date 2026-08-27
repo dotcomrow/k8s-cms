@@ -249,38 +249,82 @@ spec:
               def pascal_collection_name(collection):
                   return "".join(part[:1].upper() + part[1:] for part in collection.split("_") if part)
 
+              def json_body():
+                  return {
+                      "required": True,
+                      "content": {
+                          "application/json": {
+                              "schema": {"type": "object"}
+                          }
+                      },
+                  }
+
+              def json_response(description):
+                  return {
+                      "description": description,
+                      "content": {
+                          "application/json": {
+                              "schema": {"type": "object"}
+                          }
+                      },
+                  }
+
+              def item_id_parameter():
+                  return {
+                      "name": "id",
+                      "in": "path",
+                      "required": True,
+                      "schema": {"type": "string"},
+                  }
+
               def add_collection_paths(spec):
                   paths = spec.setdefault("paths", {})
                   for collection in extra_collections:
                       if not re.match(r"^[A-Za-z0-9_]+$", collection):
                           print(f"Skipping invalid OpenAPI extra collection: {collection}")
                           continue
+                      pascal = pascal_collection_name(collection)
                       path = f"/items/{collection}"
                       methods = paths.setdefault(path, {})
-                      if "get" in methods:
-                          continue
-                      methods["get"] = {
-                          "operationId": f"readItems{pascal_collection_name(collection)}",
-                          "summary": f"Read {collection} items",
-                          "parameters": [
-                              {"name": "fields", "in": "query", "required": False, "schema": {"type": "string"}},
-                              {"name": "filter", "in": "query", "required": False, "schema": {"type": "string"}},
-                              {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer"}},
-                              {"name": "offset", "in": "query", "required": False, "schema": {"type": "integer"}},
-                              {"name": "sort", "in": "query", "required": False, "schema": {"type": "string"}},
-                              {"name": "search", "in": "query", "required": False, "schema": {"type": "string"}},
-                          ],
-                          "responses": {
-                              "200": {
-                                  "description": "Items response",
-                                  "content": {
-                                      "application/json": {
-                                          "schema": {"type": "object"}
-                                      }
-                                  },
-                              }
-                          },
-                      }
+                      if "get" not in methods:
+                          methods["get"] = {
+                              "operationId": f"readItems{pascal}",
+                              "summary": f"Read {collection} items",
+                              "parameters": [
+                                  {"name": "fields", "in": "query", "required": False, "schema": {"type": "string"}},
+                                  {"name": "filter", "in": "query", "required": False, "schema": {"type": "string"}},
+                                  {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer"}},
+                                  {"name": "offset", "in": "query", "required": False, "schema": {"type": "integer"}},
+                                  {"name": "sort", "in": "query", "required": False, "schema": {"type": "string"}},
+                                  {"name": "search", "in": "query", "required": False, "schema": {"type": "string"}},
+                              ],
+                              "responses": {"200": json_response("Items response")},
+                          }
+                      if "post" not in methods:
+                          methods["post"] = {
+                              "operationId": f"createItems{pascal}",
+                              "summary": f"Create {collection} item",
+                              "requestBody": json_body(),
+                              "responses": {"200": json_response("Item response")},
+                          }
+
+                      item_path = f"/items/{collection}/{{id}}"
+                      item_methods = paths.setdefault(item_path, {})
+                      if "patch" not in item_methods:
+                          item_methods["patch"] = {
+                              "operationId": f"updateSingleItems{pascal}",
+                              "summary": f"Update {collection} item",
+                              "parameters": [item_id_parameter()],
+                              "requestBody": json_body(),
+                              "responses": {"200": json_response("Item response")},
+                          }
+                      if "delete" not in item_methods:
+                          item_methods["delete"] = {
+                              "operationId": f"deleteSingleItems{pascal}",
+                              "summary": f"Delete {collection} item",
+                              "parameters": [item_id_parameter()],
+                              "responses": {"200": json_response("Delete response")},
+                          }
 
               def write_stub():
                   if os.path.exists(out_path):
@@ -349,7 +393,7 @@ spec:
             - name: OPENAPI_TOKEN_CACHE_SECONDS
               value: "300"
             - name: OPENAPI_EXTRA_COLLECTIONS
-              value: "cms_pages"
+              value: "cms_pages,platform_organizations,platform_apps,platform_app_operations,platform_app_operation_steps,platform_notification_browser_subscriptions,platform_notification_templates,platform_notification_template_assets"
             - name: VAULT_ADDR
               value: "http://vault.vault.svc.cluster.local:8200"
             - name: VAULT_AUTH_PATH
