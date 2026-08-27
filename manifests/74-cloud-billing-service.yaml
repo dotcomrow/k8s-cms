@@ -233,13 +233,6 @@ spec:
                   name: cloud-billing-service-serverpronto
                   key: billing-breakdown-json
                   optional: true
-          resources:
-            requests:
-              cpu: 20m
-              memory: 96Mi
-            limits:
-              cpu: 300m
-              memory: 384Mi
           startupProbe:
             httpGet:
               path: /healthz
