@@ -62,6 +62,8 @@ data:
                    head_description = NULLIF(BTRIM(head_description), ''),
                    head_theme_color = CASE WHEN NULLIF(BTRIM(head_theme_color), '') IS NULL THEN NULL WHEN LOWER(NULLIF(BTRIM(head_theme_color), '')) ~ '^#[0-9a-f]{3}([0-9a-f]{3}|[0-9a-f]{5})?$' THEN LOWER(NULLIF(BTRIM(head_theme_color), '')) ELSE NULL END,
                    head_manifest_url = NULLIF(BTRIM(head_manifest_url), ''),
+                   head_manifest_screenshot_wide_url = NULLIF(BTRIM(head_manifest_screenshot_wide_url), ''),
+                   head_manifest_screenshot_narrow_url = NULLIF(BTRIM(head_manifest_screenshot_narrow_url), ''),
                    head_icon_url = NULLIF(BTRIM(head_icon_url), ''),
                    head_apple_touch_icon_url = NULLIF(BTRIM(head_apple_touch_icon_url), ''),
                    head_icon_shortcut_url = NULLIF(BTRIM(head_icon_shortcut_url), ''),

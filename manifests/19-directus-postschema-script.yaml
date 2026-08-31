@@ -1176,6 +1176,8 @@ data:
          head_description TEXT NULL, \
          head_theme_color TEXT NULL, \
          head_manifest_url TEXT NULL, \
+         head_manifest_screenshot_wide_url TEXT NULL, \
+         head_manifest_screenshot_narrow_url TEXT NULL, \
          head_icon_url TEXT NULL, \
          head_apple_touch_icon_url TEXT NULL, \
          head_icon_shortcut_url TEXT NULL, \
@@ -1384,6 +1386,8 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_description TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_theme_color TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_screenshot_wide_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_screenshot_narrow_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_apple_touch_icon_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_shortcut_url TEXT; \
@@ -5823,6 +5827,8 @@ data:
       head_description_note="Override only: set when meta description must differ from SEO Description. Leave empty to use SEO Description."
       head_theme_color_note="Optional: browser theme color (hex like #ffffff or #101820)."
       head_manifest_url_note="Optional: web app manifest URL (for example /manifest.json). Set for installable/PWA behavior."
+      head_manifest_screenshot_wide_url_note="Optional: wide web app manifest screenshot. Use file picker to choose/upload from Directus Files."
+      head_manifest_screenshot_narrow_url_note="Optional: narrow web app manifest screenshot. Use file picker to choose/upload from Directus Files."
       head_icon_url_note="Primary icon source (recommended). If set, favicon/app icon sizes are derived automatically. Use size-specific fields only when overriding."
       head_icon_shortcut_url_note="Optional override for legacy shortcut favicon (rel=shortcut icon). Leave empty to use Icon."
       head_icon_svg_url_note="Optional SVG icon override. Leave empty to use raster icon set."
@@ -6052,6 +6058,8 @@ data:
       head_description_note_sql="$(printf '%s' "${head_description_note}" | sed "s/'/''/g")"
       head_theme_color_note_sql="$(printf '%s' "${head_theme_color_note}" | sed "s/'/''/g")"
       head_manifest_url_note_sql="$(printf '%s' "${head_manifest_url_note}" | sed "s/'/''/g")"
+      head_manifest_screenshot_wide_url_note_sql="$(printf '%s' "${head_manifest_screenshot_wide_url_note}" | sed "s/'/''/g")"
+      head_manifest_screenshot_narrow_url_note_sql="$(printf '%s' "${head_manifest_screenshot_narrow_url_note}" | sed "s/'/''/g")"
       head_icon_url_note_sql="$(printf '%s' "${head_icon_url_note}" | sed "s/'/''/g")"
       head_icon_shortcut_url_note_sql="$(printf '%s' "${head_icon_shortcut_url_note}" | sed "s/'/''/g")"
       head_icon_svg_url_note_sql="$(printf '%s' "${head_icon_svg_url_note}" | sed "s/'/''/g")"
@@ -6072,6 +6080,8 @@ data:
       head_description_name_sql="$(printf '%s' "Head Description" | sed "s/'/''/g")"
       head_theme_color_name_sql="$(printf '%s' "Theme Color" | sed "s/'/''/g")"
       head_manifest_url_name_sql="$(printf '%s' "Manifest URL" | sed "s/'/''/g")"
+      head_manifest_screenshot_wide_url_name_sql="$(printf '%s' "Manifest Screenshot (Wide)" | sed "s/'/''/g")"
+      head_manifest_screenshot_narrow_url_name_sql="$(printf '%s' "Manifest Screenshot (Narrow)" | sed "s/'/''/g")"
       head_icon_url_name_sql="$(printf '%s' "Icon" | sed "s/'/''/g")"
       head_icon_shortcut_url_name_sql="$(printf '%s' "Icon (Shortcut)" | sed "s/'/''/g")"
       head_icon_svg_url_name_sql="$(printf '%s' "Icon (SVG)" | sed "s/'/''/g")"
@@ -8327,20 +8337,22 @@ data:
       _upsert_page_head_input_field_meta "head_description" 12 "full" "${head_description_note_sql}" "input-multiline" "" "${head_description_name_sql}"
       _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "select-color" "" "${head_theme_color_name_sql}"
       _upsert_page_head_input_field_meta "head_manifest_url" 14 "half" "${head_manifest_url_note_sql}" "input" "" "${head_manifest_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_url" 15 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_shortcut_url" 16 "half" "${head_icon_shortcut_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_shortcut_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_svg_url" 17 "half" "${head_icon_svg_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_svg_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_16_url" 18 "half" "${head_icon_16_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_16_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_32_url" 19 "half" "${head_icon_32_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_32_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_180_url" 20 "half" "${head_icon_180_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_180_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_192_url" 21 "half" "${head_icon_192_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_192_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_512_url" 22 "half" "${head_icon_512_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_512_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 23 "half" "${head_apple_touch_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_apple_touch_icon_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_mask_url" 24 "half" "${head_icon_mask_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_mask_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_mask_color" 25 "half" "${head_icon_mask_color_note_sql}" "select-color" "" "${head_icon_mask_color_name_sql}"
-      _upsert_page_head_input_field_meta "head_canonical_url" 26 "full" "${head_canonical_url_note_sql}" "input" "" "${head_canonical_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_robots" 27 "full" "${head_robots_note_sql}" "input" "" "${head_robots_name_sql}"
-      _upsert_page_head_input_field_meta "head_generator" 28 "half" "${head_generator_note_sql}" "input" "" "${head_generator_name_sql}"
+      _upsert_page_head_input_field_meta "head_manifest_screenshot_wide_url" 15 "half" "${head_manifest_screenshot_wide_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_manifest_screenshot_wide_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_manifest_screenshot_narrow_url" 16 "half" "${head_manifest_screenshot_narrow_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_manifest_screenshot_narrow_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_url" 17 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_shortcut_url" 18 "half" "${head_icon_shortcut_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_shortcut_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_svg_url" 19 "half" "${head_icon_svg_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_svg_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_16_url" 20 "half" "${head_icon_16_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_16_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_32_url" 21 "half" "${head_icon_32_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_32_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_180_url" 22 "half" "${head_icon_180_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_180_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_192_url" 23 "half" "${head_icon_192_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_192_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_512_url" 24 "half" "${head_icon_512_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_512_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 25 "half" "${head_apple_touch_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_apple_touch_icon_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_mask_url" 26 "half" "${head_icon_mask_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_mask_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_mask_color" 27 "half" "${head_icon_mask_color_note_sql}" "select-color" "" "${head_icon_mask_color_name_sql}"
+      _upsert_page_head_input_field_meta "head_canonical_url" 28 "full" "${head_canonical_url_note_sql}" "input" "" "${head_canonical_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_robots" 29 "full" "${head_robots_note_sql}" "input" "" "${head_robots_name_sql}"
+      _upsert_page_head_input_field_meta "head_generator" 30 "half" "${head_generator_note_sql}" "input" "" "${head_generator_name_sql}"
       _upsert_block_hero_background_image_field_meta
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_page_block_parent_field_meta_dynamic
@@ -8539,6 +8551,8 @@ data:
       _assign_page_field_group "head_description" "_section_meta"
       _assign_page_field_group "head_theme_color" "_section_meta"
       _assign_page_field_group "head_manifest_url" "_section_meta"
+      _assign_page_field_group "head_manifest_screenshot_wide_url" "_section_meta"
+      _assign_page_field_group "head_manifest_screenshot_narrow_url" "_section_meta"
       _assign_page_field_group "head_icon_url" "_section_meta"
       _assign_page_field_group "head_icon_shortcut_url" "_section_meta"
       _assign_page_field_group "head_icon_svg_url" "_section_meta"
