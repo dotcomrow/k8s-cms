@@ -4418,16 +4418,56 @@ data:
     if ! _psql_yb_retry "WITH preview_specs(template_key, site_key, release_channel, preview_sections) AS (
         VALUES
           ('external-header-template', NULL::text, 'preview', jsonb_build_array(
-            jsonb_build_object('key','utility','label','Utility Bar','role','header'),
-            jsonb_build_object('key','brand','label','Brand','role','left','rowContainerClass','site-header__inner','width',1),
-            jsonb_build_object('key','primary_nav','label','Primary Nav','role','main','rowContainerClass','site-header__inner','width',2),
-            jsonb_build_object('key','actions','label','Actions','role','right','rowContainerClass','site-header__inner','width',1)
+            jsonb_build_object('key','utility','label','Utility Bar','role','header','children',jsonb_build_array(
+              jsonb_build_object('key','util_1','label','Utility 1'),
+              jsonb_build_object('key','util_2','label','Utility 2')
+            )),
+            jsonb_build_object('key','brand','label','Brand','role','left','rowContainerClass','site-header__inner','width',1,'children',jsonb_build_array(
+              jsonb_build_object('key','logo','label','Logo'),
+              jsonb_build_object('key','brand_name','label','Brand Name')
+            )),
+            jsonb_build_object('key','primary_nav','label','Primary Nav','role','main','rowContainerClass','site-header__inner','width',2,'children',jsonb_build_array(
+              jsonb_build_object('key','nav_1','label','Nav 1'),
+              jsonb_build_object('key','nav_2','label','Nav 2'),
+              jsonb_build_object('key','nav_3','label','Nav 3'),
+              jsonb_build_object('key','nav_4','label','Nav 4'),
+              jsonb_build_object('key','nav_5','label','Nav 5'),
+              jsonb_build_object('key','nav_6','label','Nav 6'),
+              jsonb_build_object('key','nav_7','label','Nav 7')
+            )),
+            jsonb_build_object('key','actions','label','Actions','role','right','rowContainerClass','site-header__inner','width',1,'children',jsonb_build_array(
+              jsonb_build_object('key','action_1','label','Action 1'),
+              jsonb_build_object('key','action_2','label','Action 2')
+            ))
           )),
           ('external-footer-template', NULL::text, 'preview', jsonb_build_array(
-            jsonb_build_object('key','brand','label','Brand / Copyright','role','left','rowContainerClass','site-footer__inner','width',1.35),
-            jsonb_build_object('key','company','label','Company Links','role','feature','rowContainerClass','site-footer__inner','width',1),
-            jsonb_build_object('key','participate','label','Participate Links','role','feature','rowContainerClass','site-footer__inner','width',1),
-            jsonb_build_object('key','legal','label','Legal Links','role','feature','rowContainerClass','site-footer__inner','width',1)
+            jsonb_build_object('key','brand','label','Brand / Copyright','role','left','rowContainerClass','site-footer__inner','width',1.25,'children',jsonb_build_array(
+              jsonb_build_object('key','logo','label','Logo'),
+              jsonb_build_object('key','brand_name','label','Brand Name'),
+              jsonb_build_object('key','tagline','label','Tagline'),
+              jsonb_build_object('key','copyright','label','Copyright')
+            )),
+            jsonb_build_object('key','company','label','Company Links','role','feature','rowContainerClass','site-footer__inner','width',1,'children',jsonb_build_array(
+              jsonb_build_object('key','company_heading','label','Heading'),
+              jsonb_build_object('key','company_link_1','label','Link 1'),
+              jsonb_build_object('key','company_link_2','label','Link 2'),
+              jsonb_build_object('key','company_link_3','label','Link 3'),
+              jsonb_build_object('key','company_link_4','label','Link 4')
+            )),
+            jsonb_build_object('key','participate','label','Participate Links','role','feature','rowContainerClass','site-footer__inner','width',1,'children',jsonb_build_array(
+              jsonb_build_object('key','participate_heading','label','Heading'),
+              jsonb_build_object('key','participate_link_1','label','Link 1'),
+              jsonb_build_object('key','participate_link_2','label','Link 2'),
+              jsonb_build_object('key','participate_link_3','label','Link 3'),
+              jsonb_build_object('key','participate_link_4','label','Link 4'),
+              jsonb_build_object('key','participate_link_5','label','Link 5')
+            )),
+            jsonb_build_object('key','legal','label','Legal Links','role','feature','rowContainerClass','site-footer__inner','width',1,'children',jsonb_build_array(
+              jsonb_build_object('key','legal_heading','label','Heading'),
+              jsonb_build_object('key','legal_link_1','label','Link 1'),
+              jsonb_build_object('key','legal_link_2','label','Link 2'),
+              jsonb_build_object('key','legal_link_3','label','Link 3')
+            ))
           )),
           ('rich-text-body-v1', NULL::text, 'preview', jsonb_build_array(
             jsonb_build_object('key','body','label','Body HTML','role','main')

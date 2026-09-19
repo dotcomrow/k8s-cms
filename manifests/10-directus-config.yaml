@@ -8203,6 +8203,13 @@ data:
               tagName: asString(entry?.tagName),
               rowContainerClass: asString(entry?.rowContainerClass ?? entry?.row ?? entry?.group),
               width: Number.isFinite(Number(entry?.width)) ? Math.max(0.25, Number(entry.width)) : null,
+              children: Array.isArray(entry?.children)
+                ? entry.children.map((child) => ({
+                    key: normalizePreviewSectionKey(child?.key ?? child?.field ?? child?.slot),
+                    label: asString(child?.label ?? child?.title) || formatContentTemplateSectionLabel(child?.key ?? child?.field ?? child?.slot),
+                    role: asString(child?.role) || normalizeContentTemplatePreviewRole(child?.key ?? child?.field ?? child?.slot),
+                  })).filter((child) => child.key)
+                : [],
             };
           }).filter(Boolean);
         };
@@ -8212,13 +8219,15 @@ data:
           if (!html) return [];
           const sections = [];
           const seen = new Set();
+          const sectionByKey = new Map();
           const addSection = (key, fallbackLabel = '', source = 'html', metadata = {}) => {
             const normalizedKey = normalizePreviewSectionKey(key);
-            if (!normalizedKey || seen.has(normalizedKey)) return;
+            if (!normalizedKey) return null;
+            if (seen.has(normalizedKey)) return sectionByKey.get(normalizedKey) || null;
             seen.add(normalizedKey);
             const className = asString(metadata?.className);
             const tagName = asString(metadata?.tagName);
-            sections.push({
+            const section = {
               key: normalizedKey,
               label: asString(fallbackLabel) || formatContentTemplateSectionLabel(normalizedKey) || normalizedKey,
               source,
@@ -8226,6 +8235,21 @@ data:
               className,
               tagName,
               rowContainerClass: asString(metadata?.rowContainerClass),
+              children: [],
+            };
+            sections.push(section);
+            sectionByKey.set(normalizedKey, section);
+            return section;
+          };
+          const addPreviewChild = (parentKey, key, fallbackLabel = '') => {
+            const parent = sectionByKey.get(normalizePreviewSectionKey(parentKey));
+            const normalizedKey = normalizePreviewSectionKey(key);
+            if (!parent || !normalizedKey) return;
+            if (parent.children.some((child) => child.key === normalizedKey)) return;
+            parent.children.push({
+              key: normalizedKey,
+              label: asString(fallbackLabel) || formatContentTemplateSectionLabel(normalizedKey) || normalizedKey,
+              role: normalizeContentTemplatePreviewRole(normalizedKey),
             });
           };
 
@@ -8254,7 +8278,14 @@ data:
             const className = attrFromTag(tag, 'class');
             const rowContainerClass = isContentTemplateRowContainerClass(className) ? className : '';
             const nearestRowContainer = [...stack].reverse().find((entry) => entry.rowContainerClass)?.rowContainerClass || '';
+            const nearestSectionKey = [...stack].reverse().find((entry) => entry.sectionKey)?.sectionKey || '';
+            const previewChildKey = attrFromTag(tag, 'data-preview-child') || attrFromTag(tag, 'data-child');
+            const previewChildParentKey = attrFromTag(tag, 'data-preview-parent') || attrFromTag(tag, 'data-section-parent') || nearestSectionKey;
+            if (previewChildKey && previewChildParentKey) {
+              addPreviewChild(previewChildParentKey, previewChildKey, attrFromTag(tag, 'aria-label') || attrFromTag(tag, 'title'));
+            }
             const explicitKey = attrFromTag(tag, 'data-preview-section') || attrFromTag(tag, 'data-section') || attrFromTag(tag, 'data-field') || attrFromTag(tag, 'data-slot');
+            let openedSectionKey = '';
             if (explicitKey || ['header', 'footer', 'main', 'aside', 'nav', 'section'].includes(tagName)) {
               sectionIndex += 1;
               const key = explicitKey
@@ -8262,17 +8293,19 @@ data:
                 || attrFromTag(tag, 'id')
                 || className
                 || `section-${sectionIndex}`;
-              addSection(key, formatContentTemplateSectionLabel(key) || `Section ${sectionIndex}`, explicitKey ? 'data-section' : tagName, {
+              const section = addSection(key, formatContentTemplateSectionLabel(key) || `Section ${sectionIndex}`, explicitKey ? 'data-section' : tagName, {
                 className,
                 tagName,
                 rowContainerClass: nearestRowContainer,
               });
+              openedSectionKey = asString(section?.key);
             }
 
             if (!/\s*\/\s*>$/.test(tagLower)) {
               stack.push({
                 tagName,
                 rowContainerClass,
+                sectionKey: openedSectionKey || nearestSectionKey,
               });
             }
           }
@@ -8336,6 +8369,7 @@ data:
                 tagName: asString(entry?.tagName),
                 rowContainerClass: asString(entry?.rowContainerClass),
                 width: Number.isFinite(Number(entry?.width)) ? Math.max(0.25, Number(entry.width)) : null,
+                children: Array.isArray(entry?.children) ? entry.children : [],
               });
             }
           };
@@ -11399,8 +11433,8 @@ data:
               display: 'flex',
               flexDirection: 'column',
               gap: '12px',
-              width: 'min(1520px, calc(100vw - 96px))',
-              maxWidth: 'calc(100vw - 96px)',
+              width: '100%',
+              maxWidth: '100%',
               overflow: 'visible',
             },
             toolbar: {
@@ -11431,7 +11465,7 @@ data:
               display: 'flex',
               flexDirection: 'column',
               gap: '10px',
-              minWidth: '1120px',
+              minWidth: '820px',
             },
             treeViewport: {
               maxHeight: 'none',
@@ -11440,7 +11474,7 @@ data:
               borderRadius: 'var(--theme--border-radius)',
               padding: '10px 12px',
               background: 'var(--theme--background)',
-              minWidth: '1120px',
+              minWidth: '820px',
             },
             treeViewportFrame: {
               border: '2px solid var(--theme--border-color-subdued)',
@@ -11518,20 +11552,23 @@ data:
             },
             contentTemplateFieldRow: {
               display: 'grid',
-              gridTemplateColumns: '92px minmax(320px, 380px) minmax(640px, 1fr)',
+              gridTemplateColumns: '92px minmax(280px, 360px) minmax(220px, 290px)',
               gap: '8px',
               alignItems: 'stretch',
               paddingTop: '4px',
               width: '100%',
-              minWidth: '1060px',
+              minWidth: '680px',
             },
             contentTemplatePicker: {
               minWidth: 0,
               width: '100%',
             },
             contentTemplatePreview: {
-              minWidth: '640px',
+              minWidth: '220px',
+              maxWidth: '290px',
               width: '100%',
+              maxHeight: 'clamp(170px, 30vh, 280px)',
+              boxSizing: 'border-box',
               alignSelf: 'stretch',
               border: '1px solid var(--theme--border-subdued)',
               borderRadius: '6px',
@@ -11566,25 +11603,29 @@ data:
             contentTemplatePreviewCanvas: {
               display: 'flex',
               flexDirection: 'column',
-              gap: '5px',
-              minHeight: '112px',
+              gap: '4px',
+              minHeight: '88px',
+              maxHeight: 'clamp(118px, 22vh, 206px)',
               border: '1px solid var(--theme--border-subdued)',
               borderRadius: '4px',
               background: 'var(--theme--background-page)',
-              padding: '6px',
+              padding: '5px',
+              overflowY: 'auto',
             },
             contentTemplatePreviewRow: {
               display: 'grid',
-              gap: '5px',
+              gap: '4px',
               width: '100%',
             },
             contentTemplatePreviewSection: {
-              minHeight: '28px',
+              minHeight: '24px',
               border: '1px solid var(--theme--border-normal)',
               borderRadius: '3px',
               background: 'var(--theme--background-subdued)',
-              padding: '4px 6px',
+              padding: '4px 5px',
               display: 'flex',
+              flexDirection: 'column',
+              gap: '3px',
               alignItems: 'center',
               justifyContent: 'center',
               minWidth: 0,
@@ -11594,7 +11635,26 @@ data:
             contentTemplatePreviewSectionText: {
               fontSize: '10px',
               lineHeight: 1.15,
+              width: '100%',
               color: 'var(--theme--foreground-normal)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            },
+            contentTemplatePreviewChildren: {
+              display: 'grid',
+              gap: '2px',
+              width: '100%',
+            },
+            contentTemplatePreviewChild: {
+              minHeight: '12px',
+              border: '1px solid var(--theme--border-subdued)',
+              borderRadius: '2px',
+              background: 'var(--theme--background-page)',
+              padding: '1px 2px',
+              fontSize: '8px',
+              lineHeight: 1.05,
+              color: 'var(--theme--foreground-subdued)',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -11849,7 +11909,7 @@ data:
               const normalizedRole = asString(role);
               if (normalizedRole === 'header' || normalizedRole === 'footer' || normalizedRole === 'hero') {
                 return {
-                  minHeight: normalizedRole === 'hero' ? '44px' : '30px',
+                  minHeight: normalizedRole === 'hero' ? '34px' : '26px',
                   fontWeight: '600',
                   background: 'var(--theme--background-subdued)',
                 };
@@ -11862,24 +11922,41 @@ data:
               }
               if (normalizedRole === 'main') {
                 return {
-                  minHeight: '42px',
+                  minHeight: '34px',
                   fontWeight: '600',
                   background: 'var(--theme--background)',
                 };
               }
               if (normalizedRole === 'sidebar' || normalizedRole === 'aside' || normalizedRole === 'left' || normalizedRole === 'right') {
                 return {
-                  minHeight: '42px',
+                  minHeight: '34px',
                   borderStyle: 'dashed',
                   background: 'var(--theme--background-subdued)',
                 };
               }
               if (normalizedRole === 'feature' || normalizedRole === 'cell') {
                 return {
-                  minHeight: '34px',
+                  minHeight: '30px',
                 };
               }
               return {};
+            };
+            const renderPreviewSectionChildren = (section) => {
+              const children = Array.isArray(section?.children) ? section.children : [];
+              if (children.length === 0) return null;
+              return h(
+                'div',
+                { style: styles.contentTemplatePreviewChildren },
+                children.map((child) => h(
+                  'span',
+                  {
+                    key: `${section.key}-${child.key}`,
+                    style: styles.contentTemplatePreviewChild,
+                    title: asString(child?.label || child?.key),
+                  },
+                  asString(child?.label || child?.key),
+                )),
+              );
             };
             return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
               h('div', { style: styles.contentTemplatePreviewHeader }, [
@@ -11911,6 +11988,7 @@ data:
                         },
                         [
                           h('span', { style: styles.contentTemplatePreviewSectionText }, section.label),
+                          renderPreviewSectionChildren(section),
                         ],
                       )),
                     )),
