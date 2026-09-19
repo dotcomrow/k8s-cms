@@ -4413,6 +4413,48 @@ data:
     else
       echo "INFO: DIRECTUS_POSTSCHEMA_REBUILD_SEED_ENABLED=false; skipping manifest-managed cms_content_templates and cms_template_functions seed data."
     fi
+
+    echo "🧭 Ensuring CMS content template preview metadata..."
+    if ! _psql_yb_retry "WITH preview_specs(template_key, site_key, release_channel, preview_sections) AS (
+        VALUES
+          ('external-header-template', NULL::text, 'preview', jsonb_build_array(
+            jsonb_build_object('key','utility','label','Utility Bar','role','header'),
+            jsonb_build_object('key','brand','label','Brand','role','left','rowContainerClass','site-header__inner','width',1),
+            jsonb_build_object('key','primary_nav','label','Primary Nav','role','main','rowContainerClass','site-header__inner','width',2),
+            jsonb_build_object('key','actions','label','Actions','role','right','rowContainerClass','site-header__inner','width',1)
+          )),
+          ('external-footer-template', NULL::text, 'preview', jsonb_build_array(
+            jsonb_build_object('key','brand','label','Brand / Copyright','role','left','rowContainerClass','site-footer__inner','width',1.35),
+            jsonb_build_object('key','company','label','Company Links','role','feature','rowContainerClass','site-footer__inner','width',1),
+            jsonb_build_object('key','participate','label','Participate Links','role','feature','rowContainerClass','site-footer__inner','width',1),
+            jsonb_build_object('key','legal','label','Legal Links','role','feature','rowContainerClass','site-footer__inner','width',1)
+          )),
+          ('rich-text-body-v1', NULL::text, 'preview', jsonb_build_array(
+            jsonb_build_object('key','body','label','Body HTML','role','main')
+          )),
+          ('rich-text-body-v1', NULL::text, 'prod', jsonb_build_array(
+            jsonb_build_object('key','body','label','Body HTML','role','main')
+          )),
+          ('shell-widget-text-v1', 'external', 'preview', jsonb_build_array(
+            jsonb_build_object('key','notification_heading','label','Notification Heading','role','main')
+          )),
+          ('shell-widget-text-v1', 'external', 'prod', jsonb_build_array(
+            jsonb_build_object('key','notification_heading','label','Notification Heading','role','main')
+          ))
+      )
+      UPDATE cms_content_templates target
+         SET content_schema = jsonb_set(COALESCE(target.content_schema, '{}'::jsonb), '{x-preview-sections}', preview_specs.preview_sections, true),
+             date_updated = now()
+        FROM preview_specs
+       WHERE target.template_key = preview_specs.template_key
+         AND target.release_channel = preview_specs.release_channel
+         AND (
+           (preview_specs.site_key IS NULL AND (target.site_key IS NULL OR BTRIM(target.site_key) = ''))
+           OR target.site_key = preview_specs.site_key
+         )
+         AND COALESCE(target.content_schema->'x-preview-sections', 'null'::jsonb) IS DISTINCT FROM preview_specs.preview_sections;" "content template preview metadata" 24; then
+      echo "⚠️ Could not update CMS content template preview metadata; will retry on next postschema reconcile."
+    fi
     echo "INFO: Skipping legacy cms_block_rich_text row cleanup; Directus DB content is authoritative."
 
     echo "🧱 Ensuring UUID defaults for CMS collection IDs..."

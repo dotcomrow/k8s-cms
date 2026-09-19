@@ -8181,6 +8181,32 @@ data:
             || normalized.includes('layout__body');
         };
 
+        const parseContentTemplatePreviewSectionEntries = (schemaValue) => {
+          const schema = parseOptions(schemaValue);
+          const candidates = [
+            schema?.['x-preview-sections'],
+            schema?.x_preview_sections,
+            schema?.preview_sections,
+            schema?.previewSections,
+          ];
+          const entries = candidates.find((value) => Array.isArray(value));
+          if (!Array.isArray(entries)) return [];
+          return entries.map((entry) => {
+            const key = normalizePreviewSectionKey(entry?.key ?? entry?.field ?? entry?.slot);
+            if (!key) return null;
+            return {
+              key,
+              label: asString(entry?.label ?? entry?.title) || formatContentTemplateSectionLabel(key) || key,
+              source: 'preview-schema',
+              role: asString(entry?.role) || normalizeContentTemplatePreviewRole(key, entry?.className, entry?.tagName),
+              className: asString(entry?.className),
+              tagName: asString(entry?.tagName),
+              rowContainerClass: asString(entry?.rowContainerClass ?? entry?.row ?? entry?.group),
+              width: Number.isFinite(Number(entry?.width)) ? Math.max(0.25, Number(entry.width)) : null,
+            };
+          }).filter(Boolean);
+        };
+
         const parseContentTemplateHtmlSections = (templateHtml) => {
           const html = asString(templateHtml);
           if (!html) return [];
@@ -8228,15 +8254,15 @@ data:
             const className = attrFromTag(tag, 'class');
             const rowContainerClass = isContentTemplateRowContainerClass(className) ? className : '';
             const nearestRowContainer = [...stack].reverse().find((entry) => entry.rowContainerClass)?.rowContainerClass || '';
-            const explicitKey = attrFromTag(tag, 'data-section') || attrFromTag(tag, 'data-field') || attrFromTag(tag, 'data-slot');
-            if (explicitKey || tagName === 'section') {
+            const explicitKey = attrFromTag(tag, 'data-preview-section') || attrFromTag(tag, 'data-section') || attrFromTag(tag, 'data-field') || attrFromTag(tag, 'data-slot');
+            if (explicitKey || ['header', 'footer', 'main', 'aside', 'nav', 'section'].includes(tagName)) {
               sectionIndex += 1;
               const key = explicitKey
                 || attrFromTag(tag, 'aria-label')
                 || attrFromTag(tag, 'id')
                 || className
                 || `section-${sectionIndex}`;
-              addSection(key, formatContentTemplateSectionLabel(key) || `Section ${sectionIndex}`, explicitKey ? 'data-section' : 'section', {
+              addSection(key, formatContentTemplateSectionLabel(key) || `Section ${sectionIndex}`, explicitKey ? 'data-section' : tagName, {
                 className,
                 tagName,
                 rowContainerClass: nearestRowContainer,
@@ -8251,14 +8277,16 @@ data:
             }
           }
 
-          const tokenRegex = /\{\{\s*([a-zA-Z0-9_.:-]+)\s*\}\}/g;
-          let tokenMatch;
-          while ((tokenMatch = tokenRegex.exec(html)) !== null) {
-            const rawToken = asString(tokenMatch?.[1]);
-            if (!rawToken || rawToken.startsWith('#') || rawToken.startsWith('/')) continue;
-            addSection(rawToken, '', rawToken.toLowerCase().startsWith('slot:') ? 'slot' : 'token', {
-              role: normalizeContentTemplatePreviewRole(rawToken),
-            });
+          if (sections.length === 0) {
+            const tokenRegex = /\{\{\{?\s*([a-zA-Z0-9_.:-]+)(?:\s+[^}]*)?\s*\}?\}\}/g;
+            let tokenMatch;
+            while ((tokenMatch = tokenRegex.exec(html)) !== null) {
+              const rawToken = asString(tokenMatch?.[1]);
+              if (!rawToken || rawToken.startsWith('#') || rawToken.startsWith('/')) continue;
+              addSection(rawToken, '', rawToken.toLowerCase().startsWith('slot:') ? 'slot' : 'token', {
+                role: normalizeContentTemplatePreviewRole(rawToken),
+              });
+            }
           }
           return sections;
         };
@@ -8268,7 +8296,9 @@ data:
           const properties = schema && typeof schema.properties === 'object' && schema.properties !== null
             ? schema.properties
             : {};
-          return Object.entries(properties).map(([key, config]) => {
+          const propertyEntries = Object.entries(properties);
+          if (propertyEntries.length > 8) return [];
+          return propertyEntries.map(([key, config]) => {
             const label = asString(config?.title) || formatContentTemplateSectionLabel(key) || key;
             return {
               key: normalizePreviewSectionKey(key),
@@ -8277,6 +8307,16 @@ data:
               role: normalizeContentTemplatePreviewRole(key),
             };
           }).filter((section) => section.key);
+        };
+
+        const inferContentTemplatePreviewWidths = (sections) => {
+          const explicit = (sections || []).map((section) => Number(section?.width));
+          if (explicit.every((value) => Number.isFinite(value) && value > 0)) return explicit;
+          const roles = (sections || []).map((section) => asString(section?.role));
+          if (roles.length === 3 && roles[0] === 'left' && roles[1] === 'main' && roles[2] === 'right') return [1, 2, 1];
+          if (roles.length === 3 && roles[0] === 'nav' && roles[1] === 'main' && roles[2] === 'right') return [1, 2, 1];
+          if (roles.length === 4 && roles[0] === 'left') return [1.35, 1, 1, 1];
+          return (sections || []).map(() => 1);
         };
 
         const buildContentTemplatePreviewSections = (templateChoice) => {
@@ -8295,11 +8335,13 @@ data:
                 className: asString(entry?.className),
                 tagName: asString(entry?.tagName),
                 rowContainerClass: asString(entry?.rowContainerClass),
+                width: Number.isFinite(Number(entry?.width)) ? Math.max(0.25, Number(entry.width)) : null,
               });
             }
           };
-          addSections(parseContentTemplateHtmlSections(templateChoice?.html_template));
-          addSections(parseContentTemplateSchemaSections(templateChoice?.content_schema));
+          addSections(parseContentTemplatePreviewSectionEntries(templateChoice?.content_schema));
+          if (sections.length === 0) addSections(parseContentTemplateHtmlSections(templateChoice?.html_template));
+          if (sections.length === 0) addSections(parseContentTemplateSchemaSections(templateChoice?.content_schema));
           if (sections.length === 0 && asString(templateChoice?.html_template)) {
             sections.push({ key: 'html', label: 'HTML Template', source: 'html' });
           }
@@ -8352,7 +8394,7 @@ data:
                 cursor += 1;
               }
               if (items.length > 1) {
-                rows.push(rowFor(items, items.map(() => 1)));
+                rows.push(rowFor(items, inferContentTemplatePreviewWidths(items)));
                 items.forEach((item) => used.add(item.key));
                 i = cursor - 1;
                 continue;
@@ -8406,156 +8448,6 @@ data:
             used.add(section.key);
           }
           return rows;
-        };
-
-        const escapeHtml = (value) => asString(value)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#39;');
-
-        const sanitizePreviewHtml = (value) => asString(value)
-          .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-          .replace(/\son[a-z]+\s*=\s*(['"])[\s\S]*?\1/gi, '')
-          .replace(/\s(href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\2/gi, ' $1="#"');
-
-        const sanitizePreviewCss = (value) => asString(value)
-          .replace(/@import\b[^;]+;/gi, '')
-          .replace(/<\/style/gi, '<\\/style')
-          .replace(/url\(\s*(['"]?)javascript:[\s\S]*?\1\s*\)/gi, 'none');
-
-        const getObjectPathValue = (source, pathValue) => {
-          if (!source || typeof source !== 'object') return undefined;
-          const normalizedPath = asString(pathValue);
-          if (!normalizedPath) return undefined;
-          if (Object.prototype.hasOwnProperty.call(source, normalizedPath)) return source[normalizedPath];
-          const parts = normalizedPath.split('.').map((entry) => asString(entry)).filter(Boolean);
-          let cursor = source;
-          for (const part of parts) {
-            if (!cursor || typeof cursor !== 'object') return undefined;
-            if (Object.prototype.hasOwnProperty.call(cursor, part)) {
-              cursor = cursor[part];
-              continue;
-            }
-            const normalizedPart = normalizeFieldToken(part);
-            const matchingKey = Object.keys(cursor).find((key) => normalizeFieldToken(key) === normalizedPart);
-            if (!matchingKey) return undefined;
-            cursor = cursor[matchingKey];
-          }
-          return cursor;
-        };
-
-        const resolveContentTemplateTokenValue = (contentData, token) => {
-          const normalizedToken = stripPreviewTemplateTag(token);
-          if (!normalizedToken) return undefined;
-          const candidates = uniqueNonEmpty([
-            normalizedToken,
-            normalizedToken.replace(/^content[._:-]+/i, ''),
-            normalizedToken.replace(/^fields[._:-]+/i, ''),
-          ]);
-          for (const candidate of candidates) {
-            const value = getObjectPathValue(contentData, candidate);
-            if (value !== undefined && value !== null && asString(value) !== '') return value;
-          }
-          const normalized = normalizeFieldToken(normalizedToken);
-          const matchingKey = Object.keys(contentData || {}).find((key) => normalizeFieldToken(key) === normalized);
-          return matchingKey ? contentData[matchingKey] : undefined;
-        };
-
-        const contentTemplateTokenLabel = (token) =>
-          formatContentTemplateSectionLabel(stripPreviewTemplateTag(token)) || stripPreviewTemplateTag(token) || 'Content';
-
-        const renderContentTemplateToken = (token, contentData) => {
-          const tokenText = stripPreviewTemplateTag(token);
-          if (!tokenText) return '';
-          const value = resolveContentTemplateTokenValue(contentData, tokenText);
-          const label = contentTemplateTokenLabel(tokenText);
-          if (value !== undefined && value !== null && asString(value) !== '') {
-            if (typeof value === 'object') {
-              return `<pre class="cms-template-preview__json">${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
-            }
-            const renderedValue = asString(value);
-            if (/<[a-z][\s\S]*>/i.test(renderedValue) || /_html$/i.test(tokenText)) {
-              return `<div class="cms-template-preview__content cms-template-preview__content--html">${sanitizePreviewHtml(renderedValue)}</div>`;
-            }
-            return `<span class="cms-template-preview__content cms-template-preview__content--text">${escapeHtml(renderedValue)}</span>`;
-          }
-          return `<span class="cms-template-preview__placeholder">${escapeHtml(label)}</span>`;
-        };
-
-        const renderContentTemplatePreviewHtml = (templateHtml, contentData) => {
-          const rawHtml = asString(templateHtml) || '<section>{{body_html}}</section>';
-          const rendered = rawHtml.replace(/\{\{\{?\s*([#\/^]?[a-zA-Z0-9_.:-]+)(?:\s+[^}]*)?\s*\}?\}\}/g, (_match, rawToken) => {
-            const token = asString(rawToken);
-            if (!token || token.startsWith('#') || token.startsWith('/') || token.startsWith('^')) return '';
-            return renderContentTemplateToken(token, contentData);
-          });
-          const sanitized = sanitizePreviewHtml(rendered);
-          return /<[a-z][\s\S]*>/i.test(sanitized)
-            ? sanitized
-            : `<main class="cms-template-preview__fallback">${sanitized}</main>`;
-        };
-
-        const buildContentTemplatePreviewSrcdoc = (templateChoice, contentDataValue) => {
-          const contentData = parseOptions(contentDataValue);
-          const renderedHtml = renderContentTemplatePreviewHtml(templateChoice?.html_template, contentData);
-          const templateCss = sanitizePreviewCss(templateChoice?.css);
-          const baseCss = `
-            html, body {
-              margin: 0;
-              width: 100%;
-              min-height: 100%;
-              background: #ffffff;
-              color: #1f2937;
-              font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-              font-size: 14px;
-              line-height: 1.35;
-            }
-            *, *::before, *::after { box-sizing: border-box; }
-            img, svg, video, canvas { max-width: 100%; height: auto; }
-            a { color: inherit; }
-            .cms-template-preview__page {
-              width: 100%;
-              min-height: 100%;
-              overflow: hidden;
-            }
-            .cms-template-preview__placeholder {
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              min-height: 20px;
-              min-width: 64px;
-              padding: 3px 6px;
-              border: 1px dashed #94a3b8;
-              border-radius: 4px;
-              background: #f8fafc;
-              color: #475569;
-              font-size: 11px;
-              font-weight: 600;
-              line-height: 1.1;
-            }
-            .cms-template-preview__content--html {
-              display: contents;
-            }
-            .cms-template-preview__content--text {
-              display: inline;
-            }
-            .cms-template-preview__json {
-              margin: 0;
-              white-space: pre-wrap;
-              font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            }
-            .cms-template-preview__fallback {
-              min-height: 120px;
-              display: grid;
-              place-items: center;
-              padding: 18px;
-              border: 1px solid #e2e8f0;
-              background: #f8fafc;
-            }
-          `;
-          return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${baseCss}\n${templateCss}</style></head><body><div class="cms-template-preview__page">${renderedHtml}</div></body></html>`;
         };
 
         const contentTemplateChoiceByKey = (templateKey) => {
@@ -11649,15 +11541,6 @@ data:
               flexDirection: 'column',
               gap: '6px',
             },
-            contentTemplatePreviewFrame: {
-              display: 'block',
-              width: '100%',
-              height: '260px',
-              minHeight: '260px',
-              border: '1px solid var(--theme--border-subdued)',
-              borderRadius: '4px',
-              background: '#ffffff',
-            },
             contentTemplatePreviewHeader: {
               display: 'flex',
               justifyContent: 'space-between',
@@ -11679,6 +11562,42 @@ data:
               fontSize: '10px',
               lineHeight: 1.2,
               color: 'var(--theme--foreground-subdued)',
+            },
+            contentTemplatePreviewCanvas: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+              minHeight: '112px',
+              border: '1px solid var(--theme--border-subdued)',
+              borderRadius: '4px',
+              background: 'var(--theme--background-page)',
+              padding: '6px',
+            },
+            contentTemplatePreviewRow: {
+              display: 'grid',
+              gap: '5px',
+              width: '100%',
+            },
+            contentTemplatePreviewSection: {
+              minHeight: '28px',
+              border: '1px solid var(--theme--border-normal)',
+              borderRadius: '3px',
+              background: 'var(--theme--background-subdued)',
+              padding: '4px 6px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: 0,
+              textAlign: 'center',
+              overflow: 'hidden',
+            },
+            contentTemplatePreviewSectionText: {
+              fontSize: '10px',
+              lineHeight: 1.15,
+              color: 'var(--theme--foreground-normal)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
             },
             contentTemplatePreviewEmpty: {
               minHeight: '54px',
@@ -11905,7 +11824,7 @@ data:
             }, children);
           };
 
-          const renderContentTemplatePreview = (templateKey, row) => {
+          const renderContentTemplatePreview = (templateKey) => {
             const normalizedTemplateKey = asString(templateKey);
             if (contentTemplateChoicesLoading.value) {
               return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
@@ -11924,27 +11843,79 @@ data:
               ]);
             }
             const title = asString(templateChoice?.name) || normalizedTemplateKey;
-            const selectedContentChoice = (Array.isArray(sharedContentChoices.value) ? sharedContentChoices.value : [])
-              .find((choice) => parseId(choice?.value) === parseId(row?.content_item_id));
-            const rowContentData = parseOptions(row?.content_item_json);
-            const choiceContentData = parseOptions(selectedContentChoice?.content_json);
-            const contentData = Object.keys(rowContentData).length > 0 ? rowContentData : choiceContentData;
-            const srcdoc = buildContentTemplatePreviewSrcdoc(templateChoice, contentData);
-            const previewKey = `${normalizedTemplateKey}:${parseId(row?.content_item_id)}:${toSnapshotHash(contentData)}`;
+            const previewSections = buildContentTemplatePreviewSections(templateChoice);
+            const previewRows = buildContentTemplatePreviewRows(previewSections);
+            const sectionStyleForRole = (role) => {
+              const normalizedRole = asString(role);
+              if (normalizedRole === 'header' || normalizedRole === 'footer' || normalizedRole === 'hero') {
+                return {
+                  minHeight: normalizedRole === 'hero' ? '44px' : '30px',
+                  fontWeight: '600',
+                  background: 'var(--theme--background-subdued)',
+                };
+              }
+              if (normalizedRole === 'nav') {
+                return {
+                  borderStyle: 'dashed',
+                  background: 'var(--theme--background-subdued)',
+                };
+              }
+              if (normalizedRole === 'main') {
+                return {
+                  minHeight: '42px',
+                  fontWeight: '600',
+                  background: 'var(--theme--background)',
+                };
+              }
+              if (normalizedRole === 'sidebar' || normalizedRole === 'aside' || normalizedRole === 'left' || normalizedRole === 'right') {
+                return {
+                  minHeight: '42px',
+                  borderStyle: 'dashed',
+                  background: 'var(--theme--background-subdued)',
+                };
+              }
+              if (normalizedRole === 'feature' || normalizedRole === 'cell') {
+                return {
+                  minHeight: '34px',
+                };
+              }
+              return {};
+            };
             return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
               h('div', { style: styles.contentTemplatePreviewHeader }, [
                 h('span', { style: styles.contentTemplatePreviewTitle, title: normalizedTemplateKey }, title),
-                h('span', { style: styles.contentTemplatePreviewCount }, 'Rendered preview'),
+                h('span', { style: styles.contentTemplatePreviewCount }, `${previewSections.length} section${previewSections.length === 1 ? '' : 's'}`),
               ]),
-              h('iframe', {
-                key: previewKey,
-                title: `Preview of ${title}`,
-                srcdoc,
-                sandbox: '',
-                loading: 'lazy',
-                referrerpolicy: 'no-referrer',
-                style: styles.contentTemplatePreviewFrame,
-              }),
+              previewRows.length > 0
+                ? h(
+                    'div',
+                    { style: styles.contentTemplatePreviewCanvas },
+                    previewRows.map((layoutRow, rowIndex) => h(
+                      'div',
+                      {
+                        key: `${normalizedTemplateKey}-row-${rowIndex}`,
+                        style: {
+                          ...styles.contentTemplatePreviewRow,
+                          gridTemplateColumns: layoutRow.widths.map((width) => `${width}fr`).join(' '),
+                        },
+                      },
+                      layoutRow.sections.map((section, sectionIndex) => h(
+                        'div',
+                        {
+                          key: `${normalizedTemplateKey}-${section.key}-${rowIndex}-${sectionIndex}`,
+                          style: {
+                            ...styles.contentTemplatePreviewSection,
+                            ...sectionStyleForRole(section?.role),
+                          },
+                          title: `${section.label} (${section.key})`,
+                        },
+                        [
+                          h('span', { style: styles.contentTemplatePreviewSectionText }, section.label),
+                        ],
+                      )),
+                    )),
+                  )
+                : h('div', { style: styles.contentTemplatePreviewEmpty }, 'No preview sections configured'),
             ]);
           };
     
@@ -12058,7 +12029,7 @@ data:
                             onUpdate: (next) => { void updateContentBlockTemplateKey(row, next); },
                           }),
                         ]),
-                        renderContentTemplatePreview(currentContentTemplateKey, row),
+                        renderContentTemplatePreview(currentContentTemplateKey),
                       ]),
                       h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
                         h('span', { style: styles.treeNodeFieldLabel }, 'Content'),
