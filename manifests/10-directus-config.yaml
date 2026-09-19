@@ -11433,8 +11433,8 @@ data:
               display: 'flex',
               flexDirection: 'column',
               gap: '12px',
-              width: '100%',
-              maxWidth: '100%',
+              width: 'min(1520px, calc(100vw - 96px))',
+              maxWidth: 'calc(100vw - 96px)',
               overflow: 'visible',
             },
             toolbar: {
@@ -11465,7 +11465,7 @@ data:
               display: 'flex',
               flexDirection: 'column',
               gap: '10px',
-              minWidth: '820px',
+              minWidth: '1120px',
             },
             treeViewport: {
               maxHeight: 'none',
@@ -11474,7 +11474,7 @@ data:
               borderRadius: 'var(--theme--border-radius)',
               padding: '10px 12px',
               background: 'var(--theme--background)',
-              minWidth: '820px',
+              minWidth: '1120px',
             },
             treeViewportFrame: {
               border: '2px solid var(--theme--border-color-subdued)',
@@ -11557,7 +11557,7 @@ data:
               alignItems: 'stretch',
               paddingTop: '4px',
               width: '100%',
-              minWidth: '680px',
+              minWidth: '760px',
             },
             contentTemplatePicker: {
               minWidth: 0,
