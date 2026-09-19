@@ -8141,41 +8141,114 @@ data:
 
         const normalizePreviewSectionKey = (value) => stripPreviewTemplateTag(value).toLowerCase();
 
+        const splitContentTemplatePreviewTokens = (value) => (asString(value)
+          .toLowerCase()
+          .match(/[a-z0-9]+/g) || []);
+
+        const normalizeContentTemplatePreviewRole = (sectionKey, className = '', tagName = '') => {
+          const normalizedKey = normalizePreviewSectionKey(sectionKey);
+          const keyTokens = splitContentTemplatePreviewTokens(normalizedKey);
+          const classTokens = splitContentTemplatePreviewTokens(className);
+          const allTokens = [...classTokens, ...keyTokens, ...splitContentTemplatePreviewTokens(tagName)];
+          const has = (values) => values.some((value) => allTokens.includes(value));
+          if (has(['header', 'masthead', 'topbar'])) return 'header';
+          if (has(['hero', 'banner'])) return 'hero';
+          if (has(['nav', 'navigation', 'menu'])) return 'nav';
+          if (has(['sidebar', 'side', 'rail'])) return 'sidebar';
+          if (has(['left', 'west'])) return 'left';
+          if (has(['right', 'east'])) return 'right';
+          if (has(['aside', 'toc', 'contents', 'outline'])) return 'aside';
+          if (has(['footer', 'foot'])) return 'footer';
+          if (has(['cta', 'callout'])) return 'cta';
+          if (has(['main', 'content', 'body', 'copy'])) return 'main';
+          if (has(['feature', 'card', 'tile'])) return 'feature';
+          if (has(['cell', 'grid'])) return 'cell';
+          return normalizedKey || 'section';
+        };
+
+        const isContentTemplateRowContainerClass = (className = '') => {
+          const normalized = asString(className).toLowerCase();
+          const tokens = splitContentTemplatePreviewTokens(normalized);
+          if (!normalized) return false;
+          return tokens.includes('row')
+            || tokens.includes('columns')
+            || tokens.includes('column')
+            || tokens.includes('grid')
+            || tokens.includes('split')
+            || normalized.includes('grid-cols')
+            || normalized.includes('layout__columns')
+            || normalized.includes('layout__grid')
+            || normalized.includes('layout__body');
+        };
+
         const parseContentTemplateHtmlSections = (templateHtml) => {
           const html = asString(templateHtml);
           if (!html) return [];
           const sections = [];
           const seen = new Set();
-          const addSection = (key, fallbackLabel = '', source = 'html') => {
+          const addSection = (key, fallbackLabel = '', source = 'html', metadata = {}) => {
             const normalizedKey = normalizePreviewSectionKey(key);
             if (!normalizedKey || seen.has(normalizedKey)) return;
             seen.add(normalizedKey);
+            const className = asString(metadata?.className);
+            const tagName = asString(metadata?.tagName);
             sections.push({
               key: normalizedKey,
               label: asString(fallbackLabel) || formatContentTemplateSectionLabel(normalizedKey) || normalizedKey,
               source,
+              role: asString(metadata?.role) || normalizeContentTemplatePreviewRole(normalizedKey, className, tagName),
+              className,
+              tagName,
+              rowContainerClass: asString(metadata?.rowContainerClass),
             });
           };
 
-          const dataMarkerRegex = /data-(section|field|slot)\s*=\s*(['"])(.*?)\2/gi;
-          let markerMatch;
-          while ((markerMatch = dataMarkerRegex.exec(html)) !== null) {
-            addSection(markerMatch?.[3], '', `data-${asString(markerMatch?.[1]).toLowerCase()}`);
-          }
-
-          const sectionTagRegex = /<section\b[^>]*>/gi;
+          const tagRegex = /<[^>]+>/g;
+          const stack = [];
           let sectionIndex = 0;
           let tagMatch;
-          while ((tagMatch = sectionTagRegex.exec(html)) !== null) {
-            sectionIndex += 1;
+          while ((tagMatch = tagRegex.exec(html)) !== null) {
             const tag = tagMatch?.[0] || '';
-            const key = attrFromTag(tag, 'data-section')
-              || attrFromTag(tag, 'data-field')
-              || attrFromTag(tag, 'aria-label')
-              || attrFromTag(tag, 'id')
-              || attrFromTag(tag, 'class')
-              || `section-${sectionIndex}`;
-            addSection(key, formatContentTemplateSectionLabel(key) || `Section ${sectionIndex}`, 'section');
+            const tagLower = tag.toLowerCase();
+            const closeMatch = tagLower.match(/^<\s*\/\s*([a-z0-9-]+)/i);
+            if (closeMatch) {
+              const closingName = asString(closeMatch?.[1]).toLowerCase();
+              for (let i = stack.length - 1; i >= 0; i -= 1) {
+                if (stack[i].tagName === closingName) {
+                  stack.splice(i);
+                  break;
+                }
+              }
+              continue;
+            }
+
+            const openMatch = tagLower.match(/^<\s*([a-z0-9-]+)/i);
+            if (!openMatch) continue;
+            const tagName = asString(openMatch?.[1]).toLowerCase();
+            const className = attrFromTag(tag, 'class');
+            const rowContainerClass = isContentTemplateRowContainerClass(className) ? className : '';
+            const nearestRowContainer = [...stack].reverse().find((entry) => entry.rowContainerClass)?.rowContainerClass || '';
+            const explicitKey = attrFromTag(tag, 'data-section') || attrFromTag(tag, 'data-field') || attrFromTag(tag, 'data-slot');
+            if (explicitKey || tagName === 'section') {
+              sectionIndex += 1;
+              const key = explicitKey
+                || attrFromTag(tag, 'aria-label')
+                || attrFromTag(tag, 'id')
+                || className
+                || `section-${sectionIndex}`;
+              addSection(key, formatContentTemplateSectionLabel(key) || `Section ${sectionIndex}`, explicitKey ? 'data-section' : 'section', {
+                className,
+                tagName,
+                rowContainerClass: nearestRowContainer,
+              });
+            }
+
+            if (!/\s*\/\s*>$/.test(tagLower)) {
+              stack.push({
+                tagName,
+                rowContainerClass,
+              });
+            }
           }
 
           const tokenRegex = /\{\{\s*([a-zA-Z0-9_.:-]+)\s*\}\}/g;
@@ -8183,7 +8256,9 @@ data:
           while ((tokenMatch = tokenRegex.exec(html)) !== null) {
             const rawToken = asString(tokenMatch?.[1]);
             if (!rawToken || rawToken.startsWith('#') || rawToken.startsWith('/')) continue;
-            addSection(rawToken, '', rawToken.toLowerCase().startsWith('slot:') ? 'slot' : 'token');
+            addSection(rawToken, '', rawToken.toLowerCase().startsWith('slot:') ? 'slot' : 'token', {
+              role: normalizeContentTemplatePreviewRole(rawToken),
+            });
           }
           return sections;
         };
@@ -8199,6 +8274,7 @@ data:
               key: normalizePreviewSectionKey(key),
               label,
               source: 'schema',
+              role: normalizeContentTemplatePreviewRole(key),
             };
           }).filter((section) => section.key);
         };
@@ -8215,6 +8291,10 @@ data:
                 key,
                 label: asString(entry?.label) || formatContentTemplateSectionLabel(key) || key,
                 source: asString(entry?.source) || 'template',
+                role: asString(entry?.role) || normalizeContentTemplatePreviewRole(key, entry?.className, entry?.tagName),
+                className: asString(entry?.className),
+                tagName: asString(entry?.tagName),
+                rowContainerClass: asString(entry?.rowContainerClass),
               });
             }
           };
@@ -8224,6 +8304,108 @@ data:
             sections.push({ key: 'html', label: 'HTML Template', source: 'html' });
           }
           return sections.slice(0, 12);
+        };
+
+        const buildContentTemplatePreviewRows = (sections) => {
+          if (!Array.isArray(sections) || sections.length === 0) return [];
+          const used = new Set();
+          const isFeature = (section) => asString(section?.role) === 'feature' || /^feature[-_]/i.test(asString(section?.key));
+          const isCell = (section) => asString(section?.role) === 'cell' || /^cell[-_]/i.test(asString(section?.key));
+          const rowFor = (items, widths = []) => ({
+            sections: items,
+            widths: widths.length === items.length ? widths : items.map(() => 1),
+          });
+          const pushSequentialCollection = (rows, startIndex, predicate) => {
+            const items = [];
+            let cursor = startIndex;
+            while (cursor < sections.length && !used.has(sections[cursor]?.key) && predicate(sections[cursor])) {
+              items.push(sections[cursor]);
+              cursor += 1;
+            }
+            if (items.length > 1) {
+              rows.push(rowFor(items, items.map(() => 1)));
+              items.forEach((item) => used.add(item.key));
+              return cursor - 1;
+            }
+            return startIndex;
+          };
+
+          const rows = [];
+          for (let i = 0; i < sections.length; i += 1) {
+            const section = sections[i];
+            if (!section || used.has(section.key)) continue;
+            const next = sections[i + 1];
+            const next2 = sections[i + 2];
+            const role = asString(section?.role);
+            const nextRole = asString(next?.role);
+            const next2Role = asString(next2?.role);
+
+            if (section.rowContainerClass) {
+              const items = [section];
+              let cursor = i + 1;
+              while (cursor < sections.length) {
+                const candidate = sections[cursor];
+                if (!candidate || used.has(candidate.key)) break;
+                if (asString(candidate?.rowContainerClass) !== asString(section.rowContainerClass)) break;
+                if (['header', 'hero', 'footer'].includes(asString(candidate?.role))) break;
+                items.push(candidate);
+                cursor += 1;
+              }
+              if (items.length > 1) {
+                rows.push(rowFor(items, items.map(() => 1)));
+                items.forEach((item) => used.add(item.key));
+                i = cursor - 1;
+                continue;
+              }
+            }
+
+            if (['header', 'hero', 'footer', 'cta'].includes(role)) {
+              rows.push(rowFor([section], [1]));
+              used.add(section.key);
+              continue;
+            }
+            if (role === 'left' && nextRole === 'main' && next2Role === 'right') {
+              rows.push(rowFor([section, next, next2], [1, 2, 1]));
+              [section, next, next2].forEach((item) => used.add(item.key));
+              i += 2;
+              continue;
+            }
+            if (role === 'sidebar' && nextRole === 'main' && (next2Role === 'aside' || next2Role === 'right')) {
+              rows.push(rowFor([section, next, next2], [1, 2, 1]));
+              [section, next, next2].forEach((item) => used.add(item.key));
+              i += 2;
+              continue;
+            }
+            if ((role === 'sidebar' || role === 'left') && nextRole === 'main') {
+              rows.push(rowFor([section, next], [1, 2]));
+              [section, next].forEach((item) => used.add(item.key));
+              i += 1;
+              continue;
+            }
+            if (role === 'main' && ['aside', 'right', 'sidebar'].includes(nextRole)) {
+              rows.push(rowFor([section, next], [2, 1]));
+              [section, next].forEach((item) => used.add(item.key));
+              i += 1;
+              continue;
+            }
+            if (isFeature(section)) {
+              const nextIndex = pushSequentialCollection(rows, i, isFeature);
+              if (nextIndex !== i) {
+                i = nextIndex;
+                continue;
+              }
+            }
+            if (isCell(section)) {
+              const nextIndex = pushSequentialCollection(rows, i, isCell);
+              if (nextIndex !== i) {
+                i = nextIndex;
+                continue;
+              }
+            }
+            rows.push(rowFor([section], [1]));
+            used.add(section.key);
+          }
+          return rows;
         };
 
         const contentTemplateChoiceByKey = (templateKey) => {
@@ -11196,8 +11378,8 @@ data:
               gap: '10px',
             },
             treeViewport: {
-              maxHeight: '68vh',
-              overflow: 'auto',
+              maxHeight: 'none',
+              overflow: 'visible',
               borderRadius: 'var(--theme--border-radius)',
               padding: '10px 12px',
               background: 'var(--theme--background)',
@@ -11272,18 +11454,25 @@ data:
               fontWeight: '600',
               color: 'var(--theme--foreground-subdued)',
             },
+            contentTemplateFieldRow: {
+              display: 'grid',
+              gridTemplateColumns: '92px minmax(320px, 380px) minmax(460px, 1fr)',
+              gap: '8px',
+              alignItems: 'stretch',
+              paddingTop: '4px',
+              width: '100%',
+            },
             contentTemplatePicker: {
-              minWidth: '260px',
-              flex: '1 1 280px',
+              minWidth: 0,
+              width: '100%',
             },
             contentTemplatePreview: {
-              minWidth: '280px',
-              maxWidth: '460px',
-              flex: '1 1 340px',
+              minWidth: '460px',
+              width: '100%',
               alignSelf: 'stretch',
               border: '1px solid var(--theme--border-subdued)',
               borderRadius: '6px',
-              background: 'var(--theme--background-subdued)',
+              background: 'var(--theme--background-page)',
               padding: '8px',
               display: 'flex',
               flexDirection: 'column',
@@ -11312,20 +11501,27 @@ data:
               color: 'var(--theme--foreground-subdued)',
             },
             contentTemplatePreviewCanvas: {
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              display: 'flex',
+              flexDirection: 'column',
               gap: '4px',
-              minHeight: '54px',
+              minHeight: '104px',
+            },
+            contentTemplatePreviewRow: {
+              display: 'grid',
+              gap: '4px',
+              width: '100%',
             },
             contentTemplatePreviewSection: {
               minHeight: '24px',
               border: '1px solid var(--theme--border-normal)',
               borderRadius: '4px',
-              background: 'var(--theme--background-page)',
+              background: 'var(--theme--background-subdued)',
               padding: '4px 6px',
               display: 'flex',
               alignItems: 'center',
+              justifyContent: 'center',
               minWidth: 0,
+              textAlign: 'center',
             },
             contentTemplatePreviewSectionText: {
               fontSize: '10px',
@@ -11579,31 +11775,83 @@ data:
               ]);
             }
             const previewSections = buildContentTemplatePreviewSections(templateChoice);
+            const previewRows = buildContentTemplatePreviewRows(previewSections);
             const title = asString(templateChoice?.name) || normalizedTemplateKey;
+            const sectionStyleForRole = (role) => {
+              const normalizedRole = asString(role);
+              if (normalizedRole === 'hero') {
+                return {
+                  minHeight: '42px',
+                  fontWeight: '600',
+                  background: 'var(--theme--background-subdued)',
+                };
+              }
+              if (normalizedRole === 'header' || normalizedRole === 'footer' || normalizedRole === 'nav') {
+                return {
+                  minHeight: '24px',
+                  borderStyle: normalizedRole === 'nav' ? 'dashed' : 'solid',
+                  background: 'var(--theme--background-subdued)',
+                };
+              }
+              if (normalizedRole === 'main') {
+                return {
+                  minHeight: '58px',
+                  fontWeight: '600',
+                  background: 'var(--theme--background)',
+                };
+              }
+              if (normalizedRole === 'sidebar' || normalizedRole === 'aside' || normalizedRole === 'left' || normalizedRole === 'right') {
+                return {
+                  minHeight: '58px',
+                  borderStyle: 'dashed',
+                  background: 'var(--theme--background-subdued)',
+                };
+              }
+              if (normalizedRole === 'cta') {
+                return {
+                  minHeight: '34px',
+                  fontWeight: '600',
+                };
+              }
+              if (normalizedRole === 'feature' || normalizedRole === 'cell') {
+                return {
+                  minHeight: '32px',
+                };
+              }
+              return {};
+            };
             return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
               h('div', { style: styles.contentTemplatePreviewHeader }, [
                 h('span', { style: styles.contentTemplatePreviewTitle, title: normalizedTemplateKey }, title),
                 h('span', { style: styles.contentTemplatePreviewCount }, `${previewSections.length} section${previewSections.length === 1 ? '' : 's'}`),
               ]),
-              previewSections.length > 0
+              previewRows.length > 0
                 ? h(
                     'div',
                     { style: styles.contentTemplatePreviewCanvas },
-                    previewSections.map((section, index) => h(
+                    previewRows.map((layoutRow, rowIndex) => h(
                       'div',
                       {
-                        key: `${normalizedTemplateKey}-${section.key}-${index}`,
+                        key: `${normalizedTemplateKey}-row-${rowIndex}`,
                         style: {
-                          ...styles.contentTemplatePreviewSection,
-                          ...(previewSections.length === 1 || index === 0
-                            ? { gridColumn: '1 / -1' }
-                            : {}),
+                          ...styles.contentTemplatePreviewRow,
+                          gridTemplateColumns: layoutRow.widths.map((width) => `${width}fr`).join(' '),
                         },
-                        title: `${section.label} (${section.key})`,
                       },
-                      [
-                        h('span', { style: styles.contentTemplatePreviewSectionText }, section.label),
-                      ],
+                      layoutRow.sections.map((section, sectionIndex) => h(
+                        'div',
+                        {
+                          key: `${normalizedTemplateKey}-${section.key}-${rowIndex}-${sectionIndex}`,
+                          style: {
+                            ...styles.contentTemplatePreviewSection,
+                            ...sectionStyleForRole(section?.role),
+                          },
+                          title: `${section.label} (${section.key})`,
+                        },
+                        [
+                          h('span', { style: styles.contentTemplatePreviewSectionText }, section.label),
+                        ],
+                      )),
                     )),
                   )
                 : h('div', { style: styles.contentTemplatePreviewEmpty }, 'No sections detected'),
@@ -11709,8 +11957,8 @@ data:
                 ]),
                 ...(isContentRefBlock
                   ? [
-                      h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
-                        h('span', { style: styles.treeNodeFieldLabel }, 'HTML template'),
+                      h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.contentTemplateFieldRow }, [
+                        h('span', { style: { ...styles.treeNodeFieldLabel, alignSelf: 'center' } }, 'HTML template'),
                         h('div', { style: styles.contentTemplatePicker }, [
                           renderSelectControl({
                             value: currentContentTemplateKey,
