@@ -8408,6 +8408,156 @@ data:
           return rows;
         };
 
+        const escapeHtml = (value) => asString(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+
+        const sanitizePreviewHtml = (value) => asString(value)
+          .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/\son[a-z]+\s*=\s*(['"])[\s\S]*?\1/gi, '')
+          .replace(/\s(href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\2/gi, ' $1="#"');
+
+        const sanitizePreviewCss = (value) => asString(value)
+          .replace(/@import\b[^;]+;/gi, '')
+          .replace(/<\/style/gi, '<\\/style')
+          .replace(/url\(\s*(['"]?)javascript:[\s\S]*?\1\s*\)/gi, 'none');
+
+        const getObjectPathValue = (source, pathValue) => {
+          if (!source || typeof source !== 'object') return undefined;
+          const normalizedPath = asString(pathValue);
+          if (!normalizedPath) return undefined;
+          if (Object.prototype.hasOwnProperty.call(source, normalizedPath)) return source[normalizedPath];
+          const parts = normalizedPath.split('.').map((entry) => asString(entry)).filter(Boolean);
+          let cursor = source;
+          for (const part of parts) {
+            if (!cursor || typeof cursor !== 'object') return undefined;
+            if (Object.prototype.hasOwnProperty.call(cursor, part)) {
+              cursor = cursor[part];
+              continue;
+            }
+            const normalizedPart = normalizeFieldToken(part);
+            const matchingKey = Object.keys(cursor).find((key) => normalizeFieldToken(key) === normalizedPart);
+            if (!matchingKey) return undefined;
+            cursor = cursor[matchingKey];
+          }
+          return cursor;
+        };
+
+        const resolveContentTemplateTokenValue = (contentData, token) => {
+          const normalizedToken = stripPreviewTemplateTag(token);
+          if (!normalizedToken) return undefined;
+          const candidates = uniqueNonEmpty([
+            normalizedToken,
+            normalizedToken.replace(/^content[._:-]+/i, ''),
+            normalizedToken.replace(/^fields[._:-]+/i, ''),
+          ]);
+          for (const candidate of candidates) {
+            const value = getObjectPathValue(contentData, candidate);
+            if (value !== undefined && value !== null && asString(value) !== '') return value;
+          }
+          const normalized = normalizeFieldToken(normalizedToken);
+          const matchingKey = Object.keys(contentData || {}).find((key) => normalizeFieldToken(key) === normalized);
+          return matchingKey ? contentData[matchingKey] : undefined;
+        };
+
+        const contentTemplateTokenLabel = (token) =>
+          formatContentTemplateSectionLabel(stripPreviewTemplateTag(token)) || stripPreviewTemplateTag(token) || 'Content';
+
+        const renderContentTemplateToken = (token, contentData) => {
+          const tokenText = stripPreviewTemplateTag(token);
+          if (!tokenText) return '';
+          const value = resolveContentTemplateTokenValue(contentData, tokenText);
+          const label = contentTemplateTokenLabel(tokenText);
+          if (value !== undefined && value !== null && asString(value) !== '') {
+            if (typeof value === 'object') {
+              return `<pre class="cms-template-preview__json">${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+            }
+            const renderedValue = asString(value);
+            if (/<[a-z][\s\S]*>/i.test(renderedValue) || /_html$/i.test(tokenText)) {
+              return `<div class="cms-template-preview__content cms-template-preview__content--html">${sanitizePreviewHtml(renderedValue)}</div>`;
+            }
+            return `<span class="cms-template-preview__content cms-template-preview__content--text">${escapeHtml(renderedValue)}</span>`;
+          }
+          return `<span class="cms-template-preview__placeholder">${escapeHtml(label)}</span>`;
+        };
+
+        const renderContentTemplatePreviewHtml = (templateHtml, contentData) => {
+          const rawHtml = asString(templateHtml) || '<section>{{body_html}}</section>';
+          const rendered = rawHtml.replace(/\{\{\{?\s*([#\/^]?[a-zA-Z0-9_.:-]+)(?:\s+[^}]*)?\s*\}?\}\}/g, (_match, rawToken) => {
+            const token = asString(rawToken);
+            if (!token || token.startsWith('#') || token.startsWith('/') || token.startsWith('^')) return '';
+            return renderContentTemplateToken(token, contentData);
+          });
+          const sanitized = sanitizePreviewHtml(rendered);
+          return /<[a-z][\s\S]*>/i.test(sanitized)
+            ? sanitized
+            : `<main class="cms-template-preview__fallback">${sanitized}</main>`;
+        };
+
+        const buildContentTemplatePreviewSrcdoc = (templateChoice, contentDataValue) => {
+          const contentData = parseOptions(contentDataValue);
+          const renderedHtml = renderContentTemplatePreviewHtml(templateChoice?.html_template, contentData);
+          const templateCss = sanitizePreviewCss(templateChoice?.css);
+          const baseCss = `
+            html, body {
+              margin: 0;
+              width: 100%;
+              min-height: 100%;
+              background: #ffffff;
+              color: #1f2937;
+              font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+              font-size: 14px;
+              line-height: 1.35;
+            }
+            *, *::before, *::after { box-sizing: border-box; }
+            img, svg, video, canvas { max-width: 100%; height: auto; }
+            a { color: inherit; }
+            .cms-template-preview__page {
+              width: 100%;
+              min-height: 100%;
+              overflow: hidden;
+            }
+            .cms-template-preview__placeholder {
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              min-height: 20px;
+              min-width: 64px;
+              padding: 3px 6px;
+              border: 1px dashed #94a3b8;
+              border-radius: 4px;
+              background: #f8fafc;
+              color: #475569;
+              font-size: 11px;
+              font-weight: 600;
+              line-height: 1.1;
+            }
+            .cms-template-preview__content--html {
+              display: contents;
+            }
+            .cms-template-preview__content--text {
+              display: inline;
+            }
+            .cms-template-preview__json {
+              margin: 0;
+              white-space: pre-wrap;
+              font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            }
+            .cms-template-preview__fallback {
+              min-height: 120px;
+              display: grid;
+              place-items: center;
+              padding: 18px;
+              border: 1px solid #e2e8f0;
+              background: #f8fafc;
+            }
+          `;
+          return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${baseCss}\n${templateCss}</style></head><body><div class="cms-template-preview__page">${renderedHtml}</div></body></html>`;
+        };
+
         const contentTemplateChoiceByKey = (templateKey) => {
           const key = asString(templateKey);
           if (!key) return null;
@@ -8856,6 +9006,7 @@ data:
           const contentItemKey = asString(row?.content_item_key);
           const contentItemTemplateKey = asString(row?.content_item_template_key);
           const contentReuseStrategy = toLower(row?.content_reuse_strategy);
+          const contentItemJson = parseOptions(row?.content_item_json);
           const contextToken = templateNearestBlockId ? buildTemplateContextId(templateNearestBlockId) : PAGE_CONTEXT_ID;
           const hierarchyToken = parentBlockId ? 'nested-child' : 'page-child';
           const searchTokens = [
@@ -8906,6 +9057,7 @@ data:
             content_item_key: contentItemKey,
             content_item_template_key: contentItemTemplateKey,
             content_reuse_strategy: contentReuseStrategy,
+            content_item_json: contentItemJson,
             _context_id: contextToken,
             _search_text: searchTokens.join(' '),
           };
@@ -9110,7 +9262,7 @@ data:
               ],
             };
             const response = await apiRequest('GET', '/items/cms_content_templates', {
-              fields: 'template_key,name,site_key,release_channel,html_template,content_schema',
+              fields: 'template_key,name,site_key,release_channel,html_template,css,content_schema',
               limit: -1,
               sort: 'site_key,template_key',
               filter: JSON.stringify(filter),
@@ -9138,6 +9290,7 @@ data:
                   site_key: rowSiteKey,
                   release_channel: asString(row?.release_channel),
                   html_template: asString(row?.html_template),
+                  css: asString(row?.css),
                   content_schema: row?.content_schema,
                 };
               })
@@ -9182,7 +9335,7 @@ data:
               ],
             };
             const response = await apiRequest('GET', '/items/cms_content_items', {
-              fields: 'id,name,content_key,content_template_key,site_key,release_channel,default_language_code,content_version',
+              fields: 'id,name,content_key,content_template_key,site_key,release_channel,default_language_code,content_version,content_json',
               limit: -1,
               sort: 'site_key,content_template_key,name,content_key',
               filter: JSON.stringify(filter),
@@ -9205,6 +9358,7 @@ data:
                   name,
                   content_key: contentKey,
                   content_template_key: contentTemplateKey,
+                  content_json: parseOptions(row?.content_json),
                   reuse_strategy: 'shared',
                 };
               })
@@ -9273,7 +9427,7 @@ data:
           const contentItemById = new Map();
           if (contentItemIds.length > 0) {
             const itemResponse = await apiRequest('GET', '/items/cms_content_items', {
-              fields: 'id,name,content_key,content_template_key,reuse_strategy,content_version,status,default_language_code',
+              fields: 'id,name,content_key,content_template_key,reuse_strategy,content_version,status,default_language_code,content_json',
               limit: -1,
               filter: JSON.stringify({ id: { _in: contentItemIds } }),
             });
@@ -9296,6 +9450,7 @@ data:
               content_item_key: asString(contentItem?.content_key),
               content_item_template_key: asString(contentItem?.content_template_key),
               content_reuse_strategy: toLower(contentItem?.reuse_strategy),
+              content_item_json: parseOptions(contentItem?.content_json),
             };
           });
         };
@@ -9419,15 +9574,16 @@ data:
         const createDefaultContentItem = async ({ name = 'New content block', contentTemplateKey = '' } = {}) => {
           const normalizedName = asString(name) || 'New content block';
           const normalizedTemplateKey = asString(contentTemplateKey);
+          const defaultContentJson = {
+            body_html: `<p>${normalizedName}</p>`,
+          };
           const createdContentItem = await apiRequest('POST', '/items/cms_content_items', {}, {
             status: 'published',
             name: normalizedName,
             default_language_code: 'en',
             reuse_strategy: 'copy',
             content_template_key: normalizedTemplateKey || null,
-            content_json: {
-              body_html: `<p>${normalizedName}</p>`,
-            },
+            content_json: defaultContentJson,
             site_key: asString(pageContext.value?.site_key) || null,
             release_channel: sourcePageReleaseChannel.value,
             refresh_target: 'both',
@@ -9441,6 +9597,9 @@ data:
             name: asString(createdContentItem?.data?.name) || normalizedName,
             content_key: asString(createdContentItem?.data?.content_key),
             content_template_key: asString(createdContentItem?.data?.content_template_key) || normalizedTemplateKey,
+            content_json: Object.keys(parseOptions(createdContentItem?.data?.content_json)).length > 0
+              ? parseOptions(createdContentItem?.data?.content_json)
+              : defaultContentJson,
             reuse_strategy: 'copy',
           };
         };
@@ -9581,6 +9740,7 @@ data:
                     content_item_key: asString(selected?.content_key),
                     content_item_template_key: asString(selected?.content_template_key),
                     content_reuse_strategy: toLower(selected?.reuse_strategy) || 'copy',
+                    content_item_json: parseOptions(selected?.content_json),
                   }
                 : candidate
             ));
@@ -11347,6 +11507,9 @@ data:
               display: 'flex',
               flexDirection: 'column',
               gap: '12px',
+              width: 'min(1520px, calc(100vw - 96px))',
+              maxWidth: 'calc(100vw - 96px)',
+              overflow: 'visible',
             },
             toolbar: {
               display: 'flex',
@@ -11376,13 +11539,16 @@ data:
               display: 'flex',
               flexDirection: 'column',
               gap: '10px',
+              minWidth: '1120px',
             },
             treeViewport: {
               maxHeight: 'none',
-              overflow: 'visible',
+              overflowX: 'visible',
+              overflowY: 'visible',
               borderRadius: 'var(--theme--border-radius)',
               padding: '10px 12px',
               background: 'var(--theme--background)',
+              minWidth: '1120px',
             },
             treeViewportFrame: {
               border: '2px solid var(--theme--border-color-subdued)',
@@ -11390,6 +11556,10 @@ data:
               padding: '2px',
               background: 'var(--theme--background-subdued)',
               boxShadow: '0 0 0 1px var(--theme--border-color-subdued)',
+              width: '100%',
+              maxWidth: '100%',
+              overflowX: 'auto',
+              overflowY: 'visible',
             },
             treeNodeCard: {
               display: 'flex',
@@ -11456,18 +11626,19 @@ data:
             },
             contentTemplateFieldRow: {
               display: 'grid',
-              gridTemplateColumns: '92px minmax(320px, 380px) minmax(460px, 1fr)',
+              gridTemplateColumns: '92px minmax(320px, 380px) minmax(640px, 1fr)',
               gap: '8px',
               alignItems: 'stretch',
               paddingTop: '4px',
               width: '100%',
+              minWidth: '1060px',
             },
             contentTemplatePicker: {
               minWidth: 0,
               width: '100%',
             },
             contentTemplatePreview: {
-              minWidth: '460px',
+              minWidth: '640px',
               width: '100%',
               alignSelf: 'stretch',
               border: '1px solid var(--theme--border-subdued)',
@@ -11477,6 +11648,15 @@ data:
               display: 'flex',
               flexDirection: 'column',
               gap: '6px',
+            },
+            contentTemplatePreviewFrame: {
+              display: 'block',
+              width: '100%',
+              height: '260px',
+              minHeight: '260px',
+              border: '1px solid var(--theme--border-subdued)',
+              borderRadius: '4px',
+              background: '#ffffff',
             },
             contentTemplatePreviewHeader: {
               display: 'flex',
@@ -11499,37 +11679,6 @@ data:
               fontSize: '10px',
               lineHeight: 1.2,
               color: 'var(--theme--foreground-subdued)',
-            },
-            contentTemplatePreviewCanvas: {
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '4px',
-              minHeight: '104px',
-            },
-            contentTemplatePreviewRow: {
-              display: 'grid',
-              gap: '4px',
-              width: '100%',
-            },
-            contentTemplatePreviewSection: {
-              minHeight: '24px',
-              border: '1px solid var(--theme--border-normal)',
-              borderRadius: '4px',
-              background: 'var(--theme--background-subdued)',
-              padding: '4px 6px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minWidth: 0,
-              textAlign: 'center',
-            },
-            contentTemplatePreviewSectionText: {
-              fontSize: '10px',
-              lineHeight: 1.2,
-              color: 'var(--theme--foreground-normal)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
             },
             contentTemplatePreviewEmpty: {
               minHeight: '54px',
@@ -11756,7 +11905,7 @@ data:
             }, children);
           };
 
-          const renderContentTemplatePreview = (templateKey) => {
+          const renderContentTemplatePreview = (templateKey, row) => {
             const normalizedTemplateKey = asString(templateKey);
             if (contentTemplateChoicesLoading.value) {
               return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
@@ -11774,87 +11923,28 @@ data:
                 h('div', { style: styles.contentTemplatePreviewEmpty }, 'Preview unavailable'),
               ]);
             }
-            const previewSections = buildContentTemplatePreviewSections(templateChoice);
-            const previewRows = buildContentTemplatePreviewRows(previewSections);
             const title = asString(templateChoice?.name) || normalizedTemplateKey;
-            const sectionStyleForRole = (role) => {
-              const normalizedRole = asString(role);
-              if (normalizedRole === 'hero') {
-                return {
-                  minHeight: '42px',
-                  fontWeight: '600',
-                  background: 'var(--theme--background-subdued)',
-                };
-              }
-              if (normalizedRole === 'header' || normalizedRole === 'footer' || normalizedRole === 'nav') {
-                return {
-                  minHeight: '24px',
-                  borderStyle: normalizedRole === 'nav' ? 'dashed' : 'solid',
-                  background: 'var(--theme--background-subdued)',
-                };
-              }
-              if (normalizedRole === 'main') {
-                return {
-                  minHeight: '58px',
-                  fontWeight: '600',
-                  background: 'var(--theme--background)',
-                };
-              }
-              if (normalizedRole === 'sidebar' || normalizedRole === 'aside' || normalizedRole === 'left' || normalizedRole === 'right') {
-                return {
-                  minHeight: '58px',
-                  borderStyle: 'dashed',
-                  background: 'var(--theme--background-subdued)',
-                };
-              }
-              if (normalizedRole === 'cta') {
-                return {
-                  minHeight: '34px',
-                  fontWeight: '600',
-                };
-              }
-              if (normalizedRole === 'feature' || normalizedRole === 'cell') {
-                return {
-                  minHeight: '32px',
-                };
-              }
-              return {};
-            };
+            const selectedContentChoice = (Array.isArray(sharedContentChoices.value) ? sharedContentChoices.value : [])
+              .find((choice) => parseId(choice?.value) === parseId(row?.content_item_id));
+            const rowContentData = parseOptions(row?.content_item_json);
+            const choiceContentData = parseOptions(selectedContentChoice?.content_json);
+            const contentData = Object.keys(rowContentData).length > 0 ? rowContentData : choiceContentData;
+            const srcdoc = buildContentTemplatePreviewSrcdoc(templateChoice, contentData);
+            const previewKey = `${normalizedTemplateKey}:${parseId(row?.content_item_id)}:${toSnapshotHash(contentData)}`;
             return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
               h('div', { style: styles.contentTemplatePreviewHeader }, [
                 h('span', { style: styles.contentTemplatePreviewTitle, title: normalizedTemplateKey }, title),
-                h('span', { style: styles.contentTemplatePreviewCount }, `${previewSections.length} section${previewSections.length === 1 ? '' : 's'}`),
+                h('span', { style: styles.contentTemplatePreviewCount }, 'Rendered preview'),
               ]),
-              previewRows.length > 0
-                ? h(
-                    'div',
-                    { style: styles.contentTemplatePreviewCanvas },
-                    previewRows.map((layoutRow, rowIndex) => h(
-                      'div',
-                      {
-                        key: `${normalizedTemplateKey}-row-${rowIndex}`,
-                        style: {
-                          ...styles.contentTemplatePreviewRow,
-                          gridTemplateColumns: layoutRow.widths.map((width) => `${width}fr`).join(' '),
-                        },
-                      },
-                      layoutRow.sections.map((section, sectionIndex) => h(
-                        'div',
-                        {
-                          key: `${normalizedTemplateKey}-${section.key}-${rowIndex}-${sectionIndex}`,
-                          style: {
-                            ...styles.contentTemplatePreviewSection,
-                            ...sectionStyleForRole(section?.role),
-                          },
-                          title: `${section.label} (${section.key})`,
-                        },
-                        [
-                          h('span', { style: styles.contentTemplatePreviewSectionText }, section.label),
-                        ],
-                      )),
-                    )),
-                  )
-                : h('div', { style: styles.contentTemplatePreviewEmpty }, 'No sections detected'),
+              h('iframe', {
+                key: previewKey,
+                title: `Preview of ${title}`,
+                srcdoc,
+                sandbox: '',
+                loading: 'lazy',
+                referrerpolicy: 'no-referrer',
+                style: styles.contentTemplatePreviewFrame,
+              }),
             ]);
           };
     
@@ -11968,7 +12058,7 @@ data:
                             onUpdate: (next) => { void updateContentBlockTemplateKey(row, next); },
                           }),
                         ]),
-                        renderContentTemplatePreview(currentContentTemplateKey),
+                        renderContentTemplatePreview(currentContentTemplateKey, row),
                       ]),
                       h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
                         h('span', { style: styles.treeNodeFieldLabel }, 'Content'),
