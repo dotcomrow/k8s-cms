@@ -4504,6 +4504,114 @@ data:
       echo "⚠️ Could not ensure UUID defaults for CMS collection IDs after retries; continuing startup and retrying on next reconcile."
     fi
 
+    echo "🧱 Ensuring layout template slots are derived from template HTML..."
+    if ! _psql_yb_retry "SET search_path TO directus, public; \
+      CREATE OR REPLACE FUNCTION directus.cms_layout_slot_label_from_key(_slot_key TEXT) \
+      RETURNS TEXT \
+      LANGUAGE sql \
+      IMMUTABLE \
+      AS \$\$ \
+        SELECT NULLIF(INITCAP(REGEXP_REPLACE(REPLACE(REPLACE(COALESCE(_slot_key, ''), '_', ' '), '-', ' '), '[[:space:]]+', ' ', 'g')), '') \
+      \$\$; \
+      CREATE OR REPLACE FUNCTION directus.reconcile_cms_layout_template_slots_from_html( \
+        _template_key TEXT, \
+        _site_key TEXT, \
+        _refresh_target TEXT, \
+        _html TEXT \
+      ) \
+      RETURNS INTEGER \
+      LANGUAGE plpgsql \
+      AS \$\$ \
+      DECLARE \
+        _normalized_template_key TEXT; \
+        _normalized_site_key TEXT; \
+        _normalized_refresh_target TEXT; \
+        _slot_key TEXT; \
+        _slot_label TEXT; \
+        _changed INTEGER := 0; \
+        _row_count INTEGER := 0; \
+      BEGIN \
+        _normalized_template_key := COALESCE(NULLIF(BTRIM(_template_key), ''), ''); \
+        IF _normalized_template_key = '' THEN \
+          RETURN 0; \
+        END IF; \
+        _normalized_site_key := NULLIF(BTRIM(_site_key), ''); \
+        _normalized_refresh_target := CASE \
+          WHEN LOWER(COALESCE(_refresh_target, '')) IN ('preview','prod','both') THEN LOWER(_refresh_target) \
+          ELSE 'both' \
+        END; \
+        FOR _slot_key IN \
+          WITH extracted(raw_slot_key) AS ( \
+            SELECT (m)[1] FROM regexp_matches(COALESCE(_html, ''), 'data-slot\s*=\s*[''\"]([^''\"]+)[''\"]', 'g') AS m \
+            UNION ALL \
+            SELECT (m)[1] FROM regexp_matches(COALESCE(_html, ''), '\{\{\s*slot:\s*([a-zA-Z0-9_-]+)\s*\}\}', 'g') AS m \
+          ) \
+          SELECT DISTINCT LOWER(BTRIM(raw_slot_key)) \
+          FROM extracted \
+          WHERE COALESCE(NULLIF(BTRIM(raw_slot_key), ''), '') <> '' \
+          ORDER BY 1 \
+        LOOP \
+          _slot_label := directus.cms_layout_slot_label_from_key(_slot_key); \
+          UPDATE directus.cms_layout_template_slots s \
+             SET refresh_target = _normalized_refresh_target, \
+                 slot_label = COALESCE(NULLIF(BTRIM(s.slot_label), ''), _slot_label), \
+                 date_updated = now() \
+           WHERE s.template_key = _normalized_template_key \
+             AND COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = COALESCE(_normalized_site_key, '') \
+             AND LOWER(BTRIM(s.slot_key)) = _slot_key \
+             AND ( \
+               COALESCE(NULLIF(BTRIM(s.refresh_target), ''), '') IS DISTINCT FROM _normalized_refresh_target \
+               OR COALESCE(NULLIF(BTRIM(s.slot_label), ''), '') = '' \
+             ); \
+          GET DIAGNOSTICS _row_count = ROW_COUNT; \
+          _changed := _changed + COALESCE(_row_count, 0); \
+          INSERT INTO directus.cms_layout_template_slots (id, template_key, site_key, refresh_target, slot_key, slot_label, date_created) \
+          SELECT directus.cms_generate_uuid(), _normalized_template_key, _normalized_site_key, _normalized_refresh_target, _slot_key, _slot_label, now() \
+          WHERE NOT EXISTS ( \
+            SELECT 1 \
+            FROM directus.cms_layout_template_slots s \
+            WHERE s.template_key = _normalized_template_key \
+              AND COALESCE(NULLIF(BTRIM(s.site_key), ''), '') = COALESCE(_normalized_site_key, '') \
+              AND LOWER(BTRIM(s.slot_key)) = _slot_key \
+          ); \
+          GET DIAGNOSTICS _row_count = ROW_COUNT; \
+          _changed := _changed + COALESCE(_row_count, 0); \
+        END LOOP; \
+        RETURN _changed; \
+      END; \
+      \$\$; \
+      CREATE OR REPLACE FUNCTION directus.sync_cms_layout_template_slots_from_html() \
+      RETURNS trigger \
+      LANGUAGE plpgsql \
+      AS \$\$ \
+      BEGIN \
+        IF TG_OP = 'DELETE' THEN \
+          RETURN OLD; \
+        END IF; \
+        PERFORM directus.reconcile_cms_layout_template_slots_from_html(NEW.template_key, NEW.site_key, NEW.refresh_target, NEW.html); \
+        RETURN NEW; \
+      END; \
+      \$\$; \
+      DROP TRIGGER IF EXISTS cms_layout_templates_sync_slots_from_html ON directus.cms_layout_templates; \
+      CREATE TRIGGER cms_layout_templates_sync_slots_from_html \
+      AFTER INSERT OR UPDATE OF template_key, site_key, refresh_target, html ON directus.cms_layout_templates \
+      FOR EACH ROW EXECUTE FUNCTION directus.sync_cms_layout_template_slots_from_html(); \
+      DO \$\$ \
+      DECLARE \
+        _layout RECORD; \
+      BEGIN \
+        FOR _layout IN \
+          SELECT template_key, site_key, refresh_target, html \
+          FROM directus.cms_layout_templates \
+          WHERE COALESCE(NULLIF(BTRIM(html), ''), '') <> '' \
+        LOOP \
+          PERFORM directus.reconcile_cms_layout_template_slots_from_html(_layout.template_key, _layout.site_key, _layout.refresh_target, _layout.html); \
+        END LOOP; \
+      END \
+      \$\$;" "derive layout template slots from template HTML" 24; then
+      echo "⚠️ Could not ensure layout template slots are derived from template HTML after retries; continuing startup and retrying on next reconcile."
+    fi
+
     echo "🌐 Seeding CMS translation language model defaults..."
     if ! _psql_yb_retry "WITH seed(language_code, name, model, description) AS (
         VALUES

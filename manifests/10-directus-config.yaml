@@ -833,33 +833,57 @@ data:
           return { recordCollection, recordId };
         };
 
+        const formatTemplateSlotLabel = (slotKey) => {
+          const normalized = asString(slotKey);
+          if (!normalized) return '';
+          return normalized
+            .replace(/[-_]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\b[a-z]/g, (char) => char.toUpperCase());
+        };
+
+        const previewSlotLookupKey = (slotKey) => asString(slotKey).toLowerCase();
+
         const pickTemplatePreviewSlots = (rows, orderedKeys = []) => {
           const seen = new Set();
           const picked = [];
           const seenOrdered = new Set();
+          const ordered = [];
           for (const rawKey of orderedKeys) {
             const key = asString(rawKey);
-            if (!key || seenOrdered.has(key)) continue;
-            seenOrdered.add(key);
+            const lookupKey = previewSlotLookupKey(key);
+            if (!key || seenOrdered.has(lookupKey)) continue;
+            seenOrdered.add(lookupKey);
+            ordered.push(key);
           }
 
           const slotMap = new Map();
           for (const row of rows) {
             const key = asString(row?.[slotValueField.value]);
-            if (!key || seen.has(key)) continue;
-            seen.add(key);
-            slotMap.set(key, {
+            const lookupKey = previewSlotLookupKey(key);
+            if (!key || seen.has(lookupKey)) continue;
+            seen.add(lookupKey);
+            slotMap.set(lookupKey, {
               key,
-              label: asString(row?.[slotLabelField.value]) || key,
+              label: asString(row?.[slotLabelField.value]) || formatTemplateSlotLabel(key) || key,
             });
           }
-          for (const key of seenOrdered) {
-            const slot = slotMap.get(key);
+          for (const key of ordered) {
+            const lookupKey = previewSlotLookupKey(key);
+            const slot = slotMap.get(lookupKey);
             if (slot) {
               picked.push(slot);
-              slotMap.delete(key);
+              slotMap.delete(lookupKey);
+            } else {
+              picked.push({
+                key,
+                label: formatTemplateSlotLabel(key) || key,
+                __previewDerivedFromTemplateHtml: true,
+              });
             }
           }
+          if (ordered.length > 0) return picked;
           for (const slot of slotMap.values()) {
             picked.push(slot);
           }
@@ -872,7 +896,10 @@ data:
 
         const parseTemplateSlotOrder = (templateHtml, knownKeys = new Set()) => {
           if (!templateHtml) return [];
-          const hasLimit = knownKeys && knownKeys.size > 0;
+          const normalizedKnownKeys = new Set(
+            Array.from(knownKeys || []).map((key) => previewSlotLookupKey(key)).filter(Boolean),
+          );
+          const hasLimit = normalizedKnownKeys.size > 0;
           const matcher = /data-slot\s*=\s*['"]([^'"]+)['"]/g;
           const handlebarMatcher = /\{\{\s*slot:\s*([a-z0-9_-]+)\s*\}\}/gi;
           const seen = new Set();
@@ -880,19 +907,21 @@ data:
           let match;
           while ((match = matcher.exec(templateHtml)) !== null) {
             const key = asString(match?.[1]);
+            const lookupKey = previewSlotLookupKey(key);
             if (!key) continue;
-            if (hasLimit && !knownKeys.has(key)) continue;
-            if (seen.has(key)) continue;
-            seen.add(key);
+            if (hasLimit && !normalizedKnownKeys.has(lookupKey)) continue;
+            if (seen.has(lookupKey)) continue;
+            seen.add(lookupKey);
             ordered.push(key);
           }
           match = null;
           while ((match = handlebarMatcher.exec(templateHtml)) !== null) {
             const key = asString(match?.[1]);
+            const lookupKey = previewSlotLookupKey(key);
             if (!key) continue;
-            if (hasLimit && !knownKeys.has(key)) continue;
-            if (seen.has(key)) continue;
-            seen.add(key);
+            if (hasLimit && !normalizedKnownKeys.has(lookupKey)) continue;
+            if (seen.has(lookupKey)) continue;
+            seen.add(lookupKey);
             ordered.push(key);
           }
           return ordered;
@@ -1047,7 +1076,7 @@ data:
           const isCellSlot = (slotKey) => /^cell_[a-z]$/i.test(asString(slotKey));
           const hintByKey = new Map(
             (Array.isArray(layoutHints) ? layoutHints : []).map((hint) => {
-              const key = asString(hint?.key);
+              const key = previewSlotLookupKey(hint?.key);
               if (!key) return null;
               return [key, {
                 role: asString(hint?.role) || asString(key),
@@ -1059,7 +1088,7 @@ data:
           );
           const toRole = (slot) => {
             const key = asString(slot?.key);
-            return hintByKey.get(key)?.role || normalizeTemplateSlotRole(key);
+            return hintByKey.get(previewSlotLookupKey(key))?.role || normalizeTemplateSlotRole(key);
           };
           const isContentPanelSlot = (slot) => {
             const role = toRole(slot);
@@ -1068,8 +1097,8 @@ data:
           const decorateSlot = (slot, overrides = {}) => ({
             ...(slot || {}),
             __previewRole: toRole(slot),
-            __previewClassName: asString(hintByKey.get(asString(slot?.key))?.className),
-            __previewIsFloatingPanel: Boolean(hintByKey.get(asString(slot?.key))?.isFloatingPanel),
+            __previewClassName: asString(hintByKey.get(previewSlotLookupKey(slot?.key))?.className),
+            __previewIsFloatingPanel: Boolean(hintByKey.get(previewSlotLookupKey(slot?.key))?.isFloatingPanel),
             ...overrides,
           });
           const inferWidths = (rowSlots) => {
@@ -1146,7 +1175,7 @@ data:
             const currentRole = toRole(slot);
             const nextRole = toRole(next);
             const next2Role = toRole(next2);
-            const currentRowContainer = asString(hintByKey.get(currentKey)?.rowContainerClass);
+            const currentRowContainer = asString(hintByKey.get(previewSlotLookupKey(currentKey))?.rowContainerClass);
 
             if (currentRowContainer) {
               const rowSlots = [slot];
@@ -1154,7 +1183,7 @@ data:
               while (cursor < slots.length) {
                 const item = slots[cursor];
                 if (!item || used.has(item.key)) break;
-                const rowItemContainer = asString(hintByKey.get(asString(item.key))?.rowContainerClass);
+                const rowItemContainer = asString(hintByKey.get(previewSlotLookupKey(item.key))?.rowContainerClass);
                 if (!rowItemContainer || rowItemContainer !== currentRowContainer) break;
                 const itemRole = toRole(item);
                 if (itemRole === 'header' || itemRole === 'footer') break;
