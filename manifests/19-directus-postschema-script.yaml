@@ -3009,6 +3009,28 @@ data:
        ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_layout_templates ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_layout_templates SET date_created = now() WHERE date_created IS NULL; \
+       UPDATE cms_layout_templates SET date_updated = COALESCE(date_updated, date_created, now()) WHERE date_updated IS NULL; \
+       UPDATE cms_layout_templates SET refresh_target = 'both' WHERE refresh_target IS NULL OR BTRIM(refresh_target) = ''; \
+       CREATE OR REPLACE FUNCTION directus.cms_layout_templates_set_system_timestamps() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       BEGIN \
+         IF TG_OP = 'INSERT' THEN \
+           NEW.date_created := now(); \
+           NEW.date_updated := now(); \
+         ELSE \
+           NEW.date_created := COALESCE(OLD.date_created, NEW.date_created, now()); \
+           NEW.date_updated := now(); \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$\$; \
+       DROP TRIGGER IF EXISTS cms_layout_templates_set_system_timestamps ON cms_layout_templates; \
+       CREATE TRIGGER cms_layout_templates_set_system_timestamps \
+       BEFORE INSERT OR UPDATE ON cms_layout_templates \
+       FOR EACH ROW EXECUTE FUNCTION directus.cms_layout_templates_set_system_timestamps(); \
        DO \$\$ \
        BEGIN \
          IF EXISTS ( \
@@ -3078,6 +3100,28 @@ data:
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_layout_template_slots ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_layout_template_slots SET date_created = now() WHERE date_created IS NULL; \
+       UPDATE cms_layout_template_slots SET date_updated = COALESCE(date_updated, date_created, now()) WHERE date_updated IS NULL; \
+       UPDATE cms_layout_template_slots SET refresh_target = 'both' WHERE refresh_target IS NULL OR BTRIM(refresh_target) = ''; \
+       CREATE OR REPLACE FUNCTION directus.cms_layout_template_slots_set_system_timestamps() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       BEGIN \
+         IF TG_OP = 'INSERT' THEN \
+           NEW.date_created := now(); \
+           NEW.date_updated := now(); \
+         ELSE \
+           NEW.date_created := COALESCE(OLD.date_created, NEW.date_created, now()); \
+           NEW.date_updated := now(); \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$\$; \
+       DROP TRIGGER IF EXISTS cms_layout_template_slots_set_system_timestamps ON cms_layout_template_slots; \
+       CREATE TRIGGER cms_layout_template_slots_set_system_timestamps \
+       BEFORE INSERT OR UPDATE ON cms_layout_template_slots \
+       FOR EACH ROW EXECUTE FUNCTION directus.cms_layout_template_slots_set_system_timestamps(); \
        DO \$\$ \
        BEGIN \
          IF EXISTS ( \
@@ -3146,6 +3190,28 @@ data:
        ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN refresh_target SET DEFAULT 'both'; \
        ALTER TABLE IF EXISTS cms_theme_packages ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_theme_packages SET date_created = now() WHERE date_created IS NULL; \
+       UPDATE cms_theme_packages SET date_updated = COALESCE(date_updated, date_created, now()) WHERE date_updated IS NULL; \
+       UPDATE cms_theme_packages SET refresh_target = 'both' WHERE refresh_target IS NULL OR BTRIM(refresh_target) = ''; \
+       CREATE OR REPLACE FUNCTION directus.cms_theme_packages_set_system_timestamps() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       BEGIN \
+         IF TG_OP = 'INSERT' THEN \
+           NEW.date_created := now(); \
+           NEW.date_updated := now(); \
+         ELSE \
+           NEW.date_created := COALESCE(OLD.date_created, NEW.date_created, now()); \
+           NEW.date_updated := now(); \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$\$; \
+       DROP TRIGGER IF EXISTS cms_theme_packages_set_system_timestamps ON cms_theme_packages; \
+       CREATE TRIGGER cms_theme_packages_set_system_timestamps \
+       BEFORE INSERT OR UPDATE ON cms_theme_packages \
+       FOR EACH ROW EXECUTE FUNCTION directus.cms_theme_packages_set_system_timestamps(); \
        DO \$\$ \
        BEGIN \
          IF EXISTS ( \
@@ -5868,7 +5934,27 @@ data:
       date_created_note="System-managed timestamp for when this page was created."
       date_updated_note="System-managed timestamp for the last page update."
       status_note="Publishing control for this record."
+      refresh_note="${refresh_note:-Required: choose where cache refresh runs after save (Preview, Prod, or Both).}"
+      layout_template_site_key_note="Optional: choose a site scope for this layout template. Leave empty for a global template available to every site."
+      layout_template_refresh_target_note="Required: choose where cache refresh runs after saving this layout template."
+      layout_template_date_created_note="System-managed timestamp for when this layout template was created."
+      layout_template_date_updated_note="System-managed timestamp for the last layout template update."
+      layout_slot_site_key_note="Optional: choose a site scope for this layout slot. Leave empty for a global slot definition."
+      layout_slot_refresh_target_note="Required: choose where cache refresh runs after saving this layout slot."
+      layout_slot_date_created_note="System-managed timestamp for when this layout slot was created."
+      layout_slot_date_updated_note="System-managed timestamp for the last layout slot update."
+      theme_package_site_key_note="Optional: choose a site scope for this theme package. Leave empty for a global theme available to every site."
+      theme_package_refresh_target_note="Required: choose where cache refresh runs after saving this theme package."
+      theme_package_date_created_note="System-managed timestamp for when this theme package was created."
+      theme_package_date_updated_note="System-managed timestamp for the last theme package update."
       status_choices_json="$(jq -nc '[ {"text":"Draft","value":"draft","foreground":"#4B5563","background":"#F3F4F6"}, {"text":"Published","value":"published","foreground":"#065F46","background":"#D1FAE5"}, {"text":"Archived","value":"archived","foreground":"#92400E","background":"#FEF3C7"} ]')"
+      if [ -z "${refresh_choices_json:-}" ] || [ "${refresh_choices_json:-}" = "null" ] || [ "${refresh_choices_json:-}" = "[]" ]; then
+        refresh_choices_json="$(jq -nc '[
+          {"text":"Preview Only","value":"preview","foreground":"#1D4ED8","background":"#DBEAFE"},
+          {"text":"Prod Only","value":"prod","foreground":"#92400E","background":"#FEF3C7"},
+          {"text":"Both Preview + Prod","value":"both","foreground":"#065F46","background":"#D1FAE5"}
+        ]')"
+      fi
       site_key_choices_json="$(
         if [ -f "${SITES_FILE:-/directus-sites/sites.yaml}" ]; then
           yq -o=json '.sites // []' "${SITES_FILE:-/directus-sites/sites.yaml}" 2>/dev/null \
@@ -5916,6 +6002,18 @@ data:
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
       site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:true,allowNone:false,placeholder:"Use the deployed app/site key"}')"
       site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
+      layout_template_site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:true,placeholder:"Global (all sites)"}')"
+      layout_template_site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
+      layout_template_refresh_target_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      layout_template_refresh_target_display_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" '{choices:$choices}')"
+      layout_slot_site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:true,placeholder:"Global (all sites)"}')"
+      layout_slot_site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
+      layout_slot_refresh_target_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      layout_slot_refresh_target_display_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" '{choices:$choices}')"
+      theme_package_site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:true,placeholder:"Global (all sites)"}')"
+      theme_package_site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
+      theme_package_refresh_target_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
+      theme_package_refresh_target_display_options_json="$(jq -nc --argjson choices "${refresh_choices_json}" '{choices:$choices}')"
       release_channel_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       release_channel_display_options_json="$(jq -nc --argjson choices "${release_channel_choices_json}" '{choices:$choices}')"
       theme_mode_options_json="$(jq -nc --argjson choices "${theme_mode_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
@@ -6129,6 +6227,19 @@ data:
       date_created_note_sql="$(printf '%s' "${date_created_note}" | sed "s/'/''/g")"
       date_updated_note_sql="$(printf '%s' "${date_updated_note}" | sed "s/'/''/g")"
       status_note_sql="$(printf '%s' "${status_note}" | sed "s/'/''/g")"
+      refresh_note_sql="$(printf '%s' "${refresh_note}" | sed "s/'/''/g")"
+      layout_template_site_key_note_sql="$(printf '%s' "${layout_template_site_key_note}" | sed "s/'/''/g")"
+      layout_template_refresh_target_note_sql="$(printf '%s' "${layout_template_refresh_target_note}" | sed "s/'/''/g")"
+      layout_template_date_created_note_sql="$(printf '%s' "${layout_template_date_created_note}" | sed "s/'/''/g")"
+      layout_template_date_updated_note_sql="$(printf '%s' "${layout_template_date_updated_note}" | sed "s/'/''/g")"
+      layout_slot_site_key_note_sql="$(printf '%s' "${layout_slot_site_key_note}" | sed "s/'/''/g")"
+      layout_slot_refresh_target_note_sql="$(printf '%s' "${layout_slot_refresh_target_note}" | sed "s/'/''/g")"
+      layout_slot_date_created_note_sql="$(printf '%s' "${layout_slot_date_created_note}" | sed "s/'/''/g")"
+      layout_slot_date_updated_note_sql="$(printf '%s' "${layout_slot_date_updated_note}" | sed "s/'/''/g")"
+      theme_package_site_key_note_sql="$(printf '%s' "${theme_package_site_key_note}" | sed "s/'/''/g")"
+      theme_package_refresh_target_note_sql="$(printf '%s' "${theme_package_refresh_target_note}" | sed "s/'/''/g")"
+      theme_package_date_created_note_sql="$(printf '%s' "${theme_package_date_created_note}" | sed "s/'/''/g")"
+      theme_package_date_updated_note_sql="$(printf '%s' "${theme_package_date_updated_note}" | sed "s/'/''/g")"
     
       _upsert_page_layout_template_field_meta() {
         _collection="cms_pages"
@@ -7357,7 +7468,7 @@ data:
         _field="$1"
         _sort="${2:-0}"
         _note_sql="${3:-}"
-        _collection="cms_pages"
+        _collection="${4:-cms_pages}"
         if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
           return 0
         fi
@@ -7692,6 +7803,78 @@ data:
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created readonly metadata field UX on ${_collection}.${_field}"
+      }
+
+      _upsert_select_dropdown_field_meta() {
+        _collection="$1"
+        _field="$2"
+        _sort="${3:-10}"
+        _width="${4:-half}"
+        _note_sql="${5:-}"
+        _options_json="${6:-}"
+        _display_options_json="${7:-}"
+        _required="${8:-false}"
+        _readonly="${9:-false}"
+        if [ -z "${_collection:-}" ] || [ "${_collection}" = "null" ] || [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
+          return 0
+        fi
+
+        _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
+        _collection_exists="$(printf '%s' "$_collection_exists" | tr -d '\r')"
+        if [ "${_collection_exists}" != "1" ]; then
+          return 0
+        fi
+        _field_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='${_collection}' AND column_name='${_field}' LIMIT 1;" || true)"
+        _field_exists="$(printf '%s' "$_field_exists" | tr -d '\r')"
+        if [ "${_field_exists}" != "1" ]; then
+          return 0
+        fi
+
+        _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
+        _display_options_sql="$(_df_json_sql "${DF_DISPLAY_OPTIONS_TYPE:-}" "${_display_options_json}")"
+        _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+          "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
+        _exists="$(printf '%s' "$_exists" | tr -d '\r')"
+
+        if [ "${_exists}" = "1" ]; then
+          SETS=""
+          if _df_has_col "interface"; then SETS="${SETS},interface='select-dropdown'"; fi
+          if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then SETS="${SETS},options=${_options_sql}"; fi
+          if _df_has_col "display"; then SETS="${SETS},display='labels'"; fi
+          if _df_has_col "display_options" && [ "${_display_options_sql}" != "NULL" ]; then SETS="${SETS},display_options=${_display_options_sql}"; fi
+          if _df_has_col "required"; then SETS="${SETS},required=${_required}"; fi
+          if _df_has_col "readonly"; then SETS="${SETS},readonly=${_readonly}"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "width"; then SETS="${SETS},width='${_width}'"; fi
+          if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
+          if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then SETS="${SETS},note='${_note_sql}'"; fi
+          if [ -n "${SETS:-}" ]; then
+            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+              "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
+            echo "✅ Updated select dropdown field UX on ${_collection}.${_field}"
+          fi
+          return 0
+        fi
+
+        FCOLS="collection,field"
+        FVALS="'${_collection_sql}','${_field_sql}'"
+        if _df_has_col "interface"; then FCOLS="${FCOLS},interface"; FVALS="${FVALS},'select-dropdown'"; fi
+        if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
+        if _df_has_col "display"; then FCOLS="${FCOLS},display"; FVALS="${FVALS},'labels'"; fi
+        if _df_has_col "display_options" && [ "${_display_options_sql}" != "NULL" ]; then FCOLS="${FCOLS},display_options"; FVALS="${FVALS},${_display_options_sql}"; fi
+        if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},${_required}"; fi
+        if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},${_readonly}"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'${_width}'"; fi
+        if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
+        if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
+        echo "✅ Created select dropdown field UX on ${_collection}.${_field}"
       }
 
       _upsert_status_dropdown_field_meta() {
@@ -8314,6 +8497,20 @@ data:
       _upsert_page_site_key_field_meta
       _upsert_page_parent_field_meta
       _upsert_status_dropdown_field_meta "cms_pages" 5
+      _upsert_status_dropdown_field_meta "cms_layout_templates" 3
+      _upsert_select_dropdown_field_meta "cms_layout_templates" "site_key" 4 "half" "${layout_template_site_key_note_sql}" "${layout_template_site_key_options_json}" "${layout_template_site_key_display_options_json}" false false
+      _upsert_select_dropdown_field_meta "cms_layout_templates" "refresh_target" 5 "half" "${layout_template_refresh_target_note_sql}" "${layout_template_refresh_target_options_json}" "${layout_template_refresh_target_display_options_json}" true false
+      _upsert_page_readonly_timestamp_field_meta "date_created" -2 "${layout_template_date_created_note_sql}" "cms_layout_templates"
+      _upsert_page_readonly_timestamp_field_meta "date_updated" -1 "${layout_template_date_updated_note_sql}" "cms_layout_templates"
+      _upsert_select_dropdown_field_meta "cms_layout_template_slots" "site_key" 4 "half" "${layout_slot_site_key_note_sql}" "${layout_slot_site_key_options_json}" "${layout_slot_site_key_display_options_json}" false false
+      _upsert_select_dropdown_field_meta "cms_layout_template_slots" "refresh_target" 5 "half" "${layout_slot_refresh_target_note_sql}" "${layout_slot_refresh_target_options_json}" "${layout_slot_refresh_target_display_options_json}" true false
+      _upsert_page_readonly_timestamp_field_meta "date_created" -2 "${layout_slot_date_created_note_sql}" "cms_layout_template_slots"
+      _upsert_page_readonly_timestamp_field_meta "date_updated" -1 "${layout_slot_date_updated_note_sql}" "cms_layout_template_slots"
+      _upsert_status_dropdown_field_meta "cms_theme_packages" 3
+      _upsert_select_dropdown_field_meta "cms_theme_packages" "site_key" 4 "half" "${theme_package_site_key_note_sql}" "${theme_package_site_key_options_json}" "${theme_package_site_key_display_options_json}" false false
+      _upsert_select_dropdown_field_meta "cms_theme_packages" "refresh_target" 5 "half" "${theme_package_refresh_target_note_sql}" "${theme_package_refresh_target_options_json}" "${theme_package_refresh_target_display_options_json}" true false
+      _upsert_page_readonly_timestamp_field_meta "date_created" -2 "${theme_package_date_created_note_sql}" "cms_theme_packages"
+      _upsert_page_readonly_timestamp_field_meta "date_updated" -1 "${theme_package_date_updated_note_sql}" "cms_theme_packages"
       _upsert_page_release_channel_field_meta
       _upsert_page_readonly_timestamp_field_meta "date_created" -2 "${date_created_note_sql}"
       _upsert_page_readonly_timestamp_field_meta "date_updated" -1 "${date_updated_note_sql}"
