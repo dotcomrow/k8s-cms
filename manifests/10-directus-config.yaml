@@ -8115,6 +8115,123 @@ data:
           if (!normalized.startsWith('template:')) return '';
           return normalized.slice('template:'.length);
         };
+
+        const formatContentTemplateSectionLabel = (sectionKey) => {
+          const normalized = asString(sectionKey)
+            .replace(/^content[._:-]+/i, '')
+            .replace(/^fields[._:-]+/i, '')
+            .replace(/[-_.:]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!normalized) return '';
+          return normalized.replace(/\b[a-z]/g, (char) => char.toUpperCase());
+        };
+
+        const stripPreviewTemplateTag = (value) => asString(value)
+          .replace(/^slot:/i, '')
+          .replace(/^content[._:-]+/i, '')
+          .replace(/^fields[._:-]+/i, '')
+          .trim();
+
+        const attrFromTag = (tag, attrName) => {
+          const matcher = new RegExp(`${attrName}\\s*=\\s*(['"])(.*?)\\1`, 'i');
+          const match = asString(tag).match(matcher);
+          return asString(match?.[2]);
+        };
+
+        const normalizePreviewSectionKey = (value) => stripPreviewTemplateTag(value).toLowerCase();
+
+        const parseContentTemplateHtmlSections = (templateHtml) => {
+          const html = asString(templateHtml);
+          if (!html) return [];
+          const sections = [];
+          const seen = new Set();
+          const addSection = (key, fallbackLabel = '', source = 'html') => {
+            const normalizedKey = normalizePreviewSectionKey(key);
+            if (!normalizedKey || seen.has(normalizedKey)) return;
+            seen.add(normalizedKey);
+            sections.push({
+              key: normalizedKey,
+              label: asString(fallbackLabel) || formatContentTemplateSectionLabel(normalizedKey) || normalizedKey,
+              source,
+            });
+          };
+
+          const dataMarkerRegex = /data-(section|field|slot)\s*=\s*(['"])(.*?)\2/gi;
+          let markerMatch;
+          while ((markerMatch = dataMarkerRegex.exec(html)) !== null) {
+            addSection(markerMatch?.[3], '', `data-${asString(markerMatch?.[1]).toLowerCase()}`);
+          }
+
+          const sectionTagRegex = /<section\b[^>]*>/gi;
+          let sectionIndex = 0;
+          let tagMatch;
+          while ((tagMatch = sectionTagRegex.exec(html)) !== null) {
+            sectionIndex += 1;
+            const tag = tagMatch?.[0] || '';
+            const key = attrFromTag(tag, 'data-section')
+              || attrFromTag(tag, 'data-field')
+              || attrFromTag(tag, 'aria-label')
+              || attrFromTag(tag, 'id')
+              || attrFromTag(tag, 'class')
+              || `section-${sectionIndex}`;
+            addSection(key, formatContentTemplateSectionLabel(key) || `Section ${sectionIndex}`, 'section');
+          }
+
+          const tokenRegex = /\{\{\s*([a-zA-Z0-9_.:-]+)\s*\}\}/g;
+          let tokenMatch;
+          while ((tokenMatch = tokenRegex.exec(html)) !== null) {
+            const rawToken = asString(tokenMatch?.[1]);
+            if (!rawToken || rawToken.startsWith('#') || rawToken.startsWith('/')) continue;
+            addSection(rawToken, '', rawToken.toLowerCase().startsWith('slot:') ? 'slot' : 'token');
+          }
+          return sections;
+        };
+
+        const parseContentTemplateSchemaSections = (schemaValue) => {
+          const schema = parseOptions(schemaValue);
+          const properties = schema && typeof schema.properties === 'object' && schema.properties !== null
+            ? schema.properties
+            : {};
+          return Object.entries(properties).map(([key, config]) => {
+            const label = asString(config?.title) || formatContentTemplateSectionLabel(key) || key;
+            return {
+              key: normalizePreviewSectionKey(key),
+              label,
+              source: 'schema',
+            };
+          }).filter((section) => section.key);
+        };
+
+        const buildContentTemplatePreviewSections = (templateChoice) => {
+          const seen = new Set();
+          const sections = [];
+          const addSections = (entries) => {
+            for (const entry of entries || []) {
+              const key = normalizePreviewSectionKey(entry?.key);
+              if (!key || seen.has(key)) continue;
+              seen.add(key);
+              sections.push({
+                key,
+                label: asString(entry?.label) || formatContentTemplateSectionLabel(key) || key,
+                source: asString(entry?.source) || 'template',
+              });
+            }
+          };
+          addSections(parseContentTemplateHtmlSections(templateChoice?.html_template));
+          addSections(parseContentTemplateSchemaSections(templateChoice?.content_schema));
+          if (sections.length === 0 && asString(templateChoice?.html_template)) {
+            sections.push({ key: 'html', label: 'HTML Template', source: 'html' });
+          }
+          return sections.slice(0, 12);
+        };
+
+        const contentTemplateChoiceByKey = (templateKey) => {
+          const key = asString(templateKey);
+          if (!key) return null;
+          return (Array.isArray(contentTemplateChoices.value) ? contentTemplateChoices.value : [])
+            .find((choice) => asString(choice?.value) === key) || null;
+        };
     
         const pageIdFromValues = computed(() => parseId(props.values?.[pageIdField.value] ?? props.values?.id));
         const pageId = computed(() => {
@@ -8811,7 +8928,7 @@ data:
               ],
             };
             const response = await apiRequest('GET', '/items/cms_content_templates', {
-              fields: 'template_key,name,site_key,release_channel',
+              fields: 'template_key,name,site_key,release_channel,html_template,content_schema',
               limit: -1,
               sort: 'site_key,template_key',
               filter: JSON.stringify(filter),
@@ -8835,6 +8952,11 @@ data:
                 return {
                   text: name && name !== templateKey ? `${name} (${templateKey}, ${scope})` : `${templateKey} (${scope})`,
                   value: templateKey,
+                  name,
+                  site_key: rowSiteKey,
+                  release_channel: asString(row?.release_channel),
+                  html_template: asString(row?.html_template),
+                  content_schema: row?.content_schema,
                 };
               })
               .sort((left, right) => left.text.localeCompare(right.text));
@@ -11150,6 +11272,81 @@ data:
               fontWeight: '600',
               color: 'var(--theme--foreground-subdued)',
             },
+            contentTemplatePicker: {
+              minWidth: '260px',
+              flex: '1 1 280px',
+            },
+            contentTemplatePreview: {
+              minWidth: '280px',
+              maxWidth: '460px',
+              flex: '1 1 340px',
+              alignSelf: 'stretch',
+              border: '1px solid var(--theme--border-subdued)',
+              borderRadius: '6px',
+              background: 'var(--theme--background-subdued)',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            },
+            contentTemplatePreviewHeader: {
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '8px',
+              minWidth: 0,
+            },
+            contentTemplatePreviewTitle: {
+              fontSize: '10px',
+              lineHeight: 1.2,
+              fontWeight: '600',
+              color: 'var(--theme--foreground-normal)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            },
+            contentTemplatePreviewCount: {
+              flex: '0 0 auto',
+              fontSize: '10px',
+              lineHeight: 1.2,
+              color: 'var(--theme--foreground-subdued)',
+            },
+            contentTemplatePreviewCanvas: {
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: '4px',
+              minHeight: '54px',
+            },
+            contentTemplatePreviewSection: {
+              minHeight: '24px',
+              border: '1px solid var(--theme--border-normal)',
+              borderRadius: '4px',
+              background: 'var(--theme--background-page)',
+              padding: '4px 6px',
+              display: 'flex',
+              alignItems: 'center',
+              minWidth: 0,
+            },
+            contentTemplatePreviewSectionText: {
+              fontSize: '10px',
+              lineHeight: 1.2,
+              color: 'var(--theme--foreground-normal)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            },
+            contentTemplatePreviewEmpty: {
+              minHeight: '54px',
+              border: '1px dashed var(--theme--border-normal)',
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '6px',
+              fontSize: '10px',
+              color: 'var(--theme--foreground-subdued)',
+              background: 'var(--theme--background-page)',
+            },
             treeNodeActions: {
               display: 'flex',
               flexWrap: 'nowrap',
@@ -11362,6 +11559,56 @@ data:
               },
             }, children);
           };
+
+          const renderContentTemplatePreview = (templateKey) => {
+            const normalizedTemplateKey = asString(templateKey);
+            if (contentTemplateChoicesLoading.value) {
+              return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
+                h('div', { style: styles.contentTemplatePreviewEmpty }, 'Loading preview'),
+              ]);
+            }
+            if (!normalizedTemplateKey) {
+              return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
+                h('div', { style: styles.contentTemplatePreviewEmpty }, 'Select an HTML template'),
+              ]);
+            }
+            const templateChoice = contentTemplateChoiceByKey(normalizedTemplateKey);
+            if (!templateChoice) {
+              return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
+                h('div', { style: styles.contentTemplatePreviewEmpty }, 'Preview unavailable'),
+              ]);
+            }
+            const previewSections = buildContentTemplatePreviewSections(templateChoice);
+            const title = asString(templateChoice?.name) || normalizedTemplateKey;
+            return h('div', { class: 'cms-page-blocks-manager__content-template-preview', style: styles.contentTemplatePreview }, [
+              h('div', { style: styles.contentTemplatePreviewHeader }, [
+                h('span', { style: styles.contentTemplatePreviewTitle, title: normalizedTemplateKey }, title),
+                h('span', { style: styles.contentTemplatePreviewCount }, `${previewSections.length} section${previewSections.length === 1 ? '' : 's'}`),
+              ]),
+              previewSections.length > 0
+                ? h(
+                    'div',
+                    { style: styles.contentTemplatePreviewCanvas },
+                    previewSections.map((section, index) => h(
+                      'div',
+                      {
+                        key: `${normalizedTemplateKey}-${section.key}-${index}`,
+                        style: {
+                          ...styles.contentTemplatePreviewSection,
+                          ...(previewSections.length === 1 || index === 0
+                            ? { gridColumn: '1 / -1' }
+                            : {}),
+                        },
+                        title: `${section.label} (${section.key})`,
+                      },
+                      [
+                        h('span', { style: styles.contentTemplatePreviewSectionText }, section.label),
+                      ],
+                    )),
+                  )
+                : h('div', { style: styles.contentTemplatePreviewEmpty }, 'No sections detected'),
+            ]);
+          };
     
           const renderTreeNode = (row, ancestorPath = []) => {
             const rowId = asString(row?.id);
@@ -11464,7 +11711,7 @@ data:
                   ? [
                       h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
                         h('span', { style: styles.treeNodeFieldLabel }, 'HTML template'),
-                        h('div', { style: { minWidth: '260px', flex: '1 1 260px' } }, [
+                        h('div', { style: styles.contentTemplatePicker }, [
                           renderSelectControl({
                             value: currentContentTemplateKey,
                             items: renderedContentTemplateItems,
@@ -11473,6 +11720,7 @@ data:
                             onUpdate: (next) => { void updateContentBlockTemplateKey(row, next); },
                           }),
                         ]),
+                        renderContentTemplatePreview(currentContentTemplateKey),
                       ]),
                       h('div', { class: 'cms-page-blocks-manager__tree-node-field-row', style: styles.treeNodeFieldRow }, [
                         h('span', { style: styles.treeNodeFieldLabel }, 'Content'),
