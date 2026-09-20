@@ -7889,6 +7889,21 @@ data:
       }
       return typeof value === 'object' ? value : {};
     };
+
+    const isPlainObject = (value) =>
+      Boolean(value && typeof value === 'object' && !Array.isArray(value));
+
+    const cloneJsonValue = (value) => {
+      if (Array.isArray(value)) return value.map((entry) => cloneJsonValue(entry));
+      if (isPlainObject(value)) {
+        const output = {};
+        for (const [key, entry] of Object.entries(value)) {
+          output[key] = cloneJsonValue(entry);
+        }
+        return output;
+      }
+      return value;
+    };
     
     const normalizeRows = (response) => {
       const payload = response?.data;
@@ -8489,6 +8504,216 @@ data:
           if (!key) return null;
           return (Array.isArray(contentTemplateChoices.value) ? contentTemplateChoices.value : [])
             .find((choice) => asString(choice?.value) === key) || null;
+        };
+
+        const normalizeContentTemplateChoiceRow = (row) => {
+          const templateKey = asString(row?.template_key);
+          if (!templateKey) return null;
+          const name = asString(row?.name);
+          const rowSiteKey = asString(row?.site_key);
+          const scope = rowSiteKey ? `site:${rowSiteKey}` : 'global';
+          return {
+            text: name && name !== templateKey ? `${name} (${templateKey}, ${scope})` : `${templateKey} (${scope})`,
+            value: templateKey,
+            name,
+            site_key: rowSiteKey,
+            release_channel: asString(row?.release_channel),
+            html_template: asString(row?.html_template),
+            css: asString(row?.css),
+            content_schema: row?.content_schema,
+          };
+        };
+
+        const readSchemaDefault = (schema) => {
+          const candidates = ['default', 'default_value', 'defaultValue', 'x-default', 'x_default'];
+          for (const key of candidates) {
+            if (Object.prototype.hasOwnProperty.call(schema, key)) {
+              return { found: true, value: schema[key] };
+            }
+          }
+          return { found: false, value: undefined };
+        };
+
+        const schemaTypeList = (schema) => {
+          const rawType = schema?.type;
+          if (Array.isArray(rawType)) return rawType.map((entry) => asString(entry).toLowerCase()).filter(Boolean);
+          const type = asString(rawType).toLowerCase();
+          return type ? [type] : [];
+        };
+
+        const mergePlainJsonObjects = (left, right) => {
+          const output = {};
+          if (isPlainObject(left)) {
+            for (const [key, value] of Object.entries(left)) {
+              output[key] = cloneJsonValue(value);
+            }
+          }
+          if (isPlainObject(right)) {
+            for (const [key, value] of Object.entries(right)) {
+              output[key] = cloneJsonValue(value);
+            }
+          }
+          return output;
+        };
+
+        const contentJsonStringDefaultForSchema = (propertyKey, schema, fallbackName) => {
+          const key = asString(propertyKey).toLowerCase();
+          const format = asString(schema?.format).toLowerCase();
+          if (
+            key === 'body_html'
+            || key === 'html'
+            || key.endsWith('_html')
+            || format === 'html'
+            || format === 'rich-text-html'
+          ) {
+            return `<p>${asString(fallbackName) || 'New content block'}</p>`;
+          }
+          return '';
+        };
+
+        const buildContentJsonValueFromSchema = (schemaValue, propertyKey = '', fallbackName = 'New content block') => {
+          const schema = parseOptions(schemaValue);
+          const properties = isPlainObject(schema?.properties) ? schema.properties : {};
+          const propertyEntries = Object.entries(properties);
+          const explicitDefault = readSchemaDefault(schema);
+
+          if (propertyEntries.length > 0) {
+            const output = explicitDefault.found && isPlainObject(explicitDefault.value)
+              ? cloneJsonValue(explicitDefault.value)
+              : {};
+            for (const [key, childSchema] of propertyEntries) {
+              if (!Object.prototype.hasOwnProperty.call(output, key)) {
+                output[key] = buildContentJsonValueFromSchema(childSchema, key, fallbackName);
+              }
+            }
+            return output;
+          }
+
+          if (Array.isArray(schema?.allOf) && schema.allOf.length > 0) {
+            let merged = {};
+            let hasMergedObject = false;
+            for (const entry of schema.allOf) {
+              const value = buildContentJsonValueFromSchema(entry, propertyKey, fallbackName);
+              if (isPlainObject(value)) {
+                merged = mergePlainJsonObjects(merged, value);
+                hasMergedObject = true;
+              }
+            }
+            if (hasMergedObject) return merged;
+          }
+
+          if (explicitDefault.found) {
+            return cloneJsonValue(explicitDefault.value);
+          }
+
+          if (Object.prototype.hasOwnProperty.call(schema, 'const')) {
+            return cloneJsonValue(schema.const);
+          }
+
+          if (Array.isArray(schema?.enum) && schema.enum.length > 0) {
+            return cloneJsonValue(schema.enum[0]);
+          }
+
+          const choiceSchemas = [
+            ...(Array.isArray(schema?.oneOf) ? schema.oneOf : []),
+            ...(Array.isArray(schema?.anyOf) ? schema.anyOf : []),
+          ];
+          for (const optionSchema of choiceSchemas) {
+            const optionValue = buildContentJsonValueFromSchema(optionSchema, propertyKey, fallbackName);
+            if (optionValue !== null && optionValue !== undefined) return optionValue;
+          }
+
+          const types = schemaTypeList(schema);
+          if (types.includes('object')) return {};
+          if (types.includes('array')) {
+            const minItems = asInteger(schema?.minItems) || 0;
+            const itemSchema = schema?.items;
+            if (minItems > 0 && itemSchema) {
+              return Array.from({ length: minItems }, () =>
+                buildContentJsonValueFromSchema(itemSchema, propertyKey, fallbackName)
+              );
+            }
+            return [];
+          }
+          if (types.includes('boolean')) return false;
+          if (types.includes('integer') || types.includes('number')) return 0;
+          if (types.includes('null')) return null;
+          return contentJsonStringDefaultForSchema(propertyKey, schema, fallbackName);
+        };
+
+        const assignContentJsonPathDefault = (target, path, value) => {
+          const segments = asString(path).split('.').map((segment) => asString(segment)).filter(Boolean);
+          if (segments.length === 0) return;
+          let cursor = target;
+          for (let index = 0; index < segments.length; index += 1) {
+            const segment = segments[index];
+            if (index === segments.length - 1) {
+              if (!Object.prototype.hasOwnProperty.call(cursor, segment)) {
+                cursor[segment] = cloneJsonValue(value);
+              }
+              return;
+            }
+            if (!isPlainObject(cursor[segment])) {
+              cursor[segment] = {};
+            }
+            cursor = cursor[segment];
+          }
+        };
+
+        const buildContentJsonFromTemplateTokens = (templateHtml, fallbackName) => {
+          const html = asString(templateHtml);
+          if (!html) return {};
+          const output = {};
+          const tokenPattern = /\{\{\s*(?:(content|props|system)\.)?([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
+          let match;
+          while ((match = tokenPattern.exec(html)) !== null) {
+            const scope = asString(match?.[1]);
+            if (scope === 'props' || scope === 'system') continue;
+            const path = asString(match?.[2]);
+            if (!path) continue;
+            const leafKey = path.split('.').pop() || path;
+            assignContentJsonPathDefault(
+              output,
+              path,
+              contentJsonStringDefaultForSchema(leafKey, { type: 'string' }, fallbackName),
+            );
+          }
+          return output;
+        };
+
+        const defaultRichTextContentJson = (name) => ({
+          body_html: `<p>${asString(name) || 'New content block'}</p>`,
+        });
+
+        const isGeneratedDefaultContentJson = (contentJson, fallbackName) => {
+          const value = parseOptions(contentJson);
+          const keys = Object.keys(value);
+          if (keys.length === 0) return true;
+          if (
+            keys.length !== 1
+            || !Object.prototype.hasOwnProperty.call(value, 'body_html')
+          ) {
+            return false;
+          }
+          const bodyHtml = asString(value.body_html).trim();
+          const normalizedName = asString(fallbackName) || 'New content block';
+          return bodyHtml === ''
+            || bodyHtml === defaultRichTextContentJson(normalizedName).body_html
+            || bodyHtml === defaultRichTextContentJson('New content block').body_html;
+        };
+
+        const buildDefaultContentJsonForTemplate = (templateChoice, fallbackName) => {
+          const schemaDefault = buildContentJsonValueFromSchema(templateChoice?.content_schema, '', fallbackName);
+          if (isPlainObject(schemaDefault) && Object.keys(schemaDefault).length > 0) {
+            return schemaDefault;
+          }
+
+          const tokenDefault = buildContentJsonFromTemplateTokens(templateChoice?.html_template, fallbackName);
+          if (Object.keys(tokenDefault).length > 0) {
+            return tokenDefault;
+          }
+
+          return defaultRichTextContentJson(fallbackName);
         };
     
         const pageIdFromValues = computed(() => parseId(props.values?.[pageIdField.value] ?? props.values?.id));
@@ -9204,26 +9429,52 @@ data:
               }
             }
             contentTemplateChoices.value = Array.from(byKey.values())
-              .map((row) => {
-                const templateKey = asString(row?.template_key);
-                const name = asString(row?.name);
-                const rowSiteKey = asString(row?.site_key);
-                const scope = rowSiteKey ? `site:${rowSiteKey}` : 'global';
-                return {
-                  text: name && name !== templateKey ? `${name} (${templateKey}, ${scope})` : `${templateKey} (${scope})`,
-                  value: templateKey,
-                  name,
-                  site_key: rowSiteKey,
-                  release_channel: asString(row?.release_channel),
-                  html_template: asString(row?.html_template),
-                  css: asString(row?.css),
-                  content_schema: row?.content_schema,
-                };
-              })
+              .map((row) => normalizeContentTemplateChoiceRow(row))
+              .filter(Boolean)
               .sort((left, right) => left.text.localeCompare(right.text));
           } finally {
             contentTemplateChoicesLoading.value = false;
           }
+        };
+
+        const resolveContentTemplateChoice = async (templateKey) => {
+          const normalizedTemplateKey = asString(templateKey);
+          if (!normalizedTemplateKey) return null;
+          const existing = contentTemplateChoiceByKey(normalizedTemplateKey);
+          if (existing) return existing;
+
+          const releaseChannel = hasPageReleaseChannel.value ? sourcePageReleaseChannel.value : 'preview';
+          const siteKey = asString(pageContext.value?.site_key);
+          const filter = {
+            _and: [
+              { status: { _eq: 'published' } },
+              { template_key: { _eq: normalizedTemplateKey } },
+              { release_channel: { _eq: releaseChannel } },
+              siteKey
+                ? {
+                    _or: [
+                      { site_key: { _empty: true } },
+                      { site_key: { _eq: siteKey } },
+                    ],
+                  }
+                : { site_key: { _empty: true } },
+            ],
+          };
+          const response = await apiRequest('GET', '/items/cms_content_templates', {
+            fields: 'template_key,name,site_key,release_channel,html_template,css,content_schema',
+            limit: 50,
+            sort: 'site_key,template_key',
+            filter: JSON.stringify(filter),
+          });
+          const rows = normalizeRows(response);
+          const selected = rows.find((row) => siteKey && asString(row?.site_key) === siteKey) || rows[0];
+          const normalized = normalizeContentTemplateChoiceRow(selected);
+          if (!normalized) return null;
+          const nextChoices = (Array.isArray(contentTemplateChoices.value) ? contentTemplateChoices.value : [])
+            .filter((choice) => asString(choice?.value) !== normalizedTemplateKey);
+          contentTemplateChoices.value = [...nextChoices, normalized]
+            .sort((left, right) => left.text.localeCompare(right.text));
+          return normalized;
         };
 
         const contentTemplateChoiceItemsForRow = (row) => {
@@ -9500,9 +9751,10 @@ data:
         const createDefaultContentItem = async ({ name = 'New content block', contentTemplateKey = '' } = {}) => {
           const normalizedName = asString(name) || 'New content block';
           const normalizedTemplateKey = asString(contentTemplateKey);
-          const defaultContentJson = {
-            body_html: `<p>${normalizedName}</p>`,
-          };
+          const templateChoice = normalizedTemplateKey
+            ? await resolveContentTemplateChoice(normalizedTemplateKey)
+            : null;
+          const defaultContentJson = buildDefaultContentJsonForTemplate(templateChoice, normalizedName);
           const createdContentItem = await apiRequest('POST', '/items/cms_content_items', {}, {
             status: 'published',
             name: normalizedName,
@@ -9585,6 +9837,7 @@ data:
           markSaving(rowId, true);
           info.value = '';
           error.value = '';
+          let reseededContentJson;
           try {
             await apiRequest(
               'PATCH',
@@ -9593,11 +9846,20 @@ data:
               { template_key: templateKey },
             );
             if (parseId(row?.content_item_id) && toLower(row?.content_reuse_strategy) !== 'shared') {
+              const contentItemPatch = { content_template_key: templateKey };
+              if (isGeneratedDefaultContentJson(row?.content_item_json, row?.content_item_name)) {
+                const templateChoice = await resolveContentTemplateChoice(templateKey);
+                reseededContentJson = buildDefaultContentJsonForTemplate(
+                  templateChoice,
+                  asString(row?.content_item_name) || 'New content block',
+                );
+                contentItemPatch.content_json = reseededContentJson;
+              }
               await apiRequest(
                 'PATCH',
                 `/items/cms_content_items/${encodeURIComponent(parseId(row.content_item_id))}`,
                 {},
-                { content_template_key: templateKey },
+                contentItemPatch,
               );
             }
             blocks.value = blocks.value.map((candidate) => (
@@ -9606,7 +9868,12 @@ data:
                     ...candidate,
                     content_template_key: templateKey,
                     ...(toLower(candidate?.content_reuse_strategy) !== 'shared'
-                      ? { content_item_template_key: templateKey }
+                      ? {
+                          content_item_template_key: templateKey,
+                          ...(reseededContentJson !== undefined
+                            ? { content_item_json: cloneJsonValue(reseededContentJson) }
+                            : {}),
+                        }
                       : {}),
                   }
                 : candidate
