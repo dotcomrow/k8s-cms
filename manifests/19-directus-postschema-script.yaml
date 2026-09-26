@@ -8830,10 +8830,10 @@ data:
       _upsert_page_head_input_field_meta "force_login_for_page_access" 12 "half" "${force_login_for_page_access_note_sql}" "boolean" "" "${force_login_for_page_access_name_sql}"
       _upsert_page_head_input_field_meta "required_role_for_page_access" 13 "half" "${required_role_for_page_access_note_sql}" "cms-content-model-select" "${role_interface_options_json}" "${required_role_for_page_access_name_sql}"
       _ensure_page_social_profile_relation
-      _upsert_platform_m2o_field_meta "cms_pages" "social_profile_id" 1 "${social_profile_id_note_sql}" "${social_profile_relation_options_json}" false
+      _upsert_platform_m2o_field_meta "cms_pages" "social_profile_id" 12 "${social_profile_id_note_sql}" "${social_profile_relation_options_json}" false
       _set_page_field_name "social_profile_id" "${social_profile_id_name_sql}"
-      _upsert_page_head_input_field_meta "show_social_in_header" 2 "half" "${show_social_in_header_note_sql}" "boolean" "" "${show_social_in_header_name_sql}"
-      _upsert_page_head_input_field_meta "show_social_in_footer" 3 "half" "${show_social_in_footer_note_sql}" "boolean" "" "${show_social_in_footer_name_sql}"
+      _upsert_page_head_input_field_meta "show_social_in_header" 13 "half" "${show_social_in_header_note_sql}" "boolean" "" "${show_social_in_header_name_sql}"
+      _upsert_page_head_input_field_meta "show_social_in_footer" 14 "half" "${show_social_in_footer_note_sql}" "boolean" "" "${show_social_in_footer_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_enabled" 1 "half" "${page_cache_enabled_note_sql}" "boolean" "" "${page_cache_enabled_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_browser_max_age_seconds" 2 "half" "${page_cache_browser_max_age_seconds_note_sql}" "input" "" "${page_cache_browser_max_age_seconds_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_cdn_max_age_seconds" 3 "half" "${page_cache_cdn_max_age_seconds_note_sql}" "input" "" "${page_cache_cdn_max_age_seconds_name_sql}"
@@ -9076,9 +9076,9 @@ data:
       _assign_page_field_group "head_canonical_url" "_section_meta"
       _assign_page_field_group "head_robots" "_section_meta"
       _assign_page_field_group "head_generator" "_section_meta"
-      _assign_page_field_group "social_profile_id" "_section_blocks"
-      _assign_page_field_group "show_social_in_header" "_section_blocks"
-      _assign_page_field_group "show_social_in_footer" "_section_blocks"
+      _assign_page_field_group "social_profile_id" "_section_widget_dock"
+      _assign_page_field_group "show_social_in_header" "_section_widget_dock"
+      _assign_page_field_group "show_social_in_footer" "_section_widget_dock"
       _assign_page_field_group "blocks" "_section_blocks"
       _set_page_field_note "site_key" "${site_key_note_sql}"
       _set_page_field_note "date_created" "${date_created_note_sql}"
