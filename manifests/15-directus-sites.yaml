@@ -75,6 +75,18 @@ data:
                     _eq: internal
                 - status:
                     _eq: published
+          - collection: cms_social_profiles
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: internal
           - collection: cms_layout_templates
             fields:
               - "*"
@@ -306,6 +318,18 @@ data:
                     _eq: external
                 - status:
                     _eq: published
+          - collection: cms_social_profiles
+            fields:
+              - "*"
+            permissions:
+              _and:
+                - status:
+                    _eq: published
+                - _or:
+                    - site_key:
+                        _null: true
+                    - site_key:
+                        _eq: external
           - collection: cms_layout_templates
             fields:
               - "*"
