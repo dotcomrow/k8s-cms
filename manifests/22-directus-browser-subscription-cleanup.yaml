@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: directus-browser-subscription-cleanup
+  namespace: directus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: directus-browser-subscription-cleanup
+  namespace: directus
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: directus-browser-subscription-cleanup
+  namespace: directus
+subjects:
+  - kind: ServiceAccount
+    name: directus-browser-subscription-cleanup
+    namespace: directus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: directus-browser-subscription-cleanup
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: directus-browser-subscription-cleanup
+  namespace: directus
+spec:
+  schedule: "17 7 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: directus-browser-subscription-cleanup
+          annotations:
+            linkerd.io/inject: "disabled"
+        spec:
+          serviceAccountName: directus-browser-subscription-cleanup
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: alpine/k8s:1.31.4
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 128Mi
+              env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+              command: ["/bin/sh", "-lc"]
+              args:
+                - |
+                  set -eu
+
+                  namespace="${POD_NAMESPACE:-directus}"
+                  pod_name="$(kubectl -n "${namespace}" get pods -l app=directus -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}' | head -n 1)"
+
+                  if [ -z "${pod_name}" ]; then
+                    echo "[cleanup] No running Directus pod found; cannot run browser subscription cleanup."
+                    exit 1
+                  fi
+
+                  echo "[cleanup] Running browser subscription cleanup through Directus pod ${pod_name}..."
+
+                  kubectl -n "${namespace}" exec -i "${pod_name}" -c directus -- /bin/sh -s <<'REMOTE_CLEANUP_SCRIPT'
+                  set -eu
+
+                  if [ ! -f /postschema-state/db-ready ]; then
+                    echo "[cleanup] Directus postschema marker is not ready; refusing to run cleanup."
+                    exit 1
+                  fi
+
+                  if [ ! -f /vault-secrets/db-creds.env ]; then
+                    echo "[cleanup] Vault DB credentials file is not present in the Directus container."
+                    exit 1
+                  fi
+
+                  set -a
+                  . /vault-secrets/db-creds.env
+                  set +a
+
+                  cd /directus
+
+                  node - <<'NODE_CLEANUP_SCRIPT'
+                  const fs = require("fs");
+                  const path = require("path");
+
+                  function requirePg() {
+                    for (const candidate of ["pg", "/directus/node_modules/pg"]) {
+                      try {
+                        return require(candidate);
+                      } catch (error) {}
+                    }
+
+                    const pnpmRoot = "/directus/node_modules/.pnpm";
+                    for (const entry of fs.readdirSync(pnpmRoot)) {
+                      const packagePath = path.join(pnpmRoot, entry, "node_modules", "pg");
+                      if (entry.startsWith("pg@") && fs.existsSync(packagePath)) {
+                        return require(packagePath);
+                      }
+                    }
+
+                    throw new Error("pg package was not found in the Directus container");
+                  }
+
+                  const { Client } = requirePg();
+                  for (const name of ["DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_DATABASE"]) {
+                    if (!process.env[name]) {
+                      throw new Error(`${name} is not set`);
+                    }
+                  }
+
+                  const client = new Client({
+                    host: process.env.DB_HOST,
+                    port: Number(process.env.DB_PORT || "5432"),
+                    user: process.env.DB_USER,
+                    password: process.env.DB_PASSWORD,
+                    database: process.env.DB_DATABASE,
+                  });
+
+                  async function main() {
+                    await client.connect();
+                    const functionCheck = await client.query("SELECT to_regprocedure($1) AS function_oid", [
+                      "directus.prune_invalid_browser_subscriptions()",
+                    ]);
+                    if (!functionCheck.rows[0]?.function_oid) {
+                      throw new Error("directus.prune_invalid_browser_subscriptions() is missing; postschema reconcile has not completed");
+                    }
+
+                    const result = await client.query("SELECT directus.prune_invalid_browser_subscriptions()::integer AS deleted_count");
+                    const deletedCount = Number(result.rows[0]?.deleted_count || 0);
+                    console.log(JSON.stringify({
+                      event: "browser_subscription_cleanup_complete",
+                      deleted_count: deletedCount,
+                      ran_at: new Date().toISOString(),
+                    }));
+                  }
+
+                  main()
+                    .catch((error) => {
+                      console.error(JSON.stringify({
+                        event: "browser_subscription_cleanup_failed",
+                        error: error && error.message ? error.message : String(error),
+                      }));
+                      process.exitCode = 1;
+                    })
+                    .finally(async () => {
+                      try {
+                        await client.end();
+                      } catch (error) {}
+                    });
+                  NODE_CLEANUP_SCRIPT
+                  REMOTE_CLEANUP_SCRIPT

@@ -40,6 +40,8 @@ data:
                      WHEN LOWER(NULLIF(BTRIM(required_role_for_page_access), '')) = 'none' THEN NULL
                      ELSE NULLIF(BTRIM(required_role_for_page_access), '')
                    END,
+                   show_social_in_header = COALESCE(show_social_in_header, false),
+                   show_social_in_footer = COALESCE(show_social_in_footer, false),
                    theme_switcher_position = CASE
                      WHEN LOWER(COALESCE(widget_dock_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(widget_dock_position)
                      WHEN LOWER(COALESCE(theme_switcher_position, '')) IN ('top-right','top-left','bottom-right','bottom-left') THEN LOWER(theme_switcher_position)

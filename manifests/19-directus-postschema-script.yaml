@@ -585,6 +585,9 @@ data:
              ('cms_pages','layout_template_key'), \
              ('cms_pages','layout_chrome'), \
              ('cms_pages','theme_package_key'), \
+             ('cms_pages','social_profile_id'), \
+             ('cms_pages','show_social_in_header'), \
+             ('cms_pages','show_social_in_footer'), \
              ('cms_pages','page_cache_enabled'), \
              ('cms_pages','page_cache_browser_max_age_seconds'), \
              ('cms_pages','page_cache_cdn_max_age_seconds'), \
@@ -735,15 +738,20 @@ data:
                  AND t.tgname = required.trigger_name \
                  AND NOT t.tgisinternal \
              ) \
-         ), missing_function AS ( \
-           SELECT 'function:prune_history_retention' AS name \
-           WHERE to_regprocedure('directus.prune_history_retention()') IS NULL \
+         ), missing_functions AS ( \
+           SELECT required.name \
+           FROM ( \
+             VALUES \
+               ('function:prune_history_retention', 'directus.prune_history_retention()'), \
+               ('function:prune_invalid_browser_subscriptions', 'directus.prune_invalid_browser_subscriptions()') \
+           ) AS required(name, signature) \
+           WHERE to_regprocedure(required.signature) IS NULL \
          ) \
          SELECT COALESCE(string_agg(name, ',' ORDER BY name), '') \
          FROM ( \
            SELECT name FROM missing_triggers \
            UNION ALL \
-           SELECT name FROM missing_function \
+           SELECT name FROM missing_functions \
          ) missing;" || true)"
       MISSING_HISTORY_RETENTION="$(printf '%s' "${MISSING_HISTORY_RETENTION:-}" | tr -d '\r')"
       if [ -n "${MISSING_HISTORY_RETENTION:-}" ]; then
@@ -1195,6 +1203,9 @@ data:
          head_generator TEXT NULL, \
          theme_switcher_position TEXT NULL, \
          theme_switcher_dock_direction TEXT NULL, \
+         social_profile_id UUID NULL, \
+         show_social_in_header BOOLEAN NULL DEFAULT false, \
+         show_social_in_footer BOOLEAN NULL DEFAULT false, \
          refresh_target TEXT NULL, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
          date_updated TIMESTAMPTZ NULL \
@@ -1408,6 +1419,13 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS theme_switcher_dock_direction TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS force_login_for_page_access BOOLEAN; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS required_role_for_page_access TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS social_profile_id UUID; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS show_social_in_header BOOLEAN; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS show_social_in_footer BOOLEAN; \
+       ALTER TABLE IF EXISTS cms_pages ALTER COLUMN show_social_in_header SET DEFAULT false; \
+       ALTER TABLE IF EXISTS cms_pages ALTER COLUMN show_social_in_footer SET DEFAULT false; \
+       UPDATE cms_pages SET show_social_in_header = false WHERE show_social_in_header IS NULL; \
+       UPDATE cms_pages SET show_social_in_footer = false WHERE show_social_in_footer IS NULL; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS site_key TEXT; \
        ALTER TABLE IF EXISTS cms_page_blocks ADD COLUMN IF NOT EXISTS release_channel TEXT; \
@@ -4269,6 +4287,35 @@ data:
          END IF; \
        END \
        \$\$; \
+       CREATE OR REPLACE FUNCTION directus.prune_invalid_browser_subscriptions() RETURNS integer \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         deleted_count integer := 0; \
+       BEGIN \
+         IF to_regclass('directus.platform_notification_browser_subscriptions') IS NULL THEN \
+           RETURN 0; \
+         END IF; \
+         DELETE FROM directus.platform_notification_browser_subscriptions AS s \
+         WHERE LOWER(COALESCE(NULLIF(BTRIM(s.status), ''), 'invalid')) <> 'active' \
+            OR (s.expiration_time IS NOT NULL AND s.expiration_time <= now()) \
+            OR ( \
+              LOWER(COALESCE(NULLIF(BTRIM(s.status), ''), 'active')) = 'active' \
+              AND LOWER(COALESCE(NULLIF(BTRIM(s.permission), ''), 'granted')) = 'granted' \
+              AND LOWER(COALESCE(s.capabilities_json->>'fallback_required', 'false')) NOT IN ('true', '1', 'yes', 'on') \
+              AND LOWER(COALESCE(s.capabilities_json->>'disabled_by_user', 'false')) NOT IN ('true', '1', 'yes', 'on') \
+              AND LOWER(COALESCE(s.capabilities_json->>'registration_status', '')) NOT IN ('failed', 'disabled', 'unsupported', 'denied', 'permission_denied', 'fallback_required') \
+              AND ( \
+                NULLIF(BTRIM(s.endpoint), '') IS NULL \
+                OR NULLIF(BTRIM(s.endpoint_hash), '') IS NULL \
+                OR NULLIF(BTRIM(s.p256dh), '') IS NULL \
+                OR NULLIF(BTRIM(s.auth), '') IS NULL \
+              ) \
+            ); \
+         GET DIAGNOSTICS deleted_count = ROW_COUNT; \
+         RETURN deleted_count; \
+       END; \
+       \$\$; \
        CREATE OR REPLACE FUNCTION directus.prune_history_retention() RETURNS trigger \
        LANGUAGE plpgsql \
        AS \$\$ \
@@ -4305,6 +4352,7 @@ data:
            DELETE FROM directus.platform_notification_browser_subscriptions \
            WHERE status IN ('superseded', 'expired', 'stale') \
              AND COALESCE(date_updated, last_seen_at, date_created) < cutoff; \
+           PERFORM directus.prune_invalid_browser_subscriptions(); \
          END IF; \
          IF to_regclass('directus.cms_content_translation_jobs') IS NOT NULL THEN \
            DELETE FROM directus.cms_content_translation_jobs \
@@ -6060,6 +6108,8 @@ data:
         '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,default_group_by:"template",default_hierarchy:"direct_children",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
       page_parent_interface_options_json="$(jq -nc \
         '{template:"{{title}} ({{slug}} | {{site_key}} | {{release_channel}})",enableCreate:false,enableSelect:true,enableLink:true,filter:{_and:[{site_key:{_eq:"{{site_key}}"}},{release_channel:{_eq:"{{release_channel}}"}},{id:{_neq:"{{id}}"}}]}}')"
+      social_profile_relation_options_json="$(jq -nc \
+        '{template:"{{name}}"}')"
 
       site_key_note="Required: site scope for this page. Allowed values: internal or external."
       slug_note="Required: page route slug within site + channel (for SPA home use 'home')."
@@ -6070,6 +6120,9 @@ data:
       release_channel_note="Required: choose which release channel this page belongs to (preview or prod)."
       force_login_for_page_access_note="Enable to require Keycloak login before this page is rendered."
       required_role_for_page_access_note="Optional: restrict to a specific Keycloak role from the page realm. Choose None to allow any logged-in user."
+      social_profile_id_note="Optional: social profile used by this page header/footer."
+      show_social_in_header_note="Show the selected social profile in the page header."
+      show_social_in_footer_note="Show the selected social profile in the page footer."
       theme_mode_note="Required: choose how this page resolves theme variants (Auto uses system light/dark preference)."
       layout_chrome_note="Choose whether layout slots render as carded panels or bare sections. Carded keeps the current bordered section panels."
       analytics_google_measurement_id_note="Optional: Google Analytics 4 measurement id (example: G-XXXXXXXXXX). Leave empty to disable GA."
@@ -6334,6 +6387,9 @@ data:
       release_channel_note_sql="$(printf '%s' "${release_channel_note}" | sed "s/'/''/g")"
       force_login_for_page_access_note_sql="$(printf '%s' "${force_login_for_page_access_note}" | sed "s/'/''/g")"
       required_role_for_page_access_note_sql="$(printf '%s' "${required_role_for_page_access_note}" | sed "s/'/''/g")"
+      social_profile_id_note_sql="$(printf '%s' "${social_profile_id_note}" | sed "s/'/''/g")"
+      show_social_in_header_note_sql="$(printf '%s' "${show_social_in_header_note}" | sed "s/'/''/g")"
+      show_social_in_footer_note_sql="$(printf '%s' "${show_social_in_footer_note}" | sed "s/'/''/g")"
       theme_mode_note_sql="$(printf '%s' "${theme_mode_note}" | sed "s/'/''/g")"
       layout_chrome_note_sql="$(printf '%s' "${layout_chrome_note}" | sed "s/'/''/g")"
       analytics_google_measurement_id_note_sql="$(printf '%s' "${analytics_google_measurement_id_note}" | sed "s/'/''/g")"
@@ -6395,6 +6451,9 @@ data:
       page_cache_stale_while_revalidate_seconds_name_sql="$(printf '%s' "Stale While Revalidate Seconds" | sed "s/'/''/g")"
       force_login_for_page_access_name_sql="$(printf '%s' "Force Login For Page Access" | sed "s/'/''/g")"
       required_role_for_page_access_name_sql="$(printf '%s' "Required Role For Page Access" | sed "s/'/''/g")"
+      social_profile_id_name_sql="$(printf '%s' "Social Profile" | sed "s/'/''/g")"
+      show_social_in_header_name_sql="$(printf '%s' "Show Social In Header" | sed "s/'/''/g")"
+      show_social_in_footer_name_sql="$(printf '%s' "Show Social In Footer" | sed "s/'/''/g")"
       layout_chrome_name_sql="$(printf '%s' "Layout Chrome" | sed "s/'/''/g")"
       hero_background_image_note_sql="$(printf '%s' "${hero_background_image_note}" | sed "s/'/''/g")"
       widget_dock_enabled_note_sql="$(printf '%s' "${widget_dock_enabled_note}" | sed "s/'/''/g")"
@@ -7659,6 +7718,46 @@ data:
         echo "✅ Created parent page field UX on ${_collection}"
       }
 
+      _ensure_page_social_profile_relation() {
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; \
+           DO \$\$ \
+           BEGIN \
+             IF to_regclass('directus.directus_relations') IS NULL \
+               OR to_regclass('directus.cms_pages') IS NULL \
+               OR to_regclass('directus.cms_social_profiles') IS NULL THEN \
+               RETURN; \
+             END IF; \
+             IF NOT EXISTS ( \
+               SELECT 1 FROM information_schema.columns \
+               WHERE table_schema='directus' AND table_name='cms_pages' AND column_name='social_profile_id' \
+             ) THEN \
+               RETURN; \
+             END IF; \
+             IF EXISTS ( \
+               SELECT 1 \
+               FROM directus_relations \
+               WHERE many_collection='cms_pages' AND many_field='social_profile_id' \
+             ) THEN \
+               UPDATE directus_relations \
+                  SET one_collection='cms_social_profiles', \
+                      one_field=NULL \
+                WHERE many_collection='cms_pages' \
+                  AND many_field='social_profile_id' \
+                  AND (COALESCE(one_collection, '') IS DISTINCT FROM 'cms_social_profiles' \
+                    OR one_field IS NOT NULL); \
+             ELSE \
+               BEGIN \
+                 INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) \
+                 VALUES ('cms_pages', 'social_profile_id', 'cms_social_profiles', NULL); \
+               EXCEPTION WHEN unique_violation THEN \
+                 NULL; \
+               END; \
+             END IF; \
+           END \
+           \$\$;"
+      }
+
       _upsert_page_readonly_timestamp_field_meta() {
         _field="$1"
         _sort="${2:-0}"
@@ -8641,6 +8740,17 @@ data:
           "SET search_path TO directus, public; UPDATE directus_fields SET note='${_note_sql}' WHERE collection='cms_pages' AND field='${_field_sql}';" >/dev/null 2>&1 || true
       }
 
+      _set_page_field_name() {
+        _field="$1"
+        _name_sql="$2"
+        if [ -z "${_field:-}" ] || [ -z "${_name_sql:-}" ] || ! _df_has_col "name"; then
+          return 0
+        fi
+        _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
+        psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+          "SET search_path TO directus, public; UPDATE directus_fields SET name='${_name_sql}' WHERE collection='cms_pages' AND field='${_field_sql}';" >/dev/null 2>&1 || true
+      }
+
       _set_page_field_conditions() {
         _field="$1"
         _conditions_json="$2"
@@ -8719,6 +8829,11 @@ data:
       _upsert_page_theme_selector_dock_position_field_meta
       _upsert_page_head_input_field_meta "force_login_for_page_access" 12 "half" "${force_login_for_page_access_note_sql}" "boolean" "" "${force_login_for_page_access_name_sql}"
       _upsert_page_head_input_field_meta "required_role_for_page_access" 13 "half" "${required_role_for_page_access_note_sql}" "cms-content-model-select" "${role_interface_options_json}" "${required_role_for_page_access_name_sql}"
+      _ensure_page_social_profile_relation
+      _upsert_platform_m2o_field_meta "cms_pages" "social_profile_id" 1 "${social_profile_id_note_sql}" "${social_profile_relation_options_json}" false
+      _set_page_field_name "social_profile_id" "${social_profile_id_name_sql}"
+      _upsert_page_head_input_field_meta "show_social_in_header" 2 "half" "${show_social_in_header_note_sql}" "boolean" "" "${show_social_in_header_name_sql}"
+      _upsert_page_head_input_field_meta "show_social_in_footer" 3 "half" "${show_social_in_footer_note_sql}" "boolean" "" "${show_social_in_footer_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_enabled" 1 "half" "${page_cache_enabled_note_sql}" "boolean" "" "${page_cache_enabled_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_browser_max_age_seconds" 2 "half" "${page_cache_browser_max_age_seconds_note_sql}" "input" "" "${page_cache_browser_max_age_seconds_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_cdn_max_age_seconds" 3 "half" "${page_cache_cdn_max_age_seconds_note_sql}" "input" "" "${page_cache_cdn_max_age_seconds_name_sql}"
@@ -8729,7 +8844,7 @@ data:
       _upsert_page_head_input_field_meta "head_description" 12 "full" "${head_description_note_sql}" "input-multiline" "" "${head_description_name_sql}"
       _upsert_page_head_input_field_meta "head_theme_color" 13 "half" "${head_theme_color_note_sql}" "select-color" "" "${head_theme_color_name_sql}"
       _upsert_page_head_input_field_meta "head_manifest_url" 14 "half" "${head_manifest_url_note_sql}" "input" "" "${head_manifest_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_manifest_short_name" 15 "half" "${head_manifest_short_name_note_sql}" "input" "" "${head_manifest_short_name_name_sql}"
+      _upsert_page_head_input_field_meta "head_manifest_short_name" 6 "half" "${head_manifest_short_name_note_sql}" "input" "" "${head_manifest_short_name_name_sql}"
       _upsert_page_head_input_field_meta "head_manifest_screenshot_wide_url" 16 "half" "${head_manifest_screenshot_wide_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_manifest_screenshot_wide_url_name_sql}"
       _upsert_page_head_input_field_meta "head_manifest_screenshot_narrow_url" 17 "half" "${head_manifest_screenshot_narrow_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_manifest_screenshot_narrow_url_name_sql}"
       _upsert_page_head_input_field_meta "head_icon_url" 18 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_url_name_sql}"
@@ -8923,6 +9038,7 @@ data:
       _assign_page_field_group "refresh_target" "_section_page_settings"
       _assign_page_field_group "force_login_for_page_access" "_section_page_settings"
       _assign_page_field_group "required_role_for_page_access" "_section_page_settings"
+      _assign_page_field_group "head_manifest_short_name" "_section_page_settings"
       _assign_page_field_group "layout_template_key" "_section_layout"
       _assign_page_field_group "layout_chrome" "_section_layout"
       _assign_page_field_group "theme_package_key" "_section_theme"
@@ -8944,7 +9060,6 @@ data:
       _assign_page_field_group "head_description" "_section_meta"
       _assign_page_field_group "head_theme_color" "_section_meta"
       _assign_page_field_group "head_manifest_url" "_section_meta"
-      _assign_page_field_group "head_manifest_short_name" "_section_meta"
       _assign_page_field_group "head_manifest_screenshot_wide_url" "_section_meta"
       _assign_page_field_group "head_manifest_screenshot_narrow_url" "_section_meta"
       _assign_page_field_group "head_icon_url" "_section_meta"
@@ -8961,6 +9076,9 @@ data:
       _assign_page_field_group "head_canonical_url" "_section_meta"
       _assign_page_field_group "head_robots" "_section_meta"
       _assign_page_field_group "head_generator" "_section_meta"
+      _assign_page_field_group "social_profile_id" "_section_blocks"
+      _assign_page_field_group "show_social_in_header" "_section_blocks"
+      _assign_page_field_group "show_social_in_footer" "_section_blocks"
       _assign_page_field_group "blocks" "_section_blocks"
       _set_page_field_note "site_key" "${site_key_note_sql}"
       _set_page_field_note "date_created" "${date_created_note_sql}"
