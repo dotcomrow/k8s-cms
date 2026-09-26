@@ -144,18 +144,28 @@ spec:
 
                   async function main() {
                     await client.connect();
-                    const functionCheck = await client.query("SELECT to_regprocedure($1) AS function_oid", [
+                    const requiredFunctions = [
                       "directus.prune_invalid_browser_subscriptions()",
-                    ]);
-                    if (!functionCheck.rows[0]?.function_oid) {
-                      throw new Error("directus.prune_invalid_browser_subscriptions() is missing; postschema reconcile has not completed");
+                      "directus.prune_unretained_browser_subscriptions()",
+                    ];
+                    for (const functionSignature of requiredFunctions) {
+                      const functionCheck = await client.query("SELECT to_regprocedure($1) AS function_oid", [
+                        functionSignature,
+                      ]);
+                      if (!functionCheck.rows[0]?.function_oid) {
+                        throw new Error(`${functionSignature} is missing; postschema reconcile has not completed`);
+                      }
                     }
 
-                    const result = await client.query("SELECT directus.prune_invalid_browser_subscriptions()::integer AS deleted_count");
-                    const deletedCount = Number(result.rows[0]?.deleted_count || 0);
+                    const invalidResult = await client.query("SELECT directus.prune_invalid_browser_subscriptions()::integer AS deleted_count");
+                    const unretainedResult = await client.query("SELECT directus.prune_unretained_browser_subscriptions()::integer AS deleted_count");
+                    const invalidDeletedCount = Number(invalidResult.rows[0]?.deleted_count || 0);
+                    const unretainedDeletedCount = Number(unretainedResult.rows[0]?.deleted_count || 0);
                     console.log(JSON.stringify({
                       event: "browser_subscription_cleanup_complete",
-                      deleted_count: deletedCount,
+                      deleted_count: invalidDeletedCount + unretainedDeletedCount,
+                      invalid_deleted_count: invalidDeletedCount,
+                      unretained_deleted_count: unretainedDeletedCount,
                       ran_at: new Date().toISOString(),
                     }));
                   }

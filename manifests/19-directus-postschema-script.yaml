@@ -743,7 +743,8 @@ data:
            FROM ( \
              VALUES \
                ('function:prune_history_retention', 'directus.prune_history_retention()'), \
-               ('function:prune_invalid_browser_subscriptions', 'directus.prune_invalid_browser_subscriptions()') \
+               ('function:prune_invalid_browser_subscriptions', 'directus.prune_invalid_browser_subscriptions()'), \
+               ('function:prune_unretained_browser_subscriptions', 'directus.prune_unretained_browser_subscriptions()') \
            ) AS required(name, signature) \
            WHERE to_regprocedure(required.signature) IS NULL \
          ) \
@@ -4312,6 +4313,30 @@ data:
                 OR NULLIF(BTRIM(s.auth), '') IS NULL \
               ) \
             ); \
+         GET DIAGNOSTICS deleted_count = ROW_COUNT; \
+         RETURN deleted_count; \
+       END; \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.prune_unretained_browser_subscriptions() RETURNS integer \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         deleted_count integer := 0; \
+       BEGIN \
+         IF to_regclass('directus.platform_notification_browser_subscriptions') IS NULL THEN \
+           RETURN 0; \
+         END IF; \
+         DELETE FROM directus.platform_notification_browser_subscriptions AS s \
+         WHERE NOT ( \
+           ( \
+             LOWER(COALESCE(s.metadata_json #>> '{notification_link,persistent}', 'false')) IN ('true', '1', 'yes', 'on') \
+             OR LOWER(COALESCE(s.capabilities_json #>> '{notification_link,persistent}', 'false')) IN ('true', '1', 'yes', 'on') \
+           ) \
+           AND COALESCE( \
+             NULLIF(BTRIM(s.metadata_json #>> '{notification_link,display_name}'), ''), \
+             NULLIF(BTRIM(s.capabilities_json #>> '{notification_link,display_name}'), '') \
+           ) IS NOT NULL \
+         ); \
          GET DIAGNOSTICS deleted_count = ROW_COUNT; \
          RETURN deleted_count; \
        END; \
