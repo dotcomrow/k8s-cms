@@ -744,6 +744,7 @@ data:
           return 'template';
         });
         const templatesCollection = computed(() => asString(resolvedOptions.value?.templates_collection) || 'cms_layout_templates');
+        const templateCollectionIncludesBothScope = computed(() => toLower(templatesCollection.value) === 'cms_content_templates');
         const slotsCollection = computed(() => asString(resolvedOptions.value?.slots_collection) || 'cms_layout_template_slots');
         const layoutSlotsCollection = computed(() => asString(resolvedOptions.value?.layout_slots_collection) || slotsCollection.value);
         const themesCollection = computed(() => asString(resolvedOptions.value?.themes_collection) || 'cms_theme_packages');
@@ -1443,16 +1444,20 @@ data:
           return 'all';
         };
     
-        const buildScopedFilter = (siteKey) => {
+        const buildScopedFilter = (siteKey, { includeBoth = false } = {}) => {
           if (!includeGlobal.value && siteKey) {
-            return { site_key: { _eq: siteKey } };
+            const clauses = [{ site_key: { _eq: siteKey } }];
+            if (includeBoth && siteKey !== 'both') clauses.push({ site_key: { _eq: 'both' } });
+            return clauses.length > 1 ? { _or: clauses } : clauses[0];
           }
           if (siteKey) {
+            const clauses = [
+              { site_key: { _empty: true } },
+              { site_key: { _eq: siteKey } },
+            ];
+            if (includeBoth && siteKey !== 'both') clauses.push({ site_key: { _eq: 'both' } });
             return {
-              _or: [
-                { site_key: { _empty: true } },
-                { site_key: { _eq: siteKey } },
-              ],
+              _or: clauses,
             };
           }
           return { site_key: { _empty: true } };
@@ -1511,12 +1516,26 @@ data:
           return values?.[fieldName];
         };
 
+        const readPageSiteKey = () =>
+          asString(readFormValue(pageSiteField.value))
+          || asString(readFormValue('site_key'))
+          || asString(props.values?.[pageSiteField.value])
+          || asString(props.values?.site_key);
+
         const loadTemplateChoices = async () => {
-          const siteKey = asString(props.values?.[pageSiteField.value]);
+          const siteKey = readPageSiteKey();
+          const includeBoth = templateCollectionIncludesBothScope.value;
+          const rankTemplateRow = (row) => {
+            const rowSiteKey = asString(row?.site_key);
+            if (siteKey && rowSiteKey === siteKey) return 0;
+            if (siteKey && includeBoth && rowSiteKey === 'both') return 1;
+            if (!rowSiteKey) return 2;
+            return 3;
+          };
           const filter = {
             _and: [
               { status: { _eq: 'published' } },
-              buildScopedFilter(siteKey),
+              buildScopedFilter(siteKey, { includeBoth }),
             ],
           };
           const response = await apiGet(`/items/${templatesCollection.value}`, {
@@ -1525,8 +1544,20 @@ data:
             sort: templateValueField.value,
             filter: JSON.stringify(filter),
           });
+          const byKey = new Map();
+          for (const row of normalizeRows(response)) {
+            const templateKey = asString(row?.[templateValueField.value]);
+            if (!templateKey) continue;
+            const existing = byKey.get(templateKey);
+            if (!existing || rankTemplateRow(row) < rankTemplateRow(existing)) {
+              byKey.set(templateKey, row);
+            }
+          }
+          const rows = [...byKey.values()].sort((left, right) =>
+            asString(left?.[templateValueField.value]).localeCompare(asString(right?.[templateValueField.value]))
+          );
           return uniqueChoices(
-            normalizeRows(response).map((row) => ({
+            rows.map((row) => ({
               value: row?.[templateValueField.value],
               text: row?.[templateLabelField.value] || row?.[templateValueField.value],
             }))
@@ -1534,7 +1565,7 @@ data:
         };
     
         const loadThemeChoices = async () => {
-          const siteKey = asString(props.values?.[pageSiteField.value]);
+          const siteKey = readPageSiteKey();
           const filter = {
             _and: [
               { status: { _eq: 'published' } },
@@ -1599,7 +1630,7 @@ data:
             }
           }
 
-          const siteKey = asString(props.values?.[pageSiteField.value]);
+          const siteKey = readPageSiteKey();
           const providerClause = providers.length === 1
             ? { provider: { _eq: providers[0] } }
             : (providers.length > 1 ? { provider: { _in: providers } } : null);
@@ -1899,7 +1930,7 @@ data:
           templateSlotsLoading.value = true;
           templateSlotsError.value = '';
           try {
-            const siteKey = asString(props.values?.[pageSiteField.value]);
+            const siteKey = readPageSiteKey();
             const filter = {
               _and: [
                 { template_key: { _eq: templateKey } },
@@ -2230,7 +2261,7 @@ data:
           () => JSON.stringify({
             mode: mode.value,
             templateValue: resolveTemplatePreviewKey(props.value),
-            siteKey: asString(props.values?.[pageSiteField.value]),
+            siteKey: readPageSiteKey(),
             layoutSlotsCollection: layoutSlotsCollection.value,
             slotValueField: slotValueField.value,
             slotLabelField: slotLabelField.value,
@@ -8506,12 +8537,19 @@ data:
             .find((choice) => asString(choice?.value) === key) || null;
         };
 
+        const formatContentTemplateSiteScope = (siteKey) => {
+          const normalized = asString(siteKey);
+          if (!normalized) return 'global';
+          if (normalized === 'both') return 'both sites';
+          return `site:${normalized}`;
+        };
+
         const normalizeContentTemplateChoiceRow = (row) => {
           const templateKey = asString(row?.template_key);
           if (!templateKey) return null;
           const name = asString(row?.name);
           const rowSiteKey = asString(row?.site_key);
-          const scope = rowSiteKey ? `site:${rowSiteKey}` : 'global';
+          const scope = formatContentTemplateSiteScope(rowSiteKey);
           return {
             text: name && name !== templateKey ? `${name} (${templateKey}, ${scope})` : `${templateKey} (${scope})`,
             value: templateKey,
@@ -8722,6 +8760,8 @@ data:
           if (fromValues) return fromValues;
           return getPrimaryKeyFromLocation(pagesCollection.value);
         });
+        const formPageSiteKey = computed(() => asString(props.values?.[pageSiteField.value] ?? props.values?.site_key));
+        const sourcePageSiteKey = computed(() => formPageSiteKey.value || asString(pageContext.value?.site_key));
         const sourcePageReleaseChannel = computed(() => {
           const contextValue = toLower(pageContext.value?.release_channel);
           if (contextValue) return contextValue;
@@ -8734,6 +8774,23 @@ data:
           Boolean(pageId.value)
           && sourcePageReleaseChannel.value === PROMOTE_SOURCE_CHANNEL
         );
+
+        const contentTemplateSiteRank = (row) => {
+          const siteKey = sourcePageSiteKey.value;
+          const rowSiteKey = asString(row?.site_key);
+          if (siteKey && rowSiteKey === siteKey) return 0;
+          if (siteKey && rowSiteKey === 'both') return 1;
+          if (!rowSiteKey) return 2;
+          return 3;
+        };
+
+        const preferContentTemplateRow = (current, candidate) => {
+          if (!current) return candidate;
+          if (!candidate) return current;
+          const currentRank = contentTemplateSiteRank(current);
+          const candidateRank = contentTemplateSiteRank(candidate);
+          return candidateRank < currentRank ? candidate : current;
+        };
     
         const isNodeExpanded = (nodeKey, defaultOpen = true) => {
           const key = asString(nodeKey);
@@ -9275,7 +9332,7 @@ data:
           pageContext.value = {
             id: parseId(row?.id) || pageId.value,
             slug: asString(row?.slug),
-            site_key: asString(row?.[pageSiteField.value]),
+            site_key: formPageSiteKey.value || asString(row?.[pageSiteField.value]),
             release_channel: asString(row?.release_channel),
             layout_template_key: asString(row?.[pageTemplateField.value]),
           };
@@ -9343,7 +9400,7 @@ data:
             return slotsByTemplateKey.value[normalizedTemplateKey];
           }
     
-          const siteKey = asString(pageContext.value.site_key);
+          const siteKey = sourcePageSiteKey.value;
           const filter = {
             _and: [
               { template_key: { _eq: normalizedTemplateKey } },
@@ -9397,19 +9454,11 @@ data:
 
           contentTemplateChoicesLoading.value = true;
           try {
-            const siteKey = asString(pageContext.value?.site_key);
             const filter = {
               _and: [
                 { status: { _eq: 'published' } },
                 { release_channel: { _eq: releaseChannel } },
-                siteKey
-                  ? {
-                      _or: [
-                        { site_key: { _empty: true } },
-                        { site_key: { _eq: siteKey } },
-                      ],
-                    }
-                  : { site_key: { _empty: true } },
+                publishedContentTemplateSiteScopeFilter(),
               ],
             };
             const response = await apiRequest('GET', '/items/cms_content_templates', {
@@ -9422,11 +9471,7 @@ data:
             for (const row of normalizeRows(response)) {
               const templateKey = asString(row?.template_key);
               if (!templateKey) continue;
-              const rowSiteKey = asString(row?.site_key);
-              const existing = byKey.get(templateKey);
-              if (!existing || (siteKey && rowSiteKey === siteKey)) {
-                byKey.set(templateKey, row);
-              }
+              byKey.set(templateKey, preferContentTemplateRow(byKey.get(templateKey), row));
             }
             contentTemplateChoices.value = Array.from(byKey.values())
               .map((row) => normalizeContentTemplateChoiceRow(row))
@@ -9444,20 +9489,12 @@ data:
           if (existing) return existing;
 
           const releaseChannel = hasPageReleaseChannel.value ? sourcePageReleaseChannel.value : 'preview';
-          const siteKey = asString(pageContext.value?.site_key);
           const filter = {
             _and: [
               { status: { _eq: 'published' } },
               { template_key: { _eq: normalizedTemplateKey } },
               { release_channel: { _eq: releaseChannel } },
-              siteKey
-                ? {
-                    _or: [
-                      { site_key: { _empty: true } },
-                      { site_key: { _eq: siteKey } },
-                    ],
-                  }
-                : { site_key: { _empty: true } },
+              publishedContentTemplateSiteScopeFilter(),
             ],
           };
           const response = await apiRequest('GET', '/items/cms_content_templates', {
@@ -9467,7 +9504,7 @@ data:
             filter: JSON.stringify(filter),
           });
           const rows = normalizeRows(response);
-          const selected = rows.find((row) => siteKey && asString(row?.site_key) === siteKey) || rows[0];
+          const selected = rows.reduce((best, row) => preferContentTemplateRow(best, row), null);
           const normalized = normalizeContentTemplateChoiceRow(selected);
           if (!normalized) return null;
           const nextChoices = (Array.isArray(contentTemplateChoices.value) ? contentTemplateChoices.value : [])
@@ -9495,7 +9532,7 @@ data:
 
           sharedContentChoicesLoading.value = true;
           try {
-            const siteKey = asString(pageContext.value?.site_key);
+            const siteKey = sourcePageSiteKey.value;
             const filter = {
               _and: [
                 { status: { _eq: 'published' } },
@@ -9762,7 +9799,7 @@ data:
             reuse_strategy: 'copy',
             content_template_key: normalizedTemplateKey || null,
             content_json: defaultContentJson,
-            site_key: asString(pageContext.value?.site_key) || null,
+            site_key: sourcePageSiteKey.value || null,
             release_channel: sourcePageReleaseChannel.value,
             refresh_target: 'both',
           });
@@ -10255,17 +10292,21 @@ data:
           }
         };
     
-        const publishedSiteScopeFilter = () => {
-          const siteKey = asString(pageContext.value?.site_key);
-          return siteKey
-            ? {
-                _or: [
-                  { site_key: { _empty: true } },
-                  { site_key: { _eq: siteKey } },
-                ],
-              }
-            : { site_key: { _empty: true } };
+        const buildPageSiteScopeFilter = ({ includeBoth = false } = {}) => {
+          const siteKey = sourcePageSiteKey.value;
+          if (!siteKey) return { site_key: { _empty: true } };
+          const clauses = [
+            { site_key: { _empty: true } },
+            { site_key: { _eq: siteKey } },
+          ];
+          if (includeBoth && siteKey !== 'both') {
+            clauses.push({ site_key: { _eq: 'both' } });
+          }
+          return { _or: clauses };
         };
+
+        const publishedSiteScopeFilter = () => buildPageSiteScopeFilter();
+        const publishedContentTemplateSiteScopeFilter = () => buildPageSiteScopeFilter({ includeBoth: true });
     
         const inferParentBlockIdForContext = () => {
           const contextId = asString(activeContext.value?.value) || PAGE_CONTEXT_ID;
@@ -10347,7 +10388,7 @@ data:
           });
           const rows = normalizeRows(response);
           if (!rows.length) return '';
-          const siteKey = asString(pageContext.value?.site_key);
+          const siteKey = sourcePageSiteKey.value;
           const siteSpecific = rows.find((row) => asString(row?.site_key) === siteKey);
           return asString(siteSpecific?.module_key || rows[0]?.module_key);
         };
@@ -10369,7 +10410,7 @@ data:
           });
           const rows = normalizeRows(response);
           if (!rows.length) return '';
-          const siteKey = asString(pageContext.value?.site_key);
+          const siteKey = sourcePageSiteKey.value;
           const siteSpecific = rows.find((row) => asString(row?.site_key) === siteKey);
           return asString(siteSpecific?.template_key || rows[0]?.template_key);
         };
@@ -10381,7 +10422,7 @@ data:
             _and: [
               { status: { _eq: 'published' } },
               { release_channel: { _eq: releaseChannel } },
-              publishedSiteScopeFilter(),
+              publishedContentTemplateSiteScopeFilter(),
               ...(preferred ? [{ template_key: { _eq: preferred } }] : []),
             ],
           };
@@ -10393,9 +10434,8 @@ data:
           });
           const rows = normalizeRows(response);
           if (!rows.length) return '';
-          const siteKey = asString(pageContext.value?.site_key);
-          const siteSpecific = rows.find((row) => asString(row?.site_key) === siteKey);
-          return asString(siteSpecific?.template_key || rows[0]?.template_key);
+          const selected = rows.reduce((best, row) => preferContentTemplateRow(best, row), null);
+          return asString(selected?.template_key || rows[0]?.template_key);
         };
     
         const createPageBlockWithContent = async (type) => {
@@ -11540,6 +11580,7 @@ data:
             layoutTemplatesCollection: layoutTemplatesCollection.value,
             layoutSlotsCollection: layoutSlotsCollection.value,
             pageSiteField: pageSiteField.value,
+            pageSiteKey: formPageSiteKey.value,
             pageTemplateField: pageTemplateField.value,
             defaultLimit: defaultLimit.value,
             defaultSort: defaultSort.value,
