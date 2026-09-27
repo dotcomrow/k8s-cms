@@ -8745,13 +8745,19 @@ data:
       _assign_page_field_group() {
         _field="$1"
         _group_field="$2"
+        _sort="${3:-}"
         if [ -z "${_field:-}" ] || [ -z "${_group_field:-}" ] || ! _df_has_col "group"; then
           return 0
         fi
         _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
         _group_sql="$(printf '%s' "${_group_field}" | sed "s/'/''/g")"
+        SETS="\"group\"='${_group_sql}'"
+        case "${_sort}" in
+          ""|*[!0-9]*) ;;
+          *) if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi ;;
+        esac
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
-          "SET search_path TO directus, public; UPDATE directus_fields SET \"group\"='${_group_sql}' WHERE collection='cms_pages' AND field='${_field_sql}';" >/dev/null 2>&1 || true
+          "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS} WHERE collection='cms_pages' AND field='${_field_sql}';" >/dev/null 2>&1 || true
       }
 
       _set_page_field_note() {
@@ -9101,9 +9107,9 @@ data:
       _assign_page_field_group "head_canonical_url" "_section_meta"
       _assign_page_field_group "head_robots" "_section_meta"
       _assign_page_field_group "head_generator" "_section_meta"
-      _assign_page_field_group "social_profile_id" "_section_widget_dock"
-      _assign_page_field_group "show_social_in_header" "_section_widget_dock"
-      _assign_page_field_group "show_social_in_footer" "_section_widget_dock"
+      _assign_page_field_group "social_profile_id" "_section_widget_dock" 12
+      _assign_page_field_group "show_social_in_header" "_section_widget_dock" 13
+      _assign_page_field_group "show_social_in_footer" "_section_widget_dock" 14
       _assign_page_field_group "blocks" "_section_blocks"
       _set_page_field_note "site_key" "${site_key_note_sql}"
       _set_page_field_note "date_created" "${date_created_note_sql}"
