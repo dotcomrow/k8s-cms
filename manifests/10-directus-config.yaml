@@ -1522,8 +1522,36 @@ data:
           || asString(props.values?.[pageSiteField.value])
           || asString(props.values?.site_key);
 
+        const fetchPersistedPageSiteKey = async () => {
+          const { recordCollection, recordId } = resolveRecordContext();
+          const pageId =
+            (recordCollection === pagesCollection.value ? recordId : '')
+            || parseId(readFormValue(pageIdField.value))
+            || parseId(readFormValue('page_id'))
+            || parseId(props.values?.[pageIdField.value])
+            || parseId(props.values?.page_id)
+            || getPrimaryKeyFromLocation(pagesCollection.value);
+          if (!pageId) return '';
+
+          const response = await apiGet(`/items/${pagesCollection.value}/${encodeURIComponent(pageId)}`, {
+            fields: [pageSiteField.value, 'site_key'].join(','),
+          });
+          const row = response?.data || {};
+          return asString(row?.[pageSiteField.value] ?? row?.site_key);
+        };
+
+        const resolvePageSiteKey = async () => {
+          const currentSiteKey = readPageSiteKey();
+          if (currentSiteKey) return currentSiteKey;
+          try {
+            return await fetchPersistedPageSiteKey();
+          } catch {
+            return '';
+          }
+        };
+
         const loadTemplateChoices = async () => {
-          const siteKey = readPageSiteKey();
+          const siteKey = await resolvePageSiteKey();
           const includeBoth = templateCollectionIncludesBothScope.value;
           const rankTemplateRow = (row) => {
             const rowSiteKey = asString(row?.site_key);
@@ -1565,7 +1593,7 @@ data:
         };
     
         const loadThemeChoices = async () => {
-          const siteKey = readPageSiteKey();
+          const siteKey = await resolvePageSiteKey();
           const filter = {
             _and: [
               { status: { _eq: 'published' } },
@@ -1630,7 +1658,7 @@ data:
             }
           }
 
-          const siteKey = readPageSiteKey();
+          const siteKey = await resolvePageSiteKey();
           const providerClause = providers.length === 1
             ? { provider: { _eq: providers[0] } }
             : (providers.length > 1 ? { provider: { _in: providers } } : null);
@@ -1930,7 +1958,7 @@ data:
           templateSlotsLoading.value = true;
           templateSlotsError.value = '';
           try {
-            const siteKey = readPageSiteKey();
+            const siteKey = await resolvePageSiteKey();
             const filter = {
               _and: [
                 { template_key: { _eq: templateKey } },
