@@ -80,11 +80,11 @@ spec:
                   pod_name="$(kubectl -n "${namespace}" get pods -l app=directus -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}' | head -n 1)"
 
                   if [ -z "${pod_name}" ]; then
-                    echo "[cleanup] No running Directus pod found; cannot run browser subscription cleanup."
+                    echo "[cleanup] No running Directus pod found; cannot run Directus database cleanup."
                     exit 1
                   fi
 
-                  echo "[cleanup] Running browser subscription cleanup through Directus pod ${pod_name}..."
+                  echo "[cleanup] Running Directus database cleanup through Directus pod ${pod_name}..."
 
                   kubectl -n "${namespace}" exec -i "${pod_name}" -c directus -- /bin/sh -s <<'REMOTE_CLEANUP_SCRIPT'
                   set -eu
@@ -145,8 +145,7 @@ spec:
                   async function main() {
                     await client.connect();
                     const requiredFunctions = [
-                      "directus.prune_invalid_browser_subscriptions()",
-                      "directus.prune_unretained_browser_subscriptions()",
+                      "directus.run_database_cleanup_tasks()",
                     ];
                     for (const functionSignature of requiredFunctions) {
                       const functionCheck = await client.query("SELECT to_regprocedure($1) AS function_oid", [
@@ -157,15 +156,15 @@ spec:
                       }
                     }
 
-                    const invalidResult = await client.query("SELECT directus.prune_invalid_browser_subscriptions()::integer AS deleted_count");
-                    const unretainedResult = await client.query("SELECT directus.prune_unretained_browser_subscriptions()::integer AS deleted_count");
-                    const invalidDeletedCount = Number(invalidResult.rows[0]?.deleted_count || 0);
-                    const unretainedDeletedCount = Number(unretainedResult.rows[0]?.deleted_count || 0);
+                    const cleanupResult = await client.query("SELECT directus.run_database_cleanup_tasks()::jsonb AS result");
+                    const cleanupPayloadRaw = cleanupResult.rows[0]?.result || {};
+                    const cleanupPayload = typeof cleanupPayloadRaw === "string"
+                      ? JSON.parse(cleanupPayloadRaw)
+                      : cleanupPayloadRaw;
                     console.log(JSON.stringify({
-                      event: "browser_subscription_cleanup_complete",
-                      deleted_count: invalidDeletedCount + unretainedDeletedCount,
-                      invalid_deleted_count: invalidDeletedCount,
-                      unretained_deleted_count: unretainedDeletedCount,
+                      event: "directus_database_cleanup_complete",
+                      deleted_count: Number(cleanupPayload.total_deleted_count || 0),
+                      cleanup: cleanupPayload,
                       ran_at: new Date().toISOString(),
                     }));
                   }
@@ -173,7 +172,7 @@ spec:
                   main()
                     .catch((error) => {
                       console.error(JSON.stringify({
-                        event: "browser_subscription_cleanup_failed",
+                        event: "directus_database_cleanup_failed",
                         error: error && error.message ? error.message : String(error),
                       }));
                       process.exitCode = 1;

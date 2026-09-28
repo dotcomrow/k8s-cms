@@ -744,7 +744,9 @@ data:
              VALUES \
                ('function:prune_history_retention', 'directus.prune_history_retention()'), \
                ('function:prune_invalid_browser_subscriptions', 'directus.prune_invalid_browser_subscriptions()'), \
-               ('function:prune_unretained_browser_subscriptions', 'directus.prune_unretained_browser_subscriptions()') \
+               ('function:prune_unretained_browser_subscriptions', 'directus.prune_unretained_browser_subscriptions()'), \
+               ('function:prune_successful_cms_content_translation_jobs', 'directus.prune_successful_cms_content_translation_jobs()'), \
+               ('function:run_database_cleanup_tasks', 'directus.run_database_cleanup_tasks()') \
            ) AS required(name, signature) \
            WHERE to_regprocedure(required.signature) IS NULL \
          ) \
@@ -4275,6 +4277,7 @@ data:
        CREATE INDEX IF NOT EXISTS platform_notification_delivery_attempts_retention_idx ON platform_notification_delivery_attempts (COALESCE(finished_at, attempted_at, date_created)); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_retention_idx ON platform_notification_browser_subscriptions (status, COALESCE(date_updated, last_seen_at, date_created)); \
        CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_retention_idx ON cms_content_translation_jobs (COALESCE(date_completed, date_updated, date_created)); \
+       CREATE INDEX IF NOT EXISTS cms_content_translation_jobs_status_retention_idx ON cms_content_translation_jobs (status, COALESCE(date_completed, date_updated, date_created)); \
        CREATE INDEX IF NOT EXISTS runtime_canary_runs_retention_idx ON runtime_canary_runs (COALESCE(completed_at, started_at, date_created)); \
        CREATE INDEX IF NOT EXISTS runtime_canary_run_steps_retention_idx ON runtime_canary_run_steps (COALESCE(completed_at, started_at, date_created)); \
        CREATE INDEX IF NOT EXISTS schema_patch_runs_retention_idx ON schema_patch_runs (COALESCE(finished_at, started_at)); \
@@ -4341,6 +4344,60 @@ data:
          RETURN deleted_count; \
        END; \
        \$\$; \
+       CREATE OR REPLACE FUNCTION directus.prune_successful_cms_content_translation_jobs() RETURNS integer \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         deleted_count integer := 0; \
+       BEGIN \
+         IF to_regclass('directus.cms_content_translation_jobs') IS NULL THEN \
+           RETURN 0; \
+         END IF; \
+         DELETE FROM directus.cms_content_translation_jobs AS j \
+         WHERE LOWER(COALESCE(NULLIF(BTRIM(j.status), ''), '')) = 'succeeded' \
+           AND COALESCE(j.date_completed, j.date_updated, j.date_created) < now() - INTERVAL '24 hours'; \
+         GET DIAGNOSTICS deleted_count = ROW_COUNT; \
+         RETURN deleted_count; \
+       END; \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.run_database_cleanup_tasks() RETURNS jsonb \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         cleanup_task record; \
+         deleted_count integer := 0; \
+         total_deleted_count integer := 0; \
+         results jsonb := '[]'::jsonb; \
+       BEGIN \
+         FOR cleanup_task IN \
+           SELECT * \
+           FROM ( \
+             VALUES \
+               ('browser_subscriptions_invalid', 'directus.prune_invalid_browser_subscriptions()'), \
+               ('browser_subscriptions_unretained', 'directus.prune_unretained_browser_subscriptions()'), \
+               ('cms_content_translation_jobs_successful_24h', 'directus.prune_successful_cms_content_translation_jobs()') \
+           ) AS cleanup_tasks(task_key, function_signature) \
+         LOOP \
+           IF to_regprocedure(cleanup_task.function_signature) IS NULL THEN \
+             RAISE EXCEPTION 'Cleanup function % is missing', cleanup_task.function_signature; \
+           END IF; \
+           EXECUTE format('SELECT %s::integer', cleanup_task.function_signature) INTO deleted_count; \
+           deleted_count := COALESCE(deleted_count, 0); \
+           total_deleted_count := total_deleted_count + deleted_count; \
+           results := results || jsonb_build_array(jsonb_build_object( \
+             'task_key', cleanup_task.task_key, \
+             'function_signature', cleanup_task.function_signature, \
+             'deleted_count', deleted_count \
+           )); \
+         END LOOP; \
+         RETURN jsonb_build_object( \
+           'event', 'directus_database_cleanup_complete', \
+           'total_deleted_count', total_deleted_count, \
+           'tasks', results, \
+           'ran_at', now() \
+         ); \
+       END; \
+       \$\$; \
        CREATE OR REPLACE FUNCTION directus.prune_history_retention() RETURNS trigger \
        LANGUAGE plpgsql \
        AS \$\$ \
@@ -4380,8 +4437,10 @@ data:
            PERFORM directus.prune_invalid_browser_subscriptions(); \
          END IF; \
          IF to_regclass('directus.cms_content_translation_jobs') IS NOT NULL THEN \
+           PERFORM directus.prune_successful_cms_content_translation_jobs(); \
            DELETE FROM directus.cms_content_translation_jobs \
-           WHERE COALESCE(date_completed, date_updated, date_created) < cutoff; \
+           WHERE LOWER(COALESCE(NULLIF(BTRIM(status), ''), '')) <> 'succeeded' \
+             AND COALESCE(date_completed, date_updated, date_created) < cutoff; \
          END IF; \
          IF to_regclass('directus.runtime_canary_run_steps') IS NOT NULL THEN \
            DELETE FROM directus.runtime_canary_run_steps \
