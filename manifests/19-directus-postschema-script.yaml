@@ -8865,6 +8865,10 @@ data:
       _set_page_field_name "social_profile_id" "${social_profile_id_name_sql}"
       _upsert_page_head_input_field_meta "show_social_in_header" 13 "half" "${show_social_in_header_note_sql}" "boolean" "" "${show_social_in_header_name_sql}"
       _upsert_page_head_input_field_meta "show_social_in_footer" 14 "half" "${show_social_in_footer_note_sql}" "boolean" "" "${show_social_in_footer_name_sql}"
+      _upsert_page_section_group_field_meta "_section_widget_dock" "Widget Dock (UI Controls)" 4 "widgets"
+      _assign_page_field_group "social_profile_id" "_section_widget_dock" 12
+      _assign_page_field_group "show_social_in_header" "_section_widget_dock" 13
+      _assign_page_field_group "show_social_in_footer" "_section_widget_dock" 14
       _upsert_page_head_input_field_meta "page_cache_enabled" 1 "half" "${page_cache_enabled_note_sql}" "boolean" "" "${page_cache_enabled_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_browser_max_age_seconds" 2 "half" "${page_cache_browser_max_age_seconds_note_sql}" "input" "" "${page_cache_browser_max_age_seconds_name_sql}"
       _upsert_page_head_input_field_meta "page_cache_cdn_max_age_seconds" 3 "half" "${page_cache_cdn_max_age_seconds_note_sql}" "input" "" "${page_cache_cdn_max_age_seconds_name_sql}"
