@@ -8272,6 +8272,7 @@ data:
         _required="${7:-false}"
         _readonly="${8:-false}"
         _collection="${9:-cms_content_items}"
+        _group="${10:-}"
         if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
           return 0
         fi
@@ -8292,6 +8293,7 @@ data:
         _collection_sql="$(printf '%s' "${_collection}" | sed "s/'/''/g")"
         _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
         _interface_sql="$(printf '%s' "${_interface}" | sed "s/'/''/g")"
+        _group_sql="$(printf '%s' "${_group}" | sed "s/'/''/g")"
         _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
         _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
@@ -8307,7 +8309,13 @@ data:
           if _df_has_col "width"; then SETS="${SETS},width='${_width}'"; fi
           if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
           if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then SETS="${SETS},note='${_note_sql}'"; fi
-          if _df_has_col "group"; then SETS="${SETS},\"group\"=NULL"; fi
+          if _df_has_col "group"; then
+            if [ -n "${_group_sql:-}" ]; then
+              SETS="${SETS},\"group\"='${_group_sql}'"
+            else
+              SETS="${SETS},\"group\"=NULL"
+            fi
+          fi
           if [ -n "${SETS:-}" ]; then
             psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
               "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
@@ -8326,7 +8334,14 @@ data:
         if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'${_width}'"; fi
         if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
         if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
-        if _df_has_col "group"; then FCOLS="${FCOLS},\"group\""; FVALS="${FVALS},NULL"; fi
+        if _df_has_col "group"; then
+          FCOLS="${FCOLS},\"group\""
+          if [ -n "${_group_sql:-}" ]; then
+            FVALS="${FVALS},'${_group_sql}'"
+          else
+            FVALS="${FVALS},NULL"
+          fi
+        fi
         psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
           "SET search_path TO directus, public; INSERT INTO directus_fields (${FCOLS}) VALUES (${FVALS});"
         echo "✅ Created content item field UX on ${_collection}.${_field}"
@@ -8339,7 +8354,8 @@ data:
         _note_sql="${4:-}"
         _options_json="${5:-}"
         _required="${6:-false}"
-        _upsert_content_item_field_meta "${_field}" "select-dropdown-m2o" "half" "${_sort}" "${_note_sql}" "${_options_json}" "${_required}" false "${_collection}"
+        _group="${7:-}"
+        _upsert_content_item_field_meta "${_field}" "select-dropdown-m2o" "half" "${_sort}" "${_note_sql}" "${_options_json}" "${_required}" false "${_collection}" "${_group}"
 
         _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
@@ -8362,6 +8378,10 @@ data:
         if _df_has_col "special" && [ "${_special_sql}" != "NULL" ]; then SETS="${SETS},special=${_special_sql}"; fi
         if _df_has_col "display"; then SETS="${SETS},display='related-values'"; fi
         if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then SETS="${SETS},options=${_options_sql}"; fi
+        if _df_has_col "group" && [ -n "${_group:-}" ]; then
+          _group_sql="$(printf '%s' "${_group}" | sed "s/'/''/g")"
+          SETS="${SETS},\"group\"='${_group_sql}'"
+        fi
         if [ -n "${SETS:-}" ]; then
           psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
             "SET search_path TO directus, public; UPDATE directus_fields SET ${SETS#,} WHERE collection='${_collection_sql}' AND field='${_field_sql}';"
@@ -8861,7 +8881,7 @@ data:
       _upsert_page_head_input_field_meta "force_login_for_page_access" 12 "half" "${force_login_for_page_access_note_sql}" "boolean" "" "${force_login_for_page_access_name_sql}"
       _upsert_page_head_input_field_meta "required_role_for_page_access" 13 "half" "${required_role_for_page_access_note_sql}" "cms-content-model-select" "${role_interface_options_json}" "${required_role_for_page_access_name_sql}"
       _ensure_page_social_profile_relation
-      _upsert_platform_m2o_field_meta "cms_pages" "social_profile_id" 12 "${social_profile_id_note_sql}" "${social_profile_relation_options_json}" false
+      _upsert_platform_m2o_field_meta "cms_pages" "social_profile_id" 12 "${social_profile_id_note_sql}" "${social_profile_relation_options_json}" false "_section_widget_dock"
       _set_page_field_name "social_profile_id" "${social_profile_id_name_sql}"
       _upsert_page_head_input_field_meta "show_social_in_header" 13 "half" "${show_social_in_header_note_sql}" "boolean" "" "${show_social_in_header_name_sql}"
       _upsert_page_head_input_field_meta "show_social_in_footer" 14 "half" "${show_social_in_footer_note_sql}" "boolean" "" "${show_social_in_footer_name_sql}"
@@ -9082,6 +9102,9 @@ data:
       _assign_page_field_group "widget_dock_position" "_section_widget_dock"
       _assign_page_field_group "widget_dock_direction" "_section_widget_dock"
       _assign_page_field_group "theme_selector_dock_position" "_section_widget_dock"
+      _assign_page_field_group "social_profile_id" "_section_widget_dock" 12
+      _assign_page_field_group "show_social_in_header" "_section_widget_dock" 13
+      _assign_page_field_group "show_social_in_footer" "_section_widget_dock" 14
       _assign_page_field_group "analytics_google_measurement_id" "_section_analytics"
       _assign_page_field_group "analytics_openobserve_rum_script_url" "_section_analytics"
       _assign_page_field_group "analytics_openobserve_rum_config" "_section_analytics"
@@ -9111,9 +9134,6 @@ data:
       _assign_page_field_group "head_canonical_url" "_section_meta"
       _assign_page_field_group "head_robots" "_section_meta"
       _assign_page_field_group "head_generator" "_section_meta"
-      _assign_page_field_group "social_profile_id" "_section_widget_dock" 12
-      _assign_page_field_group "show_social_in_header" "_section_widget_dock" 13
-      _assign_page_field_group "show_social_in_footer" "_section_widget_dock" 14
       _assign_page_field_group "blocks" "_section_blocks"
       _set_page_field_note "site_key" "${site_key_note_sql}"
       _set_page_field_note "date_created" "${date_created_note_sql}"
