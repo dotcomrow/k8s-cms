@@ -2588,6 +2588,7 @@ data:
        UPDATE platform_notification_browser_subscriptions SET last_seen_at = now() WHERE last_seen_at IS NULL; \
        UPDATE platform_notification_browser_subscriptions SET date_created = now() WHERE date_created IS NULL; \
        CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_endpoint_hash_unique ON platform_notification_browser_subscriptions (endpoint_hash) WHERE endpoint_hash IS NOT NULL AND BTRIM(endpoint_hash) <> ''; \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_email_unique ON platform_notification_browser_subscriptions (LOWER(BTRIM(user_email))) WHERE user_email IS NOT NULL AND BTRIM(user_email) <> ''; \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_installation_idx ON platform_notification_browser_subscriptions (browser_installation_id, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_idx ON platform_notification_browser_subscriptions (user_id, status, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_app_idx ON platform_notification_browser_subscriptions (app_id, status, last_seen_at DESC); \
