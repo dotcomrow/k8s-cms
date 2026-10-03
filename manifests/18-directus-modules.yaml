@@ -1196,3 +1196,49 @@ data:
             correlationIdPath: "requestId"
           input: {}
           ui: {}
+      - module_key: server-rendered-section
+        name: Server-rendered Section
+        description: "Renders a page section through a backend source configured in the administrator-managed Directus module registry."
+        provider: server
+        status: published
+        site_key: null
+        component_type: server.rendered-section
+        props_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            source:
+              type: string
+              title: Backend Source
+              description: "Named source from default_props.sources on this module registry record."
+            query:
+              type: object
+              title: Query Parameters
+              additionalProperties: true
+            body:
+              type: object
+              title: Request Input
+              additionalProperties: true
+            templateData:
+              type: object
+              title: Additional Template Data
+              additionalProperties: true
+            fallbackHtml:
+              type: string
+              title: Fallback HTML
+            onError:
+              type: string
+              title: Error Behavior
+              enum:
+                - fallback
+                - fail-page
+          required:
+            - source
+        default_props:
+          source: ""
+          sources: {}
+          query: {}
+          body: {}
+          templateData: {}
+          fallbackHtml: ""
+          onError: fallback
