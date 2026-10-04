@@ -24,6 +24,11 @@ resource "oci_core_vcn" "directus_db" {
   cidr_blocks    = [var.vcn_cidr]
   display_name   = "${var.db_instance_name}-vcn"
   dns_label      = var.vcn_dns_label
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = all
+  }
 }
 
 resource "oci_core_internet_gateway" "directus_db" {
@@ -31,6 +36,11 @@ resource "oci_core_internet_gateway" "directus_db" {
   vcn_id         = oci_core_vcn.directus_db.id
   display_name   = "${var.db_instance_name}-igw"
   enabled        = true
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = all
+  }
 }
 
 resource "oci_core_route_table" "directus_db" {
@@ -42,6 +52,11 @@ resource "oci_core_route_table" "directus_db" {
     destination       = "0.0.0.0/0"
     destination_type  = "CIDR_BLOCK"
     network_entity_id = oci_core_internet_gateway.directus_db.id
+  }
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = all
   }
 }
 
@@ -135,6 +150,11 @@ resource "oci_core_security_list" "directus_db" {
       }
     }
   }
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = all
+  }
 }
 
 resource "oci_core_subnet" "directus_db" {
@@ -146,6 +166,11 @@ resource "oci_core_subnet" "directus_db" {
   route_table_id             = oci_core_route_table.directus_db.id
   security_list_ids          = [oci_core_security_list.directus_db.id]
   prohibit_public_ip_on_vnic = !var.assign_public_ip
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = all
+  }
 }
 
 locals {
@@ -183,6 +208,11 @@ locals {
 resource "tls_private_key" "db_tunnel" {
   count     = var.enable_db_ssh_tunnel && !local.use_provided_db_tunnel_key ? 1 : 0
   algorithm = "ED25519"
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = all
+  }
 }
 
 resource "oci_core_instance" "directus_db" {
@@ -236,6 +266,7 @@ resource "oci_core_instance" "directus_db" {
 
   lifecycle {
     prevent_destroy = true
+    ignore_changes  = all
 
     precondition {
       condition     = var.db_ocpus >= 1
@@ -292,6 +323,7 @@ resource "oci_core_public_ip" "directus_db_reserved" {
 
   lifecycle {
     prevent_destroy = true
+    ignore_changes  = all
   }
 }
 

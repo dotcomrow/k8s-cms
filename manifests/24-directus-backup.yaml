@@ -1,0 +1,457 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: directus-backup-scripts
+  namespace: directus
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+
+    apk add --no-cache coreutils findutils gzip jq openssh-client tar >/dev/null
+
+    WORK_DIR="${BACKUP_WORK_DIR:-/work}"
+    RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+    RUN_DIR="${WORK_DIR}/run"
+    VERIFY_UPLOADS_DIR="${WORK_DIR}/uploads-verify"
+    SSH_KEY_FILE="/ssh/ssh-key"
+    SSH_LOCAL_DB_PORT="${SSH_LOCAL_DB_PORT:-15432}"
+    VERIFY_DB_HOST="${VERIFY_DB_HOST:-127.0.0.1}"
+    VERIFY_DB_PORT="${VERIFY_DB_PORT:-55432}"
+    VERIFY_DB_NAME="${VERIFY_DB_NAME:-directus_restore_verify}"
+    VERIFY_RESTORE="${VERIFY_RESTORE:-true}"
+    CONNECT_TIMEOUT_SECONDS="${CONNECT_TIMEOUT_SECONDS:-10}"
+    COMMAND_TIMEOUT_SECONDS="${COMMAND_TIMEOUT_SECONDS:-7200}"
+    RESTORE_TIMEOUT_SECONDS="${RESTORE_TIMEOUT_SECONDS:-7200}"
+    UPLOADS_PATH="${UPLOADS_PATH:-/source-uploads}"
+    SSH_PID=""
+
+    cleanup() {
+      touch "${WORK_DIR}/stop-verifier" >/dev/null 2>&1 || true
+      if [ -n "${SSH_PID}" ]; then
+        kill "${SSH_PID}" >/dev/null 2>&1 || true
+      fi
+    }
+    fail() {
+      printf '%s\n' "$1" >&2
+      touch "${WORK_DIR}/backup-failed"
+      exit 1
+    }
+    trap cleanup EXIT INT TERM
+
+    rm -rf "${RUN_DIR}" "${VERIFY_UPLOADS_DIR}"
+    mkdir -p "${RUN_DIR}" "${VERIFY_UPLOADS_DIR}"
+
+    case "${GCS_BUCKET:-}" in
+      ""|REPLACE_WITH_GCS_BUCKET) fail "GCS_BUCKET is not configured" ;;
+    esac
+    case "${RETENTION_COUNT:-}" in
+      1|2) ;;
+      *) fail "RETENTION_COUNT must be 1 or 2" ;;
+    esac
+
+    echo "Starting read-only SSH tunnel to the Oracle PostgreSQL VM..."
+    ssh \
+      -N \
+      -o BatchMode=yes \
+      -o ConnectTimeout="${CONNECT_TIMEOUT_SECONDS}" \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=3 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
+      -i "${SSH_KEY_FILE}" \
+      -L "${SSH_LOCAL_DB_PORT}:${SSH_REMOTE_DB_HOST:-127.0.0.1}:${SSH_REMOTE_DB_PORT:-5432}" \
+      "${SSH_USER}@${SSH_HOST}" &
+    SSH_PID="$!"
+
+    tunnel_attempt=0
+    until PGPASSWORD="${DB_PASSWORD}" pg_isready \
+      -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" >/dev/null 2>&1; do
+      tunnel_attempt=$((tunnel_attempt + 1))
+      if [ "${tunnel_attempt}" -ge 30 ]; then
+        fail "Timed out waiting for the PostgreSQL SSH tunnel"
+      fi
+      sleep 2
+    done
+
+    export PGPASSWORD="${DB_PASSWORD}"
+    export PGCONNECT_TIMEOUT="${CONNECT_TIMEOUT_SECONDS}"
+
+    SERVER_VERSION="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SHOW server_version;")"
+    SERVER_VERSION_NUM="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SHOW server_version_num;")"
+    DATABASE_BYTES="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SELECT pg_database_size(current_database());")"
+
+    echo "Creating PostgreSQL custom-format backup..."
+    timeout "${COMMAND_TIMEOUT_SECONDS}" pg_dump \
+      --host=127.0.0.1 \
+      --port="${SSH_LOCAL_DB_PORT}" \
+      --username="${DB_USER}" \
+      --dbname="${DB_NAME}" \
+      --format=custom \
+      --compress=6 \
+      --no-owner \
+      --no-privileges \
+      --file="${RUN_DIR}/directus.dump"
+    pg_restore --list "${RUN_DIR}/directus.dump" >"${RUN_DIR}/directus.restore-list"
+    test -s "${RUN_DIR}/directus.dump" || fail "Database dump is empty"
+    test -s "${RUN_DIR}/directus.restore-list" || fail "Database restore list is empty"
+
+    TABLE_COUNT_SQL="${RUN_DIR}/table-counts.sql"
+    psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c \
+      "SELECT format('SELECT %L || ''|'' || count(*) FROM %I.%I;', schemaname || '.' || tablename, schemaname, tablename) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY schemaname,tablename;" \
+      >"${TABLE_COUNT_SQL}"
+    psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -f "${TABLE_COUNT_SQL}" \
+      | sort >"${RUN_DIR}/source-table-counts.txt"
+
+    echo "Archiving Directus uploads and generating per-file checksums..."
+    (
+      cd "${UPLOADS_PATH}"
+      find . -type f -print0 | sort -z | xargs -0 -r sha256sum >"${RUN_DIR}/uploads.sha256"
+      tar -czf "${RUN_DIR}/uploads.tar.gz" .
+    )
+    gzip -t "${RUN_DIR}/uploads.tar.gz"
+    tar -xzf "${RUN_DIR}/uploads.tar.gz" -C "${VERIFY_UPLOADS_DIR}"
+    (
+      cd "${VERIFY_UPLOADS_DIR}"
+      sha256sum -c "${RUN_DIR}/uploads.sha256" >/dev/null
+    )
+    UPLOAD_FILE_COUNT="$(find "${UPLOADS_PATH}" -type f | wc -l | tr -d ' ')"
+    RESTORED_UPLOAD_FILE_COUNT="$(find "${VERIFY_UPLOADS_DIR}" -type f | wc -l | tr -d ' ')"
+    [ "${UPLOAD_FILE_COUNT}" = "${RESTORED_UPLOAD_FILE_COUNT}" ] || fail "Uploads file-count verification failed"
+
+    if [ "${VERIFY_RESTORE}" = "true" ]; then
+      echo "Restoring the dump into the isolated verification PostgreSQL instance..."
+      verify_attempt=0
+      until pg_isready -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d postgres >/dev/null 2>&1; do
+        verify_attempt=$((verify_attempt + 1))
+        if [ "${verify_attempt}" -ge 60 ]; then
+          fail "Timed out waiting for the isolated verification PostgreSQL instance"
+        fi
+        sleep 2
+      done
+
+      dropdb --if-exists -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${VERIFY_DB_NAME}"
+      createdb -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${VERIFY_DB_NAME}"
+      timeout "${RESTORE_TIMEOUT_SECONDS}" pg_restore \
+        --exit-on-error \
+        --no-owner \
+        --no-privileges \
+        --host="${VERIFY_DB_HOST}" \
+        --port="${VERIFY_DB_PORT}" \
+        --username=postgres \
+        --dbname="${VERIFY_DB_NAME}" \
+        "${RUN_DIR}/directus.dump"
+      psql -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d "${VERIFY_DB_NAME}" -qAtX -f "${TABLE_COUNT_SQL}" \
+        | sort >"${RUN_DIR}/restored-table-counts.txt"
+      diff -u "${RUN_DIR}/source-table-counts.txt" "${RUN_DIR}/restored-table-counts.txt" \
+        >"${RUN_DIR}/table-counts.diff" || fail "Restored database row counts do not match the source"
+      dropdb -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${VERIFY_DB_NAME}"
+    fi
+
+    DUMP_BYTES="$(stat -c '%s' "${RUN_DIR}/directus.dump")"
+    UPLOAD_ARCHIVE_BYTES="$(stat -c '%s' "${RUN_DIR}/uploads.tar.gz")"
+    TABLE_COUNT="$(wc -l <"${RUN_DIR}/source-table-counts.txt" | tr -d ' ')"
+    jq -n \
+      --arg run_id "${RUN_ID}" \
+      --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg database "${DB_NAME}" \
+      --arg server_version "${SERVER_VERSION}" \
+      --arg server_version_num "${SERVER_VERSION_NUM}" \
+      --argjson database_bytes "${DATABASE_BYTES}" \
+      --argjson dump_bytes "${DUMP_BYTES}" \
+      --argjson uploads_archive_bytes "${UPLOAD_ARCHIVE_BYTES}" \
+      --argjson upload_file_count "${UPLOAD_FILE_COUNT}" \
+      --argjson table_count "${TABLE_COUNT}" \
+      --argjson retention_count "${RETENTION_COUNT}" \
+      '{run_id:$run_id,created_at:$created_at,database:$database,postgresql:{server_version:$server_version,server_version_num:$server_version_num,database_bytes:$database_bytes},artifacts:{database_dump_bytes:$dump_bytes,uploads_archive_bytes:$uploads_archive_bytes,upload_file_count:$upload_file_count,table_count:$table_count},verification:{pg_restore_list:true,isolated_restore:true,row_counts_match:true,uploads_checksums_match:true},retention_count:$retention_count}' \
+      >"${RUN_DIR}/manifest.json"
+    (
+      cd "${RUN_DIR}"
+      sha256sum directus.dump directus.restore-list source-table-counts.txt uploads.tar.gz uploads.sha256 manifest.json >SHA256SUMS
+      sha256sum -c SHA256SUMS >/dev/null
+    )
+
+    printf '%s\n' "${RUN_ID}" >"${WORK_DIR}/run-id"
+    touch "${WORK_DIR}/ready-to-upload"
+    echo "Backup ${RUN_ID} passed isolated restore, row-count, archive, and checksum verification."
+
+    upload_waited=0
+    until [ -f "${WORK_DIR}/upload-succeeded" ]; do
+      if [ -f "${WORK_DIR}/upload-failed" ]; then
+        fail "GCS upload or retention rotation failed"
+      fi
+      upload_waited=$((upload_waited + 5))
+      if [ "${upload_waited}" -ge 7200 ]; then
+        fail "Timed out waiting for the GCS uploader"
+      fi
+      sleep 5
+    done
+    touch "${WORK_DIR}/stop-verifier"
+    echo "Backup ${RUN_ID} uploaded and promoted successfully."
+
+  verifier.sh: |
+    #!/bin/sh
+    set -eu
+
+    docker-entrypoint.sh postgres -p 55432 -c listen_addresses=127.0.0.1 &
+    postgres_pid="$!"
+    stop_postgres() {
+      pg_ctl -D "${PGDATA}" -m fast stop >/dev/null 2>&1 || true
+      wait "${postgres_pid}" >/dev/null 2>&1 || true
+    }
+    trap stop_postgres EXIT INT TERM
+
+    while [ ! -f /work/stop-verifier ]; do
+      if ! kill -0 "${postgres_pid}" >/dev/null 2>&1; then
+        wait "${postgres_pid}"
+        exit 1
+      fi
+      sleep 5
+    done
+
+  upload.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    WORK_DIR="${BACKUP_WORK_DIR:-/work}"
+    RUN_DIR="${WORK_DIR}/run"
+    CREDENTIAL_FILE="/gcs/service-account.json"
+    trap 'touch "${WORK_DIR}/upload-failed"' ERR
+
+    until [[ -f "${WORK_DIR}/ready-to-upload" ]]; do
+      if [[ -f "${WORK_DIR}/backup-failed" ]]; then
+        echo "Backup creation failed; uploader is exiting without changing GCS."
+        exit 1
+      fi
+      sleep 5
+    done
+
+    RUN_ID="$(<"${WORK_DIR}/run-id")"
+    [[ "${RUN_ID}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || { echo "Invalid run ID" >&2; exit 1; }
+    [[ "${RETENTION_COUNT}" =~ ^[12]$ ]] || { echo "RETENTION_COUNT must be 1 or 2" >&2; exit 1; }
+    [[ -s "${CREDENTIAL_FILE}" ]] || { echo "GCS service-account key is missing" >&2; exit 1; }
+
+    gcloud auth activate-service-account --key-file="${CREDENTIAL_FILE}" --quiet >/dev/null
+    BASE_URI="gs://${GCS_BUCKET}/${GCS_PREFIX}"
+    RUN_URI="${BASE_URI}/runs/${RUN_ID}"
+
+    echo "Uploading verified backup ${RUN_ID}..."
+    gcloud storage cp "${RUN_DIR}/directus.dump" "${RUN_URI}/directus.dump" --quiet
+    gcloud storage cp "${RUN_DIR}/directus.restore-list" "${RUN_URI}/directus.restore-list" --quiet
+    gcloud storage cp "${RUN_DIR}/source-table-counts.txt" "${RUN_URI}/source-table-counts.txt" --quiet
+    gcloud storage cp "${RUN_DIR}/uploads.tar.gz" "${RUN_URI}/uploads.tar.gz" --quiet
+    gcloud storage cp "${RUN_DIR}/uploads.sha256" "${RUN_URI}/uploads.sha256" --quiet
+    gcloud storage cp "${RUN_DIR}/manifest.json" "${RUN_URI}/manifest.json" --quiet
+    gcloud storage cp "${RUN_DIR}/SHA256SUMS" "${RUN_URI}/SHA256SUMS" --quiet
+
+    for artifact in directus.dump directus.restore-list source-table-counts.txt uploads.tar.gz uploads.sha256 manifest.json SHA256SUMS; do
+      local_size="$(stat -c '%s' "${RUN_DIR}/${artifact}")"
+      remote_size="$(gcloud storage objects describe "${RUN_URI}/${artifact}" --format='value(size)' --quiet)"
+      [[ "${remote_size}" == "${local_size}" ]] || {
+        echo "Uploaded size mismatch for ${artifact}: local=${local_size} remote=${remote_size}" >&2
+        exit 1
+      }
+    done
+
+    OLD_LATEST=""
+    if gcloud storage cp "${BASE_URI}/latest.json" "${WORK_DIR}/old-latest.json" --quiet 2>/dev/null; then
+      OLD_LATEST="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run_id", ""))' "${WORK_DIR}/old-latest.json")"
+      if [[ ! "${OLD_LATEST}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+        echo "Existing latest.json has an invalid run ID; refusing retention changes" >&2
+        exit 1
+      fi
+    fi
+
+    printf '{"run_id":"%s","manifest":"%s"}\n' "${RUN_ID}" "${RUN_URI}/manifest.json" \
+      >"${WORK_DIR}/latest.json"
+    gcloud storage cp "${WORK_DIR}/latest.json" "${BASE_URI}/latest.json" --quiet
+
+    if [[ "${RETENTION_COUNT}" == "2" && -n "${OLD_LATEST}" && "${OLD_LATEST}" != "${RUN_ID}" ]]; then
+      printf '{"run_id":"%s","manifest":"%s"}\n' "${OLD_LATEST}" "${BASE_URI}/runs/${OLD_LATEST}/manifest.json" \
+        >"${WORK_DIR}/previous.json"
+      gcloud storage cp "${WORK_DIR}/previous.json" "${BASE_URI}/previous.json" --quiet
+    elif [[ "${RETENTION_COUNT}" == "1" ]]; then
+      gcloud storage rm "${BASE_URI}/previous.json" --quiet 2>/dev/null || true
+    fi
+
+    mapfile -t RUN_IDS < <(
+      gcloud storage ls "${BASE_URI}/runs/" --recursive 2>/dev/null \
+        | sed -nE 's#^.*/runs/([0-9]{8}T[0-9]{6}Z)/.*#\1#p' \
+        | sort -u
+    )
+    for candidate in "${RUN_IDS[@]}"; do
+      [[ "${candidate}" == "${RUN_ID}" ]] && continue
+      if [[ "${RETENTION_COUNT}" == "2" && "${candidate}" == "${OLD_LATEST}" ]]; then
+        continue
+      fi
+      [[ "${candidate}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || continue
+      echo "Deleting expired backup run ${candidate} after successful promotion..."
+      gcloud storage rm --recursive "${BASE_URI}/runs/${candidate}" --quiet
+    done
+
+    touch "${WORK_DIR}/upload-succeeded"
+    trap - ERR
+    echo "GCS backup ${RUN_ID} is current; retention count is ${RETENTION_COUNT}."
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: directus-full-backup
+  namespace: directus
+  labels:
+    app: directus-full-backup
+spec:
+  schedule: "0 2 * * *"
+  timeZone: "America/New_York"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 10800
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app: directus-full-backup
+        spec:
+          serviceAccountName: directus
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup-and-verify
+              image: postgres:16.15-alpine
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "/scripts/backup.sh"]
+              envFrom:
+                - configMapRef:
+                    name: directus-backup-config
+              env:
+                - name: SSH_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: vm-stats-service-ssh
+                      key: host
+                - name: DB_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: vm-stats-service-db
+                      key: name
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: vm-stats-service-db
+                      key: user
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: vm-stats-service-db
+                      key: password
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                  ephemeral-storage: 1Gi
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+                  ephemeral-storage: 4Gi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: ssh-key
+                  mountPath: /ssh
+                  readOnly: true
+                - name: uploads
+                  mountPath: /source-uploads
+                  readOnly: true
+            - name: restore-verifier
+              image: postgres:16.15-alpine
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "/scripts/verifier.sh"]
+              env:
+                - name: POSTGRES_HOST_AUTH_METHOD
+                  value: trust
+                - name: PGDATA
+                  value: /verify-db/data
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                  ephemeral-storage: 512Mi
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+                  ephemeral-storage: 4Gi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: verify-db
+                  mountPath: /verify-db
+            - name: gcs-uploader
+              image: google/cloud-sdk:stable
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/scripts/upload.sh"]
+              envFrom:
+                - configMapRef:
+                    name: directus-backup-config
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                  ephemeral-storage: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+                  ephemeral-storage: 1Gi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: gcs-credentials
+                  mountPath: /gcs
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: directus-backup-scripts
+                defaultMode: 0555
+            - name: work
+              emptyDir:
+                sizeLimit: 4Gi
+            - name: verify-db
+              emptyDir:
+                sizeLimit: 4Gi
+            - name: ssh-key
+              secret:
+                secretName: vm-stats-service-ssh
+                defaultMode: 0400
+                items:
+                  - key: private-key
+                    path: ssh-key
+            - name: uploads
+              persistentVolumeClaim:
+                claimName: directus-uploads-remote-vm-v8
+            - name: gcs-credentials
+              secret:
+                secretName: directus-backup-gcs
+                defaultMode: 0400
+                items:
+                  - key: service-account.json
+                    path: service-account.json

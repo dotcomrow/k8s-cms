@@ -68,11 +68,13 @@ jobs:
           workspace: ${{ github.event.repository.name }}
           directory: terraform
 
-      - name: Create Apply Run
+      # Safety gate: repository pushes may create a speculative plan but must
+      # never automatically mutate the stateful Oracle Directus DB stack.
+      - name: Create Plan Run
         uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
-        id: apply-run
+        id: plan-run
         if: ${{ steps.check_state.outputs.initial_deploy_state == 'disabled_manually' }}
         with:
           workspace: ${{ github.event.repository.name }}
           configuration_version: ${{ steps.upload.outputs.configuration_version_id }}
-          plan_only: false
+          plan_only: true

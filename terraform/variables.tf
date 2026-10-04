@@ -49,8 +49,21 @@ variable "apis" {
     "eventarc.googleapis.com",                   # ✅ Add this
     "pubsub.googleapis.com",                     # ✅ Recommended (used by Eventarc triggers)
     "secretmanager.googleapis.com",              # ✅ Required for your secret sync
-    "logging.googleapis.com"                     # Optional, for better visibility
+    "logging.googleapis.com",                    # Optional, for better visibility
+    "storage.googleapis.com"                     # Directus database and uploads backups
   ]
+}
+
+variable "directus_backup_bucket_location" {
+  description = "GCS location for verified Directus backups."
+  type        = string
+  default     = "US-EAST1"
+}
+
+variable "directus_backup_service_account_key_version" {
+  description = "Change this value deliberately to rotate the Terraform-managed Directus backup service-account key."
+  type        = string
+  default     = "v1"
 }
 
 variable "GHCR_PAT" {

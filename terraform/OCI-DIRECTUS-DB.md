@@ -6,7 +6,12 @@ This stack provisions a small paid Oracle Cloud VM for PostgreSQL and bootstraps
 
 - Keeps DB state outside the k8s platform.
 - Uses explicit `directus_db_user` / `directus_db_password` variables so credentials stay constant across platform rebuilds.
-- `prevent_destroy = true` by default to avoid accidental VM deletion.
+- The existing OCI stack is frozen with `prevent_destroy = true` and
+  `ignore_changes = all`. Terraform retains and reads these state objects but
+  must not update or replace the VM, its network dependencies, reserved public
+  IP, or tunnel key from this shared workspace.
+- Repository-triggered Terraform Cloud runs are plan-only. Never approve a
+  full apply unless the reviewed plan contains zero OCI changes.
 - Uses an automated SSH tunnel path by default (`enable_db_ssh_tunnel=true`):
   - PostgreSQL listens on localhost only.
   - No public ingress rule for 5432 is created.
