@@ -11921,6 +11921,110 @@ data:
       echo "⚠️ Could not reconcile Copy Bookmarks module bar item."
     fi
 
+    echo "🔗 Reconciling CMS Updates tag relationships..."
+    if ! _psql_yb_retry "DO \$\$
+      BEGIN
+        IF to_regclass('directus.cms_updates') IS NULL
+           OR to_regclass('directus.cms_update_tags') IS NULL
+           OR to_regclass('directus.cms_updates_tags') IS NULL
+           OR to_regclass('directus.directus_fields') IS NULL
+           OR to_regclass('directus.directus_relations') IS NULL THEN
+          RAISE NOTICE 'CMS Updates tag collections or Directus metadata tables are absent; skipping relationship reconciliation';
+          RETURN;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conrelid = 'directus.cms_updates_tags'::regclass
+             AND conname = 'cms_updates_tags_updates_id_foreign'
+        ) THEN
+          ALTER TABLE directus.cms_updates_tags
+            ADD CONSTRAINT cms_updates_tags_updates_id_foreign
+            FOREIGN KEY (updates_id) REFERENCES directus.cms_updates(id) ON DELETE SET NULL;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conrelid = 'directus.cms_updates_tags'::regclass
+             AND conname = 'cms_updates_tags_update_tags_id_foreign'
+        ) THEN
+          ALTER TABLE directus.cms_updates_tags
+            ADD CONSTRAINT cms_updates_tags_update_tags_id_foreign
+            FOREIGN KEY (update_tags_id) REFERENCES directus.cms_update_tags(id) ON DELETE SET NULL;
+        END IF;
+
+        UPDATE directus.directus_fields
+           SET special='m2m',
+               interface='list-m2m',
+               options='{\"template\":\"{{update_tags_id.name}}\"}'::json,
+               display='related-values',
+               display_options='{\"template\":\"{{update_tags_id.name}}\"}'::json,
+               hidden=false,
+               readonly=false,
+               width='full'
+         WHERE collection='cms_updates' AND field='tags';
+        IF NOT FOUND THEN
+          INSERT INTO directus.directus_fields
+            (collection, field, special, interface, options, display, display_options, hidden, readonly, sort, width)
+          VALUES
+            ('cms_updates', 'tags', 'm2m', 'list-m2m', '{\"template\":\"{{update_tags_id.name}}\"}'::json,
+             'related-values', '{\"template\":\"{{update_tags_id.name}}\"}'::json, false, false, 13, 'full');
+        END IF;
+
+        UPDATE directus.directus_fields
+           SET special='m2m',
+               interface='list-m2m',
+               options='{\"template\":\"{{updates_id.title}}\"}'::json,
+               display='related-values',
+               display_options='{\"template\":\"{{updates_id.title}}\"}'::json,
+               hidden=false,
+               readonly=false,
+               width='full'
+         WHERE collection='cms_update_tags' AND field='updates';
+        IF NOT FOUND THEN
+          INSERT INTO directus.directus_fields
+            (collection, field, special, interface, options, display, display_options, hidden, readonly, sort, width)
+          VALUES
+            ('cms_update_tags', 'updates', 'm2m', 'list-m2m', '{\"template\":\"{{updates_id.title}}\"}'::json,
+             'related-values', '{\"template\":\"{{updates_id.title}}\"}'::json, false, false, 8, 'full');
+        END IF;
+
+        UPDATE directus.directus_relations
+           SET one_collection='cms_updates',
+               one_field='tags',
+               one_collection_field=NULL,
+               one_allowed_collections=NULL,
+               junction_field='update_tags_id',
+               sort_field='sort',
+               one_deselect_action='nullify'
+         WHERE many_collection='cms_updates_tags' AND many_field='updates_id';
+        IF NOT FOUND THEN
+          INSERT INTO directus.directus_relations
+            (many_collection, many_field, one_collection, one_field, junction_field, sort_field, one_deselect_action)
+          VALUES
+            ('cms_updates_tags', 'updates_id', 'cms_updates', 'tags', 'update_tags_id', 'sort', 'nullify');
+        END IF;
+
+        UPDATE directus.directus_relations
+           SET one_collection='cms_update_tags',
+               one_field='updates',
+               one_collection_field=NULL,
+               one_allowed_collections=NULL,
+               junction_field='updates_id',
+               sort_field='sort',
+               one_deselect_action='nullify'
+         WHERE many_collection='cms_updates_tags' AND many_field='update_tags_id';
+        IF NOT FOUND THEN
+          INSERT INTO directus.directus_relations
+            (many_collection, many_field, one_collection, one_field, junction_field, sort_field, one_deselect_action)
+          VALUES
+            ('cms_updates_tags', 'update_tags_id', 'cms_update_tags', 'updates', 'updates_id', 'sort', 'nullify');
+        END IF;
+      END
+      \$\$;" "reconcile CMS Updates tag relationships" 12; then
+      echo "⚠️ Could not reconcile CMS Updates tag relationships."
+    fi
+
     RECON_DURATION_MS=$(( ($(date +%s) - RECON_STARTED_EPOCH) * 1000 ))
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
