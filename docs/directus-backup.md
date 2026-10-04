@@ -6,10 +6,12 @@ before promoting a backup in Google Cloud Storage.
 
 ## Safety state
 
-The CronJob is committed with `spec.suspend: true`. The backup ConfigMap is not
-stored as a deployable manifest with a placeholder; the reconciliation script
-renders it from the Terraform bucket output and the checked-in template. The
-schedule cannot run until the CronJob is deliberately unsuspended.
+The CronJob is committed with `spec.suspend: true`. The static backup settings
+are stored in the GitOps-managed `directus-backup-config` ConfigMap. Terraform
+writes the generated bucket name and service-account JSON to Vault, and the
+GitOps-managed `directus-backup-gcs` ExternalSecret continuously materializes
+those values as a namespaced Kubernetes Secret. The schedule cannot run until
+the CronJob is deliberately unsuspended.
 
 The job connects through the same Oracle VM SSH path used by
 `vm-stats-service`. PostgreSQL is read only from the backup job. Verification
@@ -67,34 +69,32 @@ The `directus_backup_service_account_key_version` variable controls deliberate
 rotation, and `create_before_destroy` prevents Terraform from revoking the old
 key before its replacement exists.
 
-After the targeted Terraform apply completes, reconcile the bucket reference
-and key directly from HCP Terraform state into Kubernetes without committing
-or printing the credential:
+`vault_kv_secret_v2.directus_backup_gcs` writes the generated values to
+`secret/data/directus-backup-gcs`. Terraform uses the existing sensitive
+`VAULT_TOKEN` and `VAULT_ADDRESS` workspace variables. The Vault value and the
+service-account private key remain sensitive Terraform inputs/state; they are
+never committed to Git or printed by the deployment workflow.
 
-```sh
-TFC_TOKEN="..." terraform/scripts/reconcile-directus-backup-gcs-secret.sh
-```
+Argo applies the ConfigMap and ExternalSecret from
+`manifests/24-directus-backup.yaml`. External Secrets reads the Vault keys
+`bucket` and `service_account_json`, creating `directus/directus-backup-gcs`
+with keys `GCS_BUCKET` and `service-account.json`. The CronJob reads the bucket
+as an environment variable and mounts the JSON credential as a file. No GitHub
+runner, HCP agent, or operator needs Kubernetes credentials for reconciliation.
 
-The script validates the credential type and service-account email, renders
-`terraform/templates/directus-backup-config.yaml.tftpl` with the
-`directus_backup_bucket` output, applies the ConfigMap and
-`directus/directus-backup-gcs`, verifies the live ConfigMap value, and removes
-the temporary directory on exit. The credential exists only in a mode-0600
-temporary file during reconciliation. Do not print or commit the sensitive
-Terraform output. Before enabling the CronJob:
+Run the complete reviewed Terraform plan so the Vault publication resource is
+included; do not target only the service-account key. The existing OCI
+lifecycle protections remain in force. Before enabling the CronJob:
 
-For the initial Google-only targeted run, target
-`google_service_account_key.directus_backup`. Its dependency chain includes the
-bucket, service account, bucket IAM grant, and required API, but no OCI
-resource.
-
-1. Run the reconciler and verify the generated `directus-backup-config`
-   ConfigMap contains the `directus_backup_bucket` Terraform output.
-2. Confirm `GCS_PREFIX` and `RETENTION_COUNT` in the ConfigMap template.
-3. Confirm bucket Object Versioning and soft-delete settings match the storage
+1. Verify `directus-backup-config` exists and the `directus-backup-gcs`
+   ExternalSecret reports `Ready=True`.
+2. Confirm the generated Secret contains non-empty `GCS_BUCKET` and
+   `service-account.json` keys without printing their values.
+3. Confirm `GCS_PREFIX` and `RETENTION_COUNT` in the ConfigMap manifest.
+4. Confirm bucket Object Versioning and soft-delete settings match the storage
    budget; retained deleted versions still consume storage.
-4. Change `spec.suspend` to `false` in `manifests/24-directus-backup.yaml`.
-5. Run one manually created Job and inspect its logs and GCS artifacts before
+5. Change `spec.suspend` to `false` in `manifests/24-directus-backup.yaml`.
+6. Run one manually created Job and inspect its logs and GCS artifacts before
    relying on the schedule.
 
 ## Backup layout

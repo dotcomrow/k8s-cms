@@ -76,6 +76,23 @@ resource "google_service_account_key" "directus_backup" {
   }
 }
 
+# Publish Terraform-generated values to the existing Vault KV-v2 mount. Argo
+# owns the Kubernetes resources, and External Secrets continuously materializes
+# the namespaced Secret without any runner-side kubectl access.
+resource "vault_kv_secret_v2" "directus_backup_gcs" {
+  mount = "secret"
+  name  = "directus-backup-gcs"
+
+  data_json = jsonencode({
+    bucket               = google_storage_bucket.directus_backups.name
+    service_account_json = base64decode(google_service_account_key.directus_backup.private_key)
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 output "directus_backup_bucket" {
   description = "GCS bucket used for verified Directus backups."
   value       = google_storage_bucket.directus_backups.name

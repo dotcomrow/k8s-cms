@@ -26,6 +26,10 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.0"
     }
+    vault = {
+      source  = "hashicorp/vault"
+      version = "~> 5.0"
+    }
   }
 }
 
@@ -47,4 +51,9 @@ provider "google" {
 
 provider "google-beta" {
   region      = var.region
+}
+
+provider "vault" {
+  address = var.VAULT_ADDRESS
+  token   = var.VAULT_TOKEN
 }

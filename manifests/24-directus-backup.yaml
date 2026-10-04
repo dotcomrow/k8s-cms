@@ -1,6 +1,60 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: directus-backup-config
+  namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-full-backup
+    app.kubernetes.io/managed-by: argocd
+data:
+  GCS_PREFIX: "directus-production"
+  RETENTION_COUNT: "2"
+  VERIFY_RESTORE: "true"
+  SSH_USER: "ubuntu"
+  SSH_REMOTE_DB_HOST: "127.0.0.1"
+  SSH_REMOTE_DB_PORT: "5432"
+  SSH_LOCAL_DB_PORT: "15432"
+  UPLOADS_PATH: "/source-uploads"
+  VERIFY_DB_HOST: "127.0.0.1"
+  VERIFY_DB_PORT: "55432"
+  VERIFY_DB_NAME: "directus_restore_verify"
+  BACKUP_WORK_DIR: "/work"
+  CONNECT_TIMEOUT_SECONDS: "10"
+  COMMAND_TIMEOUT_SECONDS: "7200"
+  RESTORE_TIMEOUT_SECONDS: "7200"
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: directus-backup-gcs
+  namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-full-backup
+    app.kubernetes.io/managed-by: argocd
+spec:
+  refreshInterval: 5m
+  secretStoreRef:
+    name: vault-store
+    kind: ClusterSecretStore
+  target:
+    name: directus-backup-gcs
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    template:
+      type: Opaque
+  data:
+    - secretKey: GCS_BUCKET
+      remoteRef:
+        key: directus-backup-gcs
+        property: bucket
+    - secretKey: service-account.json
+      remoteRef:
+        key: directus-backup-gcs
+        property: service_account_json
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
   name: directus-backup-scripts
   namespace: directus
 data:
@@ -335,6 +389,11 @@ spec:
                 - configMapRef:
                     name: directus-backup-config
               env:
+                - name: GCS_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: directus-backup-gcs
+                      key: GCS_BUCKET
                 - name: SSH_HOST
                   valueFrom:
                     secretKeyRef:
@@ -409,6 +468,12 @@ spec:
               envFrom:
                 - configMapRef:
                     name: directus-backup-config
+              env:
+                - name: GCS_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: directus-backup-gcs
+                      key: GCS_BUCKET
               resources:
                 requests:
                   cpu: 100m

@@ -66,6 +66,17 @@ variable "directus_backup_service_account_key_version" {
   default     = "v1"
 }
 
+variable "VAULT_ADDRESS" {
+  description = "Vault address used by Terraform to publish generated Directus backup configuration."
+  type        = string
+}
+
+variable "VAULT_TOKEN" {
+  description = "Sensitive Vault token supplied by the existing HCP Terraform variable-set sync."
+  type        = string
+  sensitive   = true
+}
+
 variable "GHCR_PAT" {
   description = "GitHub Container Registry Personal Access Token"
   type        = string
