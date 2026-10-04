@@ -172,8 +172,8 @@ data:
       mkdir -p "${VERIFY_UPLOADS_DIR}"
       if (
         cd "${UPLOADS_PATH}"
-        find . -type f -print0 | sort -z | xargs -0 -r sha256sum >"${RUN_DIR}/uploads.sha256" &&
-          tar -czf "${RUN_DIR}/uploads.tar.gz" .
+        find . -type f ! -path './directus-health-file' -print0 | sort -z | xargs -0 -r sha256sum >"${RUN_DIR}/uploads.sha256" &&
+          tar --exclude='./directus-health-file' -czf "${RUN_DIR}/uploads.tar.gz" .
       ) &&
         gzip -t "${RUN_DIR}/uploads.tar.gz" &&
         tar -xzf "${RUN_DIR}/uploads.tar.gz" -C "${VERIFY_UPLOADS_DIR}" &&
@@ -394,6 +394,8 @@ spec:
         metadata:
           labels:
             app: directus-full-backup
+          annotations:
+            linkerd.io/inject: "disabled"
         spec:
           serviceAccountName: directus
           restartPolicy: Never
