@@ -273,7 +273,17 @@ data:
     docker-entrypoint.sh postgres -p 55432 -c listen_addresses=127.0.0.1 &
     postgres_pid="$!"
     stop_postgres() {
-      pg_ctl -D "${PGDATA}" -m fast stop >/dev/null 2>&1 || true
+      if kill -0 "${postgres_pid}" >/dev/null 2>&1; then
+        kill -TERM "${postgres_pid}" >/dev/null 2>&1 || true
+        shutdown_waited=0
+        while kill -0 "${postgres_pid}" >/dev/null 2>&1 && [ "${shutdown_waited}" -lt 30 ]; do
+          sleep 1
+          shutdown_waited=$((shutdown_waited + 1))
+        done
+        if kill -0 "${postgres_pid}" >/dev/null 2>&1; then
+          kill -KILL "${postgres_pid}" >/dev/null 2>&1 || true
+        fi
+      fi
       wait "${postgres_pid}" >/dev/null 2>&1 || true
     }
     trap stop_postgres EXIT INT TERM
@@ -380,7 +390,7 @@ metadata:
 spec:
   schedule: "0 2 * * *"
   timeZone: "America/New_York"
-  suspend: true
+  suspend: false
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 3
