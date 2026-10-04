@@ -81,6 +81,10 @@ data:
     SSH_PID=""
 
     cleanup() {
+      cleanup_status="$?"
+      if [ "${cleanup_status}" -ne 0 ]; then
+        touch "${WORK_DIR}/backup-failed" >/dev/null 2>&1 || true
+      fi
       touch "${WORK_DIR}/stop-verifier" >/dev/null 2>&1 || true
       if [ -n "${SSH_PID}" ]; then
         kill "${SSH_PID}" >/dev/null 2>&1 || true
@@ -91,7 +95,8 @@ data:
       touch "${WORK_DIR}/backup-failed"
       exit 1
     }
-    trap cleanup EXIT INT TERM
+    trap cleanup EXIT
+    trap 'exit 1' INT TERM
 
     rm -rf "${RUN_DIR}" "${VERIFY_UPLOADS_DIR}"
     mkdir -p "${RUN_DIR}" "${VERIFY_UPLOADS_DIR}"
@@ -160,20 +165,36 @@ data:
       | sort >"${RUN_DIR}/source-table-counts.txt"
 
     echo "Archiving Directus uploads and generating per-file checksums..."
-    (
-      cd "${UPLOADS_PATH}"
-      find . -type f -print0 | sort -z | xargs -0 -r sha256sum >"${RUN_DIR}/uploads.sha256"
-      tar -czf "${RUN_DIR}/uploads.tar.gz" .
-    )
-    gzip -t "${RUN_DIR}/uploads.tar.gz"
-    tar -xzf "${RUN_DIR}/uploads.tar.gz" -C "${VERIFY_UPLOADS_DIR}"
-    (
-      cd "${VERIFY_UPLOADS_DIR}"
-      sha256sum -c "${RUN_DIR}/uploads.sha256" >/dev/null
-    )
-    UPLOAD_FILE_COUNT="$(find "${UPLOADS_PATH}" -type f | wc -l | tr -d ' ')"
-    RESTORED_UPLOAD_FILE_COUNT="$(find "${VERIFY_UPLOADS_DIR}" -type f | wc -l | tr -d ' ')"
-    [ "${UPLOAD_FILE_COUNT}" = "${RESTORED_UPLOAD_FILE_COUNT}" ] || fail "Uploads file-count verification failed"
+    upload_snapshot_attempt=1
+    upload_snapshot_ok=false
+    while [ "${upload_snapshot_attempt}" -le 3 ]; do
+      rm -rf "${VERIFY_UPLOADS_DIR}"
+      mkdir -p "${VERIFY_UPLOADS_DIR}"
+      if (
+        cd "${UPLOADS_PATH}"
+        find . -type f -print0 | sort -z | xargs -0 -r sha256sum >"${RUN_DIR}/uploads.sha256" &&
+          tar -czf "${RUN_DIR}/uploads.tar.gz" .
+      ) &&
+        gzip -t "${RUN_DIR}/uploads.tar.gz" &&
+        tar -xzf "${RUN_DIR}/uploads.tar.gz" -C "${VERIFY_UPLOADS_DIR}" &&
+        (
+          cd "${VERIFY_UPLOADS_DIR}"
+          sha256sum -c "${RUN_DIR}/uploads.sha256" >/dev/null
+        ); then
+        UPLOAD_FILE_COUNT="$(wc -l <"${RUN_DIR}/uploads.sha256" | tr -d ' ')"
+        RESTORED_UPLOAD_FILE_COUNT="$(find "${VERIFY_UPLOADS_DIR}" -type f | wc -l | tr -d ' ')"
+        if [ "${UPLOAD_FILE_COUNT}" = "${RESTORED_UPLOAD_FILE_COUNT}" ]; then
+          upload_snapshot_ok=true
+          break
+        fi
+        echo "Uploads file count changed while archiving (attempt ${upload_snapshot_attempt}/3); retrying..." >&2
+      else
+        echo "Uploads changed while archiving (attempt ${upload_snapshot_attempt}/3); retrying..." >&2
+      fi
+      upload_snapshot_attempt=$((upload_snapshot_attempt + 1))
+      sleep 5
+    done
+    [ "${upload_snapshot_ok}" = "true" ] || fail "Could not create a stable uploads snapshot after 3 attempts"
 
     if [ "${VERIFY_RESTORE}" = "true" ]; then
       echo "Restoring the dump into the isolated verification PostgreSQL instance..."
