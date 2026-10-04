@@ -1009,6 +1009,54 @@ data:
       fi
     fi
 
+    # One-time destructive cleanup authorized for the broken Updates collections.
+    # Keep this in GitOps so retries and future rebuilds converge on the same state.
+    UPDATES_CLEANUP_PATCH_KEY="drop_broken_cms_updates_collections_v1"
+    UPDATES_CLEANUP_APPLIED="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT 1 FROM directus.schema_patch_log WHERE patch_key='${UPDATES_CLEANUP_PATCH_KEY}' AND patch_status='success' LIMIT 1;" || true)"
+    if [ "${UPDATES_CLEANUP_APPLIED:-0}" != "1" ]; then
+      echo "🧨 Removing broken cms_updates collections, metadata, and tables..."
+      if ! _psql_yb_retry "BEGIN; \
+        DELETE FROM directus_fields AS field_metadata \
+         WHERE field_metadata.collection IN ('cms_updates','cms_update_tags','cms_updates_tags') \
+            OR EXISTS ( \
+              SELECT 1 \
+                FROM directus_relations AS relation_metadata \
+               WHERE (relation_metadata.many_collection IN ('cms_updates','cms_update_tags','cms_updates_tags') \
+                   OR relation_metadata.one_collection IN ('cms_updates','cms_update_tags','cms_updates_tags')) \
+                 AND ( \
+                   (field_metadata.collection = relation_metadata.many_collection AND field_metadata.field = relation_metadata.many_field) \
+                   OR (field_metadata.collection = relation_metadata.one_collection AND field_metadata.field = relation_metadata.one_field) \
+                 ) \
+            ); \
+        DELETE FROM directus_relations \
+         WHERE many_collection IN ('cms_updates','cms_update_tags','cms_updates_tags') \
+            OR one_collection IN ('cms_updates','cms_update_tags','cms_updates_tags'); \
+        DELETE FROM directus_permissions WHERE collection IN ('cms_updates','cms_update_tags','cms_updates_tags'); \
+        DELETE FROM directus_presets WHERE collection IN ('cms_updates','cms_update_tags','cms_updates_tags'); \
+        DELETE FROM directus_collections WHERE collection IN ('cms_updates','cms_update_tags','cms_updates_tags'); \
+        DROP TABLE IF EXISTS directus.cms_updates_tags CASCADE; \
+        DROP TABLE IF EXISTS directus.cms_update_tags CASCADE; \
+        DROP TABLE IF EXISTS directus.cms_updates CASCADE; \
+        INSERT INTO schema_patch_log (patch_key, patch_status, patch_group, details, last_started_at, last_checked_at, apply_count) \
+        VALUES ('${UPDATES_CLEANUP_PATCH_KEY}', 'success', 'directus-postschema', '{\"collections\":[\"cms_updates\",\"cms_update_tags\",\"cms_updates_tags\"]}'::jsonb, now(), now(), 1) \
+        ON CONFLICT (patch_key) DO UPDATE SET \
+          patch_status='success', \
+          patch_group=EXCLUDED.patch_group, \
+          details=EXCLUDED.details, \
+          last_error=NULL, \
+          last_started_at=now(), \
+          last_checked_at=now(), \
+          apply_count=COALESCE(schema_patch_log.apply_count,0)+1; \
+        COMMIT;" "broken Updates collections cleanup" 12; then
+        echo "❌ Failed to remove the broken Updates collections."
+        exit 1
+      fi
+      echo "✅ Broken Updates collections and metadata removed."
+    else
+      echo "✅ Broken Updates collections cleanup already applied."
+    fi
+
     # 2) Check sentinel; skip schema patch if already applied
     PATCH_KEY="github_profile_cols_v1"
     SKIP_PATCH="0"
