@@ -1009,53 +1009,6 @@ data:
       fi
     fi
 
-    # One-time repair for the cms_updates.image file relation. Rebuild the
-    # physical column and both Directus metadata layers in one transaction so
-    # the Admin UI cannot observe another partially-created relation.
-    UPDATES_IMAGE_REPAIR_PATCH_KEY="repair_cms_updates_image_file_relation_v1"
-    UPDATES_IMAGE_REPAIR_APPLIED="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
-      "SELECT 1 FROM directus.schema_patch_log WHERE patch_key='${UPDATES_IMAGE_REPAIR_PATCH_KEY}' AND patch_status='success' LIMIT 1;" || true)"
-    if [ "${UPDATES_IMAGE_REPAIR_APPLIED:-0}" != "1" ]; then
-      echo "🖼️ Rebuilding cms_updates.image as a Directus Files image relation..."
-      if ! _psql_yb_retry "BEGIN; \
-        DELETE FROM directus_relations \
-         WHERE many_collection='cms_updates' AND many_field='image'; \
-        DELETE FROM directus_fields \
-         WHERE collection='cms_updates' AND field='image'; \
-        ALTER TABLE cms_updates DROP COLUMN IF EXISTS image CASCADE; \
-        ALTER TABLE cms_updates ADD COLUMN image UUID NULL; \
-        ALTER TABLE cms_updates \
-          ADD CONSTRAINT cms_updates_image_foreign \
-          FOREIGN KEY (image) REFERENCES directus_files(id) ON DELETE SET NULL; \
-        INSERT INTO directus_fields \
-          (collection, field, special, interface, display, readonly, hidden, sort, width, required, note) \
-        VALUES \
-          ('cms_updates', 'image', 'file', 'file-image', 'image', false, false, 7, 'full', false, 'Upload or select the update image from Directus assets.'); \
-        INSERT INTO directus_relations \
-          (many_collection, many_field, one_collection, one_field) \
-        VALUES \
-          ('cms_updates', 'image', 'directus_files', NULL); \
-        INSERT INTO schema_patch_log \
-          (patch_key, patch_status, patch_group, details, last_started_at, last_checked_at, apply_count) \
-        VALUES \
-          ('${UPDATES_IMAGE_REPAIR_PATCH_KEY}', 'success', 'directus-postschema', '{\"collection\":\"cms_updates\",\"field\":\"image\",\"related_collection\":\"directus_files\"}'::jsonb, now(), now(), 1) \
-        ON CONFLICT (patch_key) DO UPDATE SET \
-          patch_status='success', \
-          patch_group=EXCLUDED.patch_group, \
-          details=EXCLUDED.details, \
-          last_error=NULL, \
-          last_started_at=now(), \
-          last_checked_at=now(), \
-          apply_count=COALESCE(schema_patch_log.apply_count,0)+1; \
-        COMMIT;" "cms_updates.image file relation repair" 12; then
-        echo "❌ Failed to rebuild cms_updates.image."
-        exit 1
-      fi
-      echo "✅ Rebuilt cms_updates.image as a Directus Files image relation."
-    else
-      echo "✅ cms_updates.image relation repair already applied."
-    fi
-
     # 2) Check sentinel; skip schema patch if already applied
     PATCH_KEY="github_profile_cols_v1"
     SKIP_PATCH="0"
