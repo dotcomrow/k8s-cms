@@ -342,7 +342,11 @@ data:
 
     OLD_LATEST=""
     if gcloud storage cp "${BASE_URI}/latest.json" "${WORK_DIR}/old-latest.json" --quiet 2>/dev/null; then
-      OLD_LATEST="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run_id", ""))' "${WORK_DIR}/old-latest.json")"
+      OLD_LATEST="$(
+        tr -d '\r\n' <"${WORK_DIR}/old-latest.json" \
+          | sed -nE 's/.*"run_id"[[:space:]]*:[[:space:]]*"([0-9]{8}T[0-9]{6}Z)".*/\1/p' \
+          | head -n1
+      )"
       if [[ ! "${OLD_LATEST}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
         echo "Existing latest.json has an invalid run ID; refusing retention changes" >&2
         exit 1
