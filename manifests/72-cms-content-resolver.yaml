@@ -13,11 +13,47 @@ data:
     openapi: 3.0.3
     info:
       title: CMS Content Resolver API
-      version: 1.0.0
-      description: Resolves CMS content item JSON for a required requested language and queues translation misses.
+      version: 1.4.0
+      description: Resolves CMS content item JSON, queues translation misses, and provides published CMS updates with category filtering and search.
     servers:
       - url: http://cms-content-resolver.directus.svc.cluster.local:8080
     paths:
+      /updates:
+        get:
+          operationId: list_cms_updates
+          summary: List or search published CMS updates
+          description: Returns published updates, optionally filtered by category key or label and searched across title, summary, slug, and category fields.
+          parameters:
+            - name: category
+              in: query
+              schema:
+                type: string
+                maxLength: 100
+            - name: q
+              in: query
+              schema:
+                type: string
+                maxLength: 200
+            - name: limit
+              in: query
+              schema:
+                type: integer
+                minimum: 1
+                maximum: 100
+                default: 20
+            - name: offset
+              in: query
+              schema:
+                type: integer
+                minimum: 0
+                default: 0
+          responses:
+            "200":
+              description: Published CMS updates
+              content:
+                application/json:
+                  schema:
+                    $ref: "#/components/schemas/CmsUpdatesResponse"
       /hasura/actions/resolve-content:
         post:
           operationId: resolve_cms_content
@@ -38,6 +74,87 @@ data:
                     $ref: "#/components/schemas/ResolveContentResponse"
     components:
       schemas:
+        CmsUpdateTag:
+          type: object
+          required: [id, name, slug]
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            slug:
+              type: string
+        CmsUpdateImage:
+          type: object
+          required: [id, asset_path]
+          properties:
+            id:
+              type: string
+            filename_download:
+              type: string
+            title:
+              type: string
+            description:
+              type: string
+            width:
+              type: integer
+            height:
+              type: integer
+            asset_path:
+              type: string
+        CmsUpdate:
+          type: object
+          required: [id, title, slug, category_key, category_label, published_at, tags]
+          properties:
+            id:
+              type: string
+            title:
+              type: string
+            slug:
+              type: string
+            summary:
+              type: string
+            image_alt:
+              type: string
+            published_at:
+              type: string
+              format: date
+            category_key:
+              type: string
+            category_label:
+              type: string
+            href:
+              type: string
+            image:
+              allOf:
+                - $ref: "#/components/schemas/CmsUpdateImage"
+              nullable: true
+            tags:
+              type: array
+              items:
+                $ref: "#/components/schemas/CmsUpdateTag"
+        CmsUpdatesResponse:
+          type: object
+          required: [ok, items, pagination]
+          properties:
+            ok:
+              type: boolean
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/CmsUpdate"
+            pagination:
+              type: object
+              required: [limit, offset, count, total]
+              properties:
+                limit:
+                  type: integer
+                offset:
+                  type: integer
+                count:
+                  type: integer
+                total:
+                  type: integer
         ContentItem:
           type: object
           required: [id, content_json]
@@ -190,7 +307,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request
     from pydantic import BaseModel, Field, ValidationError, field_validator
 
-    APP_VERSION = "1.3.2"
+    APP_VERSION = "1.4.0"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$")
@@ -225,6 +342,26 @@ data:
     TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS = int(os.environ.get("TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS", "3600"))
     TRANSLATION_MODEL_CACHE_SECONDS = int(os.environ.get("TRANSLATION_MODEL_CACHE_SECONDS", "0"))
     ACTIVE_TRANSLATION_JOB_STATUSES = {"queued", "processing"}
+    CMS_UPDATES_FIELDS = ",".join([
+      "id",
+      "title",
+      "slug",
+      "summary",
+      "image_alt",
+      "published_at",
+      "category_key",
+      "category_label",
+      "href",
+      "image.id",
+      "image.filename_download",
+      "image.title",
+      "image.description",
+      "image.width",
+      "image.height",
+      "tags.update_tags_id.id",
+      "tags.update_tags_id.name",
+      "tags.update_tags_id.slug",
+    ])
     CONTENT_RESOLVER_BEARER_TOKEN = os.environ.get("CONTENT_RESOLVER_BEARER_TOKEN", "").strip()
     CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH = os.environ.get(
       "CONTENT_RESOLVER_BEARER_TOKEN_VAULT_PATH",
@@ -1553,6 +1690,142 @@ data:
       if authorization != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    def normalize_cms_update(raw_item: Dict[str, Any]) -> Dict[str, Any]:
+      image_value = raw_item.get("image")
+      image: Optional[Dict[str, Any]] = None
+      if isinstance(image_value, dict) and image_value.get("id"):
+        image = {
+          "id": str(image_value.get("id")),
+          "filename_download": image_value.get("filename_download"),
+          "title": image_value.get("title"),
+          "description": image_value.get("description"),
+          "width": image_value.get("width"),
+          "height": image_value.get("height"),
+          "asset_path": f"/assets/{image_value.get('id')}",
+        }
+      elif image_value:
+        image_id = str(image_value)
+        image = {"id": image_id, "asset_path": f"/assets/{image_id}"}
+
+      tags: List[Dict[str, Any]] = []
+      for relation in raw_item.get("tags") or []:
+        if not isinstance(relation, dict):
+          continue
+        tag = relation.get("update_tags_id")
+        if not isinstance(tag, dict) or not tag.get("id"):
+          continue
+        tags.append({
+          "id": str(tag.get("id")),
+          "name": str(tag.get("name") or ""),
+          "slug": str(tag.get("slug") or ""),
+        })
+
+      return {
+        "id": str(raw_item.get("id") or ""),
+        "title": str(raw_item.get("title") or ""),
+        "slug": str(raw_item.get("slug") or ""),
+        "summary": raw_item.get("summary"),
+        "image_alt": raw_item.get("image_alt"),
+        "published_at": raw_item.get("published_at"),
+        "category_key": str(raw_item.get("category_key") or ""),
+        "category_label": str(raw_item.get("category_label") or ""),
+        "href": raw_item.get("href"),
+        "image": image,
+        "tags": tags,
+      }
+
+    async def fetch_cms_updates(
+      category: Optional[str],
+      query: Optional[str],
+      limit: int,
+      offset: int,
+    ) -> Dict[str, Any]:
+      category_value = str(category or "").strip()
+      query_value = str(query or "").strip()
+      filters: List[Dict[str, Any]] = [{"status": {"_eq": "published"}}]
+      if category_value:
+        filters.append({
+          "_or": [
+            {"category_key": {"_eq": category_value}},
+            {"category_label": {"_icontains": category_value}},
+          ],
+        })
+      if query_value:
+        filters.append({
+          "_or": [
+            {"title": {"_icontains": query_value}},
+            {"summary": {"_icontains": query_value}},
+            {"slug": {"_icontains": query_value}},
+            {"category_key": {"_icontains": query_value}},
+            {"category_label": {"_icontains": query_value}},
+          ],
+        })
+
+      token = await directus_token()
+      if not token:
+        raise HTTPException(status_code=503, detail="Directus token unavailable")
+      params = {
+        "fields": CMS_UPDATES_FIELDS,
+        "filter": json.dumps({"_and": filters}, separators=(",", ":")),
+        "sort": "-published_at,-date_created",
+        "limit": str(limit),
+        "offset": str(offset),
+        "meta": "filter_count",
+      }
+      try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+          response = await client.get(
+            f"{DIRECTUS_BASE_URL}/items/cms_updates",
+            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+            params=params,
+          )
+          response.raise_for_status()
+      except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        raise HTTPException(
+          status_code=502,
+          detail={"error": "directus_updates_request_failed", "directus_status": status_code},
+        ) from exc
+      except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Directus updates service unavailable") from exc
+
+      payload = response.json()
+      raw_items = payload.get("data") if isinstance(payload, dict) else []
+      if not isinstance(raw_items, list):
+        raw_items = []
+      items = [normalize_cms_update(item) for item in raw_items if isinstance(item, dict)]
+      meta = payload.get("meta") if isinstance(payload, dict) else {}
+      total = meta.get("filter_count") if isinstance(meta, dict) else None
+      if not isinstance(total, int):
+        total = len(items)
+      return {
+        "ok": True,
+        "items": items,
+        "pagination": {
+          "limit": limit,
+          "offset": offset,
+          "count": len(items),
+          "total": total,
+        },
+      }
+
+    @app.get("/updates")
+    async def list_cms_updates(
+      category: Optional[str] = None,
+      q: Optional[str] = None,
+      limit: int = 20,
+      offset: int = 0,
+    ) -> Dict[str, Any]:
+      if category is not None and len(category) > 100:
+        raise HTTPException(status_code=422, detail="category must be at most 100 characters")
+      if q is not None and len(q) > 200:
+        raise HTTPException(status_code=422, detail="q must be at most 200 characters")
+      if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+      if offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be zero or greater")
+      return await fetch_cms_updates(category, q, limit, offset)
+
     @app.get("/healthz")
     async def healthz() -> Dict[str, Any]:
       return {
@@ -1900,12 +2173,12 @@ metadata:
     gravitee.io/auth-required: "directus-token"
     gravitee.io/approval-required: "admin"
     gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
-    gravitee.io/description: "Language-aware CMS content resolver"
+    gravitee.io/description: "CMS content resolver with language-aware content, published updates, category filtering, and search"
     gravitee.io/version: "latest"
-    gravitee.io/tags: "directus,cms,hasura,content,translation"
+    gravitee.io/tags: "directus,cms,hasura,content,translation,updates,search"
     gravitee.io/definition-name: "cms-content-resolver-api"
-    gravitee.io/definition-summary: "Language-aware CMS content resolver"
-    gravitee.io/definition-description: "Resolves CMS content item JSON for requested browser languages and queues translation misses."
+    gravitee.io/definition-summary: "CMS content resolver and published updates API"
+    gravitee.io/definition-description: "Resolves CMS content item JSON for requested browser languages, queues translation misses, and lists or searches published CMS updates."
     gravitee.io/definition-type: "HTTP"
     gravitee.io/definition-visibility: "PUBLIC"
     gravitee.io/definition-state: "STARTED"
@@ -1916,8 +2189,8 @@ metadata:
     gravitee.io/definition-listener-host: "cms-content-resolver.directus.svc.cluster.local"
     gravitee.io/definition-listener-port: "8080"
     gravitee.io/definition-groups: "cms"
-    gravitee.io/definition-tags: "directus,cms,hasura,content,translation"
-    gravitee.io/definition-labels: "internal,cms,hasura,content,translation"
+    gravitee.io/definition-tags: "directus,cms,hasura,content,translation,updates,search"
+    gravitee.io/definition-labels: "internal,cms,hasura,content,translation,updates,search"
     gravitee.io/definition-path-mappings: "/cms-content-resolver/*"
     gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
     gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"cms-content-resolver-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://cms-content-resolver.directus.svc.cluster.local:8080"},"secondary":false}]}]'
