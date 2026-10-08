@@ -4099,6 +4099,7 @@ data:
        ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_template_functions ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN token_key DROP NOT NULL; \
        ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN status SET DEFAULT 'draft'; \
        ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN function_kind SET DEFAULT 'builtin'; \
        ALTER TABLE IF EXISTS cms_template_functions ALTER COLUMN handler_key SET DEFAULT 'current_year'; \
