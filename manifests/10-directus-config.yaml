@@ -22,6 +22,10 @@ data:
   DB_POOL__MAX: "20"
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
+  # Allow selected trusted callers to bypass the shared data cache with
+  # Cache-Control: no-store. The cms_updates resolver uses this so request-time
+  # server functions see current content without disabling caching globally.
+  CACHE_SKIP_ALLOWED: "true"
   REDIS_ENABLED: "true"
   # Use Redis Sentinel for automatic master discovery and failover.
   REDIS_NAME: "mymaster"

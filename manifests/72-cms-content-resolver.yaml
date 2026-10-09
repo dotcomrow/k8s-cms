@@ -13,7 +13,7 @@ data:
     openapi: 3.0.3
     info:
       title: CMS Content Resolver API
-      version: 1.4.0
+      version: 1.4.1
       description: Resolves CMS content item JSON, queues translation misses, and provides published CMS updates with category filtering and search.
     servers:
       - url: http://cms-content-resolver.directus.svc.cluster.local:8080
@@ -304,10 +304,10 @@ data:
 
     import httpx
     from confluent_kafka import Producer
-    from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi import FastAPI, Header, HTTPException, Request, Response
     from pydantic import BaseModel, Field, ValidationError, field_validator
 
-    APP_VERSION = "1.4.0"
+    APP_VERSION = "1.4.1"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$")
@@ -1776,7 +1776,14 @@ data:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
           response = await client.get(
             f"{DIRECTUS_BASE_URL}/items/cms_updates",
-            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+            headers={
+              "Accept": "application/json",
+              "Authorization": f"Bearer {token}",
+              # This endpoint is request-time content. Directus honors this
+              # only when CACHE_SKIP_ALLOWED=true, leaving its shared Redis
+              # cache enabled for all other APIs.
+              "Cache-Control": "no-store",
+            },
             params=params,
           )
           response.raise_for_status()
@@ -1811,6 +1818,7 @@ data:
 
     @app.get("/updates")
     async def list_cms_updates(
+      response: Response,
       category: Optional[str] = None,
       q: Optional[str] = None,
       limit: int = 20,
@@ -1824,6 +1832,10 @@ data:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
       if offset < 0:
         raise HTTPException(status_code=422, detail="offset must be zero or greater")
+      # Prevent intermediary/browser caching for the direct GET surface. The
+      # generated GraphQL action is a POST, but carries this header through its
+      # upstream request as an additional defense against stale content.
+      response.headers["Cache-Control"] = "no-store"
       return await fetch_cms_updates(category, q, limit, offset)
 
     @app.get("/healthz")

@@ -2550,6 +2550,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: CACHE_ENABLED } }
         - name: CACHE_STORE
           valueFrom: { configMapKeyRef: { name: directus-config, key: CACHE_STORE } }
+        - name: CACHE_SKIP_ALLOWED
+          valueFrom: { configMapKeyRef: { name: directus-config, key: CACHE_SKIP_ALLOWED } }
         - name: REDIS_ENABLED
           valueFrom: { configMapKeyRef: { name: directus-config, key: REDIS_ENABLED } }
         - name: REDIS_NAME
