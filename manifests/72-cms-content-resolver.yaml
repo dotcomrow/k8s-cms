@@ -13,8 +13,8 @@ data:
     openapi: 3.0.3
     info:
       title: CMS Content Resolver API
-      version: 1.5.0
-      description: Resolves CMS content item JSON, queues translation misses, and provides published CMS updates with category filtering and search.
+      version: 1.6.0
+      description: Resolves CMS content item JSON, queues translation misses, and provides published CMS updates with category, tag, and text filtering.
     servers:
       - url: http://cms-content-resolver.directus.svc.cluster.local:8080
     paths:
@@ -22,10 +22,16 @@ data:
         get:
           operationId: list_cms_updates
           summary: List or search published CMS updates
-          description: Returns complete published update records with file metadata, ordered sections, tags, related updates, pagination, optional category filtering, and text search.
+          description: Returns complete published update records with file metadata, ordered sections, tags, related updates, pagination, optional category and tag filtering, and text search.
           parameters:
             - name: category
               in: query
+              schema:
+                type: string
+                maxLength: 100
+            - name: tag
+              in: query
+              description: Exact tag name or slug associated with the update.
               schema:
                 type: string
                 maxLength: 100
@@ -349,7 +355,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request, Response
     from pydantic import BaseModel, Field, ValidationError, field_validator
 
-    APP_VERSION = "1.5.0"
+    APP_VERSION = "1.6.0"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$")
@@ -1789,11 +1795,13 @@ data:
 
     async def fetch_cms_updates(
       category: Optional[str],
+      tag: Optional[str],
       query: Optional[str],
       limit: int,
       offset: int,
     ) -> Dict[str, Any]:
       category_value = str(category or "").strip()
+      tag_value = str(tag or "").strip()
       query_value = str(query or "").strip()
       filters: List[Dict[str, Any]] = [{"status": {"_eq": "published"}}]
       if category_value:
@@ -1801,6 +1809,13 @@ data:
           "_or": [
             {"category_key": {"_eq": category_value}},
             {"category_label": {"_icontains": category_value}},
+          ],
+        })
+      if tag_value:
+        filters.append({
+          "_or": [
+            {"tags": {"update_tags_id": {"name": {"_eq": tag_value}}}},
+            {"tags": {"update_tags_id": {"slug": {"_eq": tag_value}}}},
           ],
         })
       if query_value:
@@ -1873,12 +1888,15 @@ data:
     async def list_cms_updates(
       response: Response,
       category: Optional[str] = None,
+      tag: Optional[str] = None,
       q: Optional[str] = None,
       limit: int = 20,
       offset: int = 0,
     ) -> Dict[str, Any]:
       if category is not None and len(category) > 100:
         raise HTTPException(status_code=422, detail="category must be at most 100 characters")
+      if tag is not None and len(tag) > 100:
+        raise HTTPException(status_code=422, detail="tag must be at most 100 characters")
       if q is not None and len(q) > 200:
         raise HTTPException(status_code=422, detail="q must be at most 200 characters")
       if limit < 1 or limit > 100:
@@ -1889,7 +1907,7 @@ data:
       # generated GraphQL action is a POST, but carries this header through its
       # upstream request as an additional defense against stale content.
       response.headers["Cache-Control"] = "no-store"
-      return await fetch_cms_updates(category, q, limit, offset)
+      return await fetch_cms_updates(category, tag, q, limit, offset)
 
     @app.get("/healthz")
     async def healthz() -> Dict[str, Any]:
@@ -2238,7 +2256,7 @@ metadata:
     gravitee.io/auth-required: "directus-token"
     gravitee.io/approval-required: "admin"
     gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
-    gravitee.io/description: "CMS content resolver with language-aware content, published updates, category filtering, and search"
+    gravitee.io/description: "CMS content resolver with language-aware content, published updates, category and tag filtering, and search"
     gravitee.io/version: "latest"
     gravitee.io/tags: "directus,cms,hasura,content,translation,updates,search"
     gravitee.io/definition-name: "cms-content-resolver-api"
