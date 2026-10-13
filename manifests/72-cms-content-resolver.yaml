@@ -13,7 +13,7 @@ data:
     openapi: 3.0.3
     info:
       title: CMS Content Resolver API
-      version: 1.6.0
+      version: 1.6.1
       description: Resolves CMS content item JSON, queues translation misses, and provides published CMS updates with category, tag, and text filtering.
     servers:
       - url: http://cms-content-resolver.directus.svc.cluster.local:8080
@@ -355,7 +355,7 @@ data:
     from fastapi import FastAPI, Header, HTTPException, Request, Response
     from pydantic import BaseModel, Field, ValidationError, field_validator
 
-    APP_VERSION = "1.6.0"
+    APP_VERSION = "1.6.1"
     DEFAULT_LANGUAGE = "en"
     LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,8}$")
     MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$")
@@ -1765,14 +1765,20 @@ data:
       item["sections"] = sections
 
       tags: List[Dict[str, Any]] = []
+      seen_tag_ids: set[str] = set()
       for relation in raw_item.get("tags") or []:
         if not isinstance(relation, dict):
           continue
         tag = relation.get("update_tags_id")
         if not isinstance(tag, dict) or not tag.get("id"):
           continue
+        tag_id = str(tag.get("id"))
+        if tag_id in seen_tag_ids:
+          continue
+        # Preserve the first junction so Directus relationship ordering remains stable.
+        seen_tag_ids.add(tag_id)
         tag_value = dict(tag)
-        tag_value["id"] = str(tag.get("id"))
+        tag_value["id"] = tag_id
         tag_value["junction"] = relation_junction(relation, "update_tags_id")
         tags.append(tag_value)
       item["tags"] = tags
