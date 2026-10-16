@@ -689,6 +689,7 @@ data:
              ('platform_notification_delivery_attempts','status'), \
              ('platform_notification_browser_subscriptions','endpoint_hash'), \
              ('platform_notification_browser_subscriptions','browser_installation_id'), \
+             ('platform_notification_browser_subscriptions','is_preferred'), \
              ('platform_notification_browser_subscriptions','permission'), \
              ('platform_notification_browser_subscriptions','fallback_channels_json'), \
              ('platform_notification_templates','notification_key'), \
@@ -2534,6 +2535,7 @@ data:
          user_id TEXT NULL, \
          user_email TEXT NULL, \
          user_phone TEXT NULL, \
+         is_preferred BOOLEAN NOT NULL DEFAULT false, \
          organization_id UUID NULL, \
          app_id UUID NULL, \
          permission TEXT NOT NULL DEFAULT 'granted', \
@@ -2556,6 +2558,7 @@ data:
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS user_id TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS user_email TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS user_phone TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS is_preferred BOOLEAN; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS organization_id UUID; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS app_id UUID; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS permission TEXT; \
@@ -2573,6 +2576,7 @@ data:
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN p256dh DROP NOT NULL; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN auth DROP NOT NULL; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN permission SET DEFAULT 'granted'; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN is_preferred SET DEFAULT false; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN capabilities_json SET DEFAULT '{}'::jsonb; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN fallback_channels_json SET DEFAULT '[]'::jsonb; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN metadata_json SET DEFAULT '{}'::jsonb; \
@@ -2581,6 +2585,8 @@ data:
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN date_created SET DEFAULT now(); \
        UPDATE platform_notification_browser_subscriptions SET source = 'internal-application-mfe' WHERE source IS NULL OR BTRIM(source) = ''; \
        UPDATE platform_notification_browser_subscriptions SET permission = 'granted' WHERE permission IS NULL OR BTRIM(permission) = ''; \
+       UPDATE platform_notification_browser_subscriptions SET is_preferred = false WHERE is_preferred IS NULL; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN is_preferred SET NOT NULL; \
        UPDATE platform_notification_browser_subscriptions SET capabilities_json = '{}'::jsonb WHERE capabilities_json IS NULL OR jsonb_typeof(capabilities_json) <> 'object'; \
        UPDATE platform_notification_browser_subscriptions SET fallback_channels_json = '[]'::jsonb WHERE fallback_channels_json IS NULL OR jsonb_typeof(fallback_channels_json) <> 'array'; \
        UPDATE platform_notification_browser_subscriptions SET metadata_json = '{}'::jsonb WHERE metadata_json IS NULL OR jsonb_typeof(metadata_json) <> 'object'; \
@@ -2588,7 +2594,10 @@ data:
        UPDATE platform_notification_browser_subscriptions SET last_seen_at = now() WHERE last_seen_at IS NULL; \
        UPDATE platform_notification_browser_subscriptions SET date_created = now() WHERE date_created IS NULL; \
        CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_endpoint_hash_unique ON platform_notification_browser_subscriptions (endpoint_hash) WHERE endpoint_hash IS NOT NULL AND BTRIM(endpoint_hash) <> ''; \
-       CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_email_unique ON platform_notification_browser_subscriptions (LOWER(BTRIM(user_email))) WHERE user_email IS NOT NULL AND BTRIM(user_email) <> ''; \
+       DROP INDEX IF EXISTS platform_notification_browser_subscriptions_user_email_unique; \
+       CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_email_idx ON platform_notification_browser_subscriptions (LOWER(BTRIM(user_email)), status, last_seen_at DESC) WHERE user_email IS NOT NULL AND BTRIM(user_email) <> ''; \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_preferred_user_unique ON platform_notification_browser_subscriptions (LOWER(BTRIM(user_id))) WHERE is_preferred = true AND user_id IS NOT NULL AND BTRIM(user_id) <> ''; \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_preferred_email_unique ON platform_notification_browser_subscriptions (LOWER(BTRIM(user_email))) WHERE is_preferred = true AND (user_id IS NULL OR BTRIM(user_id) = '') AND user_email IS NOT NULL AND BTRIM(user_email) <> ''; \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_installation_idx ON platform_notification_browser_subscriptions (browser_installation_id, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_idx ON platform_notification_browser_subscriptions (user_id, status, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_app_idx ON platform_notification_browser_subscriptions (app_id, status, last_seen_at DESC); \
