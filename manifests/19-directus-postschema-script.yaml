@@ -746,6 +746,8 @@ data:
                ('function:prune_history_retention', 'directus.prune_history_retention()'), \
                ('function:prune_invalid_browser_subscriptions', 'directus.prune_invalid_browser_subscriptions()'), \
                ('function:prune_unretained_browser_subscriptions', 'directus.prune_unretained_browser_subscriptions()'), \
+               ('function:prune_platform_app_operation_steps_14d', 'directus.prune_platform_app_operation_steps_14d()'), \
+               ('function:prune_platform_app_operations_14d', 'directus.prune_platform_app_operations_14d()'), \
                ('function:prune_platform_notification_delivery_attempts_14d', 'directus.prune_platform_notification_delivery_attempts_14d()'), \
                ('function:prune_platform_notification_requests_14d', 'directus.prune_platform_notification_requests_14d()'), \
                ('function:prune_successful_cms_content_translation_jobs', 'directus.prune_successful_cms_content_translation_jobs()'), \
@@ -4392,6 +4394,36 @@ data:
          RETURN deleted_count; \
        END; \
        \$\$; \
+       CREATE OR REPLACE FUNCTION directus.prune_platform_app_operation_steps_14d() RETURNS integer \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         deleted_count integer := 0; \
+       BEGIN \
+         IF to_regclass('directus.platform_app_operation_steps') IS NULL THEN \
+           RETURN 0; \
+         END IF; \
+         DELETE FROM directus.platform_app_operation_steps \
+         WHERE COALESCE(finished_at, started_at, date_created) < now() - INTERVAL '14 days'; \
+         GET DIAGNOSTICS deleted_count = ROW_COUNT; \
+         RETURN deleted_count; \
+       END; \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.prune_platform_app_operations_14d() RETURNS integer \
+       LANGUAGE plpgsql \
+       AS \$\$ \
+       DECLARE \
+         deleted_count integer := 0; \
+       BEGIN \
+         IF to_regclass('directus.platform_app_operations') IS NULL THEN \
+           RETURN 0; \
+         END IF; \
+         DELETE FROM directus.platform_app_operations \
+         WHERE COALESCE(finished_at, requested_at, date_created) < now() - INTERVAL '14 days'; \
+         GET DIAGNOSTICS deleted_count = ROW_COUNT; \
+         RETURN deleted_count; \
+       END; \
+       \$\$; \
        CREATE OR REPLACE FUNCTION directus.prune_platform_notification_delivery_attempts_14d() RETURNS integer \
        LANGUAGE plpgsql \
        AS \$\$ \
@@ -4437,6 +4469,8 @@ data:
              VALUES \
                ('browser_subscriptions_invalid', 'directus.prune_invalid_browser_subscriptions()'), \
                ('browser_subscriptions_unretained', 'directus.prune_unretained_browser_subscriptions()'), \
+               ('platform_app_operation_steps_14d', 'directus.prune_platform_app_operation_steps_14d()'), \
+               ('platform_app_operations_14d', 'directus.prune_platform_app_operations_14d()'), \
                ('platform_notification_delivery_attempts_14d', 'directus.prune_platform_notification_delivery_attempts_14d()'), \
                ('platform_notification_requests_14d', 'directus.prune_platform_notification_requests_14d()'), \
                ('cms_content_translation_jobs_successful_24h', 'directus.prune_successful_cms_content_translation_jobs()') \
