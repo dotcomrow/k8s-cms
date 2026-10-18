@@ -79,6 +79,8 @@ data:
     RESTORE_TIMEOUT_SECONDS="${RESTORE_TIMEOUT_SECONDS:-7200}"
     UPLOADS_PATH="${UPLOADS_PATH:-/source-uploads}"
     SSH_PID=""
+    SNAPSHOT_SESSION_PID=""
+    SNAPSHOT_CONTROL_FIFO=""
 
     cleanup() {
       cleanup_status="$?"
@@ -88,6 +90,10 @@ data:
       touch "${WORK_DIR}/stop-verifier" >/dev/null 2>&1 || true
       if [ -n "${SSH_PID}" ]; then
         kill "${SSH_PID}" >/dev/null 2>&1 || true
+      fi
+      if [ -n "${SNAPSHOT_SESSION_PID}" ]; then
+        kill "${SNAPSHOT_SESSION_PID}" >/dev/null 2>&1 || true
+        wait "${SNAPSHOT_SESSION_PID}" >/dev/null 2>&1 || true
       fi
     }
     fail() {
@@ -142,7 +148,39 @@ data:
     SERVER_VERSION_NUM="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SHOW server_version_num;")"
     DATABASE_BYTES="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SELECT pg_database_size(current_database());")"
 
-    echo "Creating PostgreSQL custom-format backup..."
+    # Keep the exporting transaction open while pg_dump and the count query
+    # independently import the same point-in-time database snapshot.
+    SNAPSHOT_CONTROL_FIFO="${RUN_DIR}/snapshot-control"
+    SNAPSHOT_ID_FILE="${RUN_DIR}/snapshot-id"
+    mkfifo "${SNAPSHOT_CONTROL_FIFO}"
+    psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX \
+      <"${SNAPSHOT_CONTROL_FIFO}" >"${RUN_DIR}/snapshot-session.log" 2>&1 &
+    SNAPSHOT_SESSION_PID="$!"
+    exec 3>"${SNAPSHOT_CONTROL_FIFO}"
+    printf '%s\n' \
+      'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;' \
+      "\\o ${SNAPSHOT_ID_FILE}" \
+      'SELECT pg_export_snapshot();' \
+      '\\o' >&3
+
+    snapshot_waited=0
+    while [ ! -s "${SNAPSHOT_ID_FILE}" ]; do
+      if ! kill -0 "${SNAPSHOT_SESSION_PID}" >/dev/null 2>&1; then
+        cat "${RUN_DIR}/snapshot-session.log" >&2 || true
+        fail "PostgreSQL snapshot session exited before exporting a snapshot"
+      fi
+      snapshot_waited=$((snapshot_waited + 1))
+      if [ "${snapshot_waited}" -ge 30 ]; then
+        fail "Timed out waiting for PostgreSQL to export a backup snapshot"
+      fi
+      sleep 1
+    done
+    DATABASE_SNAPSHOT_ID="$(tr -d '[:space:]' <"${SNAPSHOT_ID_FILE}")"
+    case "${DATABASE_SNAPSHOT_ID}" in
+      *[!0-9A-Fa-f:-]*|'') fail "PostgreSQL returned an invalid backup snapshot ID" ;;
+    esac
+
+    echo "Creating PostgreSQL custom-format backup from a shared database snapshot..."
     timeout "${COMMAND_TIMEOUT_SECONDS}" pg_dump \
       --host=127.0.0.1 \
       --port="${SSH_LOCAL_DB_PORT}" \
@@ -150,6 +188,7 @@ data:
       --dbname="${DB_NAME}" \
       --format=custom \
       --compress=6 \
+      --snapshot="${DATABASE_SNAPSHOT_ID}" \
       --no-owner \
       --no-privileges \
       --file="${RUN_DIR}/directus.dump"
@@ -158,11 +197,23 @@ data:
     test -s "${RUN_DIR}/directus.restore-list" || fail "Database restore list is empty"
 
     TABLE_COUNT_SQL="${RUN_DIR}/table-counts.sql"
-    psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c \
-      "SELECT format('SELECT %L || ''|'' || count(*) FROM %I.%I;', schemaname || '.' || tablename, schemaname, tablename) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY schemaname,tablename;" \
-      >"${TABLE_COUNT_SQL}"
-    psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -f "${TABLE_COUNT_SQL}" \
+    {
+      printf '%s\n' \
+        'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;' \
+        "SET TRANSACTION SNAPSHOT '${DATABASE_SNAPSHOT_ID}';" \
+        "\\o ${TABLE_COUNT_SQL}" \
+        "SELECT format('SELECT %L || ''|'' || count(*) FROM %I.%I;', schemaname || '.' || tablename, schemaname, tablename) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY schemaname,tablename;" \
+        '\\o' \
+        "\\i ${TABLE_COUNT_SQL}"
+      printf '%s\n' 'COMMIT;'
+    } | psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX \
       | sort >"${RUN_DIR}/source-table-counts.txt"
+    printf '%s\n' 'COMMIT;' '\q' >&3
+    exec 3>&-
+    wait "${SNAPSHOT_SESSION_PID}"
+    SNAPSHOT_SESSION_PID=""
+    rm -f "${SNAPSHOT_CONTROL_FIFO}" "${SNAPSHOT_ID_FILE}"
+    SNAPSHOT_CONTROL_FIFO=""
 
     echo "Archiving Directus uploads and generating per-file checksums..."
     upload_snapshot_attempt=1
@@ -220,8 +271,11 @@ data:
         "${RUN_DIR}/directus.dump"
       psql -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d "${VERIFY_DB_NAME}" -qAtX -f "${TABLE_COUNT_SQL}" \
         | sort >"${RUN_DIR}/restored-table-counts.txt"
-      diff -u "${RUN_DIR}/source-table-counts.txt" "${RUN_DIR}/restored-table-counts.txt" \
-        >"${RUN_DIR}/table-counts.diff" || fail "Restored database row counts do not match the source"
+      if ! diff -u "${RUN_DIR}/source-table-counts.txt" "${RUN_DIR}/restored-table-counts.txt" \
+        >"${RUN_DIR}/table-counts.diff"; then
+        cat "${RUN_DIR}/table-counts.diff" >&2
+        fail "Restored database row counts do not match the exported snapshot"
+      fi
       dropdb -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${VERIFY_DB_NAME}"
     fi
 

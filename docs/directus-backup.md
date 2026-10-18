@@ -30,7 +30,8 @@ Retention rotation occurs only after all of these steps succeed:
 1. `pg_dump` completes.
 2. `pg_restore --list` reads the archive.
 3. The dump restores into the isolated verification database.
-4. Every restored table row count matches the source database.
+4. Every restored table row count matches the source database at the exact
+   PostgreSQL snapshot used by `pg_dump`.
 5. The uploads archive extracts successfully and every file checksum matches.
 6. Local artifact checksums pass.
 7. Every GCS upload completes and its remote size matches the local artifact.
