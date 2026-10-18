@@ -562,6 +562,7 @@ data:
            ('platform_notification_requests'), \
            ('platform_notification_delivery_attempts'), \
            ('platform_notification_browser_subscriptions'), \
+           ('platform_email_validation_subscriptions'), \
            ('platform_notification_templates'), \
            ('platform_notification_template_assets') \
        ) \
@@ -692,6 +693,10 @@ data:
              ('platform_notification_browser_subscriptions','is_preferred'), \
              ('platform_notification_browser_subscriptions','permission'), \
              ('platform_notification_browser_subscriptions','fallback_channels_json'), \
+             ('platform_email_validation_subscriptions','validation_id'), \
+             ('platform_email_validation_subscriptions','target_collection'), \
+             ('platform_email_validation_subscriptions','target_record_id'), \
+             ('platform_email_validation_subscriptions','status'), \
              ('platform_notification_templates','notification_key'), \
              ('platform_notification_templates','subject_template'), \
              ('platform_notification_templates','body_template'), \
@@ -780,6 +785,7 @@ data:
              ('platform_notification_requests'), \
              ('platform_notification_delivery_attempts'), \
              ('platform_notification_browser_subscriptions'), \
+             ('platform_email_validation_subscriptions'), \
              ('platform_notification_templates'), \
              ('platform_notification_template_assets') \
          ) \
@@ -2538,6 +2544,10 @@ data:
          auth TEXT NULL, \
          user_id TEXT NULL, \
          user_email TEXT NULL, \
+         email_validation_id UUID NULL, \
+         email_validation_status TEXT NULL, \
+         email_validation_checked_at TIMESTAMPTZ NULL, \
+         email_validation_error TEXT NULL, \
          user_phone TEXT NULL, \
          is_preferred BOOLEAN NOT NULL DEFAULT false, \
          organization_id UUID NULL, \
@@ -2561,6 +2571,10 @@ data:
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS auth TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS user_id TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS user_email TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS email_validation_id UUID; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS email_validation_status TEXT; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS email_validation_checked_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS email_validation_error TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS user_phone TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS is_preferred BOOLEAN; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS organization_id UUID; \
@@ -2600,6 +2614,7 @@ data:
        CREATE UNIQUE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_endpoint_hash_unique ON platform_notification_browser_subscriptions (endpoint_hash) WHERE endpoint_hash IS NOT NULL AND BTRIM(endpoint_hash) <> ''; \
        DROP INDEX IF EXISTS platform_notification_browser_subscriptions_user_email_unique; \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_email_idx ON platform_notification_browser_subscriptions (LOWER(BTRIM(user_email)), status, last_seen_at DESC) WHERE user_email IS NOT NULL AND BTRIM(user_email) <> ''; \
+       CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_email_validation_idx ON platform_notification_browser_subscriptions (LOWER(BTRIM(user_email)), email_validation_status, email_validation_checked_at DESC) WHERE user_email IS NOT NULL AND BTRIM(user_email) <> ''; \
        DROP INDEX IF EXISTS platform_notification_browser_subscriptions_preferred_user_unique; \
        DROP INDEX IF EXISTS platform_notification_browser_subscriptions_preferred_email_unique; \
        WITH ranked_preferred_subscriptions AS ( \
@@ -2618,6 +2633,37 @@ data:
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_installation_idx ON platform_notification_browser_subscriptions (browser_installation_id, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_idx ON platform_notification_browser_subscriptions (user_id, status, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_app_idx ON platform_notification_browser_subscriptions (app_id, status, last_seen_at DESC); \
+       CREATE TABLE IF NOT EXISTS platform_email_validation_subscriptions ( \
+         id UUID PRIMARY KEY, \
+         validation_id UUID NOT NULL, \
+         email TEXT NOT NULL, \
+         target_collection TEXT NOT NULL, \
+         target_record_id UUID NOT NULL, \
+         status TEXT NOT NULL DEFAULT 'active', \
+         last_event_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
+         processed_at TIMESTAMPTZ NULL, \
+         error_message TEXT NULL, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS validation_id UUID; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS email TEXT; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS target_collection TEXT; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS target_record_id UUID; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS status TEXT; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS last_event_json JSONB; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS error_message TEXT; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ALTER COLUMN status SET DEFAULT 'active'; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ALTER COLUMN last_event_json SET DEFAULT '{}'::jsonb; \
+       ALTER TABLE IF EXISTS platform_email_validation_subscriptions ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE platform_email_validation_subscriptions SET status = 'active' WHERE status IS NULL OR BTRIM(status) = ''; \
+       UPDATE platform_email_validation_subscriptions SET last_event_json = '{}'::jsonb WHERE last_event_json IS NULL OR jsonb_typeof(last_event_json) <> 'object'; \
+       UPDATE platform_email_validation_subscriptions SET date_created = now() WHERE date_created IS NULL; \
+       CREATE UNIQUE INDEX IF NOT EXISTS platform_email_validation_subscriptions_target_unique ON platform_email_validation_subscriptions (validation_id, target_collection, target_record_id); \
+       CREATE INDEX IF NOT EXISTS platform_email_validation_subscriptions_validation_idx ON platform_email_validation_subscriptions (validation_id, status, date_created); \
        CREATE TABLE IF NOT EXISTS platform_notification_templates ( \
          id UUID PRIMARY KEY, \
          notification_key TEXT NOT NULL, \
@@ -2729,6 +2775,9 @@ data:
        INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
        SELECT '00000000-0000-4000-8000-000000000101'::uuid, 'platform.deploy.operation-step', 'Platform deployment step', 'Deployment operation step status notification used by the platform deploy service.', 'published', 'en', jsonb_build_array('browser_push', 'email', 'sms'), jsonb_build_array('operation_id', 'operation_type', 'step_label', 'status', 'message'), jsonb_build_object('operation_id', 'sample-operation-id', 'operation_type', 'redeploy', 'app_id', 'sample-app-id', 'step_key', 'deploy', 'step_label', 'Deploy application', 'status', 'success', 'message', 'Deploy application completed.'), 'Platform {{operation_type}}: {{step_label}} {{status}}', 'Platform {{operation_type}}: {{step_label}} {{status}}', '{{message}}', '{{message}}', NULL, jsonb_build_object('operation_id', '{{operation_id}}', 'operation_type', '{{operation_type}}', 'app_id', '{{app_id}}', 'step_key', '{{step_key}}', 'step_label', '{{step_label}}', 'status', '{{status}}', 'message', '{{message}}', 'error_message', '{{error_message}}'), jsonb_build_object('tag', 'platform-deploy-{{operation_id}}-{{step_key}}-{{status}}', 'ttl_seconds', 3600, 'urgency', 'normal', 'renotify', true), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'platform-deploy-service'), now(), now() \
        WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'platform.deploy.operation-step' AND COALESCE(locale, '') = 'en'); \
+       INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
+       SELECT '00000000-0000-4000-8000-000000000110'::uuid, 'crm.external-signup.email-confirmation', 'CRM external signup email confirmation', 'One-time confirmation email for externally submitted email addresses.', 'published', 'en', jsonb_build_array('email'), jsonb_build_array('confirmation_url', 'expires_hours'), jsonb_build_object('confirmation_url', 'https://login.suncoast.systems/crm-email-confirmation/confirm-email?code=sample', 'expires_hours', 24), 'Confirm your email address', 'Confirm your email address', 'Confirm your email address by opening this link: {{confirmation_url}}. This link expires in {{expires_hours}} hours.', 'Confirm your email address by opening this link: {{confirmation_url}}. This link expires in {{expires_hours}} hours.', '<p>Confirm your email address by selecting the link below.</p><p><a href="{{confirmation_url}}">Confirm email address</a></p><p>This link expires in {{expires_hours}} hours.</p>', jsonb_build_object('purpose', 'external-signup-email-confirmation'), jsonb_build_object('ttl_seconds', 86400), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'suncoast-crm-api', 'notification_topic', 'platform.notifications.requested.v1'), now(), now() \
+       WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'crm.external-signup.email-confirmation' AND COALESCE(locale, '') = 'en'); \
        INSERT INTO platform_notification_templates (id, notification_key, name, description, status, locale, channels_json, required_parameters_json, sample_parameters_json, subject_template, title_template, body_template, text_template, html_template, data_template_json, options_template_json, assets_json, stylesheets_json, metadata_json, date_created, date_updated) \
        SELECT '00000000-0000-4000-8000-000000000108'::uuid, 'crm.hubspot.operation.retrying', 'HubSpot CRM operation retrying', 'Warning email sent after the first retryable HubSpot CRM provider failure.', 'published', 'en', jsonb_build_array('email'), jsonb_build_array('operation_id', 'action', 'entity_type', 'attempts', 'failure'), jsonb_build_object('operation_id', 'sample-operation-id', 'action', 'create', 'entity_type', 'contacts', 'entity_id', 'sample-entity-id', 'attempts', 1, 'status', 'retrying', 'failure', 'HubSpot HTTP 503'), 'HubSpot CRM operation is retrying: {{action}} {{entity_type}}', 'HubSpot CRM operation is retrying: {{action}} {{entity_type}}', 'The first HubSpot attempt failed. The operation remains durable and will be retried with increasing delays. Operation: {{operation_id}}. Entity: {{entity_type}}/{{entity_id}}. Attempt: {{attempts}}. Failure: {{failure}}', 'The first HubSpot attempt failed. The operation remains durable and will be retried with increasing delays. Operation: {{operation_id}}. Entity: {{entity_type}}/{{entity_id}}. Attempt: {{attempts}}. Failure: {{failure}}', NULL, jsonb_build_object('operation_id', '{{operation_id}}', 'action', '{{action}}', 'entity_type', '{{entity_type}}', 'entity_id', '{{entity_id}}', 'attempts', '{{attempts}}', 'status', '{{status}}', 'failure', '{{failure}}'), jsonb_build_object('ttl_seconds', 86400), '[]'::jsonb, '[]'::jsonb, jsonb_build_object('managed_by', 'k8s-cms-postschema', 'source', 'suncoast-crm-api', 'notification_topic', 'platform.notifications.requested.v1'), now(), now() \
        WHERE NOT EXISTS (SELECT 1 FROM platform_notification_templates WHERE notification_key = 'crm.hubspot.operation.retrying' AND COALESCE(locale, '') = 'en'); \
@@ -3015,6 +3064,7 @@ data:
       _upsert_collection_meta "platform_notification_requests" "notifications" "Validated notification requests accepted by the platform notification service and routed through Kafka/NiFi." "{{event_key}} | {{status}} | {{date_created}}"
       _upsert_collection_meta "platform_notification_delivery_attempts" "outgoing_mail" "Per-channel notification delivery attempt history written by the notification executor." "{{channel}} | {{status}} | {{attempted_at}}"
       _upsert_collection_meta "platform_notification_browser_subscriptions" "notifications_active" "Browser push subscription handles captured by Organization Management for deployment event updates." "{{source}} | {{status}} | {{last_seen_at}}"
+      _upsert_collection_meta "platform_email_validation_subscriptions" "mark_email_unread" "Durable listeners that map CRM email-validation events to records that must be updated." "{{email}} | {{status}} | {{date_created}}"
       _upsert_collection_meta "platform_notification_templates" "mark_email_read" "Reusable notification templates resolved by the platform notification service from notification keys and parameters." "{{notification_key}} | {{status}} | {{locale}}"
       _upsert_collection_meta "platform_notification_template_assets" "attachment" "Images, stylesheets, and other reusable assets associated with platform notification templates." "{{asset_key}} | {{asset_type}} | {{status}}"
 
@@ -9802,6 +9852,9 @@ data:
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_browser_subscriptions" "read" "${_pn_permissions_json}"
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_browser_subscriptions" "create" "${_pn_permissions_json}"
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_browser_subscriptions" "update" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_email_validation_subscriptions" "read" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_email_validation_subscriptions" "create" "${_pn_permissions_json}"
+          _upsert_policy_action_permission "${_pn_policy_id}" "platform_email_validation_subscriptions" "update" "${_pn_permissions_json}"
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_delivery_attempts" "read" "${_pn_permissions_json}"
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_delivery_attempts" "create" "${_pn_permissions_json}"
           _upsert_policy_action_permission "${_pn_policy_id}" "platform_notification_templates" "read" "${_pn_permissions_json}"
