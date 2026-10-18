@@ -450,7 +450,7 @@ spec:
   timeZone: "America/New_York"
   suspend: false
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 2
+  successfulJobsHistoryLimit: 0
   failedJobsHistoryLimit: 3
   startingDeadlineSeconds: 3600
   jobTemplate:
