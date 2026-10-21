@@ -13154,7 +13154,8 @@ spec:
   volumeName: directus-uploads-oci-vm-v7
 ---
 # Active uploads PV on current OCI VM.
-# Use NFSv3 mount path for Kubernetes nodes to avoid NFSv4 export access denial.
+# NFSv4.1 keeps the mount path on TCP/2049 and avoids NFSv3 rpcbind/mountd
+# discovery, which can leave fresh pod mounts blocked during RPC interruptions.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -13166,7 +13167,7 @@ spec:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
   mountOptions:
-    - nfsvers=3
+    - nfsvers=4.1
     - proto=tcp
     - hard
     - timeo=600

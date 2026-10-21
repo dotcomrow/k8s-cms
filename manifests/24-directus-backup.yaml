@@ -468,15 +468,6 @@ spec:
           serviceAccountName: directus
           restartPolicy: Never
           terminationGracePeriodSeconds: 30
-          affinity:
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                  - matchExpressions:
-                      - key: kubernetes.io/hostname
-                        operator: NotIn
-                        values:
-                          - work-node-l4-gpu
           securityContext:
             seccompProfile:
               type: RuntimeDefault
