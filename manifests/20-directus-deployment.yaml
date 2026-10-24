@@ -2642,7 +2642,9 @@ spec:
           valueFrom: { configMapKeyRef: { name: directus-config, key: AUTH_GITHUB_FIRST_NAME_KEY } }
 
         startupProbe:
-          httpGet: { path: /server/health, port: 8055 }
+          # Startup only gates on the HTTP process. Database readiness is
+          # monitored separately and must not remove the sole API endpoint.
+          httpGet: { path: /server/ping, port: 8055 }
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 120
@@ -2656,8 +2658,11 @@ spec:
           timeoutSeconds: 10
           failureThreshold: 3
         readinessProbe:
-          httpGet: { path: /server/health, port: 8055 }
-          initialDelaySeconds: 300
+          # Keep the endpoint routable during transient remote DB latency so
+          # callers can use their bounded retries instead of Linkerd fail-fast
+          # turning every request into an immediate 503.
+          httpGet: { path: /server/ping, port: 8055 }
+          initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3

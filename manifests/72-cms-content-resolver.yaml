@@ -2195,7 +2195,7 @@ spec:
             - name: READINESS_TIMEOUT_SECONDS
               value: "5"
             - name: DIRECTUS_HEALTH_PATH
-              value: "/server/health"
+              value: "/server/ping"
             - name: TRANSLATION_JOB_ACTIVE_MAX_AGE_SECONDS
               value: "3600"
             - name: TRANSLATION_MODEL_CACHE_SECONDS
