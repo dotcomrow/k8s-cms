@@ -17,13 +17,13 @@ data:
       external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=purge-and-refresh&slug=home"
 
     sites:
-      # Every Directus site boundary needs one site entry. platform_apps rows
-      # are the deployed app/cache-refresh identities; site_key remains the
-      # internal/external boundary passed as DIRECTUS_CONTENT_SITE_KEY. Multiple
-      # apps may share the same site_key; cms_pages.app_id separates their page
-      # sets inside that boundary.
+      # Every Directus site boundary needs one site entry. cms_apps rows are
+      # logical applications and platform_apps rows are their site deployments;
+      # site_key remains the internal/external boundary passed as
+      # DIRECTUS_CONTENT_SITE_KEY. A logical app can own both site boundaries.
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
+        cms_app_id: fc874f2b-7077-4ac4-ab17-36c9d8972b56
         app_key: internal
         realm: internal
         homepage_slug: home
@@ -259,6 +259,7 @@ data:
 
       # External site (Cloudflare Worker service client)
       - site_key: external
+        cms_app_id: fc874f2b-7077-4ac4-ab17-36c9d8972b56
         app_key: external
         realm: external
         # The external app is now created by the platform deployment pipeline.

@@ -9,13 +9,13 @@ kubectl apply -f manifests/
 
 ## Shell App Content Scope
 
-Each deployed shell app receives `DIRECTUS_CONTENT_APP_ID` from its `platform_apps.id` and a `DIRECTUS_CONTENT_SITE_KEY` for the internal/external boundary. Directus page selection uses both values, so the same logical app can maintain separate internal and external page sets without colliding with another app's pages.
+Each deployed shell app receives `DIRECTUS_CONTENT_APP_ID` from its logical `cms_apps.id` and a `DIRECTUS_CONTENT_SITE_KEY` for the internal/external boundary. Directus page selection uses both values, so the same logical app can maintain separate internal and external page sets without colliding with another app's pages. `platform_apps.cms_app_id` links each site deployment to that logical application.
 
 Site entries in `manifests/15-directus-sites.yaml` continue to drive Directus read policies, service-token binding, and bootstrap cache-refresh defaults for `internal` and `external`. Multiple apps can share either site key. Cache refresh URLs remain app-specific on `platform_apps` (`production_cache_refresh_url` and `preview_cache_refresh_url`).
 
 ## Platform Organization Management
 
-The postschema reconcile creates Directus-managed registry collections for the internal Organization Management workflow: `platform_organizations`, `platform_apps`, `platform_app_operations`, and `platform_app_operation_steps`. These store non-secret desired state, operation history, and sanitized step status only; deployment credentials stay server-side in the platform deploy service.
+The postschema reconcile creates Directus-managed registry collections for the internal Organization Management workflow: `cms_apps`, `platform_organizations`, `platform_apps`, `platform_app_operations`, and `platform_app_operation_steps`. `cms_apps` owns content across site boundaries; `platform_apps` represents deployable internal or external sites. These store non-secret desired state, operation history, and sanitized step status only; deployment credentials stay server-side in the platform deploy service.
 
 Directus site entries can opt into platform registry permissions with `platform_management.enabled: true`. The GraphQL audience alias used by the internal MFE is bound to the external site token today, so that site entry carries the platform-management grant while browser traffic still enters through Hasura and Gravitee.
 

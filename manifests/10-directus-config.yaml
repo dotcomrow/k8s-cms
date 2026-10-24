@@ -11296,11 +11296,21 @@ data:
           if (normalizedAppId) {
             const appResponse = await apiRequest(
               'GET',
-              `/items/platform_apps/${encodeURIComponent(normalizedAppId)}`,
-              { fields: 'id,app_key,site_key,keycloak_realm' },
+              '/items/platform_apps',
+              {
+                fields: 'id,cms_app_id,app_key,site_key,keycloak_realm',
+                limit: 1,
+                filter: JSON.stringify({
+                  _and: [
+                    { cms_app_id: { _eq: normalizedAppId } },
+                    { site_key: { _eq: normalizedSite } },
+                  ],
+                }),
+              },
             );
-            normalizedApp = asString(appResponse?.data?.app_key);
-            normalizedRealm = asString(appResponse?.data?.keycloak_realm) || normalizedRealm;
+            const deployment = normalizeRows(appResponse)[0];
+            normalizedApp = asString(deployment?.app_key);
+            normalizedRealm = asString(deployment?.keycloak_realm) || normalizedRealm;
           }
           const flowNameCandidates = [
             normalizedRealm && normalizedApp ? `CMS Cache Refresh (${normalizedRealm}/${normalizedApp}/prod) - Manual` : '',
