@@ -17,11 +17,11 @@ data:
       external_preview_refresh_url: &cache_refresh_external_preview_refresh_url "https://www-preview.suncoast.systems/api/cache/refresh?mode=purge-and-refresh&slug=home"
 
     sites:
-      # Every Directus content scope needs one site entry. platform_apps rows
-      # are the deployed app/cache-refresh identities; site_key is the content
-      # scope passed as DIRECTUS_CONTENT_SITE_KEY. Multiple apps can share a
-      # realm and either use distinct site_key values or refresh from the same
-      # site_key.
+      # Every Directus site boundary needs one site entry. platform_apps rows
+      # are the deployed app/cache-refresh identities; site_key remains the
+      # internal/external boundary passed as DIRECTUS_CONTENT_SITE_KEY. Multiple
+      # apps may share the same site_key; cms_pages.app_id separates their page
+      # sets inside that boundary.
       # Internal site (Cloudflare Worker service client)
       - site_key: internal
         app_key: internal

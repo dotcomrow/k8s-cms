@@ -581,6 +581,7 @@ data:
            VALUES \
              ('cms_pages','slug'), \
              ('cms_pages','status'), \
+             ('cms_pages','app_id'), \
              ('cms_pages','site_key'), \
              ('cms_pages','release_channel'), \
              ('cms_pages','layout_template_key'), \
@@ -806,6 +807,7 @@ data:
       MISSING_REQUIRED_FIELD_METADATA="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
         "WITH required(collection, field) AS ( \
            VALUES \
+             ('cms_pages','app_id'), \
              ('platform_app_operations','app_id'), \
              ('platform_app_operations','operation_type'), \
              ('platform_app_operations','status'), \
@@ -1177,6 +1179,7 @@ data:
          seo_title TEXT NULL, \
          seo_description TEXT NULL, \
          parent UUID NULL, \
+         app_id UUID NULL, \
          site_key TEXT NULL, \
          release_channel TEXT NULL, \
          layout_template_key TEXT NULL, \
@@ -1230,6 +1233,7 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS seo_title TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS seo_description TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS parent UUID; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS app_id UUID; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_chrome TEXT; \
@@ -1385,12 +1389,13 @@ data:
        END \
        \$\$;"
     
-    # Ensure multi-site columns exist for GitOps-managed row-level site filters.
+    # Ensure app/site scope columns exist for GitOps-managed content filters.
     # This is idempotent and safe to run every startup.
     echo "🧱 Ensuring multi-site columns exist..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS app_id UUID; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS release_channel TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_template_key TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS layout_chrome TEXT; \
@@ -1477,8 +1482,9 @@ data:
        ALTER TABLE IF EXISTS cms_layout_template_slots ADD COLUMN IF NOT EXISTS refresh_target TEXT; \
        ALTER TABLE IF EXISTS cms_modules ADD COLUMN IF NOT EXISTS refresh_target TEXT;"
     
-    # Allow each site to have its own homepage slug (e.g. both can use "home").
-    echo "🧱 Ensuring per-site slug uniqueness..."
+    # Allow every app to have internal/external pages with the same slug while
+    # retaining legacy uniqueness for rows that have not been assigned to an app.
+    echo "🧱 Ensuring per-app/site slug uniqueness..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
        DO \$\$ \
@@ -1506,23 +1512,15 @@ data:
            IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='demo_pages_site_slug_unique' AND conrelid=to_regclass('directus.cms_pages')) THEN \
              ALTER TABLE cms_pages DROP CONSTRAINT demo_pages_site_slug_unique; \
            END IF; \
-           IF NOT EXISTS ( \
-             SELECT 1 \
-             FROM pg_constraint \
-             WHERE conname = 'cms_pages_site_channel_slug_unique' \
-               AND conrelid = to_regclass('directus.cms_pages') \
-           ) THEN \
-             IF NOT EXISTS ( \
-               SELECT 1 \
-               FROM cms_pages \
-               GROUP BY site_key, release_channel, slug \
-               HAVING COUNT(*) > 1 \
-             ) THEN \
-               ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_site_channel_slug_unique UNIQUE (site_key, release_channel, slug); \
-             ELSE \
-               RAISE NOTICE 'Skipping cms_pages_site_channel_slug_unique due to duplicate (site_key,release_channel,slug) rows'; \
-             END IF; \
+           IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cms_pages_site_channel_slug_unique' AND conrelid=to_regclass('directus.cms_pages')) THEN \
+             ALTER TABLE cms_pages DROP CONSTRAINT cms_pages_site_channel_slug_unique; \
            END IF; \
+           CREATE UNIQUE INDEX IF NOT EXISTS cms_pages_app_site_channel_slug_unique \
+             ON cms_pages (app_id, site_key, release_channel, slug) \
+             WHERE app_id IS NOT NULL; \
+           CREATE UNIQUE INDEX IF NOT EXISTS cms_pages_legacy_site_channel_slug_unique \
+             ON cms_pages (site_key, release_channel, slug) \
+             WHERE app_id IS NULL; \
          ELSE \
            RAISE NOTICE 'Skipping cms_pages slug constraints (table directus.cms_pages not found yet)'; \
          END IF; \
@@ -2066,7 +2064,7 @@ data:
           fi
         }
 
-        cms_pages_tabular_fields_json='["site_key","release_channel","slug","title","head_title","status","layout_template_key","layout_chrome","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","force_login_for_page_access","required_role_for_page_access","date_updated"]'
+        cms_pages_tabular_fields_json='["app_id","site_key","release_channel","slug","title","head_title","status","layout_template_key","layout_chrome","theme_package_key","theme_mode","analytics_google_measurement_id","analytics_openobserve_rum_script_url","widget_dock_enabled","widget_dock_position","widget_dock_direction","theme_selector_dock_position","refresh_target","force_login_for_page_access","required_role_for_page_access","date_updated"]'
         _upsert_global_list_preset "cms_pages" "view_column" "${cms_pages_tabular_fields_json}" '["-date_updated"]'
 
         translation_languages_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
@@ -2870,6 +2868,12 @@ data:
             AND NOT EXISTS (SELECT 1 FROM platform_notification_browser_subscriptions s WHERE s.app_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_apps a WHERE a.id = s.app_id)) THEN \
            ALTER TABLE platform_notification_browser_subscriptions ADD CONSTRAINT platform_notification_browser_subscriptions_app_id_fkey FOREIGN KEY (app_id) REFERENCES platform_apps(id) ON DELETE SET NULL; \
          END IF; \
+         IF to_regclass('directus.cms_pages') IS NOT NULL \
+            AND to_regclass('directus.platform_apps') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_pages_app_id_fkey' AND conrelid = to_regclass('directus.cms_pages')) \
+            AND NOT EXISTS (SELECT 1 FROM cms_pages p WHERE p.app_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM platform_apps a WHERE a.id = p.app_id)) THEN \
+           ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_app_id_fkey FOREIGN KEY (app_id) REFERENCES platform_apps(id) ON DELETE RESTRICT; \
+         END IF; \
        END \
        \$\$;"
 
@@ -2886,6 +2890,14 @@ data:
          ELSE \
            BEGIN \
              INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('platform_apps', 'organization_id', 'platform_organizations', 'apps'); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='cms_pages' AND many_field='app_id') THEN \
+           UPDATE directus_relations SET one_collection='platform_apps', one_field='pages' WHERE many_collection='cms_pages' AND many_field='app_id'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('cms_pages', 'app_id', 'platform_apps', 'pages'); \
            EXCEPTION WHEN unique_violation THEN NULL; \
            END; \
          END IF; \
@@ -6337,9 +6349,9 @@ data:
         --arg registry_path "${module_registry_path}" \
         --argjson registry_enabled "${module_registry_enabled_json}" \
         --argjson registry_cache_ttl_ms "${module_registry_cache_ttl_ms}" \
-        '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_site_field:"site_key",module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,default_group_by:"template",default_hierarchy:"direct_children",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
+        '{pages_collection:"cms_pages",page_blocks_collection:"cms_page_blocks",layout_templates_collection:"cms_layout_templates",layout_slots_collection:"cms_layout_template_slots",page_id_field:"id",page_template_field:"layout_template_key",page_app_field:"app_id",page_site_field:"site_key",module_registry_enabled:$registry_enabled,module_registry_url:$registry_url,module_registry_path:$registry_path,module_registry_channel:"auto",module_registry_limit:250,module_registry_cache_ttl_ms:$registry_cache_ttl_ms,default_group_by:"template",default_hierarchy:"direct_children",default_sort:["template_scope","template_group_key","group_tag","tree_path","sort"],default_limit:400,admin_base_path:"/admin/content"}')"
       page_parent_interface_options_json="$(jq -nc \
-        '{template:"{{title}} ({{slug}} | {{site_key}} | {{release_channel}})",enableCreate:false,enableSelect:true,enableLink:true,filter:{_and:[{site_key:{_eq:"{{site_key}}"}},{release_channel:{_eq:"{{release_channel}}"}},{id:{_neq:"{{id}}"}}]}}')"
+        '{template:"{{title}} ({{slug}} | {{site_key}} | {{release_channel}})",enableCreate:false,enableSelect:true,enableLink:true,filter:{_and:[{app_id:{_eq:"{{app_id}}"}},{site_key:{_eq:"{{site_key}}"}},{release_channel:{_eq:"{{release_channel}}"}},{id:{_neq:"{{id}}"}}]}}')"
       social_profile_relation_options_json="$(jq -nc \
         '{template:"{{name}}"}')"
 
@@ -6478,7 +6490,7 @@ data:
       theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
       asset_url_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
-      site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:true,allowNone:false,placeholder:"Use the deployed app/site key"}')"
+      site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:true,allowNone:false,placeholder:"Choose the internal/external site boundary"}')"
       site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
       layout_template_site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:true,placeholder:"Global (all sites)"}')"
       layout_template_site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
@@ -6551,7 +6563,7 @@ data:
       platform_operation_status_options_json="$(jq -nc --argjson choices "${platform_operation_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_notification_template_status_options_json="$(jq -nc --argjson choices "${platform_notification_template_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_org_relation_options_json="$(jq -nc '{template:"{{name}} ({{organization_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
-      platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{site_key}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
+      platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{app_key}} | {{site_key}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_operation_relation_options_json="$(jq -nc '{template:"{{operation_type}} | {{status}} | {{date_created}}",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_notification_template_relation_options_json="$(jq -nc '{template:"{{notification_key}} ({{locale}} | {{status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_user_relation_options_json="$(jq -nc '{template:"{{first_name}} {{last_name}} <{{email}}>",enableCreate:false,enableSelect:true,enableLink:true}')"
@@ -6564,8 +6576,9 @@ data:
       platform_settings_note_sql="$(printf '%s' 'Non-secret organization settings for the future deployment control plane.' | sed "s/'/''/g")"
       platform_app_org_note_sql="$(printf '%s' 'Owning organization for this app.' | sed "s/'/''/g")"
       platform_app_key_note_sql="$(printf '%s' 'Stable app slug. This should match the deployment/resource prefix.' | sed "s/'/''/g")"
-      platform_app_site_key_note_sql="$(printf '%s' 'Directus content site key passed to the shell app as DIRECTUS_CONTENT_SITE_KEY.' | sed "s/'/''/g")"
-      platform_app_realm_note_sql="$(printf '%s' 'Keycloak realm used for auth. Multiple apps can share external while using distinct site keys.' | sed "s/'/''/g")"
+      platform_page_app_note_sql="$(printf '%s' 'Application that owns this page. App and Site Key together select the page set returned to the shell.' | sed "s/'/''/g")"
+      platform_app_site_key_note_sql="$(printf '%s' 'Site boundary passed to the shell as DIRECTUS_CONTENT_SITE_KEY (for example internal or external). Multiple apps may use the same site key.' | sed "s/'/''/g")"
+      platform_app_realm_note_sql="$(printf '%s' 'Keycloak realm used for auth. Multiple apps can share the same realm and site key while retaining separate pages.' | sed "s/'/''/g")"
       platform_app_provider_note_sql="$(printf '%s' 'Cloud provider plugin target. Only Cloudflare is enabled in the first implementation.' | sed "s/'/''/g")"
       platform_deployment_strategy_note_sql="$(printf '%s' 'Deployment engine that should execute operations for this app.' | sed "s/'/''/g")"
       platform_deployment_status_note_sql="$(printf '%s' 'Last known deployment lifecycle status from the control plane.' | sed "s/'/''/g")"
@@ -9058,6 +9071,7 @@ data:
       _upsert_page_layout_template_field_meta
       _upsert_page_head_input_field_meta "layout_chrome" 3 "half" "${layout_chrome_note_sql}" "select-dropdown" "${layout_chrome_options_json}" "${layout_chrome_name_sql}"
       _upsert_page_theme_package_field_meta
+      _upsert_platform_m2o_field_meta "cms_pages" "app_id" 1 "${platform_page_app_note_sql}" "${platform_app_relation_options_json}" true
       _upsert_page_site_key_field_meta
       _upsert_page_parent_field_meta
       _upsert_status_dropdown_field_meta "cms_pages" 5
@@ -11388,8 +11402,8 @@ data:
 
                 create_read_options="$(jq -nc \
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.key }}",query:{fields:["*"]},emitEvents:false,permissions:"$full"}')"
-                create_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                  '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
+                create_match_options="$(jq -nc --arg app_id "${platform_app_config_id_effective}" --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{_or:[{read_item:{app_id:{_eq:$app_id}}},{read_item:{app_id:{_null:true}}}]},{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                 create_platform_app_read_options="$(jq -nc --arg app_id "${platform_app_config_id_effective}" \
                   '{collection:"platform_apps",key:$app_id,query:{fields:["id","keycloak_realm","app_key","site_key","cache_refresh_enabled","production_cache_refresh_url","preview_cache_refresh_url"]},emitEvents:false,permissions:"$full"}')"
                 create_platform_app_match_options="$(jq -nc --arg realm "${platform_app_realm}" --arg app "${platform_app_key}" --arg site "${site_key}" --arg endpoint_field "${target_endpoint_field}" \
@@ -11465,8 +11479,8 @@ data:
 
                 update_read_options="$(jq -nc \
                   '{collection:"{{ $trigger.collection }}",key:"{{ $trigger.keys[0] }}",query:{fields:["*"]},emitEvents:false,permissions:"$full"}')"
-                update_match_options="$(jq -nc --arg site "${site_key}" --arg target "${target_key}" \
-                  '{filter:{_and:[{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
+                update_match_options="$(jq -nc --arg app_id "${platform_app_config_id_effective}" --arg site "${site_key}" --arg target "${target_key}" \
+                  '{filter:{_and:[{_or:[{read_item:{app_id:{_eq:$app_id}}},{read_item:{app_id:{_null:true}}}]},{_or:[{read_item:{site_key:{_eq:$site}}},{read_item:{site_key:{_null:true}}},{read_item:{site_key:{_eq:""}}}]},{_or:[{read_item:{refresh_target:{_eq:$target}}},{read_item:{refresh_target:{_eq:"both"}}},{read_item:{refresh_target:{_null:true}}},{read_item:{refresh_target:{_eq:""}}}]}]}}')"
                 update_platform_app_read_options="$(jq -nc --arg app_id "${platform_app_config_id_effective}" \
                   '{collection:"platform_apps",key:$app_id,query:{fields:["id","keycloak_realm","app_key","site_key","cache_refresh_enabled","production_cache_refresh_url","preview_cache_refresh_url"]},emitEvents:false,permissions:"$full"}')"
                 update_platform_app_match_options="$(jq -nc --arg realm "${platform_app_realm}" --arg app "${platform_app_key}" --arg site "${site_key}" --arg endpoint_field "${target_endpoint_field}" \
@@ -11661,6 +11675,33 @@ data:
       fi
     else
       echo "  └─ ${SITES_FILE} not found; skipping"
+    fi
+
+    # Existing installations predate cms_pages.app_id. Assign a legacy page
+    # only when its internal/external site scope maps to exactly one app. Once
+    # multiple apps share a site_key, ambiguous rows remain unassigned for an
+    # administrator to resolve explicitly rather than being attached to the
+    # wrong app.
+    echo "🧩 Backfilling unambiguous CMS page application ownership..."
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
+      "SET search_path TO directus, public; \
+       WITH unique_site_apps AS ( \
+         SELECT site_key, MIN(id::text)::uuid AS app_id \
+         FROM platform_apps \
+         WHERE site_key IS NOT NULL AND BTRIM(site_key) <> '' \
+         GROUP BY site_key \
+         HAVING COUNT(*) = 1 \
+       ) \
+       UPDATE cms_pages p \
+          SET app_id = a.app_id \
+         FROM unique_site_apps a \
+        WHERE p.app_id IS NULL \
+          AND p.site_key = a.site_key;"
+    UNASSIGNED_APP_PAGE_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+      "SELECT COUNT(*) FROM directus.cms_pages WHERE app_id IS NULL;" || true)"
+    UNASSIGNED_APP_PAGE_COUNT="$(printf '%s' "${UNASSIGNED_APP_PAGE_COUNT:-0}" | tr -d '\r')"
+    if [ "${UNASSIGNED_APP_PAGE_COUNT:-0}" != "0" ]; then
+      echo "⚠️ ${UNASSIGNED_APP_PAGE_COUNT} CMS pages still need an explicit Application assignment in Directus."
     fi
 
     # 5d) Keep the backward-compatible Gravitee default token usable.

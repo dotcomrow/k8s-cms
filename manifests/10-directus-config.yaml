@@ -8144,6 +8144,7 @@ data:
         const layoutSlotsCollection = computed(() => asString(resolvedOptions.value?.layout_slots_collection) || 'cms_layout_template_slots');
         const pageIdField = computed(() => asString(resolvedOptions.value?.page_id_field) || 'id');
         const pageTemplateField = computed(() => asString(resolvedOptions.value?.page_template_field) || 'layout_template_key');
+        const pageAppField = computed(() => asString(resolvedOptions.value?.page_app_field) || 'app_id');
         const pageSiteField = computed(() => asString(resolvedOptions.value?.page_site_field) || 'site_key');
         const moduleRegistryEnabled = computed(() => asBoolean(resolvedOptions.value?.module_registry_enabled, false));
         const moduleRegistryUrl = computed(() => asString(resolvedOptions.value?.module_registry_url).replace(/\/+$/g, ''));
@@ -8795,6 +8796,8 @@ data:
           if (fromValues) return fromValues;
           return getPrimaryKeyFromLocation(pagesCollection.value);
         });
+        const formPageAppId = computed(() => parseId(props.values?.[pageAppField.value] ?? props.values?.app_id));
+        const sourcePageAppId = computed(() => formPageAppId.value || parseId(pageContext.value?.app_id));
         const formPageSiteKey = computed(() => asString(props.values?.[pageSiteField.value] ?? props.values?.site_key));
         const sourcePageSiteKey = computed(() => formPageSiteKey.value || asString(pageContext.value?.site_key));
         const sourcePageReleaseChannel = computed(() => {
@@ -9357,16 +9360,17 @@ data:
     
         const loadPageContext = async () => {
           if (!pageId.value) {
-            pageContext.value = { id: '', slug: '', site_key: '', release_channel: '', layout_template_key: '' };
+            pageContext.value = { id: '', slug: '', app_id: '', site_key: '', release_channel: '', layout_template_key: '' };
             return;
           }
           const response = await apiRequest('GET', `/items/${pagesCollection.value}/${encodeURIComponent(pageId.value)}`, {
-            fields: ['id', 'slug', pageSiteField.value, 'release_channel', pageTemplateField.value].join(','),
+            fields: ['id', 'slug', pageAppField.value, pageSiteField.value, 'release_channel', pageTemplateField.value].join(','),
           });
           const row = response?.data || {};
           pageContext.value = {
             id: parseId(row?.id) || pageId.value,
             slug: asString(row?.slug),
+            app_id: formPageAppId.value || parseId(row?.[pageAppField.value]),
             site_key: formPageSiteKey.value || asString(row?.[pageSiteField.value]),
             release_channel: asString(row?.release_channel),
             layout_template_key: asString(row?.[pageTemplateField.value]),
@@ -10691,19 +10695,21 @@ data:
           return response?.data || null;
         };
     
-        const findPageByScope = async ({ slug, siteKey, releaseChannel }) => {
+        const findPageByScope = async ({ appId, slug, siteKey, releaseChannel }) => {
+          const normalizedAppId = parseId(appId);
           const normalizedSlug = asString(slug);
           const normalizedRelease = toLower(releaseChannel);
-          if (!normalizedSlug || !normalizedRelease) return null;
+          if (!normalizedAppId || !normalizedSlug || !normalizedRelease) return null;
           const filter = {
             _and: [
+              { app_id: { _eq: normalizedAppId } },
               { slug: { _eq: normalizedSlug } },
               { release_channel: { _eq: normalizedRelease } },
               siteScopeFilterFor(siteKey),
             ],
           };
           const response = await apiRequest('GET', `/items/${pagesCollection.value}`, {
-            fields: 'id,slug,site_key,release_channel',
+            fields: 'id,app_id,slug,site_key,release_channel',
             limit: 1,
             sort: '-date_updated',
             filter: JSON.stringify(filter),
@@ -10886,13 +10892,14 @@ data:
           return appendPageSlugSuffix(sourceSlug, '-copy');
         };
 
-        const resolveAvailablePageCopySlug = async ({ baseSlug, siteKey, releaseChannel }) => {
+        const resolveAvailablePageCopySlug = async ({ appId, baseSlug, siteKey, releaseChannel }) => {
           const normalizedBaseSlug = normalizePageSlug(baseSlug) || 'page-copy';
           for (let index = 0; index < 100; index += 1) {
             const candidate = index === 0
               ? normalizedBaseSlug
               : appendPageSlugSuffix(normalizedBaseSlug, `-${index + 1}`);
             const existing = await findPageByScope({
+              appId,
               slug: candidate,
               siteKey,
               releaseChannel,
@@ -10905,12 +10912,15 @@ data:
         const promptForPageCopyDetails = async (sourcePage) => {
           if (typeof window === 'undefined') return null;
           const sourceSiteKey = asString(sourcePage?.site_key);
+          const sourceAppId = parseId(sourcePage?.app_id);
           const sourceReleaseChannel = toLower(sourcePage?.release_channel);
+          if (!sourceAppId) throw new Error('Source page Application is required before copying.');
           const suggestedTitle = defaultCopyTitleForPage(sourcePage);
           const rawTitle = window.prompt('New page title', suggestedTitle);
           if (rawTitle === null) return null;
           const title = asString(rawTitle) || suggestedTitle;
           const suggestedSlug = await resolveAvailablePageCopySlug({
+            appId: sourceAppId,
             baseSlug: defaultCopySlugForPage(sourcePage),
             siteKey: sourceSiteKey,
             releaseChannel: sourceReleaseChannel,
@@ -10920,12 +10930,13 @@ data:
           const slug = normalizePageSlug(rawSlug);
           if (!slug) throw new Error('New page slug is required.');
           const existing = await findPageByScope({
+            appId: sourceAppId,
             slug,
             siteKey: sourceSiteKey,
             releaseChannel: sourceReleaseChannel,
           });
           if (parseId(existing?.id)) {
-            throw new Error(`A page already exists for slug '${slug}' in this site/channel.`);
+            throw new Error(`A page already exists for slug '${slug}' in this application/site/channel.`);
           }
           return { title, slug };
         };
@@ -11206,10 +11217,12 @@ data:
             if (!sourcePage) throw new Error('Source page could not be loaded.');
 
             const sourceSlug = asString(sourcePage?.slug);
+            const sourceAppId = parseId(sourcePage?.app_id);
             const sourceSiteKey = asString(sourcePage?.site_key);
             const sourceReleaseChannel = toLower(sourcePage?.release_channel);
             const sourceRefreshTarget = asString(sourcePage?.refresh_target);
             if (!sourceSlug) throw new Error('Source page slug is required before copying.');
+            if (!sourceAppId) throw new Error('Source page Application is required before copying.');
             if (sourceReleaseChannel !== 'preview' && sourceReleaseChannel !== 'prod') {
               throw new Error('Set page release channel to preview or prod before copying.');
             }
@@ -11224,6 +11237,7 @@ data:
                 title: copyDetails.title,
                 status: 'draft',
                 parent: null,
+                app_id: sourceAppId,
                 site_key: sourceSiteKey || null,
                 release_channel: sourceReleaseChannel,
               },
@@ -11274,10 +11288,20 @@ data:
           }
         };
     
-        const triggerManualProdRefresh = async ({ siteKey, slug }) => {
+        const triggerManualProdRefresh = async ({ appId, siteKey, slug }) => {
+          const normalizedAppId = parseId(appId);
           const normalizedSite = asString(siteKey);
-          const normalizedRealm = normalizedSite || 'external';
-          const normalizedApp = normalizedSite || normalizedRealm;
+          let normalizedRealm = normalizedSite || 'external';
+          let normalizedApp = '';
+          if (normalizedAppId) {
+            const appResponse = await apiRequest(
+              'GET',
+              `/items/platform_apps/${encodeURIComponent(normalizedAppId)}`,
+              { fields: 'id,app_key,site_key,keycloak_realm' },
+            );
+            normalizedApp = asString(appResponse?.data?.app_key);
+            normalizedRealm = asString(appResponse?.data?.keycloak_realm) || normalizedRealm;
+          }
           const flowNameCandidates = [
             normalizedRealm && normalizedApp ? `CMS Cache Refresh (${normalizedRealm}/${normalizedApp}/prod) - Manual` : '',
             normalizedSite ? `CMS Cache Refresh (${normalizedSite}/prod) - Manual` : '',
@@ -11298,6 +11322,8 @@ data:
               source: 'cms-page-blocks-manager',
               collection: pagesCollection.value || 'cms_pages',
               reason: 'promote-preview-to-prod',
+              app_id: normalizedAppId || null,
+              app_key: normalizedApp || null,
               site_key: normalizedSite || null,
               slug: asString(slug) || null,
               page_slug: asString(slug) || null,
@@ -11333,8 +11359,10 @@ data:
             }
     
             const sourceSlug = asString(sourcePage?.slug);
+            const sourceAppId = parseId(sourcePage?.app_id);
             const sourceSiteKey = asString(sourcePage?.site_key);
             if (!sourceSlug) throw new Error('Page slug is required before promoting.');
+            if (!sourceAppId) throw new Error('Page Application is required before promoting.');
     
             const confirmMessage = `Promote page '${sourceSlug}' (${sourceSiteKey || 'global'}) from preview to prod? This replaces the current prod version for this page.`;
             if (typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
@@ -11343,6 +11371,7 @@ data:
             }
     
             const existingTargetPage = await findPageByScope({
+              appId: sourceAppId,
               slug: sourceSlug,
               siteKey: sourceSiteKey,
               releaseChannel: PROMOTE_TARGET_CHANNEL,
@@ -11353,6 +11382,7 @@ data:
               blockedKeys: ['blocks', 'parent'],
               force: {
                 slug: sourceSlug,
+                app_id: sourceAppId,
                 site_key: sourceSiteKey || null,
                 parent: null,
                 release_channel: PROMOTE_TARGET_CHANNEL,
@@ -11475,6 +11505,7 @@ data:
             }
     
             const refreshTriggered = await triggerManualProdRefresh({
+              appId: sourceAppId,
               siteKey: sourceSiteKey,
               slug: sourceSlug,
             });
@@ -12733,6 +12764,13 @@ data:
           type: 'string',
           meta: { width: 'half', interface: 'input' },
           schema: { default_value: 'layout_template_key' },
+        },
+        {
+          field: 'page_app_field',
+          name: 'Page Application Field',
+          type: 'string',
+          meta: { width: 'half', interface: 'input' },
+          schema: { default_value: 'app_id' },
         },
         {
           field: 'page_site_field',
