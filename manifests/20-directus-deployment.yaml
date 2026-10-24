@@ -2647,7 +2647,10 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 120
         livenessProbe:
-          httpGet: { path: /server/health, port: 8055 }
+          # Liveness must only prove the Directus process can answer. Database
+          # degradation belongs to readiness; otherwise a slow DB path causes
+          # a restart loop that makes every GraphQL operation unavailable.
+          httpGet: { path: /server/ping, port: 8055 }
           initialDelaySeconds: 360
           periodSeconds: 30
           timeoutSeconds: 10

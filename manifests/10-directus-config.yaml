@@ -18,7 +18,10 @@ data:
   DB_PORT: "15432"
   DB_DATABASE: "directus"
   DB_SCHEMA: "directus"
-  DB_POOL__MIN: "0"
+  # Keep a small warm pool because PostgreSQL is reached through an SSH tunnel.
+  # Creating a new connection over that path can take more than a second and
+  # compounds badly for GraphQL actions that make several Directus calls.
+  DB_POOL__MIN: "4"
   DB_POOL__MAX: "20"
   CACHE_ENABLED: "true"
   CACHE_STORE: "redis"
