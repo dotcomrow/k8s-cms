@@ -2236,6 +2236,7 @@ data:
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
        ALTER TABLE IF EXISTS platform_apps ALTER COLUMN status SET DEFAULT 'draft'; \
+       ALTER TABLE IF EXISTS platform_apps ALTER COLUMN site_key SET DEFAULT 'external'; \
        ALTER TABLE IF EXISTS platform_apps ALTER COLUMN keycloak_realm SET DEFAULT 'external'; \
        ALTER TABLE IF EXISTS platform_apps ALTER COLUMN cloud_provider SET DEFAULT 'cloudflare'; \
        ALTER TABLE IF EXISTS platform_apps ALTER COLUMN deployment_strategy SET DEFAULT 'terraform_cloud'; \
@@ -2253,6 +2254,92 @@ data:
        UPDATE platform_apps SET cache_refresh_enabled = true WHERE cache_refresh_enabled IS NULL; \
        UPDATE platform_apps SET config_json = '{}'::jsonb WHERE config_json IS NULL OR jsonb_typeof(config_json) <> 'object'; \
        UPDATE platform_apps SET date_created = now() WHERE date_created IS NULL; \
+       CREATE OR REPLACE FUNCTION directus.platform_apps_derive_scope_domain() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$platform_apps_derive_scope_domain\$ \
+       DECLARE \
+         resolved_domain TEXT; \
+       BEGIN \
+         NEW.keycloak_realm := LOWER(BTRIM(COALESCE(NEW.keycloak_realm, ''))); \
+         IF NEW.keycloak_realm NOT IN ('internal', 'external') THEN \
+           RAISE EXCEPTION 'platform_apps.keycloak_realm must be internal or external'; \
+         END IF; \
+         NEW.site_key := NEW.keycloak_realm; \
+         IF NEW.organization_id IS NOT NULL THEN \
+           SELECT NULLIF(BTRIM(default_domain), '') \
+             INTO resolved_domain \
+             FROM directus.platform_organizations \
+            WHERE id = NEW.organization_id; \
+           IF resolved_domain IS NULL THEN \
+             RAISE EXCEPTION 'platform_apps.organization_id must reference an organization with a default domain'; \
+           END IF; \
+           NEW.domain := resolved_domain; \
+         ELSE \
+           NEW.domain := COALESCE(NULLIF(BTRIM(NEW.domain), ''), 'suncoast.systems'); \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$platform_apps_derive_scope_domain\$; \
+       DO \$\$ \
+       BEGIN \
+         IF NOT EXISTS ( \
+           SELECT 1 FROM pg_trigger \
+            WHERE tgname = 'platform_apps_derive_scope_domain_trigger' \
+              AND tgrelid = to_regclass('directus.platform_apps') \
+              AND NOT tgisinternal \
+         ) THEN \
+           CREATE TRIGGER platform_apps_derive_scope_domain_trigger \
+           BEFORE INSERT OR UPDATE ON directus.platform_apps \
+           FOR EACH ROW EXECUTE FUNCTION directus.platform_apps_derive_scope_domain(); \
+         END IF; \
+       END \
+       \$\$; \
+       CREATE OR REPLACE FUNCTION directus.platform_organizations_propagate_domain() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$platform_organizations_propagate_domain\$ \
+       BEGIN \
+         IF NULLIF(BTRIM(NEW.default_domain), '') IS NULL THEN \
+           RAISE EXCEPTION 'platform_organizations.default_domain cannot be blank'; \
+         END IF; \
+         IF NEW.default_domain IS DISTINCT FROM OLD.default_domain THEN \
+           UPDATE directus.platform_apps \
+              SET domain = NEW.default_domain, \
+                  date_updated = now() \
+            WHERE organization_id = NEW.id \
+              AND domain IS DISTINCT FROM NEW.default_domain; \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$platform_organizations_propagate_domain\$; \
+       DO \$\$ \
+       BEGIN \
+         IF NOT EXISTS ( \
+           SELECT 1 FROM pg_trigger \
+            WHERE tgname = 'platform_organizations_propagate_domain_trigger' \
+              AND tgrelid = to_regclass('directus.platform_organizations') \
+              AND NOT tgisinternal \
+         ) THEN \
+           CREATE TRIGGER platform_organizations_propagate_domain_trigger \
+           AFTER UPDATE OF default_domain ON directus.platform_organizations \
+           FOR EACH ROW EXECUTE FUNCTION directus.platform_organizations_propagate_domain(); \
+         END IF; \
+       END \
+       \$\$; \
+       UPDATE platform_apps a \
+          SET site_key = LOWER(BTRIM(a.keycloak_realm)), \
+              domain = o.default_domain, \
+              date_updated = now() \
+         FROM platform_organizations o \
+        WHERE a.organization_id = o.id \
+          AND (a.site_key IS DISTINCT FROM LOWER(BTRIM(a.keycloak_realm)) \
+               OR a.domain IS DISTINCT FROM o.default_domain); \
+       UPDATE platform_apps \
+          SET site_key = LOWER(BTRIM(keycloak_realm)), \
+              date_updated = now() \
+        WHERE organization_id IS NULL \
+          AND site_key IS DISTINCT FROM LOWER(BTRIM(keycloak_realm)); \
        DO \$\$ \
        BEGIN \
          IF to_regclass('directus.cms_cache_refresh_targets') IS NOT NULL THEN \
@@ -3150,7 +3237,7 @@ data:
 
       _upsert_collection_meta "cms_apps" "web_asset" "Logical applications that own CMS pages across internal and external site boundaries." "{{display_name}} ({{app_key}})"
       _upsert_collection_meta "platform_organizations" "corporate_fare" "Platform organizations used by the internal Organization Management page." "{{name}}"
-      _upsert_collection_meta "platform_apps" "apps" "Deployments for logical CMS applications. Each deployment represents one internal or external site boundary." "{{display_name}} | {{site_key}} | {{deployment_status}}"
+      _upsert_collection_meta "platform_apps" "apps" "Deployments for logical CMS applications. Each deployment represents one internal or external site boundary." "{{display_name}} | {{keycloak_realm}} | {{deployment_status}}"
       _upsert_collection_meta "platform_app_operations" "history" "Create, update, redeploy, and destroy operation history for platform apps." "{{operation_type}} | {{status}} | {{date_created}}"
       _upsert_collection_meta "platform_app_operation_steps" "timeline" "Detailed non-secret step status, results, and sanitized failure logs for platform app operations." "{{step_key}} | {{status}} | {{date_created}}"
       _upsert_collection_meta "platform_notification_requests" "notifications" "Validated notification requests accepted by the platform notification service and routed through Kafka/NiFi." "{{event_key}} | {{status}} | {{date_created}}"
@@ -6570,7 +6657,7 @@ data:
       theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
       asset_url_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
-      site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:true,allowNone:false,placeholder:"Choose the internal/external site boundary"}')"
+      site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:false,placeholder:"Choose the internal/external site boundary"}')"
       site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
       layout_template_site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:true,placeholder:"Global (all sites)"}')"
       layout_template_site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
@@ -6644,7 +6731,7 @@ data:
       platform_notification_template_status_options_json="$(jq -nc --argjson choices "${platform_notification_template_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_org_relation_options_json="$(jq -nc '{template:"{{name}} ({{organization_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
       cms_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{app_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
-      platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{app_key}} | {{site_key}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
+      platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{app_key}} | {{keycloak_realm}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_operation_relation_options_json="$(jq -nc '{template:"{{operation_type}} | {{status}} | {{date_created}}",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_notification_template_relation_options_json="$(jq -nc '{template:"{{notification_key}} ({{locale}} | {{status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_user_relation_options_json="$(jq -nc '{template:"{{first_name}} {{last_name}} <{{email}}>",enableCreate:false,enableSelect:true,enableLink:true}')"
@@ -6657,12 +6744,13 @@ data:
       platform_settings_note_sql="$(printf '%s' 'Non-secret organization settings for the future deployment control plane.' | sed "s/'/''/g")"
       cms_app_key_note_sql="$(printf '%s' 'Stable logical application key shared by its internal and external deployments.' | sed "s/'/''/g")"
       cms_app_name_note_sql="$(printf '%s' 'Human-readable logical application name shown when assigning pages and deployments.' | sed "s/'/''/g")"
-      platform_app_org_note_sql="$(printf '%s' 'Owning organization for this app.' | sed "s/'/''/g")"
+      platform_app_org_note_sql="$(printf '%s' 'Required owning organization. The app domain is inherited from this organization.' | sed "s/'/''/g")"
       platform_app_cms_app_note_sql="$(printf '%s' 'Logical CMS application served by this internal or external deployment.' | sed "s/'/''/g")"
       platform_app_key_note_sql="$(printf '%s' 'Stable app slug. This should match the deployment/resource prefix.' | sed "s/'/''/g")"
       platform_page_app_note_sql="$(printf '%s' 'Logical application that owns this page. Application and Site Key together select the page set returned to the shell.' | sed "s/'/''/g")"
-      platform_app_site_key_note_sql="$(printf '%s' 'Site boundary passed to the shell as DIRECTUS_CONTENT_SITE_KEY (for example internal or external). Multiple apps may use the same site key.' | sed "s/'/''/g")"
-      platform_app_realm_note_sql="$(printf '%s' 'Keycloak realm used for auth. Multiple apps can share the same realm and site key while retaining separate pages.' | sed "s/'/''/g")"
+      platform_app_site_key_note_sql="$(printf '%s' 'Compatibility value derived automatically from Site / Keycloak Realm. It is retained for deployment and content-query contracts.' | sed "s/'/''/g")"
+      platform_app_realm_note_sql="$(printf '%s' 'Required site boundary and Keycloak authentication realm. Internal maps to the internal site and realm; External maps to the external site and realm.' | sed "s/'/''/g")"
+      platform_app_domain_note_sql="$(printf '%s' 'Read-only app domain inherited automatically from the selected organization.' | sed "s/'/''/g")"
       platform_app_provider_note_sql="$(printf '%s' 'Cloud provider plugin target. Only Cloudflare is enabled in the first implementation.' | sed "s/'/''/g")"
       platform_deployment_strategy_note_sql="$(printf '%s' 'Deployment engine that should execute operations for this app.' | sed "s/'/''/g")"
       platform_deployment_status_note_sql="$(printf '%s' 'Last known deployment lifecycle status from the control plane.' | sed "s/'/''/g")"
@@ -8578,6 +8666,8 @@ data:
         _readonly="${8:-false}"
         _collection="${9:-cms_content_items}"
         _group="${10:-}"
+        _hidden="${11:-false}"
+        _name="${12:-}"
         if [ -z "${_field:-}" ] || [ "${_field}" = "null" ]; then
           return 0
         fi
@@ -8599,6 +8689,7 @@ data:
         _field_sql="$(printf '%s' "${_field}" | sed "s/'/''/g")"
         _interface_sql="$(printf '%s' "${_interface}" | sed "s/'/''/g")"
         _group_sql="$(printf '%s' "${_group}" | sed "s/'/''/g")"
+        _name_sql="$(printf '%s' "${_name}" | sed "s/'/''/g")"
         _options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${_options_json}")"
         _exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM directus.directus_fields WHERE collection='${_collection_sql}' AND field='${_field_sql}' LIMIT 1;" || true)"
@@ -8610,7 +8701,8 @@ data:
           if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then SETS="${SETS},options=${_options_sql}"; fi
           if _df_has_col "required"; then SETS="${SETS},required=${_required}"; fi
           if _df_has_col "readonly"; then SETS="${SETS},readonly=${_readonly}"; fi
-          if _df_has_col "hidden"; then SETS="${SETS},hidden=false"; fi
+          if _df_has_col "hidden"; then SETS="${SETS},hidden=${_hidden}"; fi
+          if _df_has_col "name" && [ -n "${_name_sql:-}" ]; then SETS="${SETS},name='${_name_sql}'"; fi
           if _df_has_col "width"; then SETS="${SETS},width='${_width}'"; fi
           if _df_has_col "sort"; then SETS="${SETS},sort=${_sort}"; fi
           if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then SETS="${SETS},note='${_note_sql}'"; fi
@@ -8635,7 +8727,8 @@ data:
         if _df_has_col "options" && [ "${_options_sql}" != "NULL" ]; then FCOLS="${FCOLS},options"; FVALS="${FVALS},${_options_sql}"; fi
         if _df_has_col "required"; then FCOLS="${FCOLS},required"; FVALS="${FVALS},${_required}"; fi
         if _df_has_col "readonly"; then FCOLS="${FCOLS},readonly"; FVALS="${FVALS},${_readonly}"; fi
-        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},false"; fi
+        if _df_has_col "hidden"; then FCOLS="${FCOLS},hidden"; FVALS="${FVALS},${_hidden}"; fi
+        if _df_has_col "name" && [ -n "${_name_sql:-}" ]; then FCOLS="${FCOLS},name"; FVALS="${FVALS},'${_name_sql}'"; fi
         if _df_has_col "width"; then FCOLS="${FCOLS},width"; FVALS="${FVALS},'${_width}'"; fi
         if _df_has_col "sort"; then FCOLS="${FCOLS},sort"; FVALS="${FVALS},${_sort}"; fi
         if _df_has_col "note" && [ -n "${_note_sql:-}" ]; then FCOLS="${FCOLS},note"; FVALS="${FVALS},'${_note_sql}'"; fi
@@ -9280,17 +9373,17 @@ data:
       _upsert_content_item_field_meta "default_cloud_provider" "select-dropdown" "half" 6 "${platform_default_provider_note_sql}" "${platform_cloud_provider_options_json}" true false "platform_organizations"
       _upsert_content_item_field_meta "description" "input-multiline" "full" 7 "" "" false false "platform_organizations"
       _upsert_content_item_field_meta "settings_json" "input-code" "full" 8 "${platform_settings_note_sql}" "${platform_json_options_json}" false false "platform_organizations"
-      _upsert_platform_m2o_field_meta "platform_apps" "organization_id" 1 "${platform_app_org_note_sql}" "${platform_org_relation_options_json}" false
+      _upsert_platform_m2o_field_meta "platform_apps" "organization_id" 1 "${platform_app_org_note_sql}" "${platform_org_relation_options_json}" true
       _upsert_platform_m2o_field_meta "platform_apps" "cms_app_id" 2 "${platform_app_cms_app_note_sql}" "${cms_app_relation_options_json}" true
       _upsert_content_item_field_meta "app_key" "input" "half" 3 "${platform_app_key_note_sql}" "" true false "platform_apps"
       _upsert_content_item_field_meta "display_name" "input" "half" 4 "${platform_org_name_note_sql}" "" true false "platform_apps"
       _upsert_content_item_field_meta "status" "select-dropdown" "half" 5 "${status_note_sql}" "${platform_app_status_options_json}" true false "platform_apps"
-      _upsert_content_item_field_meta "site_key" "select-dropdown" "half" 6 "${platform_app_site_key_note_sql}" "${site_key_options_json}" true false "platform_apps"
-      _upsert_content_item_field_meta "keycloak_realm" "select-dropdown" "half" 7 "${platform_app_realm_note_sql}" "${platform_realm_options_json}" true false "platform_apps"
+      _upsert_content_item_field_meta "site_key" "select-dropdown" "half" 6 "${platform_app_site_key_note_sql}" "${site_key_options_json}" false true "platform_apps" "" true "Site Key (Derived)"
+      _upsert_content_item_field_meta "keycloak_realm" "select-dropdown" "half" 7 "${platform_app_realm_note_sql}" "${platform_realm_options_json}" true false "platform_apps" "" false "Site / Keycloak Realm"
       _upsert_content_item_field_meta "cloud_provider" "select-dropdown" "half" 8 "${platform_app_provider_note_sql}" "${platform_cloud_provider_options_json}" true false "platform_apps"
       _upsert_content_item_field_meta "deployment_strategy" "select-dropdown" "half" 9 "${platform_deployment_strategy_note_sql}" "${platform_deployment_strategy_options_json}" true false "platform_apps"
       _upsert_content_item_field_meta "deployment_status" "select-dropdown" "half" 10 "${platform_deployment_status_note_sql}" "${platform_deployment_status_options_json}" true true "platform_apps"
-      _upsert_content_item_field_meta "domain" "input" "half" 11 "${platform_default_domain_note_sql}" "" true false "platform_apps"
+      _upsert_content_item_field_meta "domain" "input" "half" 11 "${platform_app_domain_note_sql}" "" false true "platform_apps" "" false "Domain (From Organization)"
       _upsert_content_item_field_meta "production_hostname" "input" "half" 12 "${platform_hostname_note_sql}" "" false false "platform_apps"
       _upsert_content_item_field_meta "preview_hostname" "input" "half" 13 "${platform_hostname_note_sql}" "" false false "platform_apps"
       _upsert_content_item_field_meta "production_url" "input" "half" 14 "${platform_hostname_note_sql}" "" false false "platform_apps"
