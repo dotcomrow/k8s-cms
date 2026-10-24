@@ -2260,6 +2260,11 @@ data:
        AS \$platform_apps_derive_scope_domain\$ \
        DECLARE \
          resolved_domain TEXT; \
+         previous_domain TEXT; \
+         production_candidate TEXT; \
+         preview_candidate TEXT; \
+         production_subdomain TEXT; \
+         preview_subdomain TEXT; \
        BEGIN \
          NEW.keycloak_realm := LOWER(BTRIM(COALESCE(NEW.keycloak_realm, ''))); \
          IF NEW.keycloak_realm NOT IN ('internal', 'external') THEN \
@@ -2278,6 +2283,52 @@ data:
          ELSE \
            NEW.domain := COALESCE(NULLIF(BTRIM(NEW.domain), ''), 'suncoast.systems'); \
          END IF; \
+         resolved_domain := LOWER(REGEXP_REPLACE(REGEXP_REPLACE(BTRIM(NEW.domain), '^https?://', '', 'i'), '/+$', '')); \
+         IF resolved_domain !~ '^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$' OR POSITION('/' IN resolved_domain) > 0 THEN \
+           RAISE EXCEPTION 'platform_apps organization domain is not a valid hostname'; \
+         END IF; \
+         NEW.domain := resolved_domain; \
+         previous_domain := CASE \
+           WHEN TG_OP = 'UPDATE' THEN LOWER(REGEXP_REPLACE(REGEXP_REPLACE(BTRIM(COALESCE(OLD.domain, '')), '^https?://', '', 'i'), '/+$', '')) \
+           ELSE '' \
+         END; \
+         production_candidate := LOWER(SPLIT_PART(REGEXP_REPLACE(BTRIM(COALESCE(NULLIF(NEW.production_hostname, ''), NEW.production_url, '')), '^https?://', '', 'i'), '/', 1)); \
+         preview_candidate := LOWER(SPLIT_PART(REGEXP_REPLACE(BTRIM(COALESCE(NULLIF(NEW.preview_hostname, ''), NEW.preview_url, '')), '^https?://', '', 'i'), '/', 1)); \
+         IF production_candidate = '' THEN \
+           production_subdomain := NEW.app_key; \
+         ELSIF RIGHT(production_candidate, LENGTH(resolved_domain) + 1) = '.' || resolved_domain THEN \
+           production_subdomain := LEFT(production_candidate, LENGTH(production_candidate) - LENGTH(resolved_domain) - 1); \
+         ELSIF previous_domain <> '' AND RIGHT(production_candidate, LENGTH(previous_domain) + 1) = '.' || previous_domain THEN \
+           production_subdomain := LEFT(production_candidate, LENGTH(production_candidate) - LENGTH(previous_domain) - 1); \
+         ELSIF POSITION('.' IN production_candidate) = 0 THEN \
+           production_subdomain := production_candidate; \
+         ELSE \
+           production_subdomain := SPLIT_PART(production_candidate, '.', 1); \
+         END IF; \
+         IF preview_candidate = '' THEN \
+           preview_subdomain := COALESCE(NULLIF(BTRIM(NEW.app_key), ''), 'app') || '-preview'; \
+         ELSIF RIGHT(preview_candidate, LENGTH(resolved_domain) + 1) = '.' || resolved_domain THEN \
+           preview_subdomain := LEFT(preview_candidate, LENGTH(preview_candidate) - LENGTH(resolved_domain) - 1); \
+         ELSIF previous_domain <> '' AND RIGHT(preview_candidate, LENGTH(previous_domain) + 1) = '.' || previous_domain THEN \
+           preview_subdomain := LEFT(preview_candidate, LENGTH(preview_candidate) - LENGTH(previous_domain) - 1); \
+         ELSIF POSITION('.' IN preview_candidate) = 0 THEN \
+           preview_subdomain := preview_candidate; \
+         ELSE \
+           preview_subdomain := SPLIT_PART(preview_candidate, '.', 1); \
+         END IF; \
+         production_subdomain := REGEXP_REPLACE(REGEXP_REPLACE(LOWER(BTRIM(COALESCE(production_subdomain, NEW.app_key, 'app'))), '[^a-z0-9-]+', '-', 'g'), '(^-+|-+$)', '', 'g'); \
+         preview_subdomain := REGEXP_REPLACE(REGEXP_REPLACE(LOWER(BTRIM(COALESCE(preview_subdomain, NEW.app_key || '-preview', 'app-preview'))), '[^a-z0-9-]+', '-', 'g'), '(^-+|-+$)', '', 'g'); \
+         production_subdomain := RTRIM(LEFT(production_subdomain, 63), '-'); \
+         preview_subdomain := RTRIM(LEFT(preview_subdomain, 63), '-'); \
+         IF production_subdomain = '' OR preview_subdomain = '' THEN \
+           RAISE EXCEPTION 'platform_apps production and preview subdomains must not be blank'; \
+         END IF; \
+         NEW.production_hostname := production_subdomain || '.' || resolved_domain; \
+         NEW.preview_hostname := preview_subdomain || '.' || resolved_domain; \
+         NEW.production_url := 'https://' || NEW.production_hostname; \
+         NEW.preview_url := 'https://' || NEW.preview_hostname; \
+         NEW.production_cache_refresh_url := NEW.production_url || '/api/cache/refresh?mode=purge-and-refresh&slug=home'; \
+         NEW.preview_cache_refresh_url := NEW.preview_url || '/api/cache/refresh?mode=purge-and-refresh&slug=home'; \
          RETURN NEW; \
        END; \
        \$platform_apps_derive_scope_domain\$; \
@@ -2340,6 +2391,19 @@ data:
               date_updated = now() \
         WHERE organization_id IS NULL \
           AND site_key IS DISTINCT FROM LOWER(BTRIM(keycloak_realm)); \
+       UPDATE platform_apps a \
+          SET production_hostname = a.production_hostname, \
+              preview_hostname = a.preview_hostname \
+         FROM platform_organizations o \
+        WHERE a.organization_id = o.id \
+          AND (a.production_hostname IS NULL \
+               OR a.preview_hostname IS NULL \
+               OR RIGHT(LOWER(a.production_hostname), LENGTH(BTRIM(o.default_domain)) + 1) <> '.' || LOWER(BTRIM(o.default_domain)) \
+               OR RIGHT(LOWER(a.preview_hostname), LENGTH(BTRIM(o.default_domain)) + 1) <> '.' || LOWER(BTRIM(o.default_domain)) \
+               OR a.production_url IS DISTINCT FROM 'https://' || a.production_hostname \
+               OR a.preview_url IS DISTINCT FROM 'https://' || a.preview_hostname \
+               OR a.production_cache_refresh_url IS DISTINCT FROM 'https://' || a.production_hostname || '/api/cache/refresh?mode=purge-and-refresh&slug=home' \
+               OR a.preview_cache_refresh_url IS DISTINCT FROM 'https://' || a.preview_hostname || '/api/cache/refresh?mode=purge-and-refresh&slug=home'); \
        DO \$\$ \
        BEGIN \
          IF to_regclass('directus.cms_cache_refresh_targets') IS NOT NULL THEN \
@@ -6754,9 +6818,9 @@ data:
       platform_app_provider_note_sql="$(printf '%s' 'Cloud provider plugin target. Only Cloudflare is enabled in the first implementation.' | sed "s/'/''/g")"
       platform_deployment_strategy_note_sql="$(printf '%s' 'Deployment engine that should execute operations for this app.' | sed "s/'/''/g")"
       platform_deployment_status_note_sql="$(printf '%s' 'Last known deployment lifecycle status from the control plane.' | sed "s/'/''/g")"
-      platform_hostname_note_sql="$(printf '%s' 'Hostname or URL generated for the app deployment.' | sed "s/'/''/g")"
+      platform_hostname_note_sql="$(printf '%s' 'Read-only hostname or URL derived from the app subdomain and organization domain.' | sed "s/'/''/g")"
       platform_cache_refresh_enabled_note_sql="$(printf '%s' 'Enables generated Directus cache refresh requests for this app when target URLs are configured.' | sed "s/'/''/g")"
-      platform_cache_refresh_url_note_sql="$(printf '%s' 'Non-secret app cache refresh URL used by Directus refresh flows.' | sed "s/'/''/g")"
+      platform_cache_refresh_url_note_sql="$(printf '%s' 'Read-only app cache refresh URL derived from the organization-bound app URL.' | sed "s/'/''/g")"
       platform_workspace_note_sql="$(printf '%s' 'Terraform workspace name used by the deployment engine.' | sed "s/'/''/g")"
       platform_template_note_sql="$(printf '%s' 'Template source/version that should be deployed for this app.' | sed "s/'/''/g")"
       platform_operation_app_note_sql="$(printf '%s' 'App this create/update/redeploy/delete operation belongs to.' | sed "s/'/''/g")"
@@ -9384,13 +9448,13 @@ data:
       _upsert_content_item_field_meta "deployment_strategy" "select-dropdown" "half" 9 "${platform_deployment_strategy_note_sql}" "${platform_deployment_strategy_options_json}" true false "platform_apps"
       _upsert_content_item_field_meta "deployment_status" "select-dropdown" "half" 10 "${platform_deployment_status_note_sql}" "${platform_deployment_status_options_json}" true true "platform_apps"
       _upsert_content_item_field_meta "domain" "input" "half" 11 "${platform_app_domain_note_sql}" "" false true "platform_apps" "" false "Domain (From Organization)"
-      _upsert_content_item_field_meta "production_hostname" "input" "half" 12 "${platform_hostname_note_sql}" "" false false "platform_apps"
-      _upsert_content_item_field_meta "preview_hostname" "input" "half" 13 "${platform_hostname_note_sql}" "" false false "platform_apps"
-      _upsert_content_item_field_meta "production_url" "input" "half" 14 "${platform_hostname_note_sql}" "" false false "platform_apps"
-      _upsert_content_item_field_meta "preview_url" "input" "half" 15 "${platform_hostname_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "production_hostname" "input" "half" 12 "${platform_hostname_note_sql}" "" false true "platform_apps"
+      _upsert_content_item_field_meta "preview_hostname" "input" "half" 13 "${platform_hostname_note_sql}" "" false true "platform_apps"
+      _upsert_content_item_field_meta "production_url" "input" "half" 14 "${platform_hostname_note_sql}" "" false true "platform_apps"
+      _upsert_content_item_field_meta "preview_url" "input" "half" 15 "${platform_hostname_note_sql}" "" false true "platform_apps"
       _upsert_content_item_field_meta "cache_refresh_enabled" "boolean" "half" 16 "${platform_cache_refresh_enabled_note_sql}" "" true false "platform_apps"
-      _upsert_content_item_field_meta "production_cache_refresh_url" "input" "full" 17 "${platform_cache_refresh_url_note_sql}" "" false false "platform_apps"
-      _upsert_content_item_field_meta "preview_cache_refresh_url" "input" "full" 18 "${platform_cache_refresh_url_note_sql}" "" false false "platform_apps"
+      _upsert_content_item_field_meta "production_cache_refresh_url" "input" "full" 17 "${platform_cache_refresh_url_note_sql}" "" false true "platform_apps"
+      _upsert_content_item_field_meta "preview_cache_refresh_url" "input" "full" 18 "${platform_cache_refresh_url_note_sql}" "" false true "platform_apps"
       _upsert_content_item_field_meta "app_auth_slug_production" "input" "half" 19 "${platform_app_key_note_sql}" "" false false "platform_apps"
       _upsert_content_item_field_meta "app_auth_slug_preview" "input" "half" 20 "${platform_app_key_note_sql}" "" false false "platform_apps"
       _upsert_content_item_field_meta "terraform_workspace_production" "input" "half" 21 "${platform_workspace_note_sql}" "" false false "platform_apps"
