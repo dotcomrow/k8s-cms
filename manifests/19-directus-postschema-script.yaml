@@ -757,10 +757,10 @@ data:
                ('function:prune_history_retention', 'directus.prune_history_retention()'), \
                ('function:prune_invalid_browser_subscriptions', 'directus.prune_invalid_browser_subscriptions()'), \
                ('function:prune_unretained_browser_subscriptions', 'directus.prune_unretained_browser_subscriptions()'), \
-               ('function:prune_platform_app_operation_steps_14d', 'directus.prune_platform_app_operation_steps_14d()'), \
-               ('function:prune_platform_app_operations_14d', 'directus.prune_platform_app_operations_14d()'), \
-               ('function:prune_platform_notification_delivery_attempts_14d', 'directus.prune_platform_notification_delivery_attempts_14d()'), \
-               ('function:prune_platform_notification_requests_14d', 'directus.prune_platform_notification_requests_14d()'), \
+               ('function:prune_platform_app_operation_steps_2d', 'directus.prune_platform_app_operation_steps_2d()'), \
+               ('function:prune_platform_app_operations_2d', 'directus.prune_platform_app_operations_2d()'), \
+               ('function:prune_platform_notification_delivery_attempts_2d', 'directus.prune_platform_notification_delivery_attempts_2d()'), \
+               ('function:prune_platform_notification_requests_2d', 'directus.prune_platform_notification_requests_2d()'), \
                ('function:prune_successful_cms_content_translation_jobs', 'directus.prune_successful_cms_content_translation_jobs()'), \
                ('function:run_database_cleanup_tasks', 'directus.run_database_cleanup_tasks()') \
            ) AS required(name, signature) \
@@ -4591,7 +4591,7 @@ data:
        END \
        \$\$;"
 
-    echo "🧹 Ensuring Directus history retention triggers exist (14 days)..."
+    echo "🧹 Ensuring Directus history retention triggers exist (2-day operational data; 14-day audit data)..."
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -v ON_ERROR_STOP=1 -c \
       "SET search_path TO directus, public; \
        CREATE INDEX IF NOT EXISTS platform_app_operations_retention_idx ON platform_app_operations (COALESCE(finished_at, requested_at, date_created)); \
@@ -4687,7 +4687,7 @@ data:
          RETURN deleted_count; \
        END; \
        \$\$; \
-       CREATE OR REPLACE FUNCTION directus.prune_platform_app_operation_steps_14d() RETURNS integer \
+       CREATE OR REPLACE FUNCTION directus.prune_platform_app_operation_steps_2d() RETURNS integer \
        LANGUAGE plpgsql \
        AS \$\$ \
        DECLARE \
@@ -4697,12 +4697,12 @@ data:
            RETURN 0; \
          END IF; \
          DELETE FROM directus.platform_app_operation_steps \
-         WHERE COALESCE(finished_at, started_at, date_created) < now() - INTERVAL '14 days'; \
+         WHERE COALESCE(finished_at, started_at, date_created) < now() - INTERVAL '2 days'; \
          GET DIAGNOSTICS deleted_count = ROW_COUNT; \
          RETURN deleted_count; \
        END; \
        \$\$; \
-       CREATE OR REPLACE FUNCTION directus.prune_platform_app_operations_14d() RETURNS integer \
+       CREATE OR REPLACE FUNCTION directus.prune_platform_app_operations_2d() RETURNS integer \
        LANGUAGE plpgsql \
        AS \$\$ \
        DECLARE \
@@ -4712,12 +4712,12 @@ data:
            RETURN 0; \
          END IF; \
          DELETE FROM directus.platform_app_operations \
-         WHERE COALESCE(finished_at, requested_at, date_created) < now() - INTERVAL '14 days'; \
+         WHERE COALESCE(finished_at, requested_at, date_created) < now() - INTERVAL '2 days'; \
          GET DIAGNOSTICS deleted_count = ROW_COUNT; \
          RETURN deleted_count; \
        END; \
        \$\$; \
-       CREATE OR REPLACE FUNCTION directus.prune_platform_notification_delivery_attempts_14d() RETURNS integer \
+       CREATE OR REPLACE FUNCTION directus.prune_platform_notification_delivery_attempts_2d() RETURNS integer \
        LANGUAGE plpgsql \
        AS \$\$ \
        DECLARE \
@@ -4727,12 +4727,12 @@ data:
            RETURN 0; \
          END IF; \
          DELETE FROM directus.platform_notification_delivery_attempts \
-         WHERE COALESCE(finished_at, attempted_at, date_created) < now() - INTERVAL '14 days'; \
+         WHERE COALESCE(finished_at, attempted_at, date_created) < now() - INTERVAL '2 days'; \
          GET DIAGNOSTICS deleted_count = ROW_COUNT; \
          RETURN deleted_count; \
        END; \
        \$\$; \
-       CREATE OR REPLACE FUNCTION directus.prune_platform_notification_requests_14d() RETURNS integer \
+       CREATE OR REPLACE FUNCTION directus.prune_platform_notification_requests_2d() RETURNS integer \
        LANGUAGE plpgsql \
        AS \$\$ \
        DECLARE \
@@ -4742,7 +4742,7 @@ data:
            RETURN 0; \
          END IF; \
          DELETE FROM directus.platform_notification_requests \
-         WHERE COALESCE(finished_at, requested_at, date_created) < now() - INTERVAL '14 days'; \
+         WHERE COALESCE(finished_at, requested_at, date_created) < now() - INTERVAL '2 days'; \
          GET DIAGNOSTICS deleted_count = ROW_COUNT; \
          RETURN deleted_count; \
        END; \
@@ -4762,10 +4762,10 @@ data:
              VALUES \
                ('browser_subscriptions_invalid', 'directus.prune_invalid_browser_subscriptions()'), \
                ('browser_subscriptions_unretained', 'directus.prune_unretained_browser_subscriptions()'), \
-               ('platform_app_operation_steps_14d', 'directus.prune_platform_app_operation_steps_14d()'), \
-               ('platform_app_operations_14d', 'directus.prune_platform_app_operations_14d()'), \
-               ('platform_notification_delivery_attempts_14d', 'directus.prune_platform_notification_delivery_attempts_14d()'), \
-               ('platform_notification_requests_14d', 'directus.prune_platform_notification_requests_14d()'), \
+               ('platform_app_operation_steps_2d', 'directus.prune_platform_app_operation_steps_2d()'), \
+               ('platform_app_operations_2d', 'directus.prune_platform_app_operations_2d()'), \
+               ('platform_notification_delivery_attempts_2d', 'directus.prune_platform_notification_delivery_attempts_2d()'), \
+               ('platform_notification_requests_2d', 'directus.prune_platform_notification_requests_2d()'), \
                ('cms_content_translation_jobs_successful_24h', 'directus.prune_successful_cms_content_translation_jobs()') \
            ) AS cleanup_tasks(task_key, function_signature) \
          LOOP \
@@ -4789,61 +4789,66 @@ data:
          ); \
        END; \
        \$\$; \
+       DROP FUNCTION IF EXISTS directus.prune_platform_app_operation_steps_14d(); \
+       DROP FUNCTION IF EXISTS directus.prune_platform_app_operations_14d(); \
+       DROP FUNCTION IF EXISTS directus.prune_platform_notification_delivery_attempts_14d(); \
+       DROP FUNCTION IF EXISTS directus.prune_platform_notification_requests_14d(); \
        CREATE OR REPLACE FUNCTION directus.prune_history_retention() RETURNS trigger \
        LANGUAGE plpgsql \
        AS \$\$ \
        DECLARE \
-         cutoff TIMESTAMPTZ := now() - INTERVAL '14 days'; \
+         operational_cutoff TIMESTAMPTZ := now() - INTERVAL '2 days'; \
+         audit_cutoff TIMESTAMPTZ := now() - INTERVAL '14 days'; \
        BEGIN \
          IF to_regclass('directus.directus_revisions') IS NOT NULL AND to_regclass('directus.directus_activity') IS NOT NULL THEN \
            DELETE FROM directus.directus_revisions r \
            USING directus.directus_activity a \
            WHERE r.activity = a.id \
-             AND a.\"timestamp\" < cutoff; \
+             AND a.\"timestamp\" < audit_cutoff; \
          END IF; \
          IF to_regclass('directus.directus_activity') IS NOT NULL THEN \
            DELETE FROM directus.directus_activity \
-           WHERE \"timestamp\" < cutoff; \
+           WHERE \"timestamp\" < audit_cutoff; \
          END IF; \
          IF to_regclass('directus.platform_app_operation_steps') IS NOT NULL THEN \
            DELETE FROM directus.platform_app_operation_steps \
-           WHERE COALESCE(finished_at, started_at, date_created) < cutoff; \
+           WHERE COALESCE(finished_at, started_at, date_created) < operational_cutoff; \
          END IF; \
          IF to_regclass('directus.platform_app_operations') IS NOT NULL THEN \
            DELETE FROM directus.platform_app_operations \
-           WHERE COALESCE(finished_at, requested_at, date_created) < cutoff; \
+           WHERE COALESCE(finished_at, requested_at, date_created) < operational_cutoff; \
          END IF; \
          IF to_regclass('directus.platform_notification_delivery_attempts') IS NOT NULL THEN \
            DELETE FROM directus.platform_notification_delivery_attempts \
-           WHERE COALESCE(finished_at, attempted_at, date_created) < cutoff; \
+           WHERE COALESCE(finished_at, attempted_at, date_created) < operational_cutoff; \
          END IF; \
          IF to_regclass('directus.platform_notification_requests') IS NOT NULL THEN \
            DELETE FROM directus.platform_notification_requests \
-           WHERE COALESCE(finished_at, requested_at, date_created) < cutoff; \
+           WHERE COALESCE(finished_at, requested_at, date_created) < operational_cutoff; \
          END IF; \
          IF to_regclass('directus.platform_notification_browser_subscriptions') IS NOT NULL THEN \
            DELETE FROM directus.platform_notification_browser_subscriptions \
            WHERE status IN ('superseded', 'expired', 'stale') \
-             AND COALESCE(date_updated, last_seen_at, date_created) < cutoff; \
+             AND COALESCE(date_updated, last_seen_at, date_created) < audit_cutoff; \
            PERFORM directus.prune_invalid_browser_subscriptions(); \
          END IF; \
          IF to_regclass('directus.cms_content_translation_jobs') IS NOT NULL THEN \
            PERFORM directus.prune_successful_cms_content_translation_jobs(); \
            DELETE FROM directus.cms_content_translation_jobs \
            WHERE LOWER(COALESCE(NULLIF(BTRIM(status), ''), '')) <> 'succeeded' \
-             AND COALESCE(date_completed, date_updated, date_created) < cutoff; \
+             AND COALESCE(date_completed, date_updated, date_created) < audit_cutoff; \
          END IF; \
          IF to_regclass('directus.runtime_canary_run_steps') IS NOT NULL THEN \
            DELETE FROM directus.runtime_canary_run_steps \
-           WHERE COALESCE(completed_at, started_at, date_created) < cutoff; \
+           WHERE COALESCE(completed_at, started_at, date_created) < audit_cutoff; \
          END IF; \
          IF to_regclass('directus.runtime_canary_runs') IS NOT NULL THEN \
            DELETE FROM directus.runtime_canary_runs \
-           WHERE COALESCE(completed_at, started_at, date_created) < cutoff; \
+           WHERE COALESCE(completed_at, started_at, date_created) < audit_cutoff; \
          END IF; \
          IF to_regclass('directus.schema_patch_runs') IS NOT NULL THEN \
            DELETE FROM directus.schema_patch_runs \
-           WHERE COALESCE(finished_at, started_at) < cutoff; \
+           WHERE COALESCE(finished_at, started_at) < audit_cutoff; \
          END IF; \
          RETURN NULL; \
        END; \

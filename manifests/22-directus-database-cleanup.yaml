@@ -3,12 +3,18 @@ kind: ServiceAccount
 metadata:
   name: directus-browser-subscription-cleanup
   namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-database-cleanup
+    app.kubernetes.io/component: database-maintenance
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: directus-browser-subscription-cleanup
   namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-database-cleanup
+    app.kubernetes.io/component: database-maintenance
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -22,6 +28,9 @@ kind: RoleBinding
 metadata:
   name: directus-browser-subscription-cleanup
   namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-database-cleanup
+    app.kubernetes.io/component: database-maintenance
 subjects:
   - kind: ServiceAccount
     name: directus-browser-subscription-cleanup
@@ -36,6 +45,11 @@ kind: CronJob
 metadata:
   name: directus-browser-subscription-cleanup
   namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-database-cleanup
+    app.kubernetes.io/component: database-maintenance
+  annotations:
+    description: Daily Directus database cleanup with two-day app-operation and notification retention; the resource name is retained for GitOps migration safety.
 spec:
   schedule: "17 7 * * *"
   concurrencyPolicy: Forbid
@@ -50,6 +64,8 @@ spec:
         metadata:
           labels:
             app: directus-browser-subscription-cleanup
+            app.kubernetes.io/name: directus-database-cleanup
+            app.kubernetes.io/component: database-maintenance
           annotations:
             linkerd.io/inject: "disabled"
         spec:
@@ -140,10 +156,14 @@ spec:
                     user: process.env.DB_USER,
                     password: process.env.DB_PASSWORD,
                     database: process.env.DB_DATABASE,
+                    connectionTimeoutMillis: 10000,
+                    query_timeout: 250000,
                   });
 
                   async function main() {
                     await client.connect();
+                    await client.query("SET statement_timeout TO '240s'");
+                    await client.query("SET lock_timeout TO '10s'");
                     const requiredFunctions = [
                       "directus.run_database_cleanup_tasks()",
                     ];
@@ -161,10 +181,32 @@ spec:
                     const cleanupPayload = typeof cleanupPayloadRaw === "string"
                       ? JSON.parse(cleanupPayloadRaw)
                       : cleanupPayloadRaw;
+                    const retentionChecks = [
+                      ["platform_app_operation_steps", "COALESCE(finished_at, started_at, date_created)"],
+                      ["platform_app_operations", "COALESCE(finished_at, requested_at, date_created)"],
+                      ["platform_notification_delivery_attempts", "COALESCE(finished_at, attempted_at, date_created)"],
+                      ["platform_notification_requests", "COALESCE(finished_at, requested_at, date_created)"],
+                    ];
+                    const retentionVerification = [];
+                    for (const [tableName, ageExpression] of retentionChecks) {
+                      const retentionResult = await client.query(
+                        `SELECT COUNT(*)::bigint AS remaining_expired_count FROM directus.${tableName} WHERE ${ageExpression} < now() - INTERVAL '2 days'`,
+                      );
+                      const remainingExpiredCount = Number(retentionResult.rows[0]?.remaining_expired_count || 0);
+                      retentionVerification.push({
+                        table: tableName,
+                        retention_days: 2,
+                        remaining_expired_count: remainingExpiredCount,
+                      });
+                      if (remainingExpiredCount !== 0) {
+                        throw new Error(`${tableName} still has ${remainingExpiredCount} row(s) older than 2 days after cleanup`);
+                      }
+                    }
                     console.log(JSON.stringify({
                       event: "directus_database_cleanup_complete",
                       deleted_count: Number(cleanupPayload.total_deleted_count || 0),
                       cleanup: cleanupPayload,
+                      retention_verification: retentionVerification,
                       ran_at: new Date().toISOString(),
                     }));
                   }
