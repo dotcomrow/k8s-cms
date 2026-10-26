@@ -1214,6 +1214,7 @@ data:
          head_manifest_short_name TEXT NULL, \
          head_manifest_screenshot_wide_url TEXT NULL, \
          head_manifest_screenshot_narrow_url TEXT NULL, \
+         head_splash_image_url TEXT NULL, \
          head_icon_url TEXT NULL, \
          head_apple_touch_icon_url TEXT NULL, \
          head_icon_shortcut_url TEXT NULL, \
@@ -1430,6 +1431,7 @@ data:
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_short_name TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_screenshot_wide_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_manifest_screenshot_narrow_url TEXT; \
+       ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_splash_image_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_apple_touch_icon_url TEXT; \
        ALTER TABLE IF EXISTS cms_pages ADD COLUMN IF NOT EXISTS head_icon_shortcut_url TEXT; \
@@ -6621,6 +6623,7 @@ data:
       head_manifest_short_name_note="Optional: short PWA/app name for manifest short_name. Leave empty to derive it from Head Title."
       head_manifest_screenshot_wide_url_note="Optional: wide web app manifest screenshot. Use file picker to choose/upload from Directus Files."
       head_manifest_screenshot_narrow_url_note="Optional: narrow web app manifest screenshot. Use file picker to choose/upload from Directus Files."
+      head_splash_image_url_note="Optional: responsive PWA startup and shell page-loading artwork. Upload an SVG; the shell generates device-sized PNG launch images where the platform requires them."
       head_icon_url_note="Primary icon source (recommended). If set, favicon/app icon sizes are derived automatically. Use size-specific fields only when overriding."
       head_icon_shortcut_url_note="Optional override for legacy shortcut favicon (rel=shortcut icon). Leave empty to use Icon."
       head_icon_svg_url_note="Optional SVG icon override. Leave empty to use raster icon set."
@@ -6726,6 +6729,8 @@ data:
       theme_selector_dock_position_choices_json="$(jq -nc '[ {"text":"Start","value":"start","foreground":"#1D4ED8","background":"#DBEAFE"}, {"text":"End","value":"end","foreground":"#065F46","background":"#D1FAE5"} ]')"
       asset_url_picker_options_json="$(jq -nc \
         '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/*",show_preview:true,show_upload:true,show_library:true,limit:40}')"
+      splash_asset_url_picker_options_json="$(jq -nc \
+        '{asset_base_url:"",asset_path:"/assets",store_absolute_url:true,accept:"image/svg+xml",show_preview:true,show_upload:true,show_library:true,limit:40}')"
       site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:false,placeholder:"Choose the internal/external site boundary"}')"
       site_key_display_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices}')"
       layout_template_site_key_options_json="$(jq -nc --argjson choices "${site_key_choices_json}" '{choices:$choices,allowOther:false,allowNone:true,placeholder:"Global (all sites)"}')"
@@ -6895,6 +6900,7 @@ data:
       head_manifest_short_name_note_sql="$(printf '%s' "${head_manifest_short_name_note}" | sed "s/'/''/g")"
       head_manifest_screenshot_wide_url_note_sql="$(printf '%s' "${head_manifest_screenshot_wide_url_note}" | sed "s/'/''/g")"
       head_manifest_screenshot_narrow_url_note_sql="$(printf '%s' "${head_manifest_screenshot_narrow_url_note}" | sed "s/'/''/g")"
+      head_splash_image_url_note_sql="$(printf '%s' "${head_splash_image_url_note}" | sed "s/'/''/g")"
       head_icon_url_note_sql="$(printf '%s' "${head_icon_url_note}" | sed "s/'/''/g")"
       head_icon_shortcut_url_note_sql="$(printf '%s' "${head_icon_shortcut_url_note}" | sed "s/'/''/g")"
       head_icon_svg_url_note_sql="$(printf '%s' "${head_icon_svg_url_note}" | sed "s/'/''/g")"
@@ -6918,6 +6924,7 @@ data:
       head_manifest_short_name_name_sql="$(printf '%s' "Manifest Short Name" | sed "s/'/''/g")"
       head_manifest_screenshot_wide_url_name_sql="$(printf '%s' "Manifest Screenshot (Wide)" | sed "s/'/''/g")"
       head_manifest_screenshot_narrow_url_name_sql="$(printf '%s' "Manifest Screenshot (Narrow)" | sed "s/'/''/g")"
+      head_splash_image_url_name_sql="$(printf '%s' "Splash Screen Image (SVG)" | sed "s/'/''/g")"
       head_icon_url_name_sql="$(printf '%s' "Icon" | sed "s/'/''/g")"
       head_icon_shortcut_url_name_sql="$(printf '%s' "Icon (Shortcut)" | sed "s/'/''/g")"
       head_icon_svg_url_name_sql="$(printf '%s' "Icon (SVG)" | sed "s/'/''/g")"
@@ -9370,20 +9377,21 @@ data:
       _upsert_page_head_input_field_meta "head_manifest_short_name" 6 "half" "${head_manifest_short_name_note_sql}" "input" "" "${head_manifest_short_name_name_sql}"
       _upsert_page_head_input_field_meta "head_manifest_screenshot_wide_url" 16 "half" "${head_manifest_screenshot_wide_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_manifest_screenshot_wide_url_name_sql}"
       _upsert_page_head_input_field_meta "head_manifest_screenshot_narrow_url" 17 "half" "${head_manifest_screenshot_narrow_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_manifest_screenshot_narrow_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_url" 18 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_shortcut_url" 19 "half" "${head_icon_shortcut_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_shortcut_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_svg_url" 20 "half" "${head_icon_svg_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_svg_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_16_url" 21 "half" "${head_icon_16_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_16_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_32_url" 22 "half" "${head_icon_32_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_32_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_180_url" 23 "half" "${head_icon_180_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_180_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_192_url" 24 "half" "${head_icon_192_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_192_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_512_url" 25 "half" "${head_icon_512_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_512_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 26 "half" "${head_apple_touch_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_apple_touch_icon_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_mask_url" 27 "half" "${head_icon_mask_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_mask_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_icon_mask_color" 28 "half" "${head_icon_mask_color_note_sql}" "select-color" "" "${head_icon_mask_color_name_sql}"
-      _upsert_page_head_input_field_meta "head_canonical_url" 29 "full" "${head_canonical_url_note_sql}" "input" "" "${head_canonical_url_name_sql}"
-      _upsert_page_head_input_field_meta "head_robots" 30 "full" "${head_robots_note_sql}" "input" "" "${head_robots_name_sql}"
-      _upsert_page_head_input_field_meta "head_generator" 31 "half" "${head_generator_note_sql}" "input" "" "${head_generator_name_sql}"
+      _upsert_page_head_input_field_meta "head_splash_image_url" 18 "full" "${head_splash_image_url_note_sql}" "cms-asset-url-picker" "${splash_asset_url_picker_options_json}" "${head_splash_image_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_url" 19 "half" "${head_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_shortcut_url" 20 "half" "${head_icon_shortcut_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_shortcut_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_svg_url" 21 "half" "${head_icon_svg_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_svg_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_16_url" 22 "half" "${head_icon_16_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_16_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_32_url" 23 "half" "${head_icon_32_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_32_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_180_url" 24 "half" "${head_icon_180_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_180_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_192_url" 25 "half" "${head_icon_192_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_192_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_512_url" 26 "half" "${head_icon_512_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_512_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_apple_touch_icon_url" 27 "half" "${head_apple_touch_icon_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_apple_touch_icon_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_mask_url" 28 "half" "${head_icon_mask_url_note_sql}" "cms-asset-url-picker" "${asset_url_picker_options_json}" "${head_icon_mask_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_icon_mask_color" 29 "half" "${head_icon_mask_color_note_sql}" "select-color" "" "${head_icon_mask_color_name_sql}"
+      _upsert_page_head_input_field_meta "head_canonical_url" 30 "full" "${head_canonical_url_note_sql}" "input" "" "${head_canonical_url_name_sql}"
+      _upsert_page_head_input_field_meta "head_robots" 31 "full" "${head_robots_note_sql}" "input" "" "${head_robots_name_sql}"
+      _upsert_page_head_input_field_meta "head_generator" 32 "half" "${head_generator_note_sql}" "input" "" "${head_generator_name_sql}"
       _upsert_block_hero_background_image_field_meta
       _upsert_page_block_slot_field_meta_dynamic
       _upsert_page_block_parent_field_meta_dynamic
@@ -9596,6 +9604,7 @@ data:
       _assign_page_field_group "head_manifest_url" "_section_meta"
       _assign_page_field_group "head_manifest_screenshot_wide_url" "_section_meta"
       _assign_page_field_group "head_manifest_screenshot_narrow_url" "_section_meta"
+      _assign_page_field_group "head_splash_image_url" "_section_meta"
       _assign_page_field_group "head_icon_url" "_section_meta"
       _assign_page_field_group "head_icon_shortcut_url" "_section_meta"
       _assign_page_field_group "head_icon_svg_url" "_section_meta"
