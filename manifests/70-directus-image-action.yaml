@@ -729,7 +729,9 @@ metadata:
     # Gravitee discovery
     gravitee.io/expose: "true"
     gravitee.io/context-path: "/directus-image-action"
+    gravitee.io/auth-required: "directus-token"
     gravitee.io/approval-required: "admin"
+    gravitee.io/token-exchange-target: "<path:secret/data/keycloak-client-id-graphql-api#value>"
 
     # Definition metadata (string)
     gravitee.io/description: "Directus Image Action API for Hasura handlers"
@@ -759,7 +761,7 @@ metadata:
 
     # Definition JSON fields (raw JSON strings)
     gravitee.io/definition-metadata: '{"owner":"cms","slack":"#cms"}'
-    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","service":"directus-image-action"}'
+    gravitee.io/definition-properties: '{"tier":"prod","region":"us-central1","service":"directus-image-action","token_exchange_url":"http://directus-auth-bridge.directus.svc.cluster.local:8080/token","token_exchange_client_id":"<path:secret/data/keycloak-client-id-graphql-api#value>","token_exchange_client_secret":"<path:secret/data/keycloak-client-secret-graphql-api#value>"}'
     gravitee.io/definition-endpoint-groups: '[{"name":"default","type":"http-proxy","sharedConfiguration":{"http":{"version":"HTTP_1_1","connectTimeout":30000,"readTimeout":300000,"idleTimeout":300000,"keepAlive":true,"keepAliveTimeout":30000,"pipelining":false,"useCompression":false,"propagateClientAcceptEncoding":false,"followRedirects":false,"maxConcurrentConnections":20}},"services":{"healthCheck":{"enabled":true,"overrideConfiguration":true,"type":"http-health-check","configuration":{"schedule":"*/30 * * * * *","target":"/healthz","method":"GET","overrideEndpointPath":true,"headers":[],"assertion":"{#response.status == 200}","successThreshold":2,"failureThreshold":2}}},"endpoints":[{"name":"directus-image-action-http","type":"http-proxy","inheritConfiguration":true,"weight":1,"configuration":{"target":"http://directus-image-action.directus.svc.cluster.local:8080"},"secondary":false}]}]'
     gravitee.io/definition-pages: '{"swagger":{"type":"SWAGGER","name":"openapi","published":true,"visibility":"PUBLIC","homepage":false,"source":{"type":"http-fetcher","configuration":{"url":"http://directus-image-action.directus.svc.cluster.local:8080/openapi.json","autoFetch":true,"fetchCron":"0 */5 * * * *","useSystemProxy":false}}}}'
     gravitee.io/definition-resources: '[]'
