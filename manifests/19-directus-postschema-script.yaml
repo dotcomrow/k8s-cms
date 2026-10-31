@@ -698,6 +698,7 @@ data:
              ('platform_notification_browser_subscriptions','browser_installation_id'), \
              ('platform_notification_browser_subscriptions','is_preferred'), \
              ('platform_notification_browser_subscriptions','is_notification_target'), \
+             ('platform_notification_browser_subscriptions','browser_push_device_target'), \
              ('platform_notification_browser_subscriptions','routine_notifications_enabled'), \
              ('platform_notification_browser_subscriptions','permission'), \
              ('platform_notification_browser_subscriptions','fallback_channels_json'), \
@@ -724,6 +725,29 @@ data:
       if [ -n "${MISSING_REQUIRED_COLUMNS:-}" ]; then
         RECON_SCHEMA_HEALTHY="0"
         echo "⚠️ Required CMS columns missing (${MISSING_REQUIRED_COLUMNS}); forcing reconcile despite checksum match."
+      fi
+
+      MISSING_SYSTEM_UUID_DEFAULT_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "SELECT COUNT(*) \
+         FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage kcu \
+           ON kcu.constraint_schema = tc.constraint_schema \
+          AND kcu.constraint_name = tc.constraint_name \
+         JOIN information_schema.columns c \
+           ON c.table_schema = tc.constraint_schema \
+          AND c.table_name = tc.table_name \
+          AND c.column_name = kcu.column_name \
+         JOIN directus.directus_collections dc ON dc.collection = tc.table_name \
+         WHERE tc.constraint_schema = 'directus' \
+           AND tc.constraint_type = 'PRIMARY KEY' \
+           AND c.udt_name = 'uuid' \
+           AND c.column_default IS NULL \
+           AND tc.table_name NOT LIKE 'directus\\_%' ESCAPE '\\' \
+           AND tc.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\';" || true)"
+      MISSING_SYSTEM_UUID_DEFAULT_COUNT="$(printf '%s' "${MISSING_SYSTEM_UUID_DEFAULT_COUNT:-0}" | tr -d '\r')"
+      if [ -n "${MISSING_SYSTEM_UUID_DEFAULT_COUNT:-}" ] && [ "${MISSING_SYSTEM_UUID_DEFAULT_COUNT}" != "0" ]; then
+        RECON_SCHEMA_HEALTHY="0"
+        echo "⚠️ ${MISSING_SYSTEM_UUID_DEFAULT_COUNT} Directus collection primary keys lack system UUID defaults; forcing reconcile despite checksum match."
       fi
     fi
 
@@ -843,6 +867,73 @@ data:
       if [ -n "${MISSING_REQUIRED_FIELD_METADATA:-}" ]; then
         RECON_METADATA_HEALTHY="0"
         echo "⚠️ Required Directus field metadata missing (${MISSING_REQUIRED_FIELD_METADATA}); forcing reconcile despite checksum match."
+      fi
+
+      INVALID_RECORD_EDITOR_METADATA_COUNT="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
+        "WITH custom_columns AS ( \
+           SELECT c.table_name AS collection, c.column_name AS field, c.data_type \
+           FROM information_schema.columns c \
+           JOIN directus.directus_collections dc ON dc.collection = c.table_name \
+           WHERE c.table_schema = 'directus' \
+             AND c.table_name NOT LIKE 'directus\\_%' ESCAPE '\\' \
+             AND c.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\' \
+         ), primary_fields AS ( \
+           SELECT tc.table_name AS collection, kcu.column_name AS field \
+           FROM information_schema.table_constraints tc \
+           JOIN information_schema.key_column_usage kcu \
+             ON kcu.constraint_schema = tc.constraint_schema \
+            AND kcu.constraint_name = tc.constraint_name \
+           WHERE tc.constraint_schema = 'directus' \
+             AND tc.constraint_type = 'PRIMARY KEY' \
+         ), invalid AS ( \
+           SELECT c.collection, c.field \
+           FROM custom_columns c \
+           LEFT JOIN directus.directus_fields df \
+             ON df.collection = c.collection \
+            AND df.field = c.field \
+           LEFT JOIN primary_fields pk \
+             ON pk.collection = c.collection \
+            AND pk.field = c.field \
+           WHERE df.field IS NULL \
+              OR (pk.field IS NOT NULL AND COALESCE(df.readonly, false) = false) \
+              OR (c.data_type LIKE 'timestamp%' AND (COALESCE(df.interface, '') <> 'datetime' OR COALESCE(df.display, '') <> 'datetime' OR COALESCE(df.readonly, false) = false)) \
+              OR (c.data_type = 'date' AND (COALESCE(df.interface, '') <> 'datetime' OR COALESCE(df.display, '') <> 'datetime')) \
+              OR (c.data_type = 'boolean' AND COALESCE(df.interface, '') <> 'boolean') \
+              OR (c.data_type IN ('json','jsonb') AND COALESCE(df.interface, '') = '') \
+              OR (c.collection IN ( \
+                    'cms_content_translation_jobs', \
+                    'platform_app_operations', \
+                    'platform_app_operation_steps', \
+                    'platform_email_validation_subscriptions', \
+                    'platform_notification_browser_subscriptions', \
+                    'platform_notification_delivery_attempts', \
+                    'platform_notification_requests' \
+                  ) AND COALESCE(df.readonly, false) = false) \
+              OR ((c.collection, c.field) IN ( \
+                    ('cms_content_translation_jobs','status'), \
+                    ('cms_modules','provider'), \
+                    ('platform_email_validation_subscriptions','status'), \
+                    ('platform_notification_browser_subscriptions','permission'), \
+                    ('platform_notification_browser_subscriptions','status'), \
+                    ('platform_notification_browser_subscriptions','email_validation_status'), \
+                    ('platform_notification_delivery_attempts','channel'), \
+                    ('platform_notification_delivery_attempts','status'), \
+                    ('platform_notification_requests','severity'), \
+                    ('platform_notification_requests','priority'), \
+                    ('platform_notification_requests','status'), \
+                    ('platform_notification_template_assets','asset_type') \
+                  ) AND (COALESCE(df.interface, '') <> 'select-dropdown' OR df.options IS NULL)) \
+              OR ((c.collection, c.field) IN ( \
+                    ('platform_notification_templates','channels_json'), \
+                    ('platform_notification_browser_subscriptions','fallback_channels_json'), \
+                    ('platform_notification_requests','requested_channels_json') \
+                  ) AND (COALESCE(df.interface, '') <> 'select-multiple-dropdown' OR df.options IS NULL)) \
+         ) \
+         SELECT COUNT(*) FROM invalid;" || true)"
+      INVALID_RECORD_EDITOR_METADATA_COUNT="$(printf '%s' "${INVALID_RECORD_EDITOR_METADATA_COUNT:-0}" | tr -d '\r')"
+      if [ -n "${INVALID_RECORD_EDITOR_METADATA_COUNT:-}" ] && [ "${INVALID_RECORD_EDITOR_METADATA_COUNT}" != "0" ]; then
+        RECON_METADATA_HEALTHY="0"
+        echo "⚠️ Directus record-editor metadata has ${INVALID_RECORD_EDITOR_METADATA_COUNT} missing or invalid field definitions; forcing reconcile despite checksum match."
       fi
     fi
 
@@ -2769,6 +2860,7 @@ data:
          user_phone TEXT NULL, \
          is_preferred BOOLEAN NOT NULL DEFAULT false, \
          is_notification_target BOOLEAN NOT NULL DEFAULT false, \
+         browser_push_device_target TEXT NULL, \
          routine_notifications_enabled BOOLEAN NOT NULL DEFAULT true, \
          organization_id UUID NULL, \
          app_id UUID NULL, \
@@ -2798,6 +2890,7 @@ data:
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS user_phone TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS is_preferred BOOLEAN; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS is_notification_target BOOLEAN; \
+       ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS browser_push_device_target TEXT; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS routine_notifications_enabled BOOLEAN; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS organization_id UUID; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ADD COLUMN IF NOT EXISTS app_id UUID; \
@@ -2831,6 +2924,7 @@ data:
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN is_preferred SET NOT NULL; \
        UPDATE platform_notification_browser_subscriptions SET is_notification_target = false WHERE is_notification_target IS NULL; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN is_notification_target SET NOT NULL; \
+       UPDATE platform_notification_browser_subscriptions SET browser_push_device_target = NULL WHERE browser_push_device_target IS NOT NULL AND browser_push_device_target NOT IN ('current_device','favorite_device','all_devices'); \
        UPDATE platform_notification_browser_subscriptions SET routine_notifications_enabled = true WHERE routine_notifications_enabled IS NULL; \
        ALTER TABLE IF EXISTS platform_notification_browser_subscriptions ALTER COLUMN routine_notifications_enabled SET NOT NULL; \
        UPDATE platform_notification_browser_subscriptions SET capabilities_json = '{}'::jsonb WHERE capabilities_json IS NULL OR jsonb_typeof(capabilities_json) <> 'object'; \
@@ -2861,6 +2955,7 @@ data:
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_installation_idx ON platform_notification_browser_subscriptions (browser_installation_id, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_user_idx ON platform_notification_browser_subscriptions (user_id, status, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_notification_target_idx ON platform_notification_browser_subscriptions (is_notification_target, status, last_seen_at DESC); \
+       CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_device_target_idx ON platform_notification_browser_subscriptions (browser_push_device_target, status, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_routine_enabled_idx ON platform_notification_browser_subscriptions (routine_notifications_enabled, status, last_seen_at DESC); \
        CREATE INDEX IF NOT EXISTS platform_notification_browser_subscriptions_app_idx ON platform_notification_browser_subscriptions (app_id, status, last_seen_at DESC); \
        CREATE TABLE IF NOT EXISTS platform_email_validation_subscriptions ( \
@@ -5043,7 +5138,7 @@ data:
     fi
     echo "INFO: Skipping legacy cms_block_rich_text row cleanup; Directus DB content is authoritative."
 
-    echo "🧱 Ensuring UUID defaults for CMS collection IDs..."
+    echo "🧱 Ensuring UUID defaults for Directus application collection IDs..."
     if ! _psql_yb_retry "CREATE OR REPLACE FUNCTION directus.cms_generate_uuid()
       RETURNS uuid
       LANGUAGE plpgsql
@@ -5128,8 +5223,36 @@ data:
           ALTER TABLE cms_modules ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
         END IF;
       END
-      \$\$;" "ensure UUID defaults for CMS collection IDs" 24; then
-      echo "⚠️ Could not ensure UUID defaults for CMS collection IDs after retries; continuing startup and retrying on next reconcile."
+      \$\$;
+      DO \$\$
+      DECLARE
+        _uuid_pk RECORD;
+      BEGIN
+        FOR _uuid_pk IN
+          SELECT tc.table_name, kcu.column_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON kcu.constraint_schema = tc.constraint_schema
+           AND kcu.constraint_name = tc.constraint_name
+          JOIN information_schema.columns c
+            ON c.table_schema = tc.constraint_schema
+           AND c.table_name = tc.table_name
+           AND c.column_name = kcu.column_name
+          WHERE tc.constraint_schema = 'directus'
+            AND tc.constraint_type = 'PRIMARY KEY'
+            AND c.udt_name = 'uuid'
+            AND tc.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+            AND tc.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+        LOOP
+          EXECUTE format(
+            'ALTER TABLE directus.%I ALTER COLUMN %I SET DEFAULT directus.cms_generate_uuid()',
+            _uuid_pk.table_name,
+            _uuid_pk.column_name
+          );
+        END LOOP;
+      END
+      \$\$;" "ensure UUID defaults for Directus application collection IDs" 24; then
+      echo "⚠️ Could not ensure UUID defaults for Directus application collection IDs after retries; continuing startup and retrying on next reconcile."
     fi
 
     echo "🧱 Ensuring layout template slots are derived from template HTML..."
@@ -9746,6 +9869,337 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_modules" "date_updated" 103
       _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_position" 104
       _upsert_hidden_internal_field_meta_dynamic "cms_pages" "theme_switcher_dock_direction" 105
+
+      echo "🧭 Reconciling record-editor controls for every registered application collection..."
+      _record_editor_options_json() {
+        jq -nc --argjson choices "$1" --argjson allow_none "${2:-false}" '{choices:$choices,allowNone:$allow_none}'
+      }
+      _record_editor_display_options_json() {
+        jq -nc --argjson choices "$1" '{choices:$choices}'
+      }
+
+      _upsert_status_dropdown_field_meta "cms_block_rich_text" 1
+
+      translation_job_status_choices_json="$(jq -nc '[
+        {"text":"Queued","value":"queued"},
+        {"text":"Processing","value":"processing"},
+        {"text":"Succeeded","value":"succeeded"},
+        {"text":"Failed","value":"failed"}
+      ]')"
+      translation_job_status_options_json="$(_record_editor_options_json "${translation_job_status_choices_json}" false)"
+      translation_job_status_display_options_json="$(_record_editor_display_options_json "${translation_job_status_choices_json}")"
+      _upsert_select_dropdown_field_meta "cms_content_translation_jobs" "status" 6 "half" "Worker-managed translation job state." "${translation_job_status_options_json}" "${translation_job_status_display_options_json}" true true
+
+      notification_status_choices_json="$(jq -nc '[
+        {"text":"Queued","value":"queued"},
+        {"text":"Processing","value":"processing"},
+        {"text":"Sent","value":"sent"},
+        {"text":"Partially Sent","value":"partially_sent"},
+        {"text":"Failed","value":"failed"},
+        {"text":"Canceled","value":"canceled"}
+      ]')"
+      notification_status_options_json="$(_record_editor_options_json "${notification_status_choices_json}" false)"
+      notification_status_display_options_json="$(_record_editor_display_options_json "${notification_status_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_requests" "status" 6 "half" "Notification-service request state." "${notification_status_options_json}" "${notification_status_display_options_json}" true true
+
+      notification_severity_choices_json="$(jq -nc '[
+        {"text":"Debug","value":"debug"},
+        {"text":"Info","value":"info"},
+        {"text":"Success","value":"success"},
+        {"text":"Warning","value":"warning"},
+        {"text":"Error","value":"error"},
+        {"text":"Critical","value":"critical"}
+      ]')"
+      notification_severity_options_json="$(_record_editor_options_json "${notification_severity_choices_json}" false)"
+      notification_severity_display_options_json="$(_record_editor_display_options_json "${notification_severity_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_requests" "severity" 4 "half" "Validated notification severity." "${notification_severity_options_json}" "${notification_severity_display_options_json}" true true
+
+      notification_priority_choices_json="$(jq -nc '[
+        {"text":"Low","value":"low"},
+        {"text":"Normal","value":"normal"},
+        {"text":"High","value":"high"},
+        {"text":"Urgent","value":"urgent"}
+      ]')"
+      notification_priority_options_json="$(_record_editor_options_json "${notification_priority_choices_json}" false)"
+      notification_priority_display_options_json="$(_record_editor_display_options_json "${notification_priority_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_requests" "priority" 5 "half" "Validated notification priority." "${notification_priority_options_json}" "${notification_priority_display_options_json}" true true
+
+      notification_channel_choices_json="$(jq -nc '[
+        {"text":"In App","value":"in_app"},
+        {"text":"Browser Push","value":"browser_push"},
+        {"text":"Mobile Push","value":"mobile_push"},
+        {"text":"Email","value":"email"},
+        {"text":"SMS","value":"sms"},
+        {"text":"Voice","value":"voice"},
+        {"text":"Webhook","value":"webhook"}
+      ]')"
+      notification_channel_options_json="$(_record_editor_options_json "${notification_channel_choices_json}" false)"
+      notification_channel_display_options_json="$(_record_editor_display_options_json "${notification_channel_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_delivery_attempts" "channel" 3 "half" "Validated delivery channel." "${notification_channel_options_json}" "${notification_channel_display_options_json}" true true
+
+      delivery_status_choices_json="$(jq -nc '[
+        {"text":"Queued","value":"queued"},
+        {"text":"Sending","value":"sending"},
+        {"text":"Sent","value":"sent"},
+        {"text":"Failed","value":"failed"},
+        {"text":"Skipped","value":"skipped"}
+      ]')"
+      delivery_status_options_json="$(_record_editor_options_json "${delivery_status_choices_json}" false)"
+      delivery_status_display_options_json="$(_record_editor_display_options_json "${delivery_status_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_delivery_attempts" "status" 7 "half" "Notification-executor delivery state." "${delivery_status_options_json}" "${delivery_status_display_options_json}" true true
+
+      browser_permission_choices_json="$(jq -nc '[
+        {"text":"Granted","value":"granted"},
+        {"text":"Denied","value":"denied"},
+        {"text":"Default","value":"default"},
+        {"text":"Unsupported","value":"unsupported"}
+      ]')"
+      browser_permission_options_json="$(_record_editor_options_json "${browser_permission_choices_json}" false)"
+      browser_permission_display_options_json="$(_record_editor_display_options_json "${browser_permission_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_browser_subscriptions" "permission" 14 "half" "Browser permission reported by the registered device." "${browser_permission_options_json}" "${browser_permission_display_options_json}" true true
+
+      browser_status_choices_json="$(jq -nc '[
+        {"text":"Active","value":"active"},
+        {"text":"Disabled","value":"disabled"},
+        {"text":"Missing Subscription","value":"missing_subscription"},
+        {"text":"Fallback","value":"fallback"}
+      ]')"
+      browser_status_options_json="$(_record_editor_options_json "${browser_status_choices_json}" false)"
+      browser_status_display_options_json="$(_record_editor_display_options_json "${browser_status_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_browser_subscriptions" "status" 19 "half" "Subscription lifecycle state." "${browser_status_options_json}" "${browser_status_display_options_json}" true true
+
+      browser_device_target_choices_json="$(jq -nc '[
+        {"text":"Current Device","value":"current_device"},
+        {"text":"Favorite Device","value":"favorite_device"},
+        {"text":"All Devices","value":"all_devices"}
+      ]')"
+      browser_device_target_options_json="$(_record_editor_options_json "${browser_device_target_choices_json}" true)"
+      browser_device_target_display_options_json="$(_record_editor_display_options_json "${browser_device_target_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_browser_subscriptions" "browser_push_device_target" 16 "half" "Durable notification routing mode managed by the notification service." "${browser_device_target_options_json}" "${browser_device_target_display_options_json}" false true
+
+      email_validation_status_choices_json="$(jq -nc '[
+        {"text":"Pending","value":"pending"},
+        {"text":"Validated","value":"validated"},
+        {"text":"Failed","value":"failed"},
+        {"text":"Expired","value":"expired"}
+      ]')"
+      email_validation_status_options_json="$(_record_editor_options_json "${email_validation_status_choices_json}" true)"
+      email_validation_status_display_options_json="$(_record_editor_display_options_json "${email_validation_status_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_browser_subscriptions" "email_validation_status" 25 "half" "Email-validation state propagated by the notification service." "${email_validation_status_options_json}" "${email_validation_status_display_options_json}" false true
+
+      validation_subscription_status_choices_json="$(jq -nc '[
+        {"text":"Active","value":"active"},
+        {"text":"Processed","value":"processed"},
+        {"text":"Failed","value":"failed"}
+      ]')"
+      validation_subscription_status_options_json="$(_record_editor_options_json "${validation_subscription_status_choices_json}" false)"
+      validation_subscription_status_display_options_json="$(_record_editor_display_options_json "${validation_subscription_status_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_email_validation_subscriptions" "status" 6 "half" "Email-validation listener state." "${validation_subscription_status_options_json}" "${validation_subscription_status_display_options_json}" true true
+
+      module_provider_choices_json="$(jq -nc '[
+        {"text":"Radix","value":"radix"},
+        {"text":"Micro Frontend","value":"mfe"}
+      ]')"
+      module_provider_options_json="$(_record_editor_options_json "${module_provider_choices_json}" false)"
+      module_provider_display_options_json="$(_record_editor_display_options_json "${module_provider_choices_json}")"
+      _upsert_select_dropdown_field_meta "cms_modules" "provider" 5 "half" "Select the registered module provider." "${module_provider_options_json}" "${module_provider_display_options_json}" true false
+
+      notification_asset_type_choices_json="$(jq -nc '[
+        {"text":"Generic","value":"generic"},
+        {"text":"Image","value":"image"},
+        {"text":"Icon","value":"icon"},
+        {"text":"Stylesheet","value":"stylesheet"},
+        {"text":"Font","value":"font"},
+        {"text":"Document","value":"document"}
+      ]')"
+      notification_asset_type_options_json="$(_record_editor_options_json "${notification_asset_type_choices_json}" false)"
+      notification_asset_type_display_options_json="$(_record_editor_display_options_json "${notification_asset_type_choices_json}")"
+      _upsert_select_dropdown_field_meta "platform_notification_template_assets" "asset_type" 4 "half" "Select the reusable notification asset type." "${notification_asset_type_options_json}" "${notification_asset_type_display_options_json}" true false
+
+      notification_channels_multi_options_json="$(jq -nc --argjson choices "${notification_channel_choices_json}" '{choices:$choices,allowNone:true}')"
+      fallback_channel_choices_json="$(jq -nc '[
+        {"text":"Email","value":"email"},
+        {"text":"SMS","value":"sms"}
+      ]')"
+      fallback_channels_multi_options_json="$(jq -nc --argjson choices "${fallback_channel_choices_json}" '{choices:$choices,allowNone:true}')"
+      _upsert_content_item_field_meta "channels_json" "select-multiple-dropdown" "full" 7 "Allowed delivery channels for this template." "${notification_channels_multi_options_json}" true false "platform_notification_templates"
+      _upsert_content_item_field_meta "requested_channels_json" "select-multiple-dropdown" "full" 16 "Validated channels requested for this notification." "${notification_channels_multi_options_json}" true true "platform_notification_requests"
+      _upsert_content_item_field_meta "fallback_channels_json" "select-multiple-dropdown" "full" 16 "Allowed browser-push fallback channels." "${fallback_channels_multi_options_json}" true true "platform_notification_browser_subscriptions"
+
+      record_editor_json_options_sql="$(_df_json_sql "${DF_OPTIONS_TYPE:-}" "${platform_json_options_json}")"
+      record_editor_special_m2o_sql="$(_df_special_m2o_sql)"
+      record_editor_special_file_sql="NULL"
+      if _df_has_col "special"; then
+        case "${DF_SPECIAL_DATA_TYPE:-}:${DF_SPECIAL_UDT_NAME:-}" in
+          ARRAY:*) record_editor_special_file_sql="ARRAY['file']::text[]" ;;
+          jsonb:*) record_editor_special_file_sql="'[\"file\"]'::jsonb" ;;
+          json:*) record_editor_special_file_sql="'[\"file\"]'::json" ;;
+          text:*|character\ varying:*) record_editor_special_file_sql="'file'" ;;
+        esac
+      fi
+
+      record_editor_baseline_sql="
+        INSERT INTO directus_fields (collection, field)
+        SELECT c.table_name, c.column_name
+        FROM information_schema.columns c
+        JOIN directus_collections dc ON dc.collection = c.table_name
+        WHERE c.table_schema = 'directus'
+          AND c.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+          AND c.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+          AND NOT EXISTS (
+            SELECT 1 FROM directus_fields df
+            WHERE df.collection = c.table_name AND df.field = c.column_name
+          )
+        ON CONFLICT DO NOTHING;
+
+        UPDATE directus_fields df
+           SET sort = c.ordinal_position,
+               hidden = COALESCE(df.hidden, false),
+               width = COALESCE(df.width, CASE WHEN c.data_type IN ('json','jsonb') THEN 'full' ELSE 'half' END)
+          FROM information_schema.columns c
+          JOIN directus_collections dc ON dc.collection = c.table_name
+         WHERE c.table_schema = 'directus'
+           AND c.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND c.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+           AND df.collection = c.table_name
+           AND df.field = c.column_name
+           AND df.sort IS NULL;
+
+        UPDATE directus_fields df
+           SET readonly = true,
+               hidden = true,
+               required = false,
+               note = COALESCE(NULLIF(df.note, ''), 'System-generated primary key; it cannot be edited.')
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON kcu.constraint_schema = tc.constraint_schema
+           AND kcu.constraint_name = tc.constraint_name
+         WHERE tc.constraint_schema = 'directus'
+           AND tc.constraint_type = 'PRIMARY KEY'
+           AND tc.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND tc.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+           AND df.collection = tc.table_name
+           AND df.field = kcu.column_name;
+
+        UPDATE directus_fields df
+           SET interface = 'datetime',
+               display = 'datetime',
+               readonly = true,
+               hidden = false,
+               width = 'half',
+               note = COALESCE(NULLIF(df.note, ''), 'Set automatically by the system.')
+          FROM information_schema.columns c
+          JOIN directus_collections dc ON dc.collection = c.table_name
+         WHERE c.table_schema = 'directus'
+           AND c.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND c.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+           AND c.data_type LIKE 'timestamp%'
+           AND df.collection = c.table_name
+           AND df.field = c.column_name;
+
+        UPDATE directus_fields df
+           SET interface = 'datetime',
+               display = 'datetime',
+               hidden = false,
+               width = 'half'
+          FROM information_schema.columns c
+          JOIN directus_collections dc ON dc.collection = c.table_name
+         WHERE c.table_schema = 'directus'
+           AND c.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND c.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+           AND c.data_type = 'date'
+           AND df.collection = c.table_name
+           AND df.field = c.column_name;
+
+        UPDATE directus_fields df
+           SET interface = 'boolean',
+               display = COALESCE(df.display, 'boolean'),
+               hidden = false,
+               width = COALESCE(df.width, 'half')
+          FROM information_schema.columns c
+          JOIN directus_collections dc ON dc.collection = c.table_name
+         WHERE c.table_schema = 'directus'
+           AND c.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND c.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+           AND c.data_type = 'boolean'
+           AND df.collection = c.table_name
+           AND df.field = c.column_name;
+
+        UPDATE directus_fields df
+           SET interface = 'input-code',
+               options = ${record_editor_json_options_sql},
+               hidden = false,
+               width = 'full'
+          FROM information_schema.columns c
+          JOIN directus_collections dc ON dc.collection = c.table_name
+         WHERE c.table_schema = 'directus'
+           AND c.table_name NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND c.table_name NOT LIKE 'schema\\_patch\\_%' ESCAPE '\\'
+           AND c.data_type IN ('json','jsonb')
+           AND df.collection = c.table_name
+           AND df.field = c.column_name
+           AND COALESCE(df.interface, '') IN ('','input');
+
+        INSERT INTO directus_relations (many_collection, many_field, one_collection)
+        SELECT 'platform_notification_template_assets', 'directus_file', 'directus_files'
+        WHERE to_regclass('directus.platform_notification_template_assets') IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM directus_relations
+            WHERE many_collection = 'platform_notification_template_assets'
+              AND many_field = 'directus_file'
+          )
+        ON CONFLICT DO NOTHING;
+
+        UPDATE directus_fields df
+           SET interface = CASE WHEN r.one_collection = 'directus_files' THEN 'file' ELSE 'select-dropdown-m2o' END,
+               display = CASE WHEN r.one_collection = 'directus_files' THEN 'file' ELSE 'related-values' END,
+               special = CASE WHEN r.one_collection = 'directus_files' THEN ${record_editor_special_file_sql} ELSE ${record_editor_special_m2o_sql} END,
+               hidden = false,
+               width = COALESCE(df.width, 'half')
+          FROM directus_relations r
+          JOIN information_schema.columns c
+            ON c.table_schema = 'directus'
+           AND c.table_name = r.many_collection
+           AND c.column_name = r.many_field
+          JOIN directus_collections dc ON dc.collection = r.many_collection
+         WHERE r.many_collection NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND df.collection = r.many_collection
+           AND df.field = r.many_field
+           AND COALESCE(df.interface, '') IN ('','input');
+
+        UPDATE directus_fields
+           SET readonly = true
+         WHERE collection IN (
+           'cms_content_translation_jobs',
+           'platform_app_operations',
+           'platform_app_operation_steps',
+           'platform_email_validation_subscriptions',
+           'platform_notification_browser_subscriptions',
+           'platform_notification_delivery_attempts',
+           'platform_notification_requests'
+         );
+
+        UPDATE directus_fields
+           SET readonly = true,
+               note = COALESCE(NULLIF(note, ''), 'Set automatically when the function review is completed.')
+         WHERE collection = 'cms_template_functions'
+           AND field = 'reviewed_at';
+
+        UPDATE directus_fields
+           SET interface = 'input-multiline',
+               width = 'full'
+         WHERE collection NOT LIKE 'directus\\_%' ESCAPE '\\'
+           AND COALESCE(interface, '') = ''
+           AND field IN (
+             'description','summary','message','last_message','error_message','last_error',
+             'log_excerpt','user_agent','subject_hint','body_hint','email_validation_error'
+           );
+      "
+      if _psql_yb_retry "${record_editor_baseline_sql}" "reconcile all Directus record-editor field metadata" 24; then
+        echo "✅ Reconciled record-editor metadata across all registered application collections"
+      else
+        echo "⚠️ Could not reconcile all record-editor metadata after retries; it will retry on the next postschema run."
+      fi
       set -e
     else
       echo "  └─ directus_fields metadata table not found; skipping layout/theme/slot/module UX config"
