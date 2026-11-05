@@ -2354,6 +2354,7 @@ data:
        LANGUAGE plpgsql \
        AS \$platform_apps_derive_scope_domain\$ \
        DECLARE \
+         resolved_cms_app_id UUID; \
          resolved_domain TEXT; \
          previous_domain TEXT; \
          production_candidate TEXT; \
@@ -2361,6 +2362,35 @@ data:
          production_subdomain TEXT; \
          preview_subdomain TEXT; \
        BEGIN \
+         IF NULLIF(BTRIM(NEW.app_key), '') IS NULL THEN \
+           RAISE EXCEPTION 'platform_apps.app_key cannot be blank'; \
+         END IF; \
+         IF NEW.cms_app_id IS NULL THEN \
+           SELECT id \
+             INTO resolved_cms_app_id \
+             FROM directus.cms_apps \
+            WHERE app_key = NEW.app_key \
+            ORDER BY date_created ASC NULLS LAST, id ASC \
+            LIMIT 1; \
+           IF resolved_cms_app_id IS NULL THEN \
+             INSERT INTO directus.cms_apps (app_key, display_name, status, description, date_created, date_updated) \
+             VALUES (NEW.app_key, COALESCE(NULLIF(BTRIM(NEW.display_name), ''), NEW.app_key), 'active', 'Logical application created automatically with its first platform deployment.', now(), now()) \
+             ON CONFLICT DO NOTHING \
+             RETURNING id INTO resolved_cms_app_id; \
+           END IF; \
+           IF resolved_cms_app_id IS NULL THEN \
+             SELECT id \
+               INTO resolved_cms_app_id \
+               FROM directus.cms_apps \
+              WHERE app_key = NEW.app_key \
+              ORDER BY date_created ASC NULLS LAST, id ASC \
+              LIMIT 1; \
+           END IF; \
+           IF resolved_cms_app_id IS NULL THEN \
+             RAISE EXCEPTION 'platform_apps could not resolve a logical cms_apps record for app_key %', NEW.app_key; \
+           END IF; \
+           NEW.cms_app_id := resolved_cms_app_id; \
+         END IF; \
          NEW.keycloak_realm := LOWER(BTRIM(COALESCE(NEW.keycloak_realm, ''))); \
          IF NEW.keycloak_realm NOT IN ('internal', 'external') THEN \
            RAISE EXCEPTION 'platform_apps.keycloak_realm must be internal or external'; \
