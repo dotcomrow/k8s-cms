@@ -2294,6 +2294,7 @@ data:
          template_ref TEXT NULL, \
          template_commit_sha TEXT NULL, \
          last_deployed_at TIMESTAMPTZ NULL, \
+         deployed_source_version TEXT NULL, \
          last_error TEXT NULL, \
          config_json JSONB NOT NULL DEFAULT '{}'::jsonb, \
          date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
@@ -2326,6 +2327,7 @@ data:
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS template_ref TEXT; \
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS template_commit_sha TEXT; \
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS last_deployed_at TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS deployed_source_version TEXT; \
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS last_error TEXT; \
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS config_json JSONB; \
        ALTER TABLE IF EXISTS platform_apps ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
@@ -7000,6 +7002,7 @@ data:
       platform_cache_refresh_url_note_sql="$(printf '%s' 'Read-only app cache refresh URL derived from the organization-bound app URL.' | sed "s/'/''/g")"
       platform_workspace_note_sql="$(printf '%s' 'Terraform workspace name used by the deployment engine.' | sed "s/'/''/g")"
       platform_template_note_sql="$(printf '%s' 'Template source/version that should be deployed for this app.' | sed "s/'/''/g")"
+      platform_deployed_source_version_note_sql="$(printf '%s' 'Read-only source commit recorded when the production deployment step succeeds.' | sed "s/'/''/g")"
       platform_operation_app_note_sql="$(printf '%s' 'App this create/update/redeploy/delete operation belongs to.' | sed "s/'/''/g")"
       platform_operation_type_note_sql="$(printf '%s' 'Requested management operation.' | sed "s/'/''/g")"
       platform_operation_status_note_sql="$(printf '%s' 'Execution state reported by the deployment worker.' | sed "s/'/''/g")"
