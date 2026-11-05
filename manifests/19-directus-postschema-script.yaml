@@ -6974,6 +6974,7 @@ data:
       platform_notification_template_status_options_json="$(jq -nc --argjson choices "${platform_notification_template_status_choices_json}" '{choices:$choices,allowOther:false,allowNone:false}')"
       platform_org_relation_options_json="$(jq -nc '{template:"{{name}} ({{organization_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
       cms_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{app_key}})",enableCreate:true,enableSelect:true,enableLink:true}')"
+      cms_page_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{app_key}})",enableCreate:false,enableSelect:true,enableLink:false}')"
       platform_app_relation_options_json="$(jq -nc '{template:"{{display_name}} ({{app_key}} | {{keycloak_realm}} | {{deployment_status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_operation_relation_options_json="$(jq -nc '{template:"{{operation_type}} | {{status}} | {{date_created}}",enableCreate:false,enableSelect:true,enableLink:true}')"
       platform_notification_template_relation_options_json="$(jq -nc '{template:"{{notification_key}} ({{locale}} | {{status}})",enableCreate:false,enableSelect:true,enableLink:true}')"
@@ -8999,7 +9000,8 @@ data:
         _options_json="${5:-}"
         _required="${6:-false}"
         _group="${7:-}"
-        _upsert_content_item_field_meta "${_field}" "select-dropdown-m2o" "half" "${_sort}" "${_note_sql}" "${_options_json}" "${_required}" false "${_collection}" "${_group}"
+        _name="${8:-}"
+        _upsert_content_item_field_meta "${_field}" "select-dropdown-m2o" "half" "${_sort}" "${_note_sql}" "${_options_json}" "${_required}" false "${_collection}" "${_group}" false "${_name}"
 
         _collection_exists="$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_DATABASE" -Atc \
           "SELECT 1 FROM information_schema.tables WHERE table_schema='directus' AND table_name='${_collection}' LIMIT 1;" || true)"
@@ -9494,7 +9496,7 @@ data:
       _upsert_page_layout_template_field_meta
       _upsert_page_head_input_field_meta "layout_chrome" 3 "half" "${layout_chrome_note_sql}" "select-dropdown" "${layout_chrome_options_json}" "${layout_chrome_name_sql}"
       _upsert_page_theme_package_field_meta
-      _upsert_platform_m2o_field_meta "cms_pages" "app_id" 1 "${platform_page_app_note_sql}" "${cms_app_relation_options_json}" true
+      _upsert_platform_m2o_field_meta "cms_pages" "app_id" 1 "${platform_page_app_note_sql}" "${cms_page_app_relation_options_json}" true "" "Application"
       _upsert_page_site_key_field_meta
       _upsert_page_parent_field_meta
       _upsert_status_dropdown_field_meta "cms_pages" 5
