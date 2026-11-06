@@ -760,6 +760,7 @@ data:
              ('platform_notification_requests','platform_notification_requests_history_retention_trg'), \
              ('platform_notification_delivery_attempts','platform_notification_delivery_attempts_history_retention_trg'), \
              ('platform_notification_browser_subscriptions','platform_notification_browser_subscriptions_history_retention_trg'), \
+             ('platform_apps','platform_apps_delete_cleanup_trigger'), \
              ('cms_content_translation_jobs','cms_content_translation_jobs_history_retention_trg'), \
              ('runtime_canary_runs','runtime_canary_runs_history_retention_trg'), \
              ('runtime_canary_run_steps','runtime_canary_run_steps_history_retention_trg'), \
@@ -781,6 +782,7 @@ data:
            FROM ( \
              VALUES \
                ('function:prune_history_retention', 'directus.prune_history_retention()'), \
+               ('function:cleanup_platform_app_after_delete', 'directus.cleanup_platform_app_after_delete()'), \
                ('function:prune_invalid_browser_subscriptions', 'directus.prune_invalid_browser_subscriptions()'), \
                ('function:prune_unretained_browser_subscriptions', 'directus.prune_unretained_browser_subscriptions()'), \
                ('function:prune_platform_app_operation_steps_2d', 'directus.prune_platform_app_operation_steps_2d()'), \
@@ -801,7 +803,7 @@ data:
       MISSING_HISTORY_RETENTION="$(printf '%s' "${MISSING_HISTORY_RETENTION:-}" | tr -d '\r')"
       if [ -n "${MISSING_HISTORY_RETENTION:-}" ]; then
         RECON_SCHEMA_HEALTHY="0"
-        echo "⚠️ Required Directus history retention objects missing (${MISSING_HISTORY_RETENTION}); forcing reconcile despite checksum match."
+        echo "⚠️ Required Directus safety/retention objects missing (${MISSING_HISTORY_RETENTION}); forcing reconcile despite checksum match."
       fi
     fi
 
@@ -5285,6 +5287,161 @@ data:
       END
       \$\$;" "ensure UUID defaults for Directus application collection IDs" 24; then
       echo "⚠️ Could not ensure UUID defaults for Directus application collection IDs after retries; continuing startup and retrying on next reconcile."
+    fi
+
+    echo "🧹 Ensuring ownership-scoped platform app deletion cleanup..."
+    if ! _psql_yb_retry "SET search_path TO directus, public;
+      CREATE OR REPLACE FUNCTION directus.cleanup_platform_app_after_delete()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS \$platform_app_delete_cleanup\$
+      DECLARE
+        _flow_identity TEXT;
+        _flow_ids UUID[] := ARRAY[]::UUID[];
+        _operation_ids UUID[] := ARRAY[]::UUID[];
+      BEGIN
+        _flow_identity := COALESCE(NULLIF(BTRIM(OLD.keycloak_realm), ''), 'external') || '/' || COALESCE(NULLIF(BTRIM(OLD.app_key), ''), '');
+
+        IF RIGHT(_flow_identity, 1) <> '/' THEN
+          SELECT COALESCE(ARRAY_AGG(f.id), ARRAY[]::UUID[])
+            INTO _flow_ids
+            FROM directus.directus_flows f
+           WHERE to_jsonb(f.options)->>'managed_by' = 'k8s-cms-postschema'
+             AND to_jsonb(f.options)->>'platform_app_id' = OLD.id::TEXT
+             AND f.name = ANY (ARRAY[
+               'CMS Cache Refresh (' || _flow_identity || '/prod) - Create',
+               'CMS Cache Refresh (' || _flow_identity || '/prod) - Update',
+               'CMS Cache Refresh (' || _flow_identity || '/prod) - Manual',
+               'CMS Cache Refresh (' || _flow_identity || '/preview) - Create',
+               'CMS Cache Refresh (' || _flow_identity || '/preview) - Update',
+               'CMS Cache Refresh (' || _flow_identity || '/preview) - Manual'
+             ]::TEXT[]);
+        END IF;
+
+        IF COALESCE(ARRAY_LENGTH(_flow_ids, 1), 0) > 0 THEN
+          SELECT COALESCE(ARRAY_AGG(op.id), ARRAY[]::UUID[])
+            INTO _operation_ids
+            FROM directus.directus_operations op
+           WHERE op.flow = ANY (_flow_ids);
+
+          IF COALESCE(ARRAY_LENGTH(_operation_ids, 1), 0) > 0 AND EXISTS (
+            SELECT 1
+              FROM directus.directus_flows f
+             WHERE NOT (f.id = ANY (_flow_ids))
+               AND f.operation = ANY (_operation_ids)
+          ) THEN
+            RAISE EXCEPTION 'Refusing platform app % cleanup because another flow points to an owned cache-refresh operation', OLD.id;
+          END IF;
+
+          IF COALESCE(ARRAY_LENGTH(_operation_ids, 1), 0) > 0 AND EXISTS (
+            SELECT 1
+              FROM directus.directus_operations op
+             WHERE NOT (op.flow = ANY (_flow_ids))
+               AND (op.resolve = ANY (_operation_ids) OR op.reject = ANY (_operation_ids))
+          ) THEN
+            RAISE EXCEPTION 'Refusing platform app % cleanup because another flow graph points to an owned cache-refresh operation', OLD.id;
+          END IF;
+
+          UPDATE directus.directus_flows
+             SET operation = NULL
+           WHERE id = ANY (_flow_ids);
+          UPDATE directus.directus_operations
+             SET resolve = NULL,
+                 reject = NULL
+           WHERE flow = ANY (_flow_ids);
+          DELETE FROM directus.directus_operations
+           WHERE flow = ANY (_flow_ids);
+          DELETE FROM directus.directus_flows
+           WHERE id = ANY (_flow_ids);
+        END IF;
+
+        IF OLD.cms_app_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1
+               FROM directus.platform_apps remaining
+              WHERE remaining.cms_app_id = OLD.cms_app_id
+           ) THEN
+          DELETE FROM directus.cms_block_rich_text item
+           WHERE EXISTS (
+             SELECT 1
+               FROM directus.cms_page_blocks owned_block
+               JOIN directus.cms_pages owned_page ON owned_page.id = owned_block.page_id
+              WHERE owned_page.app_id = OLD.cms_app_id
+                AND owned_block.collection = 'cms_block_rich_text'
+                AND owned_block.item = item.id::TEXT
+           )
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM directus.cms_page_blocks other_block
+                 JOIN directus.cms_pages other_page ON other_page.id = other_block.page_id
+                WHERE other_page.app_id IS DISTINCT FROM OLD.cms_app_id
+                  AND other_block.collection = 'cms_block_rich_text'
+                  AND other_block.item = item.id::TEXT
+             );
+
+          DELETE FROM directus.cms_block_hero item
+           WHERE EXISTS (
+             SELECT 1 FROM directus.cms_page_blocks owned_block
+             JOIN directus.cms_pages owned_page ON owned_page.id = owned_block.page_id
+             WHERE owned_page.app_id = OLD.cms_app_id AND owned_block.collection = 'cms_block_hero' AND owned_block.item = item.id::TEXT
+           )
+             AND NOT EXISTS (
+               SELECT 1 FROM directus.cms_page_blocks other_block
+               JOIN directus.cms_pages other_page ON other_page.id = other_block.page_id
+               WHERE other_page.app_id IS DISTINCT FROM OLD.cms_app_id AND other_block.collection = 'cms_block_hero' AND other_block.item = item.id::TEXT
+             );
+
+          DELETE FROM directus.cms_block_module item
+           WHERE EXISTS (
+             SELECT 1 FROM directus.cms_page_blocks owned_block
+             JOIN directus.cms_pages owned_page ON owned_page.id = owned_block.page_id
+             WHERE owned_page.app_id = OLD.cms_app_id AND owned_block.collection = 'cms_block_module' AND owned_block.item = item.id::TEXT
+           )
+             AND NOT EXISTS (
+               SELECT 1 FROM directus.cms_page_blocks other_block
+               JOIN directus.cms_pages other_page ON other_page.id = other_block.page_id
+               WHERE other_page.app_id IS DISTINCT FROM OLD.cms_app_id AND other_block.collection = 'cms_block_module' AND other_block.item = item.id::TEXT
+             );
+
+          DELETE FROM directus.cms_block_template_ref item
+           WHERE EXISTS (
+             SELECT 1 FROM directus.cms_page_blocks owned_block
+             JOIN directus.cms_pages owned_page ON owned_page.id = owned_block.page_id
+             WHERE owned_page.app_id = OLD.cms_app_id AND owned_block.collection = 'cms_block_template_ref' AND owned_block.item = item.id::TEXT
+           )
+             AND NOT EXISTS (
+               SELECT 1 FROM directus.cms_page_blocks other_block
+               JOIN directus.cms_pages other_page ON other_page.id = other_block.page_id
+               WHERE other_page.app_id IS DISTINCT FROM OLD.cms_app_id AND other_block.collection = 'cms_block_template_ref' AND other_block.item = item.id::TEXT
+             );
+
+          DELETE FROM directus.cms_block_content_ref item
+           WHERE EXISTS (
+             SELECT 1 FROM directus.cms_page_blocks owned_block
+             JOIN directus.cms_pages owned_page ON owned_page.id = owned_block.page_id
+             WHERE owned_page.app_id = OLD.cms_app_id AND owned_block.collection = 'cms_block_content_ref' AND owned_block.item = item.id::TEXT
+           )
+             AND NOT EXISTS (
+               SELECT 1 FROM directus.cms_page_blocks other_block
+               JOIN directus.cms_pages other_page ON other_page.id = other_block.page_id
+               WHERE other_page.app_id IS DISTINCT FROM OLD.cms_app_id AND other_block.collection = 'cms_block_content_ref' AND other_block.item = item.id::TEXT
+             );
+
+          DELETE FROM directus.cms_pages
+           WHERE app_id = OLD.cms_app_id;
+          DELETE FROM directus.cms_apps
+           WHERE id = OLD.cms_app_id;
+        END IF;
+
+        RETURN OLD;
+      END;
+      \$platform_app_delete_cleanup\$;
+      DROP TRIGGER IF EXISTS platform_apps_delete_cleanup_trigger ON directus.platform_apps;
+      CREATE TRIGGER platform_apps_delete_cleanup_trigger
+      AFTER DELETE ON directus.platform_apps
+      FOR EACH ROW EXECUTE FUNCTION directus.cleanup_platform_app_after_delete();" "install ownership-scoped platform app deletion cleanup" 24; then
+      echo "❌ Could not install ownership-scoped platform app deletion cleanup after retries; refusing to make Directus ready without the deletion guard."
+      exit 1
     fi
 
     echo "🧱 Ensuring layout template slots are derived from template HTML..."
@@ -12123,20 +12280,26 @@ data:
                 --arg name "${create_flow_name}" \
                 --arg status "${flow_status}" \
                 --arg desc "${create_flow_desc}" \
+                --arg platform_app_id "${platform_app_config_id_effective}" \
+                --arg cms_app_id "${platform_content_app_id_effective}" \
                 --argjson collections "${refresh_collections_json}" \
-                '{name:$name,trigger:"event",status:$status,accountability:"all",icon:"sync",color:"#2E7D32",description:$desc,options:{type:"action",scope:["items.create"],collections:$collections}}')"
+                '{name:$name,trigger:"event",status:$status,accountability:"all",icon:"sync",color:"#2E7D32",description:$desc,options:{type:"action",scope:["items.create"],collections:$collections,managed_by:"k8s-cms-postschema",platform_app_id:$platform_app_id,cms_app_id:$cms_app_id}}')"
               update_flow_payload="$(jq -nc \
                 --arg name "${update_flow_name}" \
                 --arg status "${flow_status}" \
                 --arg desc "${update_flow_desc}" \
+                --arg platform_app_id "${platform_app_config_id_effective}" \
+                --arg cms_app_id "${platform_content_app_id_effective}" \
                 --argjson collections "${refresh_collections_json}" \
-                '{name:$name,trigger:"event",status:$status,accountability:"all",icon:"sync",color:"#2E7D32",description:$desc,options:{type:"action",scope:["items.update"],collections:$collections}}')"
+                '{name:$name,trigger:"event",status:$status,accountability:"all",icon:"sync",color:"#2E7D32",description:$desc,options:{type:"action",scope:["items.update"],collections:$collections,managed_by:"k8s-cms-postschema",platform_app_id:$platform_app_id,cms_app_id:$cms_app_id}}')"
               manual_flow_payload="$(jq -nc \
                 --arg name "${manual_flow_name}" \
                 --arg status "${flow_status}" \
                 --arg desc "${manual_flow_desc}" \
+                --arg platform_app_id "${platform_app_config_id_effective}" \
+                --arg cms_app_id "${platform_content_app_id_effective}" \
                 --argjson collections "${manual_refresh_collections_json}" \
-                '{name:$name,trigger:"manual",status:$status,accountability:"all",icon:"bolt",color:"#1565C0",description:$desc,options:{collections:$collections}}')"
+                '{name:$name,trigger:"manual",status:$status,accountability:"all",icon:"bolt",color:"#1565C0",description:$desc,options:{collections:$collections,managed_by:"k8s-cms-postschema",platform_app_id:$platform_app_id,cms_app_id:$cms_app_id}}')"
     
               create_flow_id="$(_directus_find_flow_id_by_name "${create_flow_name}")"
               if [ -n "${create_flow_id:-}" ] && [ "${create_flow_id}" != "null" ]; then
