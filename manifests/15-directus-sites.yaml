@@ -75,6 +75,15 @@ data:
                     _eq: internal
                 - status:
                     _eq: published
+          - collection: cms_app_sites
+            fields:
+              - id
+              - app_id
+              - site_key
+              - profile_preferences_enabled
+            permissions:
+              site_key:
+                _eq: internal
           - collection: cms_social_profiles
             fields:
               - "*"
@@ -319,6 +328,15 @@ data:
                     _eq: external
                 - status:
                     _eq: published
+          - collection: cms_app_sites
+            fields:
+              - id
+              - app_id
+              - site_key
+              - profile_preferences_enabled
+            permissions:
+              site_key:
+                _eq: external
           - collection: cms_social_profiles
             fields:
               - "*"

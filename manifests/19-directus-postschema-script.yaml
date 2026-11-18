@@ -2267,6 +2267,30 @@ data:
          status = EXCLUDED.status, \
          description = EXCLUDED.description, \
          date_updated = now(); \
+       CREATE TABLE IF NOT EXISTS cms_app_sites ( \
+         id UUID PRIMARY KEY, \
+         app_id UUID NOT NULL, \
+         site_key TEXT NOT NULL, \
+         profile_preferences_enabled BOOLEAN NOT NULL DEFAULT false, \
+         date_created TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         date_updated TIMESTAMPTZ NULL \
+       ); \
+       ALTER TABLE IF EXISTS cms_app_sites ADD COLUMN IF NOT EXISTS app_id UUID; \
+       ALTER TABLE IF EXISTS cms_app_sites ADD COLUMN IF NOT EXISTS site_key TEXT; \
+       ALTER TABLE IF EXISTS cms_app_sites ADD COLUMN IF NOT EXISTS profile_preferences_enabled BOOLEAN; \
+       ALTER TABLE IF EXISTS cms_app_sites ADD COLUMN IF NOT EXISTS date_created TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_app_sites ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ; \
+       ALTER TABLE IF EXISTS cms_app_sites ALTER COLUMN profile_preferences_enabled SET DEFAULT false; \
+       ALTER TABLE IF EXISTS cms_app_sites ALTER COLUMN date_created SET DEFAULT now(); \
+       UPDATE cms_app_sites SET site_key = LOWER(BTRIM(site_key)) WHERE site_key IS NOT NULL AND site_key IS DISTINCT FROM LOWER(BTRIM(site_key)); \
+       UPDATE cms_app_sites SET profile_preferences_enabled = false WHERE profile_preferences_enabled IS NULL; \
+       UPDATE cms_app_sites SET date_created = now() WHERE date_created IS NULL; \
+       ALTER TABLE IF EXISTS cms_app_sites ALTER COLUMN app_id SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_app_sites ALTER COLUMN site_key SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_app_sites ALTER COLUMN profile_preferences_enabled SET NOT NULL; \
+       ALTER TABLE IF EXISTS cms_app_sites ALTER COLUMN date_created SET NOT NULL; \
+       CREATE UNIQUE INDEX IF NOT EXISTS cms_app_sites_app_site_unique ON cms_app_sites (app_id, site_key); \
+       CREATE INDEX IF NOT EXISTS cms_app_sites_site_key_idx ON cms_app_sites (site_key) WHERE site_key IS NOT NULL AND BTRIM(site_key) <> ''; \
        CREATE TABLE IF NOT EXISTS platform_apps ( \
          id UUID PRIMARY KEY, \
          cms_app_id UUID NULL, \
@@ -2602,6 +2626,39 @@ data:
        CREATE UNIQUE INDEX IF NOT EXISTS platform_apps_org_app_key_unique ON platform_apps (COALESCE(organization_id, '00000000-0000-0000-0000-000000000000'::uuid), app_key) WHERE app_key IS NOT NULL AND BTRIM(app_key) <> ''; \
        CREATE INDEX IF NOT EXISTS platform_apps_org_idx ON platform_apps (organization_id); \
        CREATE INDEX IF NOT EXISTS platform_apps_status_idx ON platform_apps (status, deployment_status); \
+       INSERT INTO cms_app_sites (id, app_id, site_key, profile_preferences_enabled, date_created, date_updated) \
+       SELECT (SUBSTR(MD5(a.cms_app_id::text || ':' || LOWER(BTRIM(a.site_key))), 1, 8) || '-' || SUBSTR(MD5(a.cms_app_id::text || ':' || LOWER(BTRIM(a.site_key))), 9, 4) || '-' || SUBSTR(MD5(a.cms_app_id::text || ':' || LOWER(BTRIM(a.site_key))), 13, 4) || '-' || SUBSTR(MD5(a.cms_app_id::text || ':' || LOWER(BTRIM(a.site_key))), 17, 4) || '-' || SUBSTR(MD5(a.cms_app_id::text || ':' || LOWER(BTRIM(a.site_key))), 21, 12))::uuid, a.cms_app_id, LOWER(BTRIM(a.site_key)), LOWER(BTRIM(a.site_key)) = 'internal', now(), now() \
+         FROM platform_apps a \
+        WHERE a.cms_app_id IS NOT NULL \
+          AND NULLIF(BTRIM(a.site_key), '') IS NOT NULL \
+       ON CONFLICT (app_id, site_key) DO NOTHING; \
+       CREATE OR REPLACE FUNCTION directus.ensure_cms_app_site_settings() \
+       RETURNS trigger \
+       LANGUAGE plpgsql \
+       AS \$ensure_cms_app_site_settings\$ \
+       BEGIN \
+         IF NEW.cms_app_id IS NOT NULL AND NULLIF(BTRIM(NEW.site_key), '') IS NOT NULL THEN \
+           INSERT INTO directus.cms_app_sites (id, app_id, site_key, profile_preferences_enabled, date_created, date_updated) \
+           VALUES ((SUBSTR(MD5(NEW.cms_app_id::text || ':' || LOWER(BTRIM(NEW.site_key))), 1, 8) || '-' || SUBSTR(MD5(NEW.cms_app_id::text || ':' || LOWER(BTRIM(NEW.site_key))), 9, 4) || '-' || SUBSTR(MD5(NEW.cms_app_id::text || ':' || LOWER(BTRIM(NEW.site_key))), 13, 4) || '-' || SUBSTR(MD5(NEW.cms_app_id::text || ':' || LOWER(BTRIM(NEW.site_key))), 17, 4) || '-' || SUBSTR(MD5(NEW.cms_app_id::text || ':' || LOWER(BTRIM(NEW.site_key))), 21, 12))::uuid, NEW.cms_app_id, LOWER(BTRIM(NEW.site_key)), LOWER(BTRIM(NEW.site_key)) = 'internal', now(), now()) \
+           ON CONFLICT (app_id, site_key) DO NOTHING; \
+         END IF; \
+         RETURN NEW; \
+       END; \
+       \$ensure_cms_app_site_settings\$; \
+       DO \$\$ \
+       BEGIN \
+         IF NOT EXISTS ( \
+           SELECT 1 FROM pg_trigger \
+            WHERE tgname = 'platform_apps_ensure_cms_app_site_settings_trigger' \
+              AND tgrelid = to_regclass('directus.platform_apps') \
+              AND NOT tgisinternal \
+         ) THEN \
+           CREATE TRIGGER platform_apps_ensure_cms_app_site_settings_trigger \
+           AFTER INSERT OR UPDATE OF cms_app_id, site_key ON directus.platform_apps \
+           FOR EACH ROW EXECUTE FUNCTION directus.ensure_cms_app_site_settings(); \
+         END IF; \
+       END \
+       \$\$; \
        UPDATE platform_apps \
           SET cms_app_id = 'fc874f2b-7077-4ac4-ab17-36c9d8972b56'::uuid, \
               date_updated = now() \
@@ -3241,6 +3298,12 @@ data:
             AND NOT EXISTS (SELECT 1 FROM cms_pages p WHERE p.app_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cms_apps a WHERE a.id = p.app_id)) THEN \
            ALTER TABLE cms_pages ADD CONSTRAINT cms_pages_app_id_fkey FOREIGN KEY (app_id) REFERENCES cms_apps(id) ON DELETE RESTRICT; \
          END IF; \
+         IF to_regclass('directus.cms_app_sites') IS NOT NULL \
+            AND to_regclass('directus.cms_apps') IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cms_app_sites_app_id_fkey' AND conrelid = to_regclass('directus.cms_app_sites')) \
+            AND NOT EXISTS (SELECT 1 FROM cms_app_sites s WHERE s.app_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cms_apps a WHERE a.id = s.app_id)) THEN \
+           ALTER TABLE cms_app_sites ADD CONSTRAINT cms_app_sites_app_id_fkey FOREIGN KEY (app_id) REFERENCES cms_apps(id) ON DELETE CASCADE; \
+         END IF; \
        END \
        \$\$;"
 
@@ -3273,6 +3336,14 @@ data:
          ELSE \
            BEGIN \
              INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('cms_pages', 'app_id', 'cms_apps', 'pages'); \
+           EXCEPTION WHEN unique_violation THEN NULL; \
+           END; \
+         END IF; \
+         IF EXISTS (SELECT 1 FROM directus_relations WHERE many_collection='cms_app_sites' AND many_field='app_id') THEN \
+           UPDATE directus_relations SET one_collection='cms_apps', one_field='site_settings' WHERE many_collection='cms_app_sites' AND many_field='app_id'; \
+         ELSE \
+           BEGIN \
+             INSERT INTO directus_relations (many_collection, many_field, one_collection, one_field) VALUES ('cms_app_sites', 'app_id', 'cms_apps', 'site_settings'); \
            EXCEPTION WHEN unique_violation THEN NULL; \
            END; \
          END IF; \
@@ -3445,6 +3516,7 @@ data:
       }
 
       _upsert_collection_meta "cms_apps" "web_asset" "Logical applications that own CMS pages across internal and external site boundaries." "{{display_name}} ({{app_key}})"
+      _upsert_collection_meta "cms_app_sites" "settings" "Site-specific shell settings for a logical CMS application. One row controls every page in an app and site-key scope." "{{app_id}} | {{site_key}}"
       _upsert_collection_meta "platform_organizations" "corporate_fare" "Platform organizations used by the internal Organization Management page." "{{name}}"
       _upsert_collection_meta "platform_apps" "apps" "Deployments for logical CMS applications. Each deployment represents one internal or external site boundary." "{{display_name}} | {{keycloak_realm}} | {{deployment_status}}"
       _upsert_collection_meta "platform_app_operations" "history" "Create, update, redeploy, and destroy operation history for platform apps." "{{operation_type}} | {{status}} | {{date_created}}"
@@ -5198,6 +5270,9 @@ data:
       BEGIN
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_pages' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_pages ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_app_sites' AND column_name='id' AND udt_name='uuid') THEN
+          ALTER TABLE cms_app_sites ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='directus' AND table_name='cms_page_blocks' AND column_name='id' AND udt_name='uuid') THEN
           ALTER TABLE cms_page_blocks ALTER COLUMN id SET DEFAULT directus.cms_generate_uuid();
@@ -7149,6 +7224,9 @@ data:
       platform_app_cms_app_note_sql="$(printf '%s' 'Logical CMS application served by this internal or external deployment.' | sed "s/'/''/g")"
       platform_app_key_note_sql="$(printf '%s' 'Stable app slug. This should match the deployment/resource prefix.' | sed "s/'/''/g")"
       platform_page_app_note_sql="$(printf '%s' 'Logical application that owns this page. Application and Site Key together select the page set returned to the shell.' | sed "s/'/''/g")"
+      cms_app_site_app_note_sql="$(printf '%s' 'Logical application whose pages share these site-specific shell settings.' | sed "s/'/''/g")"
+      cms_app_site_key_note_sql="$(printf '%s' 'Site boundary for these settings. The application and Site Key pair applies to every page in that scope.' | sed "s/'/''/g")"
+      profile_preferences_enabled_note_sql="$(printf '%s' 'Shows the Preferences action in the signed-in profile menu on every page for this application and Site Key.' | sed "s/'/''/g")"
       platform_app_site_key_note_sql="$(printf '%s' 'Compatibility value derived automatically from Site / Keycloak Realm. It is retained for deployment and content-query contracts.' | sed "s/'/''/g")"
       platform_app_realm_note_sql="$(printf '%s' 'Required site boundary and Keycloak authentication realm. Internal maps to the internal site and realm; External maps to the external site and realm.' | sed "s/'/''/g")"
       platform_app_domain_note_sql="$(printf '%s' 'Read-only app domain inherited automatically from the selected organization.' | sed "s/'/''/g")"
@@ -9771,6 +9849,9 @@ data:
       _upsert_content_item_field_meta "display_name" "input" "half" 2 "${cms_app_name_note_sql}" "" true false "cms_apps"
       _upsert_content_item_field_meta "status" "select-dropdown" "half" 3 "${status_note_sql}" "${platform_org_status_options_json}" true false "cms_apps"
       _upsert_content_item_field_meta "description" "input-multiline" "full" 4 "${platform_page_app_note_sql}" "" false false "cms_apps"
+      _upsert_platform_m2o_field_meta "cms_app_sites" "app_id" 1 "${cms_app_site_app_note_sql}" "${cms_app_relation_options_json}" true
+      _upsert_content_item_field_meta "site_key" "select-dropdown" "half" 2 "${cms_app_site_key_note_sql}" "${site_key_options_json}" true false "cms_app_sites" "" false "Site Key"
+      _upsert_content_item_field_meta "profile_preferences_enabled" "boolean" "half" 3 "${profile_preferences_enabled_note_sql}" "" true false "cms_app_sites" "" false "Show Preferences in Profile Menu"
       _upsert_content_item_field_meta "organization_key" "input" "half" 1 "${platform_org_key_note_sql}" "" true false "platform_organizations"
       _upsert_content_item_field_meta "name" "input" "half" 2 "${platform_org_name_note_sql}" "" true false "platform_organizations"
       _upsert_content_item_field_meta "status" "select-dropdown" "half" 3 "${status_note_sql}" "${platform_org_status_options_json}" true false "platform_organizations"
@@ -9868,6 +9949,9 @@ data:
       _upsert_hidden_internal_field_meta_dynamic "cms_apps" "id" 90
       _upsert_hidden_internal_field_meta_dynamic "cms_apps" "date_created" 91
       _upsert_hidden_internal_field_meta_dynamic "cms_apps" "date_updated" 92
+      _upsert_hidden_internal_field_meta_dynamic "cms_app_sites" "id" 90
+      _upsert_hidden_internal_field_meta_dynamic "cms_app_sites" "date_created" 91
+      _upsert_hidden_internal_field_meta_dynamic "cms_app_sites" "date_updated" 92
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "id" 90
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_created" 91
       _upsert_hidden_internal_field_meta_dynamic "platform_organizations" "date_updated" 92
@@ -11985,7 +12069,7 @@ data:
               refresh_targets_json="[]"
             fi
     
-            refresh_collections_json='["cms_pages","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_block_content_ref","cms_content_templates","cms_content_items","cms_content_item_translations","cms_template_functions","cms_modules","cms_layout_templates","cms_layout_template_slots","cms_theme_packages"]'
+            refresh_collections_json='["cms_pages","cms_app_sites","cms_page_blocks","cms_block_rich_text","cms_block_hero","cms_block_module","cms_block_template_ref","cms_block_content_ref","cms_content_templates","cms_content_items","cms_content_item_translations","cms_template_functions","cms_modules","cms_layout_templates","cms_layout_template_slots","cms_theme_packages"]'
             manual_refresh_collections_json='["cms_pages"]'
             targets_count="$(printf '%s' "${refresh_targets_json}" | jq -r 'length' 2>/dev/null || echo 0)"
             if [ "${targets_count:-0}" = "0" ]; then
