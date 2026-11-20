@@ -77,10 +77,21 @@ jobs:
           workspace_id="$(jq -r '.data.id' <<<"${workspace_json}")"
           locked="$(jq -r '.data.attributes.locked' <<<"${workspace_json}")"
           locked_reason="$(jq -r '.data.attributes["locked-reason"] // empty' <<<"${workspace_json}")"
-          [[ "${locked}" == "true" && "${locked_reason}" == "${SOURCE_LOCK_REASON}" ]] || {
-            echo "Source workspace does not have the expected migration lock" >&2
-            exit 1
-          }
+          if [[ "${locked}" == "true" ]]; then
+            [[ "${locked_reason}" == "${SOURCE_LOCK_REASON}" ]] || {
+              echo "Source workspace is locked for an unrelated reason: ${locked_reason}" >&2
+              exit 1
+            }
+          else
+            lock_payload="$(jq -n --arg reason "${SOURCE_LOCK_REASON}" '{reason:$reason}')"
+            curl --fail --silent --show-error \
+              --request POST \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${lock_payload}" \
+              "${api}/workspaces/${workspace_id}/actions/lock" >/dev/null
+            echo "Restored the expected migration lock before the forget-only run"
+          fi
 
           curl --fail --silent --show-error \
             --request POST \
@@ -148,3 +159,42 @@ jobs:
           }
           echo "Source state no longer owns OCI or TLS resources"
           echo "HCP Terraform run: ${{ steps.run.outputs.run_link }}"
+
+      - name: Preserve migration lock while source records remain
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+          workspace_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+          workspace_id="$(jq -r '.data.id' <<<"${workspace_json}")"
+          resources_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/workspaces/${workspace_id}/resources?page%5Bsize%5D=100")"
+          remaining="$(jq '[.data[]? | select(.attributes.provider | test("oracle/oci|hashicorp/tls"))] | length' <<<"${resources_json}")"
+
+          if [[ "${remaining}" == "0" ]]; then
+            echo "No OCI/TLS source records remain; migration lock is no longer required"
+            exit 0
+          fi
+
+          workspace_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/workspaces/${workspace_id}")"
+          locked="$(jq -r '.data.attributes.locked' <<<"${workspace_json}")"
+          locked_reason="$(jq -r '.data.attributes["locked-reason"] // empty' <<<"${workspace_json}")"
+          if [[ "${locked}" == "true" ]]; then
+            [[ "${locked_reason}" == "${SOURCE_LOCK_REASON}" ]] || {
+              echo "Source workspace is locked for an unrelated reason: ${locked_reason}" >&2
+              exit 1
+            }
+            echo "Source workspace retains the migration lock"
+            exit 0
+          fi
+
+          lock_payload="$(jq -n --arg reason "${SOURCE_LOCK_REASON}" '{reason:$reason}')"
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            --data "${lock_payload}" \
+            "${api}/workspaces/${workspace_id}/actions/lock" >/dev/null
+          echo "Restored migration lock because ${remaining} OCI/TLS source records remain"
