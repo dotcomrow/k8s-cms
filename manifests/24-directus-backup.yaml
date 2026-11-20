@@ -603,7 +603,7 @@ spec:
                     path: ssh-key
             - name: uploads
               persistentVolumeClaim:
-                claimName: directus-uploads-remote-vm-v8
+                claimName: directus-uploads-remote-vm-v9
             - name: gcs-credentials
               secret:
                 secretName: directus-backup-gcs

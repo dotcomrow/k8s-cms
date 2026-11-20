@@ -91,8 +91,8 @@ For local/service discovery:
 
 In this workspace, the default `REPORTING_SYSTEMS_JSON` is set in `manifests/71-vm-stats-service.yaml` to the Oracle VM target (`oracle-db`), using:
 
-- `ssh_host`: `157.151.150.61`
-- `db_host`: `157.151.150.61`
+- `ssh_host`: `129.151.63.67`
+- `db_host`: `127.0.0.1` (through the SSH tunnel)
 - `db_user`: `directus_app_k7m2v9q4x6r1t8h3`
 
 For collector metadata and thresholds, see `vm-stats-service/src/server.ts` env parsing section.

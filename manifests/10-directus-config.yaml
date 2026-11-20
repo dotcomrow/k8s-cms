@@ -13204,13 +13204,15 @@ spec:
   storageClassName: ""
   volumeName: directus-uploads-oci-vm-v7
 ---
-# Active uploads PV on current OCI VM.
+# Legacy uploads PV retained after VM host rotation.
 # NFSv4.1 keeps the mount path on TCP/2049 and avoids NFSv3 rpcbind/mountd
 # discovery, which can leave fresh pod mounts blocked during RPC interruptions.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: directus-uploads-oci-vm-v8
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   capacity:
     storage: 500Gi
@@ -13227,12 +13229,14 @@ spec:
     server: "157.151.150.61"
     path: /srv/directus/uploads
 ---
-# Active uploads PVC bound to the current OCI VM NFS export.
+# Legacy uploads PVC retained after VM host rotation.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: directus-uploads-remote-vm-v8
   namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   accessModes:
     - ReadWriteMany
@@ -13241,6 +13245,42 @@ spec:
       storage: 500Gi
   storageClassName: ""
   volumeName: directus-uploads-oci-vm-v8
+---
+# Active uploads PV on the current OCI VM reserved public IP.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: directus-uploads-oci-vm-v9
+spec:
+  capacity:
+    storage: 500Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - nfsvers=4.1
+    - proto=tcp
+    - hard
+    - timeo=600
+    - retrans=2
+  nfs:
+    server: "129.151.63.67"
+    path: /srv/directus/uploads
+---
+# Active uploads PVC bound to the current OCI VM NFS export.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: directus-uploads-remote-vm-v9
+  namespace: directus
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 500Gi
+  storageClassName: ""
+  volumeName: directus-uploads-oci-vm-v9
 ---
 # Legacy uploads PVC kept for rollback/migration safety.
 # Directus no longer writes here.

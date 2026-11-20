@@ -9,7 +9,7 @@ data:
       {
         "id": "oracle-db",
         "name": "Oracle Cloud VM",
-        "ssh_host": "157.151.150.61",
+        "ssh_host": "129.151.63.67",
         "ssh_port": "22",
         "ssh_user": "ubuntu",
         "ssh_key_path": "/secrets/ssh-key",
