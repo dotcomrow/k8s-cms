@@ -6,14 +6,6 @@ terraform {
     google-beta = {
       source = "hashicorp/google-beta"
     }
-    oci = {
-      source  = "oracle/oci"
-      version = "~> 6.0"
-    }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
-    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.0"
