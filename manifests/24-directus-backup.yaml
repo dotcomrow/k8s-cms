@@ -19,6 +19,12 @@ data:
   VERIFY_DB_HOST: "127.0.0.1"
   VERIFY_DB_PORT: "55432"
   VERIFY_DB_NAME: "directus_restore_verify"
+  ESPOCRM_DB_NAME: "espocrm"
+  ESPOCRM_DB_USER: "espocrm_app"
+  OPENWEBUI_DB_NAME: "openwebui"
+  OPENWEBUI_DB_USER: "openwebui_app"
+  SUNCOAST_CRM_DB_NAME: "suncoast_crm"
+  SUNCOAST_CRM_DB_USER: "suncoast_crm_app"
   BACKUP_WORK_DIR: "/work"
   CONNECT_TIMEOUT_SECONDS: "10"
   COMMAND_TIMEOUT_SECONDS: "7200"
@@ -53,6 +59,39 @@ spec:
         key: directus-backup-gcs
         property: service_account_json
 ---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: directus-backup-databases
+  namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-full-backup
+    app.kubernetes.io/managed-by: argocd
+spec:
+  refreshInterval: 5m
+  secretStoreRef:
+    name: vault-store
+    kind: ClusterSecretStore
+  target:
+    name: directus-backup-databases
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    template:
+      type: Opaque
+  data:
+    - secretKey: ESPOCRM_DB_PASSWORD
+      remoteRef:
+        key: suncoast-crm-api
+        property: espocrm_database_password
+    - secretKey: OPENWEBUI_DB_PASSWORD
+      remoteRef:
+        key: openwebui-db-password
+        property: value
+    - secretKey: SUNCOAST_CRM_DB_PASSWORD
+      remoteRef:
+        key: suncoast-crm-api
+        property: facade_database_password
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -68,6 +107,7 @@ data:
     WORK_DIR="${BACKUP_WORK_DIR:-/work}"
     RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
     RUN_DIR="${WORK_DIR}/run"
+    DATABASES_DIR="${RUN_DIR}/databases"
     VERIFY_UPLOADS_DIR="${WORK_DIR}/uploads-verify"
     SSH_KEY_FILE="/ssh/ssh-key"
     SSH_LOCAL_DB_PORT="${SSH_LOCAL_DB_PORT:-15432}"
@@ -106,7 +146,7 @@ data:
     trap 'exit 1' INT TERM
 
     rm -rf "${RUN_DIR}" "${VERIFY_UPLOADS_DIR}"
-    mkdir -p "${RUN_DIR}" "${VERIFY_UPLOADS_DIR}"
+    mkdir -p "${DATABASES_DIR}" "${VERIFY_UPLOADS_DIR}"
 
     case "${GCS_BUCKET:-}" in
       ""|REPLACE_WITH_GCS_BUCKET) fail "GCS_BUCKET is not configured" ;;
@@ -115,6 +155,12 @@ data:
       1|2) ;;
       *) fail "RETENTION_COUNT must be 1 or 2" ;;
     esac
+    [ -n "${DB_NAME:-}" ] || fail "DB_NAME is not configured"
+    [ -n "${DB_USER:-}" ] || fail "DB_USER is not configured"
+    [ -n "${DB_PASSWORD:-}" ] || fail "DB_PASSWORD is not configured"
+    [ -n "${ESPOCRM_DB_PASSWORD:-}" ] || fail "ESPOCRM_DB_PASSWORD is not configured"
+    [ -n "${OPENWEBUI_DB_PASSWORD:-}" ] || fail "OPENWEBUI_DB_PASSWORD is not configured"
+    [ -n "${SUNCOAST_CRM_DB_PASSWORD:-}" ] || fail "SUNCOAST_CRM_DB_PASSWORD is not configured"
 
     echo "Starting read-only SSH tunnel to the Oracle PostgreSQL VM..."
     ssh \
@@ -142,79 +188,159 @@ data:
       sleep 2
     done
 
-    export PGPASSWORD="${DB_PASSWORD}"
     export PGCONNECT_TIMEOUT="${CONNECT_TIMEOUT_SECONDS}"
 
-    SERVER_VERSION="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SHOW server_version;")"
-    SERVER_VERSION_NUM="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SHOW server_version_num;")"
-    DATABASE_BYTES="$(psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SELECT pg_database_size(current_database());")"
+    SERVER_VERSION="$(PGPASSWORD="${DB_PASSWORD}" psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SHOW server_version;")"
+    SERVER_VERSION_NUM="$(PGPASSWORD="${DB_PASSWORD}" psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -c "SHOW server_version_num;")"
 
-    # Keep the exporting transaction open while pg_dump and the count query
-    # independently import the same point-in-time database snapshot.
-    SNAPSHOT_CONTROL_FIFO="${RUN_DIR}/snapshot-control"
-    SNAPSHOT_ID_FILE="${RUN_DIR}/snapshot-id"
-    mkfifo "${SNAPSHOT_CONTROL_FIFO}"
-    psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -v ON_ERROR_STOP=1 \
-      <"${SNAPSHOT_CONTROL_FIFO}" >"${RUN_DIR}/snapshot-session.log" 2>&1 &
-    SNAPSHOT_SESSION_PID="$!"
-    exec 3>"${SNAPSHOT_CONTROL_FIFO}"
-    printf '%s\n' \
-      'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;' \
-      "\\o ${SNAPSHOT_ID_FILE}" \
-      'SELECT pg_export_snapshot();' \
-      '\o' >&3
+    if [ "${VERIFY_RESTORE}" = "true" ]; then
+      verify_attempt=0
+      until pg_isready -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d postgres >/dev/null 2>&1; do
+        verify_attempt=$((verify_attempt + 1))
+        if [ "${verify_attempt}" -ge 60 ]; then
+          fail "Timed out waiting for the isolated verification PostgreSQL instance"
+        fi
+        sleep 2
+      done
+    fi
 
-    snapshot_waited=0
-    while [ ! -s "${SNAPSHOT_ID_FILE}" ]; do
-      if ! kill -0 "${SNAPSHOT_SESSION_PID}" >/dev/null 2>&1; then
-        cat "${RUN_DIR}/snapshot-session.log" >&2 || true
-        fail "PostgreSQL snapshot session exited before exporting a snapshot"
-      fi
-      snapshot_waited=$((snapshot_waited + 1))
-      if [ "${snapshot_waited}" -ge 30 ]; then
-        fail "Timed out waiting for PostgreSQL to export a backup snapshot"
-      fi
-      sleep 1
-    done
-    DATABASE_SNAPSHOT_ID="$(tr -d '[:space:]' <"${SNAPSHOT_ID_FILE}")"
-    case "${DATABASE_SNAPSHOT_ID}" in
-      *[!0-9A-Fa-f:-]*|'') fail "PostgreSQL returned an invalid backup snapshot ID" ;;
-    esac
+    backup_database() {
+      db_slug="$1"
+      db_name="$2"
+      db_user="$3"
+      db_password="$4"
+      db_dir="${DATABASES_DIR}/${db_slug}"
+      snapshot_id_file="${db_dir}/snapshot-id"
+      snapshot_log="${db_dir}/snapshot-session.log"
+      dump_file="${db_dir}/${db_slug}.dump"
+      restore_list="${db_dir}/${db_slug}.restore-list"
+      table_count_sql="${db_dir}/table-counts.sql"
+      source_counts="${db_dir}/source-table-counts.txt"
+      restored_counts="${db_dir}/restored-table-counts.txt"
+      table_count_diff="${db_dir}/table-counts.diff"
+      mkdir -p "${db_dir}"
 
-    echo "Creating PostgreSQL custom-format backup from a shared database snapshot..."
-    timeout "${COMMAND_TIMEOUT_SECONDS}" pg_dump \
-      --host=127.0.0.1 \
-      --port="${SSH_LOCAL_DB_PORT}" \
-      --username="${DB_USER}" \
-      --dbname="${DB_NAME}" \
-      --format=custom \
-      --compress=6 \
-      --snapshot="${DATABASE_SNAPSHOT_ID}" \
-      --no-owner \
-      --no-privileges \
-      --file="${RUN_DIR}/directus.dump"
-    pg_restore --list "${RUN_DIR}/directus.dump" >"${RUN_DIR}/directus.restore-list"
-    test -s "${RUN_DIR}/directus.dump" || fail "Database dump is empty"
-    test -s "${RUN_DIR}/directus.restore-list" || fail "Database restore list is empty"
+      database_bytes="$(PGPASSWORD="${db_password}" psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${db_user}" -d "${db_name}" -qAtX -v ON_ERROR_STOP=1 -c "SELECT pg_database_size(current_database());")"
 
-    TABLE_COUNT_SQL="${RUN_DIR}/table-counts.sql"
-    {
+      # Keep one exported snapshot open per database so its dump and source
+      # row counts describe the same point in time.
+      SNAPSHOT_CONTROL_FIFO="${db_dir}/snapshot-control"
+      mkfifo "${SNAPSHOT_CONTROL_FIFO}"
+      PGPASSWORD="${db_password}" psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${db_user}" -d "${db_name}" -qAtX -v ON_ERROR_STOP=1 \
+        <"${SNAPSHOT_CONTROL_FIFO}" >"${snapshot_log}" 2>&1 &
+      SNAPSHOT_SESSION_PID="$!"
+      exec 3>"${SNAPSHOT_CONTROL_FIFO}"
       printf '%s\n' \
         'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;' \
-        "SET TRANSACTION SNAPSHOT '${DATABASE_SNAPSHOT_ID}';" \
-        "\\o ${TABLE_COUNT_SQL}" \
-        "SELECT format('SELECT %L || ''|'' || count(*) FROM %I.%I;', schemaname || '.' || tablename, schemaname, tablename) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY schemaname,tablename;" \
-        '\o' \
-        "\\i ${TABLE_COUNT_SQL}"
-      printf '%s\n' 'COMMIT;'
-    } | psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -qAtX -v ON_ERROR_STOP=1 \
-      | sort >"${RUN_DIR}/source-table-counts.txt"
-    printf '%s\n' 'COMMIT;' '\q' >&3
-    exec 3>&-
-    wait "${SNAPSHOT_SESSION_PID}"
-    SNAPSHOT_SESSION_PID=""
-    rm -f "${SNAPSHOT_CONTROL_FIFO}" "${SNAPSHOT_ID_FILE}"
-    SNAPSHOT_CONTROL_FIFO=""
+        "\\o ${snapshot_id_file}" \
+        'SELECT pg_export_snapshot();' \
+        '\o' >&3
+
+      snapshot_waited=0
+      while [ ! -s "${snapshot_id_file}" ]; do
+        if ! kill -0 "${SNAPSHOT_SESSION_PID}" >/dev/null 2>&1; then
+          cat "${snapshot_log}" >&2 || true
+          fail "PostgreSQL snapshot session for ${db_name} exited before exporting a snapshot"
+        fi
+        snapshot_waited=$((snapshot_waited + 1))
+        if [ "${snapshot_waited}" -ge 30 ]; then
+          fail "Timed out waiting for PostgreSQL to export a ${db_name} snapshot"
+        fi
+        sleep 1
+      done
+      database_snapshot_id="$(tr -d '[:space:]' <"${snapshot_id_file}")"
+      case "${database_snapshot_id}" in
+        *[!0-9A-Fa-f:-]*|'') fail "PostgreSQL returned an invalid ${db_name} snapshot ID" ;;
+      esac
+
+      echo "Creating ${db_name} custom-format backup from a shared snapshot..."
+      PGPASSWORD="${db_password}" timeout "${COMMAND_TIMEOUT_SECONDS}" pg_dump \
+        --host=127.0.0.1 \
+        --port="${SSH_LOCAL_DB_PORT}" \
+        --username="${db_user}" \
+        --dbname="${db_name}" \
+        --format=custom \
+        --compress=6 \
+        --snapshot="${database_snapshot_id}" \
+        --no-owner \
+        --no-privileges \
+        --file="${dump_file}"
+      pg_restore --list "${dump_file}" >"${restore_list}"
+      test -s "${dump_file}" || fail "${db_name} database dump is empty"
+      test -s "${restore_list}" || fail "${db_name} restore list is empty"
+
+      {
+        printf '%s\n' \
+          'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;' \
+          "SET TRANSACTION SNAPSHOT '${database_snapshot_id}';" \
+          "\\o ${table_count_sql}" \
+          "SELECT format('SELECT %L || ''|'' || count(*) FROM %I.%I;', schemaname || '.' || tablename, schemaname, tablename) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY schemaname,tablename;" \
+          '\o' \
+          "\\i ${table_count_sql}"
+        printf '%s\n' 'COMMIT;'
+      } | PGPASSWORD="${db_password}" psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${db_user}" -d "${db_name}" -qAtX -v ON_ERROR_STOP=1 \
+        | sort >"${source_counts}"
+      printf '%s\n' 'COMMIT;' '\q' >&3
+      exec 3>&-
+      wait "${SNAPSHOT_SESSION_PID}"
+      SNAPSHOT_SESSION_PID=""
+      rm -f "${SNAPSHOT_CONTROL_FIFO}" "${snapshot_id_file}"
+      SNAPSHOT_CONTROL_FIFO=""
+
+      isolated_restore=false
+      if [ "${VERIFY_RESTORE}" = "true" ]; then
+        verify_db_name="${VERIFY_DB_NAME}_${db_slug}"
+        echo "Restoring ${db_name} into isolated verification database ${verify_db_name}..."
+        dropdb --if-exists -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${verify_db_name}"
+        createdb -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${verify_db_name}"
+        timeout "${RESTORE_TIMEOUT_SECONDS}" pg_restore \
+          --exit-on-error \
+          --no-owner \
+          --no-privileges \
+          --host="${VERIFY_DB_HOST}" \
+          --port="${VERIFY_DB_PORT}" \
+          --username=postgres \
+          --dbname="${verify_db_name}" \
+          "${dump_file}"
+        psql -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d "${verify_db_name}" -qAtX -v ON_ERROR_STOP=1 -f "${table_count_sql}" \
+          | sort >"${restored_counts}"
+        if ! diff -u "${source_counts}" "${restored_counts}" >"${table_count_diff}"; then
+          cat "${table_count_diff}" >&2
+          fail "Restored ${db_name} row counts do not match the exported snapshot"
+        fi
+        dropdb -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${verify_db_name}"
+        isolated_restore=true
+      fi
+
+      dump_bytes="$(stat -c '%s' "${dump_file}")"
+      table_count="$(wc -l <"${source_counts}" | tr -d ' ')"
+      jq -n \
+        --arg database "${db_name}" \
+        --arg artifact "databases/${db_slug}/${db_slug}.dump" \
+        --argjson database_bytes "${database_bytes}" \
+        --argjson dump_bytes "${dump_bytes}" \
+        --argjson table_count "${table_count}" \
+        --argjson isolated_restore "${isolated_restore}" \
+        '{database:$database,artifact:$artifact,database_bytes:$database_bytes,dump_bytes:$dump_bytes,table_count:$table_count,verification:{pg_restore_list:true,isolated_restore:$isolated_restore,row_counts_match:$isolated_restore}}' \
+        >"${db_dir}/manifest.json"
+    }
+
+    backup_database directus "${DB_NAME}" "${DB_USER}" "${DB_PASSWORD}"
+    backup_database espocrm "${ESPOCRM_DB_NAME}" "${ESPOCRM_DB_USER}" "${ESPOCRM_DB_PASSWORD}"
+    backup_database openwebui "${OPENWEBUI_DB_NAME}" "${OPENWEBUI_DB_USER}" "${OPENWEBUI_DB_PASSWORD}"
+    backup_database suncoast_crm "${SUNCOAST_CRM_DB_NAME}" "${SUNCOAST_CRM_DB_USER}" "${SUNCOAST_CRM_DB_PASSWORD}"
+
+    jq -s '.' "${DATABASES_DIR}"/*/manifest.json >"${RUN_DIR}/databases.json"
+    (
+      cd "${RUN_DIR}"
+      find databases -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >databases/SHA256SUMS
+      sha256sum -c databases/SHA256SUMS >/dev/null
+      tar -czf databases.tar.gz databases
+      gzip -t databases.tar.gz
+    )
+    ln "${DATABASES_DIR}/directus/directus.dump" "${RUN_DIR}/directus.dump"
+    ln "${DATABASES_DIR}/directus/directus.restore-list" "${RUN_DIR}/directus.restore-list"
+    ln "${DATABASES_DIR}/directus/source-table-counts.txt" "${RUN_DIR}/source-table-counts.txt"
 
     echo "Archiving Directus uploads and generating per-file checksums..."
     upload_snapshot_attempt=1
@@ -248,64 +374,39 @@ data:
     done
     [ "${upload_snapshot_ok}" = "true" ] || fail "Could not create a stable uploads snapshot after 3 attempts"
 
-    if [ "${VERIFY_RESTORE}" = "true" ]; then
-      echo "Restoring the dump into the isolated verification PostgreSQL instance..."
-      verify_attempt=0
-      until pg_isready -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d postgres >/dev/null 2>&1; do
-        verify_attempt=$((verify_attempt + 1))
-        if [ "${verify_attempt}" -ge 60 ]; then
-          fail "Timed out waiting for the isolated verification PostgreSQL instance"
-        fi
-        sleep 2
-      done
-
-      dropdb --if-exists -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${VERIFY_DB_NAME}"
-      createdb -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${VERIFY_DB_NAME}"
-      timeout "${RESTORE_TIMEOUT_SECONDS}" pg_restore \
-        --exit-on-error \
-        --no-owner \
-        --no-privileges \
-        --host="${VERIFY_DB_HOST}" \
-        --port="${VERIFY_DB_PORT}" \
-        --username=postgres \
-        --dbname="${VERIFY_DB_NAME}" \
-        "${RUN_DIR}/directus.dump"
-      psql -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d "${VERIFY_DB_NAME}" -qAtX -v ON_ERROR_STOP=1 -f "${TABLE_COUNT_SQL}" \
-        | sort >"${RUN_DIR}/restored-table-counts.txt"
-      if ! diff -u "${RUN_DIR}/source-table-counts.txt" "${RUN_DIR}/restored-table-counts.txt" \
-        >"${RUN_DIR}/table-counts.diff"; then
-        cat "${RUN_DIR}/table-counts.diff" >&2
-        fail "Restored database row counts do not match the exported snapshot"
-      fi
-      dropdb -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres "${VERIFY_DB_NAME}"
-    fi
-
-    DUMP_BYTES="$(stat -c '%s' "${RUN_DIR}/directus.dump")"
+    DIRECTUS_DUMP_BYTES="$(stat -c '%s' "${RUN_DIR}/directus.dump")"
+    DATABASE_ARCHIVE_BYTES="$(stat -c '%s' "${RUN_DIR}/databases.tar.gz")"
     UPLOAD_ARCHIVE_BYTES="$(stat -c '%s' "${RUN_DIR}/uploads.tar.gz")"
-    TABLE_COUNT="$(wc -l <"${RUN_DIR}/source-table-counts.txt" | tr -d ' ')"
+    DATABASE_COUNT="$(jq 'length' "${RUN_DIR}/databases.json")"
+    ALL_DATABASES_VERIFIED=false
+    if [ "${VERIFY_RESTORE}" = "true" ]; then
+      ALL_DATABASES_VERIFIED=true
+    fi
     jq -n \
       --arg run_id "${RUN_ID}" \
       --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --arg database "${DB_NAME}" \
       --arg server_version "${SERVER_VERSION}" \
       --arg server_version_num "${SERVER_VERSION_NUM}" \
-      --argjson database_bytes "${DATABASE_BYTES}" \
-      --argjson dump_bytes "${DUMP_BYTES}" \
+      --slurpfile databases "${RUN_DIR}/databases.json" \
+      --argjson database_count "${DATABASE_COUNT}" \
+      --argjson directus_dump_bytes "${DIRECTUS_DUMP_BYTES}" \
+      --argjson database_archive_bytes "${DATABASE_ARCHIVE_BYTES}" \
       --argjson uploads_archive_bytes "${UPLOAD_ARCHIVE_BYTES}" \
       --argjson upload_file_count "${UPLOAD_FILE_COUNT}" \
-      --argjson table_count "${TABLE_COUNT}" \
+      --argjson all_databases_verified "${ALL_DATABASES_VERIFIED}" \
       --argjson retention_count "${RETENTION_COUNT}" \
-      '{run_id:$run_id,created_at:$created_at,database:$database,postgresql:{server_version:$server_version,server_version_num:$server_version_num,database_bytes:$database_bytes},artifacts:{database_dump_bytes:$dump_bytes,uploads_archive_bytes:$uploads_archive_bytes,upload_file_count:$upload_file_count,table_count:$table_count},verification:{pg_restore_list:true,isolated_restore:true,row_counts_match:true,uploads_checksums_match:true},retention_count:$retention_count}' \
+      '{run_id:$run_id,created_at:$created_at,database:$database,databases:$databases[0],postgresql:{server_version:$server_version,server_version_num:$server_version_num,database_count:$database_count},artifacts:{directus_database_dump_bytes:$directus_dump_bytes,database_archive_bytes:$database_archive_bytes,uploads_archive_bytes:$uploads_archive_bytes,upload_file_count:$upload_file_count},verification:{all_database_restore_lists:true,all_databases_isolated_restore:$all_databases_verified,all_database_row_counts_match:$all_databases_verified,uploads_checksums_match:true},retention_count:$retention_count}' \
       >"${RUN_DIR}/manifest.json"
     (
       cd "${RUN_DIR}"
-      sha256sum directus.dump directus.restore-list source-table-counts.txt uploads.tar.gz uploads.sha256 manifest.json >SHA256SUMS
+      sha256sum directus.dump directus.restore-list source-table-counts.txt databases.tar.gz databases.json uploads.tar.gz uploads.sha256 manifest.json >SHA256SUMS
       sha256sum -c SHA256SUMS >/dev/null
     )
 
     printf '%s\n' "${RUN_ID}" >"${WORK_DIR}/run-id"
     touch "${WORK_DIR}/ready-to-upload"
-    echo "Backup ${RUN_ID} passed isolated restore, row-count, archive, and checksum verification."
+    echo "Backup ${RUN_ID} passed isolated restore, row-count, archive, and checksum verification for ${DATABASE_COUNT} databases."
 
     upload_waited=0
     until [ -f "${WORK_DIR}/upload-succeeded" ]; do
@@ -378,15 +479,19 @@ data:
     RUN_URI="${BASE_URI}/runs/${RUN_ID}"
 
     echo "Uploading verified backup ${RUN_ID}..."
-    gcloud storage cp "${RUN_DIR}/directus.dump" "${RUN_URI}/directus.dump" --quiet
-    gcloud storage cp "${RUN_DIR}/directus.restore-list" "${RUN_URI}/directus.restore-list" --quiet
-    gcloud storage cp "${RUN_DIR}/source-table-counts.txt" "${RUN_URI}/source-table-counts.txt" --quiet
-    gcloud storage cp "${RUN_DIR}/uploads.tar.gz" "${RUN_URI}/uploads.tar.gz" --quiet
-    gcloud storage cp "${RUN_DIR}/uploads.sha256" "${RUN_URI}/uploads.sha256" --quiet
-    gcloud storage cp "${RUN_DIR}/manifest.json" "${RUN_URI}/manifest.json" --quiet
-    gcloud storage cp "${RUN_DIR}/SHA256SUMS" "${RUN_URI}/SHA256SUMS" --quiet
-
-    for artifact in directus.dump directus.restore-list source-table-counts.txt uploads.tar.gz uploads.sha256 manifest.json SHA256SUMS; do
+    ARTIFACTS=(
+      directus.dump
+      directus.restore-list
+      source-table-counts.txt
+      databases.tar.gz
+      databases.json
+      uploads.tar.gz
+      uploads.sha256
+      manifest.json
+      SHA256SUMS
+    )
+    for artifact in "${ARTIFACTS[@]}"; do
+      gcloud storage cp "${RUN_DIR}/${artifact}" "${RUN_URI}/${artifact}" --quiet
       local_size="$(stat -c '%s' "${RUN_DIR}/${artifact}")"
       remote_size="$(gcloud storage objects describe "${RUN_URI}/${artifact}" --format='value(size)' --quiet)"
       [[ "${remote_size}" == "${local_size}" ]] || {
@@ -501,6 +606,21 @@ spec:
                     secretKeyRef:
                       name: vm-stats-service-db
                       key: password
+                - name: ESPOCRM_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: directus-backup-databases
+                      key: ESPOCRM_DB_PASSWORD
+                - name: OPENWEBUI_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: directus-backup-databases
+                      key: OPENWEBUI_DB_PASSWORD
+                - name: SUNCOAST_CRM_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: directus-backup-databases
+                      key: SUNCOAST_CRM_DB_PASSWORD
               resources:
                 requests:
                   cpu: 250m
