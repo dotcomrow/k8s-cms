@@ -222,13 +222,16 @@ spec:
               ESPOCRM_BACKUP_PASSWORD="$(vault kv get -field=espocrm_database_password secret/suncoast-crm-api)"
               OPENWEBUI_BACKUP_PASSWORD="$(vault kv get -field=value secret/openwebui-db-password)"
               SUNCOAST_CRM_BACKUP_PASSWORD="$(vault kv get -field=facade_database_password secret/suncoast-crm-api)"
+              RESEARCH_BACKUP_PASSWORD="$(vault kv get -field=owner_password secret/research-data-platform/database)"
               [ -n "${ESPOCRM_BACKUP_PASSWORD}" ] || { echo "❌ Missing EspoCRM backup password."; exit 1; }
               [ -n "${OPENWEBUI_BACKUP_PASSWORD}" ] || { echo "❌ Missing OpenWebUI backup password."; exit 1; }
               [ -n "${SUNCOAST_CRM_BACKUP_PASSWORD}" ] || { echo "❌ Missing Suncoast CRM backup password."; exit 1; }
+              [ -n "${RESEARCH_BACKUP_PASSWORD}" ] || { echo "❌ Missing research backup password."; exit 1; }
               vault kv put secret/directus-backup-databases \
                 espocrm_db_password="${ESPOCRM_BACKUP_PASSWORD}" \
                 openwebui_db_password="${OPENWEBUI_BACKUP_PASSWORD}" \
                 suncoast_crm_db_password="${SUNCOAST_CRM_BACKUP_PASSWORD}" \
+                research_db_password="${RESEARCH_BACKUP_PASSWORD}" \
                 >/dev/null
 
               vault policy write "directus-backup-databases" - <<'EOF'

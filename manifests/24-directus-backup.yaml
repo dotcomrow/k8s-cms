@@ -25,6 +25,8 @@ data:
   OPENWEBUI_DB_USER: "openwebui_app"
   SUNCOAST_CRM_DB_NAME: "suncoast_crm"
   SUNCOAST_CRM_DB_USER: "suncoast_crm_app"
+  RESEARCH_DB_NAME: "research"
+  RESEARCH_DB_USER: "research_owner"
   BACKUP_WORK_DIR: "/work"
   CONNECT_TIMEOUT_SECONDS: "10"
   COMMAND_TIMEOUT_SECONDS: "7200"
@@ -125,6 +127,10 @@ spec:
       remoteRef:
         key: directus-backup-databases
         property: suncoast_crm_db_password
+    - secretKey: RESEARCH_DB_PASSWORD
+      remoteRef:
+        key: directus-backup-databases
+        property: research_db_password
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -380,6 +386,7 @@ data:
     backup_database espocrm "${ESPOCRM_DB_NAME}" "${ESPOCRM_DB_USER}" "${ESPOCRM_DB_PASSWORD}"
     backup_database openwebui "${OPENWEBUI_DB_NAME}" "${OPENWEBUI_DB_USER}" "${OPENWEBUI_DB_PASSWORD}"
     backup_database suncoast_crm "${SUNCOAST_CRM_DB_NAME}" "${SUNCOAST_CRM_DB_USER}" "${SUNCOAST_CRM_DB_PASSWORD}"
+    backup_database research "${RESEARCH_DB_NAME}" "${RESEARCH_DB_USER}" "${RESEARCH_DB_PASSWORD}"
 
     jq -s '.' "${DATABASES_DIR}"/*/manifest.json >"${RUN_DIR}/databases.json"
     (
@@ -672,6 +679,11 @@ spec:
                     secretKeyRef:
                       name: directus-backup-databases
                       key: SUNCOAST_CRM_DB_PASSWORD
+                - name: RESEARCH_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: directus-backup-databases
+                      key: RESEARCH_DB_PASSWORD
               resources:
                 requests:
                   cpu: 250m
