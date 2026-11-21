@@ -288,22 +288,27 @@ data:
       esac
 
       echo "Creating ${db_name} custom-format backup from a shared snapshot..."
-      PGPASSWORD="${db_password}" timeout "${COMMAND_TIMEOUT_SECONDS}" pg_dump \
-        --host=127.0.0.1 \
-        --port="${SSH_LOCAL_DB_PORT}" \
-        --username="${db_user}" \
-        --dbname="${db_name}" \
-        --format=custom \
-        --compress=6 \
-        --snapshot="${database_snapshot_id}" \
-        --no-owner \
-        --no-privileges \
-        --file="${dump_file}"
-      pg_restore --list "${dump_file}" >"${restore_list}"
+      if ! PGPASSWORD="${db_password}" timeout "${COMMAND_TIMEOUT_SECONDS}" pg_dump \
+          --host=127.0.0.1 \
+          --port="${SSH_LOCAL_DB_PORT}" \
+          --username="${db_user}" \
+          --dbname="${db_name}" \
+          --format=custom \
+          --compress=6 \
+          --snapshot="${database_snapshot_id}" \
+          --no-owner \
+          --no-privileges \
+          --file="${dump_file}"; then
+        fail "pg_dump failed for ${db_name}"
+      fi
+      if ! pg_restore --list "${dump_file}" >"${restore_list}"; then
+        fail "pg_restore could not list the ${db_name} dump"
+      fi
       test -s "${dump_file}" || fail "${db_name} database dump is empty"
       test -s "${restore_list}" || fail "${db_name} restore list is empty"
 
-      {
+      source_counts_unsorted="${db_dir}/source-table-counts.unsorted"
+      if ! {
         printf '%s\n' \
           'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;' \
           "SET TRANSACTION SNAPSHOT '${database_snapshot_id}';" \
@@ -313,10 +318,17 @@ data:
           "\\i ${table_count_sql}"
         printf '%s\n' 'COMMIT;'
       } | PGPASSWORD="${db_password}" psql -h 127.0.0.1 -p "${SSH_LOCAL_DB_PORT}" -U "${db_user}" -d "${db_name}" -qAtX -v ON_ERROR_STOP=1 \
-        | sort >"${source_counts}"
+          >"${source_counts_unsorted}"; then
+        fail "Source row-count query failed for ${db_name}"
+      fi
+      sort "${source_counts_unsorted}" >"${source_counts}"
+      rm -f "${source_counts_unsorted}"
       printf '%s\n' 'COMMIT;' '\q' >&3
       exec 3>&-
-      wait "${SNAPSHOT_SESSION_PID}"
+      if ! wait "${SNAPSHOT_SESSION_PID}"; then
+        cat "${snapshot_log}" >&2 || true
+        fail "PostgreSQL snapshot session failed for ${db_name}"
+      fi
       SNAPSHOT_SESSION_PID=""
       rm -f "${SNAPSHOT_CONTROL_FIFO}" "${snapshot_id_file}"
       SNAPSHOT_CONTROL_FIFO=""
@@ -336,8 +348,13 @@ data:
           --username=postgres \
           --dbname="${verify_db_name}" \
           "${dump_file}"
-        psql -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d "${verify_db_name}" -qAtX -v ON_ERROR_STOP=1 -f "${table_count_sql}" \
-          | sort >"${restored_counts}"
+        restored_counts_unsorted="${db_dir}/restored-table-counts.unsorted"
+        if ! psql -h "${VERIFY_DB_HOST}" -p "${VERIFY_DB_PORT}" -U postgres -d "${verify_db_name}" -qAtX -v ON_ERROR_STOP=1 -f "${table_count_sql}" \
+            >"${restored_counts_unsorted}"; then
+          fail "Restored row-count query failed for ${db_name}"
+        fi
+        sort "${restored_counts_unsorted}" >"${restored_counts}"
+        rm -f "${restored_counts_unsorted}"
         if ! diff -u "${source_counts}" "${restored_counts}" >"${table_count_diff}"; then
           cat "${table_count_diff}" >&2
           fail "Restored ${db_name} row counts do not match the exported snapshot"
