@@ -1,21 +1,36 @@
-# Directus PostgreSQL and uploads backup
+# Application PostgreSQL and Directus uploads backup
 
-The `directus-full-backup` CronJob creates a portable PostgreSQL custom-format
-dump and a compressed archive of Directus uploads. It verifies both artifacts
-before promoting a backup in Google Cloud Storage.
+The `directus-full-backup` CronJob creates portable PostgreSQL custom-format
+dumps for the `directus`, `espocrm`, `openwebui`, and `suncoast_crm`
+application databases, plus a compressed archive of Directus uploads. It
+verifies every database and upload artifact before promoting a backup in
+Google Cloud Storage.
+
+Each database dump is transactionally consistent with its own exported
+snapshot. The four databases are captured sequentially, so the backup is not a
+single cross-database transaction. The backup does not contain PostgreSQL
+global roles, tablespaces, host configuration, or non-Directus application
+file storage. Application bootstrap must recreate roles and privileges before
+restoring these owner-neutral, privilege-neutral dumps.
 
 ## Safety state
 
-The CronJob is committed with `spec.suspend: true`. The static backup settings
+The CronJob is enabled with `spec.suspend: false`. The static backup settings
 are stored in the GitOps-managed `directus-backup-config` ConfigMap. Terraform
 writes the generated bucket name and service-account JSON to Vault, and the
 GitOps-managed `directus-backup-gcs` ExternalSecret continuously materializes
-those values as a namespaced Kubernetes Secret. The schedule cannot run until
-the CronJob is deliberately unsuspended.
+those values as a namespaced Kubernetes Secret.
 
 The job connects through the same Oracle VM SSH path used by
 `vm-stats-service`. PostgreSQL is read only from the backup job. Verification
 uses an isolated PostgreSQL 16.15 sidecar in the Job pod.
+
+The Vault bootstrap copies only the three additional application database
+passwords into `secret/directus-backup-databases`. A dedicated Kubernetes auth
+role can read only that Vault path. The `directus-backup-vault` SecretStore and
+`directus-backup-databases` ExternalSecret materialize exactly the three
+password keys needed by the backup job; the job does not receive access to the
+broader CRM or OpenWebUI source secrets.
 
 ## Schedule and retention
 
@@ -27,11 +42,11 @@ uses an isolated PostgreSQL 16.15 sidecar in the Job pod.
 
 Retention rotation occurs only after all of these steps succeed:
 
-1. `pg_dump` completes.
-2. `pg_restore --list` reads the archive.
-3. The dump restores into the isolated verification database.
-4. Every restored table row count matches the source database at the exact
-   PostgreSQL snapshot used by `pg_dump`.
+1. `pg_dump` completes for all four application databases.
+2. `pg_restore --list` reads every archive.
+3. Each dump restores into a separate isolated verification database.
+4. Every restored table row count matches its source database at the exact
+   PostgreSQL snapshot used by that database's `pg_dump`.
 5. The uploads archive extracts successfully and every file checksum matches.
 6. Local artifact checksums pass.
 7. Every GCS upload completes and its remote size matches the local artifact.
@@ -87,14 +102,16 @@ Run the complete reviewed Terraform plan so the Vault publication resource is
 included; do not target only the service-account key. The existing OCI
 lifecycle protections remain in force. Before enabling the CronJob:
 
-1. Verify `directus-backup-config` exists and the `directus-backup-gcs`
-   ExternalSecret reports `Ready=True`.
-2. Confirm the generated Secret contains non-empty `GCS_BUCKET` and
+1. Verify `directus-backup-config` exists and both backup ExternalSecrets
+   report `Ready=True`.
+2. Confirm the generated GCS Secret contains non-empty `GCS_BUCKET` and
    `service-account.json` keys without printing their values.
-3. Confirm `GCS_PREFIX` and `RETENTION_COUNT` in the ConfigMap manifest.
-4. Confirm bucket Object Versioning and soft-delete settings match the storage
+3. Confirm the database Secret contains exactly `ESPOCRM_DB_PASSWORD`,
+   `OPENWEBUI_DB_PASSWORD`, and `SUNCOAST_CRM_DB_PASSWORD` without printing
+   their values.
+4. Confirm `GCS_PREFIX` and `RETENTION_COUNT` in the ConfigMap manifest.
+5. Confirm bucket Object Versioning and soft-delete settings match the storage
    budget; retained deleted versions still consume storage.
-5. Change `spec.suspend` to `false` in `manifests/24-directus-backup.yaml`.
 6. Run one manually created Job and inspect its logs and GCS artifacts before
    relying on the schedule.
 
@@ -108,6 +125,8 @@ gs://BUCKET/directus-production/
     directus.dump
     directus.restore-list
     source-table-counts.txt
+    databases.tar.gz
+    databases.json
     uploads.tar.gz
     uploads.sha256
     manifest.json
@@ -131,6 +150,22 @@ mkdir uploads-restored
 tar -xzf uploads.tar.gz -C uploads-restored
 (cd uploads-restored && sha256sum -c ../uploads.sha256)
 ```
+
+`directus.dump` remains at the run root for backward compatibility.
+`databases.tar.gz` contains all four verified dumps and their per-database
+restore lists, source/restored row counts, manifests, and checksums:
+
+```text
+databases/
+  directus/directus.dump
+  espocrm/espocrm.dump
+  openwebui/openwebui.dump
+  suncoast_crm/suncoast_crm.dump
+  SHA256SUMS
+```
+
+Extract the archive, verify `databases/SHA256SUMS`, then restore the desired
+database into an isolated database owned by the application bootstrap role.
 
 Use PostgreSQL 16 or a newer supported target for restoration. Restore into an
 isolated database first; do not use `--clean` against production during a test.
