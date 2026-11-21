@@ -11,6 +11,7 @@ data:
   RETENTION_COUNT: "2"
   VERIFY_RESTORE: "true"
   SSH_USER: "ubuntu"
+  SSH_HOST: "129.151.63.67"
   SSH_REMOTE_DB_HOST: "127.0.0.1"
   SSH_REMOTE_DB_PORT: "5432"
   SSH_LOCAL_DB_PORT: "15432"
@@ -485,11 +486,6 @@ spec:
                     secretKeyRef:
                       name: directus-backup-gcs
                       key: GCS_BUCKET
-                - name: SSH_HOST
-                  valueFrom:
-                    secretKeyRef:
-                      name: vm-stats-service-ssh
-                      key: host
                 - name: DB_NAME
                   valueFrom:
                     secretKeyRef:
