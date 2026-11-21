@@ -216,6 +216,31 @@ spec:
                 policies="directus" \
                 ttl="48h"
 
+              # Materialize only the application database passwords required by
+              # the multi-database backup into a dedicated Vault path. The
+              # backup ExternalSecret role cannot read the broader source paths.
+              ESPOCRM_BACKUP_PASSWORD="$(vault kv get -field=espocrm_database_password secret/suncoast-crm-api)"
+              OPENWEBUI_BACKUP_PASSWORD="$(vault kv get -field=value secret/openwebui-db-password)"
+              SUNCOAST_CRM_BACKUP_PASSWORD="$(vault kv get -field=facade_database_password secret/suncoast-crm-api)"
+              [ -n "${ESPOCRM_BACKUP_PASSWORD}" ] || { echo "❌ Missing EspoCRM backup password."; exit 1; }
+              [ -n "${OPENWEBUI_BACKUP_PASSWORD}" ] || { echo "❌ Missing OpenWebUI backup password."; exit 1; }
+              [ -n "${SUNCOAST_CRM_BACKUP_PASSWORD}" ] || { echo "❌ Missing Suncoast CRM backup password."; exit 1; }
+              vault kv put secret/directus-backup-databases \
+                espocrm_db_password="${ESPOCRM_BACKUP_PASSWORD}" \
+                openwebui_db_password="${OPENWEBUI_BACKUP_PASSWORD}" \
+                suncoast_crm_db_password="${SUNCOAST_CRM_BACKUP_PASSWORD}" \
+                >/dev/null
+
+              vault policy write "directus-backup-databases" - <<'EOF'
+              path "secret/data/directus-backup-databases" { capabilities = ["read"] }
+              EOF
+
+              vault write auth/kubernetes/role/directus-backup-databases \
+                bound_service_account_names="directus-backup-external-secrets" \
+                bound_service_account_namespaces="directus" \
+                policies="directus-backup-databases" \
+                ttl="1h"
+
               # Platform deploy service/executor Vault identities are owned by
               # their component manifests, not the CMS bootstrap.
 

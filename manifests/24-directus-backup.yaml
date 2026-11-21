@@ -59,19 +59,53 @@ spec:
         key: directus-backup-gcs
         property: service_account_json
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: directus-backup-external-secrets
+  namespace: directus
+  labels:
+    app.kubernetes.io/name: directus-full-backup
+    app.kubernetes.io/managed-by: argocd
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: directus-backup-vault
+  namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: directus-full-backup
+    app.kubernetes.io/managed-by: argocd
+spec:
+  provider:
+    vault:
+      server: http://vault.vault.svc.cluster.local:8200
+      path: secret
+      version: v2
+      auth:
+        kubernetes:
+          mountPath: kubernetes
+          role: directus-backup-databases
+          serviceAccountRef:
+            name: directus-backup-external-secrets
+---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: directus-backup-databases
   namespace: directus
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
   labels:
     app.kubernetes.io/name: directus-full-backup
     app.kubernetes.io/managed-by: argocd
 spec:
   refreshInterval: 5m
   secretStoreRef:
-    name: vault-store
-    kind: ClusterSecretStore
+    name: directus-backup-vault
+    kind: SecretStore
   target:
     name: directus-backup-databases
     creationPolicy: Owner
@@ -81,16 +115,16 @@ spec:
   data:
     - secretKey: ESPOCRM_DB_PASSWORD
       remoteRef:
-        key: suncoast-crm-api
-        property: espocrm_database_password
+        key: directus-backup-databases
+        property: espocrm_db_password
     - secretKey: OPENWEBUI_DB_PASSWORD
       remoteRef:
-        key: openwebui-db-password
-        property: value
+        key: directus-backup-databases
+        property: openwebui_db_password
     - secretKey: SUNCOAST_CRM_DB_PASSWORD
       remoteRef:
-        key: suncoast-crm-api
-        property: facade_database_password
+        key: directus-backup-databases
+        property: suncoast_crm_db_password
 ---
 apiVersion: v1
 kind: ConfigMap
