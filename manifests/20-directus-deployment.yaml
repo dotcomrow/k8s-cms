@@ -1385,7 +1385,7 @@ spec:
                   | tr -d ' \n' || true
               )"
               case "${_probe_reply}" in
-                53|4e) return 0 ;;
+                53*|4e*) return 0 ;;
                 *) return 1 ;;
               esac
             }
