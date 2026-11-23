@@ -637,7 +637,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: backup-and-verify
-              image: postgres:16.15-alpine
+              image: postgres:18.7-alpine
               imagePullPolicy: IfNotPresent
               command: ["/bin/sh", "/scripts/backup.sh"]
               envFrom:
@@ -706,7 +706,7 @@ spec:
                   mountPath: /source-uploads
                   readOnly: true
             - name: restore-verifier
-              image: postgres:16.15-alpine
+              image: postgres:18.7-alpine
               imagePullPolicy: IfNotPresent
               command: ["/bin/sh", "/scripts/verifier.sh"]
               env:

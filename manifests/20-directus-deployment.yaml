@@ -491,7 +491,7 @@ spec:
             runAsNonRoot: false
             allowPrivilegeEscalation: false
         - name: nuke-directus-roles
-          image: postgres:16-alpine
+          image: postgres:18.7-alpine
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh","-lc"]
           args:
@@ -739,7 +739,7 @@ spec:
             - |
               set -eu
 
-              apk add --no-cache curl jq postgresql15-client openssh-client netcat-openbsd >/dev/null
+              apk add --no-cache curl jq postgresql-client openssh-client netcat-openbsd >/dev/null
 
               VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
               VAULT_TOKEN="$(cat /vault-token/VAULT_TOKEN)"
@@ -1227,7 +1227,7 @@ spec:
               value: "26379"
       containers:
       - name: directus-postschema
-        image: postgres:16-alpine
+        image: postgres:18.7-alpine
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "/scripts/directus-postschema.sh"]
         readinessProbe:
