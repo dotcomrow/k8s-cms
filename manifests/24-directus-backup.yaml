@@ -272,6 +272,7 @@ data:
       exec 3>"${SNAPSHOT_CONTROL_FIFO}"
       printf '%s\n' \
         'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;' \
+        'SET LOCAL idle_in_transaction_session_timeout = 0;' \
         "\\o ${snapshot_id_file}" \
         'SELECT pg_export_snapshot();' \
         '\o' >&3
